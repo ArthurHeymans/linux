@@ -1201,8 +1201,13 @@ int cw1200_setup_mac(struct cw1200_common *priv)
 	if (ret)
 		return ret;
 
-	if (priv->is_xr819 && !priv->output_power)
-		priv->output_power = 20;
+	if (priv->is_xr819) {
+		if (!priv->output_power)
+			priv->output_power = 20;
+
+		/* XR819 configures per-interface MIBs after add_interface. */
+		return 0;
+	}
 
 	return cw1200_setup_rcpi_rssi_threshold(priv);
 }
