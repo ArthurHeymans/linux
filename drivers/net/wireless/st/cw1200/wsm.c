@@ -20,6 +20,7 @@
 #include "debug.h"
 
 #define WSM_CMD_TIMEOUT		(2 * HZ) /* With respect to interrupt loss */
+#define WSM_CMD_JOIN_TIMEOUT	(7 * HZ) /* Join may take 5 seconds in XR819 FW */
 #define WSM_CMD_START_TIMEOUT	(7 * HZ)
 #define WSM_CMD_RESET_TIMEOUT	(3 * HZ) /* 2 sec. timeout was observed.   */
 #define WSM_CMD_MAX_TIMEOUT	(3 * HZ)
@@ -444,8 +445,9 @@ int wsm_join(struct cw1200_common *priv, struct wsm_join *arg)
 	WSM_PUT32(buf, arg->basic_rate_set);
 
 	priv->tx_burst_idx = -1;
-	ret = wsm_cmd_send(priv, buf, &resp,
-			   WSM_JOIN_REQ_ID, WSM_CMD_TIMEOUT);
+	ret = wsm_cmd_send(priv, buf, &resp, WSM_JOIN_REQ_ID,
+			   priv->is_xr819 ? WSM_CMD_JOIN_TIMEOUT :
+			   WSM_CMD_TIMEOUT);
 	/* TODO:  Update state based on resp.min|max_power_level */
 
 	priv->join_complete_status = resp.status;
