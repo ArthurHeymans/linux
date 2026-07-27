@@ -265,6 +265,29 @@ nomem:
 	return -ENOMEM;
 }
 
+int wsm_set_operational_mode(struct cw1200_common *priv,
+			     const struct wsm_operational_mode *arg)
+{
+	u32 mode = arg->power_mode;
+	u8 val;
+
+	if (arg->disable_more_flag_usage)
+		mode |= BIT(4);
+	if (arg->perform_ant_diversity)
+		mode |= BIT(5);
+
+	if (priv->is_xr819) {
+		__le32 xr819_val = cpu_to_le32(mode);
+
+		return wsm_write_mib(priv, WSM_MIB_ID_OPERATIONAL_POWER_MODE,
+				     &xr819_val, sizeof(xr819_val));
+	}
+
+	val = mode;
+	return wsm_write_mib(priv, WSM_MIB_ID_OPERATIONAL_POWER_MODE, &val,
+			     sizeof(val));
+}
+
 static int wsm_write_mib_confirm(struct cw1200_common *priv,
 				struct wsm_mib *arg,
 				struct wsm_buf *buf)

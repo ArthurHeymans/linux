@@ -1435,17 +1435,8 @@ struct wsm_operational_mode {
 	int perform_ant_diversity;
 };
 
-static inline int wsm_set_operational_mode(struct cw1200_common *priv,
-					const struct wsm_operational_mode *arg)
-{
-	u8 val = arg->power_mode;
-	if (arg->disable_more_flag_usage)
-		val |= BIT(4);
-	if (arg->perform_ant_diversity)
-		val |= BIT(5);
-	return wsm_write_mib(priv, WSM_MIB_ID_OPERATIONAL_POWER_MODE, &val,
-			     sizeof(val));
-}
+int wsm_set_operational_mode(struct cw1200_common *priv,
+			     const struct wsm_operational_mode *arg);
 
 struct wsm_template_frame {
 	u8 frame_type;
