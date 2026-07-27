@@ -15,6 +15,7 @@
 #include <net/mac80211.h>
 #include <linux/kthread.h>
 #include <linux/timer.h>
+#include <linux/delay.h>
 
 #include "cw1200.h"
 #include "bh.h"
@@ -191,6 +192,7 @@ static int cw1200_device_wakeup(struct cw1200_common *priv)
 {
 	u16 ctrl_reg;
 	int ret;
+	int i;
 
 	pr_debug("[BH] Device wakeup.\n");
 
@@ -218,7 +220,25 @@ static int cw1200_device_wakeup(struct cw1200_common *priv)
 		return 1;
 	}
 
-	return 0;
+	if (!priv->is_xr819)
+		return 0;
+
+	/* XR819 firmware does not always generate a reliable wake interrupt. */
+	for (i = 0; i < 500; i++) {
+		usleep_range(1000, 2000);
+		ret = cw1200_bh_read_ctrl_reg(priv, &ctrl_reg);
+		if (ret)
+			return ret;
+		if (ctrl_reg & ST90TDS_CONT_RDY_BIT) {
+			if (i >= 49)
+				wiphy_warn(priv->hw->wiphy,
+					   "slow device wakeup: %d ms\n", i + 1);
+			return 1;
+		}
+	}
+
+	wiphy_err(priv->hw->wiphy, "device wakeup timed out\n");
+	return -ETIMEDOUT;
 }
 
 /* Must be called from BH thraed. */
@@ -351,8 +371,7 @@ static int cw1200_bh_tx_helper(struct cw1200_common *priv,
 	if (priv->device_can_sleep) {
 		ret = cw1200_device_wakeup(priv);
 		if (WARN_ON(ret < 0)) { /* Error in wakeup */
-			*pending_tx = 1;
-			return 0;
+			return ret;
 		} else if (ret) { /* Woke up */
 			priv->device_can_sleep = false;
 		} else { /* Did not awake */

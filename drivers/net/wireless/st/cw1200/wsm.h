@@ -385,6 +385,9 @@ struct cw1200_common;
 /* BT active */
 #define WSM_EVENT_BT_ACTIVE		(6)
 
+/* Power-save mode request failed */
+#define WSM_EVENT_PS_MODE_ERROR		(7)
+
 /* MIB IDs */
 /* 4.1  dot11StationId */
 #define WSM_MIB_ID_DOT11_STATION_ID		0x0000

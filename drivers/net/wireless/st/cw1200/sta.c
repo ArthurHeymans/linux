@@ -666,17 +666,19 @@ int cw1200_get_stats(struct ieee80211_hw *dev,
 int cw1200_set_pm(struct cw1200_common *priv, const struct wsm_set_pm *arg)
 {
 	struct wsm_set_pm pm = *arg;
+	int ret;
 
 	if (priv->uapsd_info.uapsd_flags != 0)
 		pm.mode &= ~WSM_PSM_FAST_PS_FLAG;
 
-	if (memcmp(&pm, &priv->firmware_ps_mode,
-		   sizeof(struct wsm_set_pm))) {
-		priv->firmware_ps_mode = pm;
-		return wsm_set_pm(priv, &pm);
-	} else {
+	if (!memcmp(&pm, &priv->firmware_ps_mode, sizeof(pm)))
 		return 0;
-	}
+
+	ret = wsm_set_pm(priv, &pm);
+	if (!ret)
+		priv->firmware_ps_mode = pm;
+
+	return ret;
 }
 
 int cw1200_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
@@ -1028,6 +1030,20 @@ void cw1200_event_handler(struct work_struct *work)
 			break;
 		case WSM_EVENT_BT_ACTIVE:
 			pr_warn("Unhandled BT ACTIVE from LMAC\n");
+			break;
+		case WSM_EVENT_PS_MODE_ERROR:
+			if (priv->is_xr819 &&
+			    !le16_to_cpu(priv->uapsd_info.uapsd_flags) &&
+			    priv->powersave_mode.mode == WSM_PSM_FAST_PS) {
+				struct wsm_set_pm pm = priv->powersave_mode;
+
+				wiphy_warn(priv->hw->wiphy,
+					   "firmware rejected fast power-save mode, falling back to active mode\n");
+				pm.mode = WSM_PSM_ACTIVE;
+				if (cw1200_set_pm(priv, &pm))
+					wiphy_warn(priv->hw->wiphy,
+						   "failed to disable power-save mode\n");
+			}
 			break;
 		}
 	}
