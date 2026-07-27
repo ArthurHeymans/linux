@@ -342,6 +342,15 @@ int cw1200_config(struct ieee80211_hw *dev, int radio_idx, u32 changed)
 
 	pr_debug("CONFIG CHANGED:  %08x\n", changed);
 
+	/* XR819 firmware does not accept operational-mode updates from the
+	 * mac80211 idle/monitor transition. The vendor driver ignores the
+	 * complete config callback when either change bit is present.
+	 */
+	if (priv->is_xr819 &&
+	    (changed & (IEEE80211_CONF_CHANGE_MONITOR |
+			IEEE80211_CONF_CHANGE_IDLE)))
+		return 0;
+
 	down(&priv->scan.lock);
 	mutex_lock(&priv->conf_mutex);
 	/* TODO: IEEE80211_CONF_CHANGE_QOS */
