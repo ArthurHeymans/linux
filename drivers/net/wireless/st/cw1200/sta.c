@@ -371,22 +371,27 @@ int cw1200_config(struct ieee80211_hw *dev, int radio_idx, u32 changed)
 		pr_debug("[STA] Freq %d (wsm ch: %d).\n",
 			 ch->center_freq, ch->hw_value);
 
-		/* __cw1200_flush() implicitly locks tx, if successful */
-		if (!__cw1200_flush(priv, false)) {
-			if (!wsm_switch_channel(priv, &channel)) {
-				ret = wait_event_timeout(priv->channel_switch_done,
-							 !priv->channel_switch_in_progress,
-							 3 * HZ);
-				if (ret) {
-					/* Already unlocks if successful */
-					priv->channel = ch;
-					ret = 0;
+		if (priv->is_xr819) {
+			/* XR819 switches channel as part of scan/join. */
+			priv->channel = ch;
+		} else {
+			/* __cw1200_flush() implicitly locks tx, if successful */
+			if (!__cw1200_flush(priv, false)) {
+				if (!wsm_switch_channel(priv, &channel)) {
+					ret = wait_event_timeout(priv->channel_switch_done,
+								 !priv->channel_switch_in_progress,
+								 3 * HZ);
+					if (ret) {
+						/* Already unlocks if successful */
+						priv->channel = ch;
+						ret = 0;
+					} else {
+						ret = -ETIMEDOUT;
+					}
 				} else {
-					ret = -ETIMEDOUT;
+					/* Unlock if switch channel fails */
+					wsm_unlock_tx(priv);
 				}
-			} else {
-				/* Unlock if switch channel fails */
-				wsm_unlock_tx(priv);
 			}
 		}
 	}
