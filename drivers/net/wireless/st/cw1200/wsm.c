@@ -1103,9 +1103,12 @@ static int wsm_cmd_send(struct cw1200_common *priv,
 
 	/* Due to buggy SPI on CW1200, we need to
 	 * pad the message by a few bytes to ensure
-	 * that it's completely received.
+	 * that it's completely received. XR819 uses the exact WSM message
+	 * length; including the padding in the header corrupts its command
+	 * parser state.
 	 */
-	buf_len += 4;
+	if (!priv->is_xr819)
+		buf_len += 4;
 
 	/* Fill HI message header */
 	/* BH will add sequence number */
