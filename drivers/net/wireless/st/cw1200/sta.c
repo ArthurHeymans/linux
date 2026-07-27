@@ -1339,6 +1339,8 @@ static void cw1200_do_join(struct cw1200_common *priv)
 	if (priv->hw->conf.ps_dtim_period)
 		priv->join_dtim_period = priv->hw->conf.ps_dtim_period;
 	join.dtim_period = priv->join_dtim_period;
+	if (priv->is_xr819 && !join.dtim_period)
+		join.dtim_period = 1;
 
 	join.channel_number = priv->channel->hw_value;
 	join.band = (priv->channel->band == NL80211_BAND_5GHZ) ?
@@ -1367,8 +1369,10 @@ static void cw1200_do_join(struct cw1200_common *priv)
 			cw1200_rate_mask_to_wsm(priv, 0xFF0);
 	}
 
-	/* Enable asynchronous join calls */
-	if (!priv->vif->cfg.ibss_joined) {
+	/* Enable asynchronous join calls. XR819 does not use the CW1200
+	 * force flags and completes the join with the command confirmation.
+	 */
+	if (!priv->is_xr819 && !priv->vif->cfg.ibss_joined) {
 		join.flags |= WSM_JOIN_FLAGS_FORCE;
 		join.flags |= WSM_JOIN_FLAGS_FORCE_WITH_COMPLETE_IND;
 	}
@@ -1507,6 +1511,12 @@ void cw1200_unjoin_work(struct work_struct *work)
 {
 	struct cw1200_common *priv =
 		container_of(work, struct cw1200_common, unjoin_work);
+
+	/* Most callers transfer a TX lock to this work item. Error and
+	 * deferred paths can reach it after that lock has already unwound.
+	 */
+	if (!atomic_read(&priv->tx_lock))
+		wsm_lock_tx(priv);
 
 	cw1200_do_unjoin(priv);
 
