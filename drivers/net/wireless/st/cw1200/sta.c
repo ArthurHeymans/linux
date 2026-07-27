@@ -34,6 +34,7 @@ static int cw1200_start_ap(struct cw1200_common *priv);
 static int cw1200_update_beaconing(struct cw1200_common *priv);
 static int cw1200_enable_beaconing(struct cw1200_common *priv,
 				   bool enable);
+static int cw1200_setup_rcpi_rssi_threshold(struct cw1200_common *priv);
 static void __cw1200_sta_notify(struct ieee80211_hw *dev,
 				struct ieee80211_vif *vif,
 				enum sta_notify_cmd notify_cmd,
@@ -66,13 +67,15 @@ int cw1200_start(struct ieee80211_hw *dev)
 	WSM_EDCA_SET(&priv->edca, 1, 0x0002, 0x0007, 0x000f, 94, 0xc8, false);
 	WSM_EDCA_SET(&priv->edca, 2, 0x0003, 0x000f, 0x03ff, 0, 0xc8, false);
 	WSM_EDCA_SET(&priv->edca, 3, 0x0007, 0x000f, 0x03ff, 0, 0xc8, false);
-	ret = wsm_set_edca_params(priv, &priv->edca);
-	if (ret)
-		goto out;
+	if (!priv->is_xr819) {
+		ret = wsm_set_edca_params(priv, &priv->edca);
+		if (ret)
+			goto out;
 
-	ret = cw1200_set_uapsd_param(priv, &priv->edca);
-	if (ret)
-		goto out;
+		ret = cw1200_set_uapsd_param(priv, &priv->edca);
+		if (ret)
+			goto out;
+	}
 
 	priv->setbssparams_done = false;
 
@@ -235,7 +238,15 @@ int cw1200_add_interface(struct ieee80211_hw *dev,
 
 	priv->vif = vif;
 	memcpy(priv->mac_addr, vif->addr, ETH_ALEN);
-	ret = cw1200_setup_mac(priv);
+	if (priv->is_xr819) {
+		ret = wsm_set_edca_params(priv, &priv->edca);
+		if (!ret)
+			ret = cw1200_set_uapsd_param(priv, &priv->edca);
+		if (!ret)
+			ret = cw1200_setup_rcpi_rssi_threshold(priv);
+	} else {
+		ret = cw1200_setup_mac(priv);
+	}
 	/* Enable auto-calibration */
 	/* Exception in subsequent channel switch; disabled.
 	 *  wsm_write_mib(priv, WSM_MIB_ID_SET_AUTO_CALIBRATION_MODE,
@@ -294,7 +305,8 @@ void cw1200_remove_interface(struct ieee80211_hw *dev,
 	eth_zero_addr(priv->mac_addr);
 	memset(&priv->p2p_ps_modeinfo, 0, sizeof(priv->p2p_ps_modeinfo));
 	cw1200_free_keys(priv);
-	cw1200_setup_mac(priv);
+	if (!priv->is_xr819)
+		cw1200_setup_mac(priv);
 	priv->listening = false;
 	priv->join_status = CW1200_JOIN_STATUS_PASSIVE;
 	if (!__cw1200_flush(priv, true))
@@ -1136,10 +1148,8 @@ static int cw1200_parse_sdd_file(struct cw1200_common *priv)
 	return ret;
 }
 
-int cw1200_setup_mac(struct cw1200_common *priv)
+static int cw1200_setup_rcpi_rssi_threshold(struct cw1200_common *priv)
 {
-	int ret = 0;
-
 	/* NOTE: There is a bug in FW: it reports signal
 	 * as RSSI if RSSI subscription is enabled.
 	 * It's not enough to set WSM_RCPI_RSSI_USE_RSSI.
@@ -1155,15 +1165,21 @@ int cw1200_setup_mac(struct cw1200_common *priv)
 		.rollingAverageCount = 16,
 	};
 
-	struct wsm_configuration cfg = {
-		.dot11StationId = &priv->mac_addr[0],
-	};
-
 	/* Remember the decission here to make sure, we will handle
 	 * the RCPI/RSSI value correctly on WSM_EVENT_RCPI_RSS
 	 */
 	if (threshold.rssiRcpiMode & WSM_RCPI_RSSI_USE_RSSI)
 		priv->cqm_use_rssi = true;
+
+	return wsm_set_rcpi_rssi_threshold(priv, &threshold);
+}
+
+int cw1200_setup_mac(struct cw1200_common *priv)
+{
+	struct wsm_configuration cfg = {
+		.dot11StationId = &priv->mac_addr[0],
+	};
+	int ret;
 
 	if (!priv->sdd) {
 		ret = request_firmware(&priv->sdd, priv->sdd_path, priv->pdev);
@@ -1185,10 +1201,10 @@ int cw1200_setup_mac(struct cw1200_common *priv)
 	if (ret)
 		return ret;
 
-	/* Configure RSSI/SCPI reporting as RSSI. */
-	wsm_set_rcpi_rssi_threshold(priv, &threshold);
+	if (priv->is_xr819 && !priv->output_power)
+		priv->output_power = 20;
 
-	return 0;
+	return cw1200_setup_rcpi_rssi_threshold(priv);
 }
 
 static void cw1200_join_complete(struct cw1200_common *priv)
@@ -1441,7 +1457,10 @@ static void cw1200_do_unjoin(struct cw1200_common *priv)
 	wsm_reset(priv, &reset);
 	wsm_set_output_power(priv, priv->output_power * 10);
 	priv->join_dtim_period = 0;
-	cw1200_setup_mac(priv);
+	if (priv->is_xr819)
+		cw1200_setup_rcpi_rssi_threshold(priv);
+	else
+		cw1200_setup_mac(priv);
 	cw1200_free_event_queue(priv);
 	cancel_work_sync(&priv->event_handler);
 	cw1200_update_listening(priv, priv->listening);
