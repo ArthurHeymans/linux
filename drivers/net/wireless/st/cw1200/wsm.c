@@ -1377,8 +1377,7 @@ int wsm_handle_rx(struct cw1200_common *priv, u16 id,
 							    &wsm_buf);
 			break;
 		case WSM_START_SCAN_RESP_ID:
-			if (wsm_arg)
-				ret = wsm_scan_started(priv, wsm_arg, &wsm_buf);
+			ret = wsm_scan_started(priv, wsm_arg, &wsm_buf);
 			break;
 		case WSM_CONFIGURATION_RESP_ID:
 			if (wsm_arg)

@@ -136,6 +136,9 @@ void cw1200_scan_work(struct work_struct *work)
 			  priv->scan.begin != priv->scan.end);
 	int i;
 
+	if (priv->is_xr819)
+		scan.flags = 0;
+
 	if (first_run) {
 		/* Firmware gets crazy if scan request is sent
 		 * when STA is joined but not yet associated.
@@ -192,6 +195,9 @@ void cw1200_scan_work(struct work_struct *work)
 		return;
 	} else {
 		struct ieee80211_channel *first = *priv->scan.curr;
+		bool passive_scan = first->flags & IEEE80211_CHAN_NO_IR;
+		u32 max_chan_time = 0;
+
 		for (it = priv->scan.curr + 1, i = 1;
 		     it != priv->scan.end && i < WSM_SCAN_MAX_NUM_OF_CHANNELS;
 		     ++it, ++i) {
@@ -210,13 +216,12 @@ void cw1200_scan_work(struct work_struct *work)
 			scan.max_tx_rate = WSM_TRANSMIT_RATE_6;
 		else
 			scan.max_tx_rate = WSM_TRANSMIT_RATE_1;
-		scan.num_probes =
-			(first->flags & IEEE80211_CHAN_NO_IR) ? 0 : 2;
+		scan.num_probes = passive_scan ? 0 : 2;
 		scan.num_ssids = priv->scan.n_ssids;
 		scan.ssids = &priv->scan.ssids[0];
 		scan.num_channels = it - priv->scan.curr;
 		/* TODO: Is it optimal? */
-		scan.probe_delay = 100;
+		scan.probe_delay = priv->is_xr819 ? 200 : 100;
 		/* It is not stated in WSM specification, however
 		 * FW team says that driver may not use FG scan
 		 * when joined.
@@ -230,11 +235,23 @@ void cw1200_scan_work(struct work_struct *work)
 			priv->scan.status = -ENOMEM;
 			goto fail;
 		}
+		if (priv->is_xr819) {
+			max_chan_time = scan.num_ssids * scan.num_probes * 2 + 15;
+			max_chan_time = max_t(u32, max_chan_time, 35);
+		}
 		for (i = 0; i < scan.num_channels; ++i) {
 			scan.ch[i].number = priv->scan.curr[i]->hw_value;
-			if (priv->scan.curr[i]->flags & IEEE80211_CHAN_NO_IR) {
-				scan.ch[i].min_chan_time = 50;
-				scan.ch[i].max_chan_time = 100;
+			if (passive_scan) {
+				if (priv->is_xr819) {
+					scan.ch[i].min_chan_time = 110;
+					scan.ch[i].max_chan_time = 120;
+				} else {
+					scan.ch[i].min_chan_time = 50;
+					scan.ch[i].max_chan_time = 100;
+				}
+			} else if (priv->is_xr819) {
+				scan.ch[i].min_chan_time = 15;
+				scan.ch[i].max_chan_time = max_chan_time;
 			} else {
 				scan.ch[i].min_chan_time = 10;
 				scan.ch[i].max_chan_time = 25;
