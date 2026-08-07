@@ -365,8 +365,16 @@ static int tx_policy_upload(struct cw1200_common *priv)
 			struct wsm_tx_rate_retry_policy *dst =
 				&arg.tbl[arg.num];
 			dst->index = i;
-			dst->short_retries = priv->short_frame_max_tx_count;
-			dst->long_retries = priv->long_frame_max_tx_count;
+			if (priv->is_xr819) {
+				/* XR819 counts the initial transmission separately. */
+				dst->short_retries =
+					priv->short_frame_max_tx_count - 1;
+				dst->long_retries =
+					priv->short_frame_max_tx_count - 1;
+			} else {
+				dst->short_retries = priv->short_frame_max_tx_count;
+				dst->long_retries = priv->long_frame_max_tx_count;
+			}
 
 			dst->flags = WSM_TX_RATE_POLICY_FLAG_TERMINATE_WHEN_FINISHED |
 				WSM_TX_RATE_POLICY_FLAG_COUNT_INITIAL_TRANSMIT;

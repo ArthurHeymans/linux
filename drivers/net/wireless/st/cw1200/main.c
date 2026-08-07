@@ -545,6 +545,14 @@ static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 		priv->ba_rx_tid_mask = 0x3f;
 		dev->wiphy->bands[NL80211_BAND_2GHZ]->ht_cap.ampdu_factor =
 			IEEE80211_HT_MAX_AMPDU_32K;
+
+		/* XR819 ignores config callbacks containing IDLE, so seed the
+		 * retry limits before the first TX policy is constructed.
+		 */
+		priv->long_frame_max_tx_count = dev->conf.long_frame_max_tx_count;
+		priv->short_frame_max_tx_count =
+			min_t(u8, dev->conf.short_frame_max_tx_count, 0x0f);
+		dev->max_rate_tries = priv->short_frame_max_tx_count;
 	}
 	priv->hw_refclk = ref_clk;
 	if (cw1200_refclk)
