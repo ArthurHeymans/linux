@@ -778,6 +778,9 @@ struct wsm_tx_confirm {
 	/* WSM_TX_STATUS_... */
 	u16 flags;
 
+	/* XR819: four-bit attempt count for each hardware rate. */
+	u32 rate_try[3];
+
 	/* The total time in microseconds that the frame spent in */
 	/* the WLAN device before transmission as completed. */
 	u32 media_delay;

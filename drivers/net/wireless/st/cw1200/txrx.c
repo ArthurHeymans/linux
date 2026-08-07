@@ -844,6 +844,93 @@ done:
 
 /* ******************************************************************** */
 
+static int cw1200_xr819_rate_idx(struct cw1200_common *priv, u8 hw_rate,
+				 bool *mcs)
+{
+	struct ieee80211_supported_band *sband;
+	int i;
+
+	if (hw_rate >= WSM_TRANSMIT_RATE_HT_6 &&
+	    hw_rate <= WSM_TRANSMIT_RATE_HT_65) {
+		*mcs = true;
+		return hw_rate - WSM_TRANSMIT_RATE_HT_6;
+	}
+
+	*mcs = false;
+	sband = priv->hw->wiphy->bands[priv->channel->band];
+	for (i = 0; i < sband->n_bitrates; i++)
+		if (sband->bitrates[i].hw_value == hw_rate)
+			return i;
+
+	return -EINVAL;
+}
+
+static void cw1200_xr819_tx_status(struct cw1200_common *priv,
+				   const struct wsm_tx_confirm *arg,
+				   struct ieee80211_tx_info *tx)
+{
+	int success_rate = arg->status ? -1 : arg->tx_rate;
+	int rate_num = 0;
+	int word;
+
+	for (word = ARRAY_SIZE(arg->rate_try) - 1; word >= 0; word--) {
+		int nibble;
+
+		for (nibble = 7; nibble >= 0; nibble--) {
+			u8 hw_rate = word * 8 + nibble;
+			u8 attempts = (arg->rate_try[word] >> (nibble * 4)) & 0xf;
+			bool mcs;
+			int idx;
+
+			if (!attempts)
+				continue;
+
+			idx = cw1200_xr819_rate_idx(priv, hw_rate, &mcs);
+			if (idx < 0)
+				continue;
+
+			if (success_rate == hw_rate) {
+				attempts++;
+				success_rate = -1;
+			}
+
+			tx->status.rates[rate_num].idx = idx;
+			tx->status.rates[rate_num].count = attempts;
+			tx->status.rates[rate_num].flags = mcs ?
+				IEEE80211_TX_RC_MCS : 0;
+			if (mcs && cw1200_ht_greenfield(&priv->ht_info))
+				tx->status.rates[rate_num].flags |=
+					IEEE80211_TX_RC_GREEN_FIELD;
+
+			if (++rate_num == IEEE80211_TX_MAX_RATES)
+				goto done;
+		}
+	}
+
+	if (success_rate >= 0 && rate_num < IEEE80211_TX_MAX_RATES) {
+		bool mcs;
+		int idx = cw1200_xr819_rate_idx(priv, success_rate, &mcs);
+
+		if (idx >= 0) {
+			tx->status.rates[rate_num].idx = idx;
+			tx->status.rates[rate_num].count = 1;
+			tx->status.rates[rate_num].flags = mcs ?
+				IEEE80211_TX_RC_MCS : 0;
+			if (mcs && cw1200_ht_greenfield(&priv->ht_info))
+				tx->status.rates[rate_num].flags |=
+					IEEE80211_TX_RC_GREEN_FIELD;
+			rate_num++;
+		}
+	}
+
+done:
+	for (; rate_num < IEEE80211_TX_MAX_RATES; rate_num++) {
+		tx->status.rates[rate_num].count = 0;
+		tx->status.rates[rate_num].idx = -1;
+		tx->status.rates[rate_num].flags = 0;
+	}
+}
+
 void cw1200_tx_confirm_cb(struct cw1200_common *priv,
 			  int link_id,
 			  struct wsm_tx_confirm *arg)
@@ -929,19 +1016,24 @@ void cw1200_tx_confirm_cb(struct cw1200_common *priv,
 				++tx_count;
 		}
 
-		for (i = 0; i < IEEE80211_TX_MAX_RATES; ++i) {
-			if (tx->status.rates[i].count >= tx_count) {
-				tx->status.rates[i].count = tx_count;
-				break;
+		if (priv->is_xr819) {
+			cw1200_xr819_tx_status(priv, arg, tx);
+		} else {
+			for (i = 0; i < IEEE80211_TX_MAX_RATES; ++i) {
+				if (tx->status.rates[i].count >= tx_count) {
+					tx->status.rates[i].count = tx_count;
+					break;
+				}
+				tx_count -= tx->status.rates[i].count;
+				if (tx->status.rates[i].flags &
+				    IEEE80211_TX_RC_MCS)
+					tx->status.rates[i].flags |= ht_flags;
 			}
-			tx_count -= tx->status.rates[i].count;
-			if (tx->status.rates[i].flags & IEEE80211_TX_RC_MCS)
-				tx->status.rates[i].flags |= ht_flags;
-		}
 
-		for (++i; i < IEEE80211_TX_MAX_RATES; ++i) {
-			tx->status.rates[i].count = 0;
-			tx->status.rates[i].idx = -1;
+			for (++i; i < IEEE80211_TX_MAX_RATES; ++i) {
+				tx->status.rates[i].count = 0;
+				tx->status.rates[i].idx = -1;
+			}
 		}
 
 		/* Pull off any crypto trailers that we added on */

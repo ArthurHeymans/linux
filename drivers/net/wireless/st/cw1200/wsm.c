@@ -387,9 +387,9 @@ static int wsm_tx_confirm(struct cw1200_common *priv,
 
 	/* XR819 reports three additional per-rate attempt counters. */
 	if (priv->is_xr819) {
-		WSM_GET32(buf);
-		WSM_GET32(buf);
-		WSM_GET32(buf);
+		tx_confirm.rate_try[0] = WSM_GET32(buf);
+		tx_confirm.rate_try[1] = WSM_GET32(buf);
+		tx_confirm.rate_try[2] = WSM_GET32(buf);
 	}
 
 	tx_confirm.media_delay = WSM_GET32(buf);
