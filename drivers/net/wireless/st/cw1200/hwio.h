@@ -201,6 +201,8 @@ int cw1200_indirect_read(struct cw1200_common *priv, u32 addr, void *buf,
 			 size_t buf_len, u32 prefetch, u16 port_addr);
 int cw1200_apb_write(struct cw1200_common *priv, u32 addr, const void *buf,
 		     size_t buf_len);
+int cw1200_ahb_write(struct cw1200_common *priv, u32 addr, const void *buf,
+		     size_t buf_len);
 
 static inline int cw1200_apb_read(struct cw1200_common *priv, u32 addr,
 				  void *buf, size_t buf_len)
@@ -240,6 +242,14 @@ static inline int cw1200_ahb_read_32(struct cw1200_common *priv,
 	int i = cw1200_ahb_read(priv, addr, &tmp, sizeof(tmp));
 	*val = le32_to_cpu(tmp);
 	return i;
+}
+
+static inline int cw1200_ahb_write_32(struct cw1200_common *priv,
+				      u32 addr, u32 val)
+{
+	__le32 tmp = cpu_to_le32(val);
+
+	return cw1200_ahb_write(priv, addr, &tmp, sizeof(tmp));
 }
 
 #endif /* CW1200_HWIO_H_INCLUDED */

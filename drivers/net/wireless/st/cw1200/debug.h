@@ -9,8 +9,26 @@
 #ifndef CW1200_DEBUG_H_INCLUDED
 #define CW1200_DEBUG_H_INCLUDED
 
+struct cw1200_debug_mem {
+	struct cw1200_common *priv;
+	struct mutex lock;
+	u32 address;
+	bool ahb;
+};
+
+enum cw1200_debug_state {
+	CW1200_DEBUG_NORMAL,
+	CW1200_DEBUG_HALTED,
+	CW1200_DEBUG_PAYLOAD,
+};
+
 struct cw1200_debug_priv {
 	struct dentry *debugfs_phy;
+	struct cw1200_debug_mem ahb;
+	struct cw1200_debug_mem apb;
+	struct mutex control_lock;
+	u32 saved_config;
+	enum cw1200_debug_state state;
 	int tx;
 	int tx_agg;
 	int rx;

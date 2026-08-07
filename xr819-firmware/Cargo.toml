@@ -1,0 +1,49 @@
+[package]
+name = "xr819-firmware"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Experimental open firmware for the XRadio XR819"
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "mailbox"
+path = "src/bin/mailbox.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "download-boot"
+path = "src/bin/download_boot.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "download-boot-low"
+path = "src/bin/download_boot_low.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "main-mailbox"
+path = "src/bin/main_mailbox.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "hif-startup"
+path = "src/bin/hif_startup.rs"
+test = false
+bench = false
+
+[dependencies]
+tock-registers = "0.10.1"
+zerocopy = { version = "0.8", features = ["derive"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"

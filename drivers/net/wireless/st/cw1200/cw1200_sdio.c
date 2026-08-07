@@ -237,7 +237,7 @@ static struct gpio_desc *cw1200_powerup;
 static int cw1200_sdio_off(const struct cw1200_platform_data_sdio *pdata)
 {
 	if (cw1200_reset) {
-		gpiod_set_value(cw1200_reset, 0);
+		gpiod_set_value(cw1200_reset, 1);
 		msleep(30); /* Min is 2 * CLK32K cycles */
 	}
 

@@ -8,11 +8,20 @@
  */
 
 #include <linux/module.h>
+#include <linux/capability.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #include "cw1200.h"
+#include "bh.h"
 #include "debug.h"
 #include "fwio.h"
+#include "hwio.h"
+#include "wsm.h"
+
+static bool unsafe_debugfs;
+module_param(unsafe_debugfs, bool, 0600);
+MODULE_PARM_DESC(unsafe_debugfs,
+		 "Allow raw XR819 AHB/APB writes through debugfs");
 
 /* join_status */
 static const char * const cw1200_debug_join_status[] = {
@@ -357,6 +366,245 @@ static const struct file_operations fops_wsm_dumps = {
 	.llseek = default_llseek,
 };
 
+static int cw1200_debug_mem_show(struct seq_file *seq, void *v)
+{
+	struct cw1200_debug_mem *mem = seq->private;
+	u32 value;
+	int ret;
+
+	guard(mutex)(&mem->lock);
+	if (mem->priv->debug->state == CW1200_DEBUG_NORMAL)
+		return -EBUSY;
+	if (mem->ahb)
+		ret = cw1200_ahb_read_32(mem->priv, mem->address, &value);
+	else
+		ret = cw1200_apb_read_32(mem->priv, mem->address, &value);
+	if (ret)
+		return ret;
+
+	seq_printf(seq, "0x%08x: 0x%08x\n", mem->address, value);
+	return 0;
+}
+
+static int cw1200_debug_mem_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cw1200_debug_mem_show, inode->i_private);
+}
+
+static ssize_t cw1200_debug_mem_write(struct file *file,
+				      const char __user *user_buf,
+				      size_t count, loff_t *ppos)
+{
+	struct seq_file *seq = file->private_data;
+	struct cw1200_debug_mem *mem = seq->private;
+	char buf[64];
+	u32 address;
+	u32 value;
+	int fields;
+	int ret;
+
+	if (!count || count >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, user_buf, count))
+		return -EFAULT;
+	buf[count] = '\0';
+
+	fields = sscanf(buf, "%x %x", &address, &value);
+	if (fields < 1)
+		return -EINVAL;
+	if (!IS_ALIGNED(address, sizeof(value)))
+		return -EINVAL;
+
+	guard(mutex)(&mem->lock);
+	mem->address = address;
+	if (fields == 1)
+		return count;
+	if (mem->priv->debug->state == CW1200_DEBUG_NORMAL)
+		return -EBUSY;
+	if (!unsafe_debugfs || !capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	if (mem->ahb)
+		ret = cw1200_ahb_write_32(mem->priv, address, value);
+	else
+		ret = cw1200_apb_write_32(mem->priv, address, value);
+
+	return ret ? ret : count;
+}
+
+static const struct file_operations cw1200_debug_mem_fops = {
+	.owner = THIS_MODULE,
+	.open = cw1200_debug_mem_open,
+	.read = seq_read,
+	.write = cw1200_debug_mem_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static int cw1200_debug_halt_show(struct seq_file *seq, void *v)
+{
+	struct cw1200_common *priv = seq->private;
+
+	seq_printf(seq, "%u\n", priv->debug->state);
+	return 0;
+}
+
+static int cw1200_debug_halt_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cw1200_debug_halt_show, inode->i_private);
+}
+
+static ssize_t cw1200_debug_halt_write(struct file *file,
+				       const char __user *user_buf,
+				       size_t count, loff_t *ppos)
+{
+	struct seq_file *seq = file->private_data;
+	struct cw1200_common *priv = seq->private;
+	struct cw1200_debug_priv *debug = priv->debug;
+	bool halt;
+	u32 config;
+	int ret;
+
+	if (!unsafe_debugfs || !capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	ret = kstrtobool_from_user(user_buf, count, &halt);
+	if (ret)
+		return ret;
+
+	guard(mutex)(&debug->control_lock);
+	if (halt && debug->state == CW1200_DEBUG_HALTED)
+		return count;
+	if (!halt && debug->state == CW1200_DEBUG_NORMAL)
+		return count;
+
+	if (halt && debug->state == CW1200_DEBUG_PAYLOAD) {
+		ret = cw1200_reg_read_32(priv, ST90TDS_CONFIG_REG_ID, &config);
+		if (ret)
+			return ret;
+		ret = cw1200_reg_write_32(priv, ST90TDS_CONFIG_REG_ID,
+					  config |
+					  ST90TDS_CONFIG_CPU_RESET_BIT |
+					  ST90TDS_CONFIG_ACCESS_MODE_BIT);
+		if (!ret)
+			debug->state = CW1200_DEBUG_HALTED;
+		return ret ? ret : count;
+	}
+
+	if (halt) {
+		wsm_lock_tx(priv);
+		ret = cw1200_bh_suspend(priv);
+		if (ret)
+			goto unlock_tx;
+		ret = cw1200_reg_read_32(priv, ST90TDS_CONFIG_REG_ID,
+					 &debug->saved_config);
+		if (ret)
+			goto resume_bh;
+		ret = cw1200_reg_write_32(priv, ST90TDS_CONFIG_REG_ID,
+					  debug->saved_config |
+					  ST90TDS_CONFIG_CPU_RESET_BIT |
+					  ST90TDS_CONFIG_ACCESS_MODE_BIT);
+		if (ret)
+			goto resume_bh;
+		debug->state = CW1200_DEBUG_HALTED;
+		return count;
+	}
+
+	ret = cw1200_reg_write_32(priv, ST90TDS_CONFIG_REG_ID,
+				  debug->saved_config);
+	if (ret)
+		return ret;
+	debug->state = CW1200_DEBUG_NORMAL;
+	ret = cw1200_bh_resume(priv);
+	wsm_unlock_tx(priv);
+	return ret ? ret : count;
+
+resume_bh:
+	cw1200_bh_resume(priv);
+unlock_tx:
+	wsm_unlock_tx(priv);
+	return ret;
+}
+
+static const struct file_operations cw1200_debug_halt_fops = {
+	.owner = THIS_MODULE,
+	.open = cw1200_debug_halt_open,
+	.read = seq_read,
+	.write = cw1200_debug_halt_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static ssize_t cw1200_debug_upload_write(struct file *file,
+					 const char __user *user_buf,
+					 size_t count, loff_t *ppos)
+{
+	struct cw1200_common *priv = file->private_data;
+	struct cw1200_debug_priv *debug = priv->debug;
+	void *buf;
+	int ret;
+
+	if (!unsafe_debugfs || !capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	if (debug->state != CW1200_DEBUG_HALTED)
+		return -EBUSY;
+	if (!count || !IS_ALIGNED(*ppos, sizeof(u32)) ||
+	    !IS_ALIGNED(count, sizeof(u32)) || *ppos + count > SZ_64K)
+		return -EINVAL;
+
+	buf = memdup_user(user_buf, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+	ret = cw1200_ahb_write(priv, AHB_MEMORY_ADDRESS + *ppos, buf, count);
+	kfree(buf);
+	if (ret)
+		return ret;
+	*ppos += count;
+	return count;
+}
+
+static const struct file_operations cw1200_debug_upload_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.write = cw1200_debug_upload_write,
+	.llseek = default_llseek,
+};
+
+static ssize_t cw1200_debug_run_write(struct file *file,
+				      const char __user *user_buf,
+				      size_t count, loff_t *ppos)
+{
+	struct cw1200_common *priv = file->private_data;
+	struct cw1200_debug_priv *debug = priv->debug;
+	bool run;
+	u32 config;
+	int ret;
+
+	if (!unsafe_debugfs || !capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	ret = kstrtobool_from_user(user_buf, count, &run);
+	if (ret)
+		return ret;
+	if (!run)
+		return -EINVAL;
+
+	guard(mutex)(&debug->control_lock);
+	if (debug->state != CW1200_DEBUG_HALTED)
+		return -EBUSY;
+	config = (debug->saved_config | ST90TDS_CONFIG_ACCESS_MODE_BIT) &
+		 ~(ST90TDS_CONFIG_CPU_RESET_BIT | ST90TDS_CONFIG_CPU_CLK_DIS_BIT);
+	ret = cw1200_reg_write_32(priv, ST90TDS_CONFIG_REG_ID, config);
+	if (ret)
+		return ret;
+	debug->state = CW1200_DEBUG_PAYLOAD;
+	return count;
+}
+
+static const struct file_operations cw1200_debug_run_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.write = cw1200_debug_run_write,
+	.llseek = default_llseek,
+};
+
 int cw1200_debug_init(struct cw1200_common *priv)
 {
 	int ret = -ENOMEM;
@@ -364,6 +612,15 @@ int cw1200_debug_init(struct cw1200_common *priv)
 	priv->debug = d;
 	if (!d)
 		return ret;
+
+	mutex_init(&d->control_lock);
+	d->ahb.priv = priv;
+	d->ahb.ahb = true;
+	d->ahb.address = AHB_MEMORY_ADDRESS;
+	mutex_init(&d->ahb.lock);
+	d->apb.priv = priv;
+	d->apb.address = PAC_SHARED_MEMORY_SILICON;
+	mutex_init(&d->apb.lock);
 
 	d->debugfs_phy = debugfs_create_dir("cw1200",
 					    priv->hw->wiphy->debugfsdir);
@@ -373,6 +630,18 @@ int cw1200_debug_init(struct cw1200_common *priv)
 			    &cw1200_counters_fops);
 	debugfs_create_file("wsm_dumps", 0200, d->debugfs_phy, priv,
 			    &fops_wsm_dumps);
+	if (priv->is_xr819) {
+		debugfs_create_file("halt", 0600, d->debugfs_phy, priv,
+				    &cw1200_debug_halt_fops);
+		debugfs_create_file("upload", 0200, d->debugfs_phy, priv,
+				    &cw1200_debug_upload_fops);
+		debugfs_create_file("run", 0200, d->debugfs_phy, priv,
+				    &cw1200_debug_run_fops);
+		debugfs_create_file("ahb", 0600, d->debugfs_phy, &d->ahb,
+				    &cw1200_debug_mem_fops);
+		debugfs_create_file("apb", 0600, d->debugfs_phy, &d->apb,
+				    &cw1200_debug_mem_fops);
+	}
 
 	return 0;
 }

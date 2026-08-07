@@ -456,12 +456,11 @@ static void cw1200_unregister_common(struct ieee80211_hw *dev)
 	struct cw1200_common *priv = dev->priv;
 	int i;
 
+	cw1200_debug_release(priv);
 	ieee80211_unregister_hw(dev);
 
 	timer_delete_sync(&priv->mcast_timeout);
 	cw1200_unregister_bh(priv);
-
-	cw1200_debug_release(priv);
 
 	mutex_destroy(&priv->conf_mutex);
 
@@ -517,6 +516,75 @@ u32 cw1200_dpll_from_clk(u16 clk_khz)
 	}
 }
 
+static void cw1200_xr819_read_postcodes(struct cw1200_common *priv)
+{
+	__le32 download_state[10];
+	__le32 checkpoints[4];
+	__le32 postcodes[10];
+	u32 config;
+	u32 hif_value;
+	u32 sram_postcode;
+	size_t i;
+	int ret;
+
+	ret = cw1200_reg_read_32(priv, ST90TDS_CONFIG_REG_ID, &config);
+	if (ret)
+		return;
+
+	config |= ST90TDS_CONFIG_CPU_RESET_BIT |
+		  ST90TDS_CONFIG_ACCESS_MODE_BIT;
+	config &= ~(ST90TDS_CONFIG_AHB_PRFETCH_BIT |
+		    ST90TDS_CONFIG_PRFETCH_BIT);
+	ret = cw1200_reg_write_32(priv, ST90TDS_CONFIG_REG_ID, config);
+	if (ret)
+		return;
+
+	msleep(30);
+	ret = cw1200_ahb_read(priv, CW1200_APB(DOWNLOAD_DEBUG_DATA_REG),
+			      postcodes, sizeof(postcodes));
+	if (ret) {
+		dev_warn(priv->pdev, "unable to read XR819 firmware postcodes: %d\n",
+			 ret);
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(postcodes); i++)
+		dev_info(priv->pdev, "XR819 firmware postcode[%zu] = %08x\n",
+			 i, le32_to_cpu(postcodes[i]));
+
+	ret = cw1200_ahb_read(priv, 0x0900ff80, download_state,
+			      sizeof(download_state));
+	if (!ret)
+		for (i = 0; i < ARRAY_SIZE(download_state); i++)
+			dev_info(priv->pdev, "XR819 download state[%zu] = %08x\n",
+				 i, le32_to_cpu(download_state[i]));
+
+	ret = cw1200_ahb_read(priv, 0x0900fd00, checkpoints,
+			      sizeof(checkpoints));
+	if (ret)
+		return;
+	for (i = 0; i < ARRAY_SIZE(checkpoints); i++)
+		dev_info(priv->pdev, "XR819 firmware checkpoint[%zu] = %08x\n",
+			 i, le32_to_cpu(checkpoints[i]));
+
+	ret = cw1200_ahb_read_32(priv, 0x0400bf00, &sram_postcode);
+	if (!ret)
+		dev_info(priv->pdev, "XR819 SRAM postcode = %08x\n",
+			 sram_postcode);
+
+	for (i = 0; i < 6; i++) {
+		static const u32 hif_addresses[] = {
+			0x0ab00100, 0x0ab00104, 0x0ab00120,
+			0x0ab00134, 0x0ab00140, 0x0ab00000,
+		};
+
+		ret = cw1200_ahb_read_32(priv, hif_addresses[i], &hif_value);
+		if (!ret)
+			dev_info(priv->pdev, "XR819 HIF %08x = %08x\n",
+				 hif_addresses[i], hif_value);
+	}
+}
+
 static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 			       struct hwbus_priv *hwbus,
 			       struct device *pdev,
@@ -526,6 +594,7 @@ static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 			       bool is_xr819)
 {
 	int err = -EINVAL;
+	bool startup_timeout = false;
 	struct ieee80211_hw *dev;
 	struct cw1200_common *priv;
 	struct wsm_operational_mode mode = {
@@ -580,11 +649,12 @@ static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 
 	if (wait_event_interruptible_timeout(priv->wsm_startup_done,
 					     priv->firmware_ready,
-					     3*HZ) <= 0) {
+					     3 * HZ) <= 0) {
 		/* TODO: Need to find how to reset device
 		   in QUEUE mode properly.
 		*/
 		pr_err("Timeout waiting on device startup\n");
+		startup_timeout = true;
 		err = -ETIMEDOUT;
 		goto err2;
 	}
@@ -603,6 +673,8 @@ static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 
 err2:
 	cw1200_unregister_bh(priv);
+	if (startup_timeout && priv->is_xr819)
+		cw1200_xr819_read_postcodes(priv);
 err1:
 	cw1200_free_common(dev);
 err:

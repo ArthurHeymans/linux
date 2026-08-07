@@ -512,6 +512,23 @@ int cw1200_load_firmware(struct cw1200_common *priv)
 		goto out;
 	}
 
+	if (!(val32 & ST90TDS_CONFIG_ACCESS_MODE_BIT) && priv->is_xr819) {
+		/* A failed experimental firmware probe leaves XR819 in queue mode.
+		 * Put only its embedded CPU back into reset and restore direct access
+		 * mode so the normal bootloader download path can run again.  This
+		 * avoids requiring a board reboot between firmware iterations.
+		 */
+		ret = config_reg_write(priv, val32 |
+				       ST90TDS_CONFIG_CPU_RESET_BIT |
+				       ST90TDS_CONFIG_ACCESS_MODE_BIT);
+		if (ret < 0)
+			goto out;
+		msleep(30);
+		ret = config_reg_read(priv, &val32);
+		if (ret < 0)
+			goto out;
+	}
+
 	if (!(val32 & ST90TDS_CONFIG_ACCESS_MODE_BIT)) {
 		pr_err("Device is already in QUEUE mode!\n");
 		ret = -EINVAL;

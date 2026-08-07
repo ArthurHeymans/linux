@@ -232,8 +232,8 @@ out:
 	return ret;
 }
 
-int cw1200_apb_write(struct cw1200_common *priv, u32 addr, const void *buf,
-			size_t buf_len)
+static int cw1200_indirect_write(struct cw1200_common *priv, u32 addr,
+				 const void *buf, size_t buf_len, u16 port_addr)
 {
 	int ret;
 
@@ -252,16 +252,27 @@ int cw1200_apb_write(struct cw1200_common *priv, u32 addr, const void *buf,
 	}
 
 	/* Write data port */
-	ret = __cw1200_reg_write(priv, ST90TDS_SRAM_DPORT_REG_ID,
-					buf, buf_len, 0);
-	if (ret < 0) {
+	ret = __cw1200_reg_write(priv, port_addr, buf, buf_len, 0);
+	if (ret < 0)
 		pr_err("Can't write data port.\n");
-		goto out;
-	}
 
 out:
 	priv->hwbus_ops->unlock(priv->hwbus_priv);
 	return ret;
+}
+
+int cw1200_apb_write(struct cw1200_common *priv, u32 addr, const void *buf,
+			size_t buf_len)
+{
+	return cw1200_indirect_write(priv, addr, buf, buf_len,
+				     ST90TDS_SRAM_DPORT_REG_ID);
+}
+
+int cw1200_ahb_write(struct cw1200_common *priv, u32 addr, const void *buf,
+			size_t buf_len)
+{
+	return cw1200_indirect_write(priv, addr, buf, buf_len,
+				     ST90TDS_AHB_DPORT_REG_ID);
 }
 
 int __cw1200_irq_enable(struct cw1200_common *priv, int enable)
