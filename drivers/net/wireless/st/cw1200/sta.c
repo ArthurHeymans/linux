@@ -1828,7 +1828,10 @@ void cw1200_set_cts_work(struct work_struct *work)
 
 	wsm_write_mib(priv, WSM_MIB_ID_NON_ERP_PROTECTION,
 		      &use_cts_prot, sizeof(use_cts_prot));
-	wsm_update_ie(priv, &update_ie);
+
+	/* XR819 rejects beacon IE updates while acting as a station. */
+	if (!priv->is_xr819 || priv->mode != NL80211_IFTYPE_STATION)
+		wsm_update_ie(priv, &update_ie);
 
 	return;
 }
@@ -1842,7 +1845,8 @@ static int cw1200_set_btcoexinfo(struct cw1200_common *priv)
 		/* Plumb PSPOLL and NULL template */
 		cw1200_upload_pspoll(priv);
 		cw1200_upload_null(priv);
-		cw1200_upload_qosnull(priv);
+		if (!priv->is_xr819)
+			cw1200_upload_qosnull(priv);
 	} else {
 		return 0;
 	}
@@ -2071,6 +2075,9 @@ void cw1200_bss_info_changed(struct ieee80211_hw *dev,
 				wsm_set_p2p_ps_modeinfo(priv,
 							&priv->p2p_ps_modeinfo);
 			}
+			if (priv->is_xr819 &&
+			    priv->mode == NL80211_IFTYPE_STATION)
+				cw1200_upload_qosnull(priv);
 			if (priv->bt_present)
 				cw1200_set_btcoexinfo(priv);
 		} else {

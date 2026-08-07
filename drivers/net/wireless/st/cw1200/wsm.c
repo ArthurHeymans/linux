@@ -1410,8 +1410,9 @@ int wsm_handle_rx(struct cw1200_common *priv, u16 id,
 					   "wsm_generic_confirm failed for request 0x%04x.\n",
 					   id & ~0x0400);
 
-				/* often 0x407 and 0x410 occur, this means we're dead.. */
-				if (priv->join_status >= CW1200_JOIN_STATUS_JOINING) {
+				/* XR819 can reject an optional request and continue. */
+				if (!priv->is_xr819 &&
+				    priv->join_status >= CW1200_JOIN_STATUS_JOINING) {
 					wsm_lock_tx(priv);
 					if (queue_work(priv->workqueue, &priv->unjoin_work) <= 0)
 						wsm_unlock_tx(priv);
