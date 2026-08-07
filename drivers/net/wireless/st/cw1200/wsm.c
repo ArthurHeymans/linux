@@ -384,6 +384,14 @@ static int wsm_tx_confirm(struct cw1200_common *priv,
 	tx_confirm.tx_rate = WSM_GET8(buf);
 	tx_confirm.ack_failures = WSM_GET8(buf);
 	tx_confirm.flags = WSM_GET16(buf);
+
+	/* XR819 reports three additional per-rate attempt counters. */
+	if (priv->is_xr819) {
+		WSM_GET32(buf);
+		WSM_GET32(buf);
+		WSM_GET32(buf);
+	}
+
 	tx_confirm.media_delay = WSM_GET32(buf);
 	tx_confirm.tx_queue_delay = WSM_GET32(buf);
 
