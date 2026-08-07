@@ -62,6 +62,60 @@ static void tx_policy_dump(struct tx_policy *policy)
 		 policy->defined);
 }
 
+static void tx_policy_build_xr819(const struct cw1200_common *priv,
+				  struct tx_policy *policy,
+				  struct ieee80211_tx_rate *rates,
+				  size_t count)
+{
+	int i;
+
+	memset(policy, 0, sizeof(*policy));
+
+	/* XR819 policies cover all 24 hardware rates. This also makes the
+	 * existing cache comparison check all 12 policy bytes.
+	 */
+	policy->defined = sizeof(policy->raw) * 2;
+
+	for (i = 1; i < count && rates[i].idx >= 0; i++) {
+		struct ieee80211_tx_rate rate = rates[i];
+		unsigned int key = rate.idx;
+		int j = i;
+
+		if (rate.flags & IEEE80211_TX_RC_MCS)
+			key += 0x100;
+
+		while (j > 0) {
+			unsigned int previous = rates[j - 1].idx;
+
+			if (rates[j - 1].flags & IEEE80211_TX_RC_MCS)
+				previous += 0x100;
+			if (previous >= key)
+				break;
+			rates[j] = rates[j - 1];
+			j--;
+		}
+		rates[j] = rate;
+	}
+	count = i;
+
+	for (i = 0; i < count; i++) {
+		const struct ieee80211_rate *rate;
+		unsigned int rate_id, offset, shift, retries;
+
+		rate = cw1200_get_tx_rate(priv, &rates[i]);
+		if (!rate)
+			break;
+
+		rate_id = rate->hw_value;
+		offset = rate_id >> 3;
+		shift = (rate_id & 7) << 2;
+		retries = min_t(unsigned int, rates[i].count, 0x0f);
+		rates[i].count = retries;
+		policy->tbl[offset] |= cpu_to_le32(retries << shift);
+		policy->retry_count += retries;
+	}
+}
+
 static void tx_policy_build(const struct cw1200_common *priv,
 	/* [out] */ struct tx_policy *policy,
 	struct ieee80211_tx_rate *rates, size_t count)
@@ -70,6 +124,12 @@ static void tx_policy_build(const struct cw1200_common *priv,
 	unsigned limit = priv->short_frame_max_tx_count;
 	unsigned total = 0;
 	BUG_ON(rates[0].idx < 0);
+
+	if (priv->is_xr819) {
+		tx_policy_build_xr819(priv, policy, rates, count);
+		return;
+	}
+
 	memset(policy, 0, sizeof(*policy));
 
 	/* Sort rates in descending order. */
