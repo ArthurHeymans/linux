@@ -289,7 +289,6 @@ static void cw1200_scan_restart_delayed(struct cw1200_common *priv)
 
 	if (priv->delayed_unjoin) {
 		priv->delayed_unjoin = false;
-		wsm_lock_tx(priv);
 		if (queue_work(priv->workqueue, &priv->unjoin_work) <= 0)
 			wsm_unlock_tx(priv);
 	} else if (priv->delayed_link_loss) {

@@ -24,7 +24,7 @@
 #endif
 
 static void cw1200_do_join(struct cw1200_common *priv);
-static void cw1200_do_unjoin(struct cw1200_common *priv);
+static bool cw1200_do_unjoin(struct cw1200_common *priv);
 
 static int cw1200_upload_beacon(struct cw1200_common *priv);
 static int cw1200_upload_pspoll(struct cw1200_common *priv);
@@ -1234,7 +1234,8 @@ static void cw1200_join_complete(struct cw1200_common *priv)
 	if (priv->join_complete_status) {
 		priv->join_status = CW1200_JOIN_STATUS_PASSIVE;
 		cw1200_update_listening(priv, priv->listening);
-		cw1200_do_unjoin(priv);
+		if (cw1200_do_unjoin(priv))
+			return;
 		ieee80211_connection_loss(priv->vif);
 	} else {
 		if (priv->mode == NL80211_IFTYPE_ADHOC)
@@ -1288,8 +1289,8 @@ static void cw1200_do_join(struct cw1200_common *priv)
 		return;
 	}
 
-	if (priv->join_status)
-		cw1200_do_unjoin(priv);
+	if (priv->join_status && cw1200_do_unjoin(priv))
+		return;
 
 	bssid = priv->vif->bss_conf.bssid;
 
@@ -1443,11 +1444,12 @@ void cw1200_join_timeout(struct work_struct *work)
 		wsm_unlock_tx(priv);
 }
 
-static void cw1200_do_unjoin(struct cw1200_common *priv)
+static bool cw1200_do_unjoin(struct cw1200_common *priv)
 {
 	struct wsm_reset reset = {
 		.reset_statistics = true,
 	};
+	bool deferred = false;
 
 	cancel_delayed_work_sync(&priv->join_timeout);
 
@@ -1455,10 +1457,13 @@ static void cw1200_do_unjoin(struct cw1200_common *priv)
 	priv->join_pending = false;
 
 	if (atomic_read(&priv->scan.in_progress)) {
-		if (priv->delayed_unjoin)
+		if (priv->delayed_unjoin) {
 			wiphy_dbg(priv->hw->wiphy, "Delayed unjoin is already scheduled.\n");
-		else
+			wsm_unlock_tx(priv);
+		} else {
 			priv->delayed_unjoin = true;
+		}
+		deferred = true;
 		goto done;
 	}
 
@@ -1505,6 +1510,7 @@ static void cw1200_do_unjoin(struct cw1200_common *priv)
 
 done:
 	mutex_unlock(&priv->conf_mutex);
+	return deferred;
 }
 
 void cw1200_unjoin_work(struct work_struct *work)
@@ -1518,7 +1524,8 @@ void cw1200_unjoin_work(struct work_struct *work)
 	if (!atomic_read(&priv->tx_lock))
 		wsm_lock_tx(priv);
 
-	cw1200_do_unjoin(priv);
+	if (cw1200_do_unjoin(priv))
+		return;
 
 	/* Tell the stack we're dead */
 	ieee80211_connection_loss(priv->vif);
