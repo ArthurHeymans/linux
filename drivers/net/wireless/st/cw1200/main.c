@@ -539,6 +539,13 @@ static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 
 	priv = dev->priv;
 	priv->is_xr819 = is_xr819;
+	if (is_xr819) {
+		/* Match the aggregation limits used by the XR819 firmware. */
+		priv->ba_tx_tid_mask = 0x3f;
+		priv->ba_rx_tid_mask = 0x3f;
+		dev->wiphy->bands[NL80211_BAND_2GHZ]->ht_cap.ampdu_factor =
+			IEEE80211_HT_MAX_AMPDU_32K;
+	}
 	priv->hw_refclk = ref_clk;
 	if (cw1200_refclk)
 		priv->hw_refclk = cw1200_refclk;
