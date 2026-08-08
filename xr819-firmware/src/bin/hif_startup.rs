@@ -9,13 +9,16 @@ use xr819_firmware::hif::Transport;
 use xr819_firmware::phy::{initialize_mac_core_mode0, initialize_mac_software_state};
 use xr819_firmware::platform::{
     initialize_runtime_state, prepare_dma_and_clocks, prepare_high_platform_support,
-    prepare_main_control, prepare_memory_and_interrupts, prepare_packet_dma,
-    register_post_activation_interrupts, try_activate_hif, wait_for_host_download_completion,
+    prepare_mac_receive_hardware, prepare_main_control, prepare_memory_and_interrupts,
+    prepare_packet_dma, program_station_address, register_post_activation_interrupts,
+    try_activate_hif, wait_for_host_download_completion,
 };
+use xr819_firmware::radio;
 use xr819_firmware::scan;
 use xr819_firmware::wsm::{
-    CONFIGURATION_REQ_ID, ConfigurationRequest, JOIN_REQ_ID, READ_MIB_REQ_ID, START_SCAN_REQ_ID,
-    STATUS_FAILURE, StartScanRequest, StartupIndication, TxPowerRange,
+    CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID, EdcaParameters, JOIN_REQ_ID,
+    READ_MIB_REQ_ID, START_SCAN_REQ_ID, STATUS_FAILURE, StartScanRequest, StartupIndication,
+    TX_QUEUE_PARAMS_REQ_ID, TxPowerRange, TxQueueParameters, WRITE_MIB_REQ_ID, WriteMibRequest,
     encode_configuration_response, encode_join_response, encode_read_mib_response,
     encode_scan_complete_indication, encode_status_response,
 };
@@ -109,6 +112,8 @@ extern "C" fn rust_main() -> ! {
 
     // Vendor 0x9ac calls packet-DMA initialization immediately after 0x94c.
     prepare_packet_dma();
+    prepare_mac_receive_hardware();
+    unsafe { radio::initialize() };
     debug_stop(8, 0x5354_4708);
 
     // Vendor 0x16d24 performs the complete 0x16ac6 software and hardware
@@ -151,7 +156,17 @@ extern "C" fn rust_main() -> ! {
         // Service firmware-owned work before accepting another host command.
         // This preserves response-before-indication ordering without allowing a
         // queued follow-up command to overtake scan completion.
-        if let Some(completion) = scan::service() {
+        let scan_completion = scan::service();
+
+        if let Some(channel) = scan::active_channel() {
+            if transport.output_available() {
+                if let Some(indication) = unsafe { radio::poll_scan_indication(channel) } {
+                    unsafe { transport.publish_radio(indication) };
+                }
+            }
+        }
+
+        if let Some(completion) = scan_completion {
             let output = unsafe { transport.output_buffer() };
             if let Ok(length) = encode_scan_complete_indication(
                 completion.status,
@@ -193,6 +208,7 @@ extern "C" fn rust_main() -> ! {
                         },
                     ],
                 ));
+                program_station_address(station_id);
                 encode_configuration_response(station_id, tx_power_ranges, output)
             } else if request.id == START_SCAN_REQ_ID {
                 let status = match StartScanRequest::parse(request.payload) {
@@ -202,6 +218,34 @@ extern "C" fn rust_main() -> ! {
                         Err(_) => 2,
                     },
                     Err(_) => 2,
+                };
+                encode_status_response(request.id | 0x0400, status, output)
+            } else if request.id == TX_QUEUE_PARAMS_REQ_ID {
+                let status = match TxQueueParameters::parse(request.payload) {
+                    Ok(parameters) => {
+                        configuration::retain_tx_queue(parameters);
+                        0
+                    }
+                    Err(_) => 2,
+                };
+                encode_status_response(request.id | 0x0400, status, output)
+            } else if request.id == EDCA_PARAMS_REQ_ID {
+                let status = match EdcaParameters::parse(request.payload) {
+                    Ok(parameters) => {
+                        configuration::retain_edca(parameters);
+                        0
+                    }
+                    Err(_) => 2,
+                };
+                encode_status_response(request.id | 0x0400, status, output)
+            } else if request.id == WRITE_MIB_REQ_ID {
+                let status = match WriteMibRequest::parse(request.payload) {
+                    Ok(request)
+                        if configuration::retain_interface_mib(request.mib_id, request.data) =>
+                    {
+                        0
+                    }
+                    _ => STATUS_FAILURE,
                 };
                 encode_status_response(request.id | 0x0400, status, output)
             } else if request.id == READ_MIB_REQ_ID {

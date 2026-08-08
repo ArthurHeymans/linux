@@ -458,6 +458,109 @@ pub fn register_post_activation_interrupts() {
     register_interrupt_source(21);
 }
 
+pub fn prepare_mac_receive_hardware() {
+    let control = 0x09c0_0040;
+    for (offset, value) in [
+        (0x000, 0x8000_ffd4),
+        (0x004, 0x8000_ffc4),
+        (0x008, 0x8000_ffb4),
+        (0x00c, 0x8000_efe4),
+        (0x010, 0x8000_ff84),
+        (0x014, 0x8000_ff94),
+        (0x018, 0x0000_ff80),
+        (0x01c, 0x0000_8f88),
+        (0x020, 0x0000_2020),
+        (0x024, 0x0000_4040),
+        (0x028, 0x0000_4000),
+        (0x02c, 0x0004_0101),
+    ] {
+        register32(0x09c0_0000 + offset).set(value);
+    }
+    for (offset, value) in [
+        (0x060, 0x0010_0101),
+        (0x064, 0x8018_6000),
+        (0x068, 0x0002_ff00),
+        (0x06c, 0x0003_ff00),
+        (0x070, 0x0000_ff74),
+        (0x074, 0x0084_0604),
+        (0x078, 0x0001_8080),
+        (0x07c, 0x801a_0202),
+        (0x080, 0x801d_0100),
+        (0x084, 0x000c_0202),
+        (0x088, 0x000f_0100),
+        (0x08c, 0x0018_0202),
+        (0x090, 0x8600_e3e2),
+        (0x094, 0x860a_3f1d),
+        (0x0b4, 0x001b_0100),
+        (0x0b8, 0x0000_0f00),
+        (0x0bc, 0x0084_2624),
+        (0x0c0, 0x8000_0000),
+        (0x0c4, 0x0002_0000),
+        (0x0c8, 0x0016_0000),
+        (0x0cc, 0xc018_0000),
+        (0x0d0, 0xc010_0000),
+        (0x0d4, 0xc012_0000),
+        (0x0e0, 0x0004_0000),
+        (0x0e8, 0x800a_0000),
+        (0x0f0, 0x0010_0000),
+    ] {
+        register32(control + offset).set(value);
+    }
+
+    let timing = 0x09c0_0200;
+    for (offset, value) in [
+        (0x010, 0x1900_0000),
+        (0x014, 0x1c00_0000),
+        (0x018, 0x1000_0000),
+        (0x01c, 0x4000_0000),
+        (0x020, 0x8000_0000),
+        (0x028, 0x2000_0002),
+        (0x02c, 0x0100_0004),
+        (0x030, 0x0400_0004),
+        (0x034, 0x0180_0010),
+        (0x038, 0x0480_0010),
+        (0x03c, 0x2000_1010),
+        (0x040, 0x2000_0020),
+        (0x044, 0x2000_1020),
+        (0x048, 0x0200_0040),
+        (0x04c, 0x0000_0800),
+        (0x050, 0x2000_2080),
+        (0x054, 0x2000_0001),
+        (0x05c, 0x0100_0000),
+        (0x060, 0x0400_0000),
+        (0x064, 0x0000_c380),
+        (0x068, 8),
+        (0x06c, 0),
+        (0x074, 0x2080_0010),
+        (0x078, 0x2082_0080),
+        (0x098, 0),
+        (0x0c0, 0),
+        (0x0e4, 0),
+        (0x0e8, 0x80),
+        (0x0f0, 0x0002_0004),
+        (0x0f4, 0x001e_0080),
+        (0x0f8, 0x0006_0000),
+        (0x0fc, 0x0067_0000),
+    ] {
+        register32(timing + offset).set(value);
+    }
+    register32(0x09c0_0a14).set(0);
+    register32(0x09c0_0a18).set(0x8000);
+    register32(0x09c0_0308).set(0x70);
+    register32(0x09c0_02ec).set(4);
+}
+
+pub fn program_station_address(address: [u8; 6]) {
+    let low = u32::from_le_bytes([address[0], address[1], address[2], address[3]]);
+    let high = u32::from(u16::from_le_bytes([address[4], address[5]]));
+    register32(0x09c0_0030).set(low);
+    register32(0x09c0_0034).set(high);
+    register32(0x09c0_0038).set(0x101);
+    register32(0x09c0_0048).set(low);
+    register32(0x09c0_004c).set(high);
+    register32(0x09c0_0050).set(0x101);
+}
+
 pub fn prepare_packet_dma() {
     register32(0x0ab9_8040).set(0);
     register32(0x09c0_080c).set(0);

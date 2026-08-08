@@ -2,9 +2,10 @@
 
 use core::cell::UnsafeCell;
 
-use crate::wsm::{ConfigurationRequest, TxPowerRange};
+use crate::wsm::{ConfigurationRequest, EdcaParameters, TxPowerRange, TxQueueParameters};
 
 pub const MAX_DPD_DATA_LEN: usize = 1536;
+pub const MAX_TEMPLATE_FRAME_LEN: usize = 2304;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfigurationError {
@@ -35,6 +36,14 @@ struct ConfigurationStorage {
     dpd_flags: u16,
     dpd_len: usize,
     dpd_data: [u8; MAX_DPD_DATA_LEN],
+    edca_valid: bool,
+    edca: EdcaParameters,
+    uapsd_information: [u8; 8],
+    rcpi_rssi_threshold: [u8; 4],
+    tx_queues: [TxQueueParameters; 4],
+    template_frame_len: usize,
+    template_frame: [u8; MAX_TEMPLATE_FRAME_LEN],
+    rx_filter: u32,
 }
 
 impl ConfigurationStorage {
@@ -49,6 +58,27 @@ impl ConfigurationStorage {
             dpd_flags: 0,
             dpd_len: 0,
             dpd_data: [0; MAX_DPD_DATA_LEN],
+            edca_valid: false,
+            edca: EdcaParameters {
+                queues: [crate::wsm::EdcaQueueParameters {
+                    cwmin: 0,
+                    cwmax: 0,
+                    aifns: 0,
+                    txop_limit: 0,
+                    max_rx_lifetime: 0,
+                }; 4],
+            },
+            uapsd_information: [0; 8],
+            rcpi_rssi_threshold: [0; 4],
+            tx_queues: [TxQueueParameters {
+                queue_id: 0,
+                ack_policy: 0,
+                max_transmit_lifetime: 0,
+                allowed_medium_time: 0,
+            }; 4],
+            template_frame_len: 0,
+            template_frame: [0; MAX_TEMPLATE_FRAME_LEN],
+            rx_filter: 0,
         }
     }
 }
@@ -87,7 +117,55 @@ pub fn retain(request: &ConfigurationRequest<'_>) -> Result<(), ConfigurationErr
     storage.dpd_len = request.dpd_data.len();
     storage.dpd_data[..storage.dpd_len].copy_from_slice(request.dpd_data);
     storage.configured = true;
+    #[cfg(target_arch = "arm")]
+    unsafe {
+        populate_vendor_calibration_state();
+    }
     Ok(())
+}
+
+pub fn retain_edca(parameters: EdcaParameters) {
+    let storage = unsafe { &mut *XR819_CONFIGURATION.0.get() };
+    storage.edca = parameters;
+    storage.edca_valid = true;
+}
+
+pub fn edca() -> Option<EdcaParameters> {
+    let storage = unsafe { &*XR819_CONFIGURATION.0.get() };
+    storage.edca_valid.then_some(storage.edca)
+}
+
+pub fn retain_tx_queue(parameters: TxQueueParameters) {
+    let storage = unsafe { &mut *XR819_CONFIGURATION.0.get() };
+    storage.tx_queues[usize::from(parameters.queue_id)] = parameters;
+}
+
+pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
+    let storage = unsafe { &mut *XR819_CONFIGURATION.0.get() };
+    match (mib_id, data) {
+        (crate::wsm::MIB_ID_SET_UAPSD_INFORMATION, [a, b, c, d, e, f, g, h]) => {
+            storage.uapsd_information = [*a, *b, *c, *d, *e, *f, *g, *h];
+            true
+        }
+        (crate::wsm::MIB_ID_RCPI_RSSI_THRESHOLD, [a, b, c, d]) => {
+            storage.rcpi_rssi_threshold = [*a, *b, *c, *d];
+            true
+        }
+        (crate::wsm::MIB_ID_RX_FILTER, [a, b, c, d]) => {
+            storage.rx_filter = u32::from_le_bytes([*a, *b, *c, *d]);
+            true
+        }
+        (crate::wsm::MIB_ID_TEMPLATE_FRAME, data) if data.len() <= MAX_TEMPLATE_FRAME_LEN => {
+            let previous_len = storage.template_frame_len;
+            storage.template_frame[..data.len()].copy_from_slice(data);
+            if previous_len > data.len() {
+                storage.template_frame[data.len()..previous_len].fill(0);
+            }
+            storage.template_frame_len = data.len();
+            true
+        }
+        _ => false,
+    }
 }
 
 pub fn snapshot() -> Option<ConfigurationSnapshot> {
@@ -107,6 +185,66 @@ pub fn snapshot() -> Option<ConfigurationSnapshot> {
             core::slice::from_raw_parts(storage.dpd_data.as_ptr(), storage.dpd_len)
         },
     })
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn populate_vendor_calibration_state() {
+    unsafe fn write_u8(address: usize, value: u8) {
+        unsafe { (address as *mut u8).write_volatile(value) };
+    }
+    unsafe fn write_u16(address: usize, value: u16) {
+        unsafe { (address as *mut u16).write_volatile(value) };
+    }
+    unsafe fn write_u32(address: usize, value: u32) {
+        unsafe { (address as *mut u32).write_volatile(value) };
+    }
+    unsafe fn copy_u16_profile(id: u8, destination: usize) {
+        if let Some(data) = find_sdd_element(id) {
+            for (index, value) in data.chunks_exact(2).take(11).enumerate() {
+                unsafe {
+                    write_u16(
+                        destination + index * 2,
+                        u16::from_le_bytes([value[0], value[1]]),
+                    )
+                };
+            }
+        }
+    }
+
+    unsafe {
+        if let Some(reference) = reference_frequency_khz() {
+            write_u32(0x0400_996c, u32::from(reference));
+        }
+
+        // Annotated callbacks 0x17626 and 0x17646.
+        copy_u16_profile(0xe3, 0x0400_34b0);
+        copy_u16_profile(0xe4, 0x0400_3542);
+        copy_u16_profile(0x48, 0x0400_3504);
+        copy_u16_profile(0x49, 0x0400_3596);
+
+        // Annotated callback 0x17668: count plus three-byte channel records.
+        if let Some(data) = find_sdd_element(0xec) {
+            if data.len() >= 2 {
+                let count = usize::from(u16::from_le_bytes([data[0], data[1]]));
+                let records_len = count.saturating_mul(3);
+                if count <= u8::MAX as usize && data.len() >= 2 + records_len {
+                    for (index, value) in data[2..2 + records_len].iter().copied().enumerate() {
+                        write_u8(0x0400_34c6 + index, value);
+                    }
+                    write_u8(0x0400_34f6, count as u8);
+                    write_u32(0x0400_99d8, 0x0400_34b0);
+                }
+            }
+        }
+
+        // Parameter-zero temperature fallback supplied by SDD element 0x46.
+        if let Some(data) = find_sdd_element(0x46) {
+            if data.len() >= 4 {
+                write_u16(0x0400_9990, u16::from_le_bytes([data[0], data[1]]));
+                write_u16(0x0400_9992, u16::from_le_bytes([data[2], data[3]]));
+            }
+        }
+    }
 }
 
 pub fn reference_frequency_khz() -> Option<u16> {

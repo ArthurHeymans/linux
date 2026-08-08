@@ -52,10 +52,14 @@ Implemented:
 - structured configuration confirmation with vendor-compatible -16.0 dBm
   minima, zero stepping, and SDD-derived `0xe3`/`0xe4` maxima;
 - length-correct failure confirmations for unsupported read-MIB and join;
+- retained TX-queue, EDCA, U-APSD, RCPI/RSSI, RX-filter, and template-frame
+  configuration needed for interface bring-up and scan requests;
 - honest failure status for other requests whose state effects are unimplemented;
 - WSM command dispatch with sequence/link fields stripped and explicit `if_id`;
 - modulo-eight sequence stamping on every normal host-bound WSM message;
-- validated and retained SDD/DPD calibration TLVs;
+- validated and retained SDD/DPD calibration TLVs, with live publication of
+  reference, power-profile, channel-table, and temperature fallback state into
+  the vendor DTCM layout;
 - explicit clearing of linker-defined Rust `.bss` before using retained state;
 - successful registration of a Linux `phy` and `wlan0`;
 - borrowed parsing and fixed-storage retention of scan channels/SSIDs;
@@ -84,7 +88,9 @@ Implemented:
 - translated `0x179ea` normalization, shift-state update, and gain-indexed publication plan;
 - translated `0x17ac8` signed-8 primary coefficient packing;
 - detached bounded `0x17bf2 -> 0x17b70` sample command and accumulator read;
-- allocation-free twelve-gain `0x17c20` arithmetic/publication series;
+- allocation-free twelve-gain `0x17c20` arithmetic/publication series and
+  complete bounded primary/optional-secondary hardware acquisition envelope
+  with nested timeout cleanup and exact publication ordering;
 - initial candidate and signed-12 correction packing from dynamic IQ/DC calibration;
 - detached bounded 64-word ADC capture from dynamic IQ/DC calibration;
 - pure fixed-point three-correlation DFT and candidate normalization from `0x18480`;
@@ -108,11 +114,26 @@ Implemented:
   shortcut, live synth preparation, exact control-word staging,
   timeout-preserving capture, candidate publication, and guaranteed restoration
   on every normal post-acquisition return;
+- complete detached `phy_set_channel_full` normal path with profile-zero/one
+  PLL calculation, timing, temperature conversion, calibration, AGC,
+  SDD-derived threshold/TX-power publication, frequency offset, configuration
+  slots, correction-cache initialization, and channel recording;
 - byte verification of all loader MMIO pairs and MAC/PHY copies against the
   annotated `xr819-fw.tar.gz` firmware container;
 - vendor channel-timing validation and event-bit-10 scan activation semantics;
 - verified completion path `0x13fac -> 0x111ba -> 0xed4c`;
-- vendor-aligned 12-byte asynchronous empty scan completion while the real PHY scan path is incomplete.
+- vendor-aligned 12-byte asynchronous empty scan completion after successfully
+  running the live channel transition for the first retained scan channel;
+- repeated hardware scans complete with BH alive, WSM idle, and no outstanding
+  firmware buffers;
+- an experimental passive-RX path with multi-channel dwell, packet-DMA FIFO
+  recycling, beacon/probe-response filtering, WSM receive indications, and
+  fixed diagnostic counters;
+- vendor-style zero-copy RX indications that use the FIFO slot's 16-byte
+  headroom and defer slot recycling until HIF TX descriptor reclamation, so the
+  full advertised 1600-byte frame size is supported instead of the temporary
+  368-byte copied-frame limit. The newest MAC/RX activation and zero-copy
+  changes remain hardware-unvalidated pending a target reset.
 
 Not yet implemented:
 

@@ -250,7 +250,33 @@ the final-gain coefficient/scale references at `0x0400993c`, and restores the
 path, test tone, band selector, and engine gate on success or timeout. A direct
 annotated-C review also corrected one subtlety: every gain derives its shift
 word from the same profile value at `0x04009978`; shift output from one gain is
-not fed into the next gain.
+not fed into the next gain. The optional secondary branch is now assembled too:
+it reuses the stored final-gain references, applies signed 8-to-6-bit DAC
+scaling, measures the primary and alternate paths with command modes 1 and 0,
+computes the two `×0x4000 / scale` corrections, publishes the secondary packed
+word, and preserves vendor ordering of primary, secondary, then normalized
+table writes. Secondary timeout and zero-scale exits restore both nested path
+snapshots before disabling the calibration engine.
+
+Work has also started on the enclosing `phy_set_channel_full`/target `0x166ea`
+transition. The Rust side now has exact live helpers for clock-divisor
+publication at `0x0ab88020`, signed frequency-offset caching, both configuration
+slot copies, AGC enable/disable writes, profile-validity inspection, default
+sixteen-entry correction-bank initialization, and calibrated-channel recording.
+The normal profile-zero front of `phy_apply_cfg_pair` is now connected too. It
+maps the channel to 2.4 GHz frequency, applies the signed reference correction,
+computes the vendor `frequency × 1250 / corrected_reference` integer and 21-bit
+fractional pair, reuses the cached pair when allowed, writes the live PLL word,
+and performs the exact restart. Nonzero-profile dispatch remains detached.
+The remaining normal-path pieces are now connected. The parameter-zero
+`rf_measure_temp_and_vbat` path preserves its exact interleaved save/override
+order, accepted 41000..58900 range, 38000 fallback, and both fatal exits that
+skip restoration. Profile-specific threshold descriptors and the SDD-derived
+three-byte rate table now drive the two TX-power values, and profile-one channel
+PLL calculation uses dispatcher case zero's 5000 MHz base and multiplier 1000.
+`run_channel_transition()` assembles PLL, optional calibration, timing,
+temperature, cache preparation, AGC, threshold/TX power, and frequency offset.
+It remains detached from scans pending controlled hardware validation.
 
 The supplied annotated container was also reparsed independently. Its ordered
 41-register type-2 section and all four MAC/PHY type-0 copies are byte-identical

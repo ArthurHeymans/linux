@@ -8,6 +8,8 @@ use core::arch::asm;
 #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
 use core::arch::global_asm;
 use core::cell::UnsafeCell;
+
+use crate::radio::{self, PendingIndication, ReleaseToken};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
@@ -137,6 +139,7 @@ pub struct Transport {
     state: &'static HifState,
     software_state: &'static HifSoftwareState,
     shared: &'static HifShared,
+    external_releases: [Option<ReleaseToken>; 4],
 }
 
 #[cfg(all(target_arch = "arm", not(target_feature = "thumb-mode")))]
@@ -263,6 +266,7 @@ impl Transport {
             state,
             software_state,
             shared,
+            external_releases: [None; 4],
         }
     }
 
@@ -303,13 +307,17 @@ impl Transport {
         }
     }
 
-    fn reclaim_tx(&self) {
+    fn reclaim_tx(&mut self) {
         let producer = self.state.tx_producer.get();
         let mut consumer = self.state.tx_consumer.get();
         while consumer != producer {
-            let descriptor = &self.shared.tx[(consumer & 3) as usize];
+            let slot = (consumer & 3) as usize;
+            let descriptor = &self.shared.tx[slot];
             if descriptor.control.get() & 1 != 0 {
                 break;
+            }
+            if let Some(token) = self.external_releases[slot].take() {
+                unsafe { radio::complete_host_transfer(token) };
             }
             consumer = consumer.wrapping_add(1);
             self.state.tx_consumer.set(consumer);
@@ -321,6 +329,15 @@ impl Transport {
 
     fn current_tx_buffer(&self) -> usize {
         SHARED_BUFFER_BASE + ((self.state.tx_producer.get() & 3) as usize * SHARED_BUFFER_SIZE)
+    }
+
+    pub fn output_available(&mut self) -> bool {
+        self.reclaim_tx();
+        self.state
+            .tx_producer
+            .get()
+            .wrapping_sub(self.state.tx_consumer.get())
+            < 4
     }
 
     /// Returns the next vendor packet-RAM TX buffer as an ordinary byte slice.
@@ -400,20 +417,19 @@ impl Transport {
 
     /// Publishes one firmware-to-host WSM message.
     ///
-    /// # Safety
-    ///
-    /// `length` must describe initialized data in the fixed output buffer.
-    pub unsafe fn publish(&mut self, length: u16) {
+    unsafe fn publish_address(
+        &mut self,
+        buffer_address: usize,
+        length: u16,
+        release: Option<ReleaseToken>,
+    ) {
         let queued = self.state.tx_queued.get();
         let producer = self.state.tx_producer.get();
-        let descriptor = &self.shared.tx[(producer & 3) as usize];
-        let buffer_address = self.current_tx_buffer();
+        let slot = (producer & 3) as usize;
+        let descriptor = &self.shared.tx[slot];
+        self.external_releases[slot] = release;
         self.software_state.tx_buffers[(queued & 63) as usize].set(buffer_address as u32);
         let header_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
-        // CW1200 consumes a modulo-eight WSM sequence in ID bits 13..15. The
-        // software-ring producer advances exactly once per host-bound message,
-        // so its low three bits provide the required message sequence. Clear
-        // all previous sequence bits because each of the four buffers is reused.
         let sequence = ((producer as u16) & 7) << 13;
         let sequenced_id = (header_id & 0x1fff) | sequence;
 
@@ -425,17 +441,31 @@ impl Transport {
             DescriptorControl::LENGTH.val(u32::from(length).wrapping_add(1) & 0x1fff)
                 + DescriptorControl::SEQUENCE.val(u32::from((sequenced_id >> 13) & 3)),
         );
-
         self.state.tx_queued.set(queued.wrapping_add(1));
-        // 0x0000ed4c advances the software queue producer at 0x040098fc;
-        // 0x0000ec82 advances the descriptor producer at 0x04009914. The
-        // software queue consumer at 0x04009900 is reclaimed later by the HIF
-        // completion path and must not move when a descriptor is published.
         self.state.tx_producer.set(producer.wrapping_add(1));
-
-        // Reference startup drains the ARM write buffer at 0x00016550 after
-        // initializing the descriptor engine and before enabling interrupts.
-        // This makes packet and descriptor writes visible to HIF DMA.
         drain_write_buffer()
+    }
+
+    /// # Safety
+    ///
+    /// `length` must describe initialized data in the fixed output buffer.
+    pub unsafe fn publish(&mut self, length: u16) {
+        let buffer_address = self.current_tx_buffer();
+        unsafe { self.publish_address(buffer_address, length, None) };
+    }
+
+    /// Publishes a WSM indication directly from a retained radio FIFO slot.
+    /// The slot is recycled only after the host returns descriptor ownership.
+    ///
+    /// # Safety
+    /// `indication` must be the unique outstanding radio FIFO transfer.
+    pub unsafe fn publish_radio(&mut self, indication: PendingIndication) {
+        unsafe {
+            self.publish_address(
+                indication.address as usize,
+                indication.length,
+                Some(indication.release),
+            )
+        };
     }
 }

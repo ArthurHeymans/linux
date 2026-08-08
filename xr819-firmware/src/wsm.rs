@@ -21,10 +21,18 @@ pub const START_SCAN_REQ_ID: u16 = 0x0007;
 pub const START_SCAN_RESP_ID: u16 = 0x0407;
 pub const JOIN_REQ_ID: u16 = 0x000b;
 pub const JOIN_RESP_ID: u16 = 0x040b;
+pub const TX_QUEUE_PARAMS_REQ_ID: u16 = 0x0012;
+pub const TX_QUEUE_PARAMS_RESP_ID: u16 = 0x0412;
+pub const EDCA_PARAMS_REQ_ID: u16 = 0x0013;
+pub const EDCA_PARAMS_RESP_ID: u16 = 0x0413;
 pub const RECEIVE_IND_ID: u16 = 0x0804;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_FAILURE: u32 = 1;
+pub const MIB_ID_TEMPLATE_FRAME: u16 = 0x1002;
+pub const MIB_ID_RX_FILTER: u16 = 0x1003;
+pub const MIB_ID_RCPI_RSSI_THRESHOLD: u16 = 0x1009;
+pub const MIB_ID_SET_UAPSD_INFORMATION: u16 = 0x1013;
 
 #[derive(Clone, Copy, Immutable, IntoBytes)]
 #[repr(C)]
@@ -73,6 +81,96 @@ pub struct TxPowerRange {
     pub min_power_level: i32,
     pub max_power_level: i32,
     pub stepping: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EdcaQueueParameters {
+    pub cwmin: u16,
+    pub cwmax: u16,
+    pub aifns: u8,
+    pub txop_limit: u16,
+    pub max_rx_lifetime: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EdcaParameters {
+    pub queues: [EdcaQueueParameters; 4],
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TxQueueParameters {
+    pub queue_id: u8,
+    pub ack_policy: u8,
+    pub max_transmit_lifetime: u32,
+    pub allowed_medium_time: u16,
+}
+
+impl TxQueueParameters {
+    pub fn parse(payload: &[u8]) -> Result<Self, Error> {
+        if payload.len() != 12 || payload[0] > 3 {
+            return Err(Error::InvalidLength);
+        }
+        Ok(Self {
+            queue_id: payload[0],
+            ack_policy: payload[2],
+            max_transmit_lifetime: u32::from_le_bytes([
+                payload[4], payload[5], payload[6], payload[7],
+            ]),
+            allowed_medium_time: u16::from_le_bytes([payload[8], payload[9]]),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WriteMibRequest<'a> {
+    pub mib_id: u16,
+    pub data: &'a [u8],
+}
+
+impl WriteMibRequest<'_> {
+    pub fn parse(payload: &[u8]) -> Result<WriteMibRequest<'_>, Error> {
+        if payload.len() < 4 {
+            return Err(Error::Truncated);
+        }
+        let mib_id = u16::from_le_bytes([payload[0], payload[1]]);
+        let length = usize::from(u16::from_le_bytes([payload[2], payload[3]]));
+        if payload.len() != 4 + length {
+            return Err(Error::InvalidLength);
+        }
+        Ok(WriteMibRequest {
+            mib_id,
+            data: &payload[4..],
+        })
+    }
+}
+
+impl EdcaParameters {
+    pub fn parse(payload: &[u8]) -> Result<Self, Error> {
+        if payload.len() != 44 {
+            return Err(Error::InvalidLength);
+        }
+        let read_u16 = |offset: usize| u16::from_le_bytes([payload[offset], payload[offset + 1]]);
+        let read_u32 = |offset: usize| {
+            u32::from_le_bytes([
+                payload[offset],
+                payload[offset + 1],
+                payload[offset + 2],
+                payload[offset + 3],
+            ])
+        };
+        let mut queues = [EdcaQueueParameters::default(); 4];
+        for wire_index in 0..4 {
+            let queue = 3 - wire_index;
+            queues[queue] = EdcaQueueParameters {
+                cwmin: read_u16(wire_index * 2),
+                cwmax: read_u16(8 + wire_index * 2),
+                aifns: payload[16 + wire_index],
+                txop_limit: read_u16(20 + wire_index * 2),
+                max_rx_lifetime: read_u32(28 + wire_index * 4),
+            };
+        }
+        Ok(Self { queues })
+    }
 }
 
 impl Header {
@@ -402,6 +500,36 @@ pub fn encode_join_response(
     Ok(LEN)
 }
 
+pub fn encode_receive_indication(
+    if_id: u8,
+    status: u32,
+    channel: u16,
+    rate: u8,
+    rcpi: u8,
+    flags: u32,
+    frame: &[u8],
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const METADATA_LEN: usize = 12;
+    let len = HEADER_LEN + METADATA_LEN + frame.len();
+    if if_id > 2 || len > u16::MAX as usize || output.len() < len {
+        return Err(Error::OutputTooSmall);
+    }
+
+    Header {
+        len: len as u16,
+        id: 0x0804 | (u16::from(if_id) << 6),
+    }
+    .encode(output)?;
+    write_u32(output, 4, status);
+    write_u16(output, 8, channel);
+    output[10] = rate;
+    output[11] = rcpi;
+    write_u32(output, 12, flags);
+    output[16..len].copy_from_slice(frame);
+    Ok(len)
+}
+
 pub fn encode_scan_complete_indication(
     status: u32,
     psm: u8,
@@ -537,6 +665,40 @@ mod tests {
         assert_eq!(request.channel(1).unwrap().number, 11);
         assert_eq!(request.channel(1).unwrap().max_channel_time, 50);
         assert_eq!(request.ssid(0).unwrap(), b"test");
+    }
+
+    #[test]
+    fn edca_request_restores_linux_queue_order() {
+        let mut payload = [0_u8; 44];
+        for wire_index in 0..4 {
+            write_u16(&mut payload, wire_index * 2, 10 + wire_index as u16);
+            write_u16(&mut payload, 8 + wire_index * 2, 20 + wire_index as u16);
+            payload[16 + wire_index] = 30 + wire_index as u8;
+            write_u16(&mut payload, 20 + wire_index * 2, 40 + wire_index as u16);
+            write_u32(&mut payload, 28 + wire_index * 4, 50 + wire_index as u32);
+        }
+        let parameters = EdcaParameters::parse(&payload).unwrap();
+        assert_eq!(parameters.queues[3].cwmin, 10);
+        assert_eq!(parameters.queues[0].cwmin, 13);
+        assert_eq!(parameters.queues[2].max_rx_lifetime, 51);
+        assert_eq!(parameters.queues[1].txop_limit, 42);
+    }
+
+    #[test]
+    fn receive_indication_matches_driver_layout() {
+        let frame = [0x80, 0x00, 1, 2, 3, 4];
+        let mut output = [0; 32];
+        let length =
+            encode_receive_indication(0, 0, 6, 0, 120, 1 << 7, &frame, &mut output).unwrap();
+        assert_eq!(length, 22);
+        assert_eq!(read_u16(&output, 0), Ok(22));
+        assert_eq!(read_u16(&output, 2), Ok(0x0804));
+        assert_eq!(read_u32(&output, 4), Ok(0));
+        assert_eq!(read_u16(&output, 8), Ok(6));
+        assert_eq!(output[10], 0);
+        assert_eq!(output[11], 120);
+        assert_eq!(read_u32(&output, 12), Ok(1 << 7));
+        assert_eq!(&output[16..22], &frame);
     }
 
     #[test]

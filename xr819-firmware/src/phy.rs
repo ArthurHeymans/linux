@@ -464,14 +464,16 @@ pub fn calibration_sample_settings(i: u8, q: u8) -> u32 {
 pub const CALIBRATION_SAMPLE_COMMAND: u32 = 0x0800_000d;
 
 /// Detached bounded form of `0x17bf2 -> 0x17b70`.
-pub unsafe fn run_calibration_sample(
+pub unsafe fn run_calibration_sample_mode(
     i: u8,
     q: u8,
+    measurement_mode: u8,
     max_polls: u32,
 ) -> Result<IqCalibrationCoefficient, CalibrationSampleError> {
     unsafe {
         write_u32(0x0abb_8114, calibration_sample_settings(i, q));
-        write_u32(0x0abb_80f0, CALIBRATION_SAMPLE_COMMAND);
+        let command = 0x0800_0009 | (u32::from(measurement_mode & 1) << 2);
+        write_u32(0x0abb_80f0, command);
         for _ in 0..max_polls {
             if (0x0abb_80f0 as *const u32).read_volatile() & 0x10 != 0 {
                 let i = decode_calibration_accumulator((0x0abb_810c as *const u32).read_volatile());
@@ -481,6 +483,14 @@ pub unsafe fn run_calibration_sample(
         }
     }
     Err(CalibrationSampleError::Timeout)
+}
+
+pub unsafe fn run_calibration_sample(
+    i: u8,
+    q: u8,
+    max_polls: u32,
+) -> Result<IqCalibrationCoefficient, CalibrationSampleError> {
+    unsafe { run_calibration_sample_mode(i, q, 1, max_polls) }
 }
 
 /// Complete `0x178be -> 0x17898` calibration mode programming.
@@ -774,6 +784,511 @@ pub fn channel_frequency_offset_mhz(mode: u8, frequency_khz: u32) -> i16 {
     ((frequency_khz / 1000) as i32 - nominal_mhz) as i16
 }
 
+/// Live `phy_program_clock_divisor` publication.
+///
+/// # Safety
+///
+/// The vendor channel state at `0x0400994c` must be initialized.
+pub unsafe fn program_channel_measurement_timing() -> Option<i32> {
+    unsafe {
+        let mode = (0x0400_994e as *const u8).read_volatile();
+        let frequency_khz = (0x0400_9974 as *const u32).read_volatile();
+        let timing = channel_measurement_timing(mode, frequency_khz)?;
+        write_u32(0x0ab8_8020, timing as u32);
+        Some(timing)
+    }
+}
+
+/// Live `phy_set_freq_offset` publication.
+///
+/// # Safety
+///
+/// The vendor channel and PHY software states must be initialized.
+pub unsafe fn publish_channel_frequency_offset() -> i16 {
+    unsafe {
+        let mode = (0x0400_994e as *const u8).read_volatile();
+        let frequency_khz = (0x0400_9974 as *const u32).read_volatile();
+        let offset = channel_frequency_offset_mhz(mode, frequency_khz);
+        let current = (0x0400_99f4 as *const i32).read_volatile();
+        if current != i32::from(offset) {
+            (0x0400_99f4 as *mut i32).write_volatile(i32::from(offset));
+        }
+        offset
+    }
+}
+
+/// Exact `phy_copy_cfg_slot` state copy.
+///
+/// # Safety
+///
+/// The vendor channel state must be initialized and `slot` must identify its
+/// fixed two-entry cache.
+pub unsafe fn copy_channel_configuration_slot(slot: u8) {
+    if slot > 1 {
+        return;
+    }
+    unsafe {
+        let value = (0x0400_9998 as *const u32).read_volatile();
+        write_u32(0x0400_99ac + usize::from(slot) * 4, value);
+    }
+}
+
+/// Exact enable/disable writes from annotated `phy_agc_enable`.
+///
+/// # Safety
+///
+/// The AGC and MAC/PHY register banks must be enabled.
+pub unsafe fn set_phy_agc_enabled(enabled: bool) {
+    unsafe {
+        let current = (0x0abb_81b8 as *const u32).read_volatile();
+        let updated = if enabled {
+            write_u32(0x0ab8_0c20, 0);
+            let profile = (0x0400_994e as *const u8).read_volatile();
+            write_u32(0x0ab8_006c, if profile == 1 { 0 } else { 0x0ebf });
+            write_u32(0x0ab8_0068, 0);
+            current | 0x1800
+        } else {
+            current & !0x1800
+        };
+        write_u32(0x0abb_81b8, updated);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelCalibrationRequirement {
+    AlreadyValid,
+    RunCalibration,
+    UnsupportedProfile,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelPllError {
+    UnsupportedProfile,
+    InvalidReference,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TemperatureMeasurement {
+    pub value: i32,
+    pub accepted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TemperatureMeasurementError {
+    HardwareFaultNoRestore,
+    InvalidCalibrationNoRestore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelPowerError {
+    InvalidThresholdTable,
+    InvalidRateTable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelTransitionError {
+    Pll(ChannelPllError),
+    InvalidTiming,
+    Temperature(TemperatureMeasurementError),
+    Calibration(IqCalibrationHardwareError),
+    Power(ChannelPowerError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelTransitionResult {
+    pub divider: PllDivider,
+    pub timing: i32,
+    pub temperature: TemperatureMeasurement,
+    pub calibration_ran: bool,
+    pub threshold: i16,
+    pub first_tx_power: i16,
+    pub second_tx_power: i16,
+    pub frequency_offset: i16,
+}
+
+/// Channel form of `phy_apply_cfg_pair`, including its cached
+/// integer/fractional pair and vendor PLL restart. Profile zero uses the
+/// 2407/2484 MHz mapping and multiplier 1250; profile one uses dispatcher case
+/// zero's 5000 MHz base and multiplier 1000.
+///
+/// # Safety
+///
+/// The vendor channel state and PLL register bank must be initialized.
+pub unsafe fn program_channel_pll(channel: u16) -> Result<PllDivider, ChannelPllError> {
+    unsafe {
+        let profile = (0x0400_994e as *const u8).read_volatile();
+        let (frequency_khz, multiplier) = match profile {
+            0 => (channel_frequency_khz_2ghz(channel), 1250),
+            1 => ((5000 + u32::from(channel & 0xff) * 5) * 1000, 1000),
+            _ => return Err(ChannelPllError::UnsupportedProfile),
+        };
+        write_u32(0x0400_9974, frequency_khz);
+        let reference = (0x0400_996c as *const u32).read_volatile();
+        let correction = i32::from((0x0400_9988 as *const i16).read_volatile());
+        let correction = i64::from(reference)
+            .wrapping_mul(i64::from(correction))
+            .wrapping_div(1000);
+        let divisor = i64::from(reference)
+            .wrapping_mul(1000)
+            .wrapping_add(correction);
+        if divisor <= 0 || divisor > i64::from(u32::MAX) {
+            return Err(ChannelPllError::InvalidReference);
+        }
+        let cached_channel = (0x0400_9a06 as *const u16).read_volatile();
+        let cache_forced = (0x0400_9a08 as *const u8).read_volatile() != 0;
+        let divider = if cached_channel == channel && !cache_forced {
+            let integer = (0x0400_99f8 as *const u32).read_volatile();
+            let fractional = (0x0400_99fc as *const u32).read_volatile();
+            PllDivider {
+                integer,
+                fractional,
+                register: integer.wrapping_shl(21) | fractional,
+            }
+        } else {
+            let divider = pll_divider(frequency_khz, multiplier, divisor as u32)
+                .ok_or(ChannelPllError::InvalidReference)?;
+            write_u32(0x0400_99f8, divider.integer);
+            write_u32(0x0400_99fc, divider.fractional);
+            write_u16(0x0400_9a06, channel);
+            divider
+        };
+        commit_channel_pll(divider.register, profile, cache_forced);
+        Ok(divider)
+    }
+}
+
+/// Parameter-zero path of annotated `rf_measure_temp_and_vbat`. The two fatal
+/// exits intentionally skip restoration, matching the vendor routine.
+///
+/// # Safety
+///
+/// The vendor DTCM state and RF/PHY register banks must be initialized.
+pub unsafe fn measure_temperature_primary()
+-> Result<TemperatureMeasurement, TemperatureMeasurementError> {
+    unsafe {
+        write_u32(
+            0x0abb_8004,
+            (0x0abb_8004 as *const u32).read_volatile() | 0x800,
+        );
+        let saved_abc0084 = (0x0abc_0084 as *const u32).read_volatile();
+        write_u32(
+            0x0abc_0084,
+            (0x0abc_0098 as *const u32).read_volatile() | 0x0700_0200,
+        );
+        let saved_abc006c = (0x0abc_006c as *const u32).read_volatile();
+        write_u32(0x0abc_006c, (0x0abc_0080 as *const u32).read_volatile());
+        let saved_abc0050 = (0x0abc_0050 as *const u32).read_volatile();
+        write_u32(0x0abc_0050, (0x0abc_0064 as *const u32).read_volatile());
+        let saved_abc0034 = (0x0abc_0034 as *const u32).read_volatile();
+        write_u32(
+            0x0abc_0034,
+            (0x0abc_0048 as *const u32).read_volatile() | 0x101,
+        );
+        let saved_abc0004 = (0x0abc_0004 as *const u32).read_volatile();
+        write_u32(0x0abc_0004, saved_abc0004 | 2);
+        let saved_abb800c = (0x0abb_800c as *const u32).read_volatile();
+        write_u32(0x0abb_800c, 0x0000_e080);
+        delay_units(10);
+        let status = (0x0abb_800c as *const u32).read_volatile();
+        if status & 0x20 != 0 {
+            return Err(TemperatureMeasurementError::HardwareFaultNoRestore);
+        }
+        delay_units(10);
+        let denominator = i32::from((0x0400_9990 as *const i16).read_volatile());
+        if denominator == 0 {
+            return Err(TemperatureMeasurementError::InvalidCalibrationNoRestore);
+        }
+        let raw = (0x0abb_82d8 as *const i32)
+            .read_volatile()
+            .wrapping_mul(0x47);
+        let offset = i32::from((0x0400_9992 as *const i16).read_volatile());
+        let converted = raw
+            .wrapping_sub(offset)
+            .wrapping_mul(1000)
+            .wrapping_div(denominator);
+        let accepted = (converted.wrapping_add(-41_000) as u32) <= 17_900;
+        let value = if accepted { converted } else { 38_000 };
+        if accepted {
+            write_u32(0x0400_9998, converted as u32);
+        }
+        delay_units(1);
+
+        write_u32(0x0abc_0004, saved_abc0004);
+        write_u32(0x0abc_0084, saved_abc0084);
+        write_u32(0x0abc_006c, saved_abc006c);
+        write_u32(0x0abc_0050, saved_abc0050);
+        write_u32(0x0abc_0034, saved_abc0034);
+        write_u32(0x0abb_800c, saved_abb800c);
+        Ok(TemperatureMeasurement { value, accepted })
+    }
+}
+
+/// Live threshold lookup from the profile descriptor table at `0x0400145c`.
+///
+/// # Safety
+///
+/// The vendor SDD-derived descriptor and record pointers must remain valid.
+pub unsafe fn lookup_channel_threshold(channel: u16) -> Result<i16, ChannelPowerError> {
+    unsafe {
+        let profile = usize::from((0x0400_994e as *const u8).read_volatile());
+        if profile > 1 {
+            return Err(ChannelPowerError::InvalidThresholdTable);
+        }
+        let descriptor = 0x0400_145c + profile * 8;
+        let count = usize::from(((descriptor + 1) as *const u8).read_volatile());
+        if count > 64 {
+            return Err(ChannelPowerError::InvalidThresholdTable);
+        }
+        let default = ((descriptor + 2) as *const i16).read_volatile();
+        let records = ((descriptor + 4) as *const u32).read_volatile() as usize;
+        let mut selected = default;
+        for index in 0..count {
+            let record = records + index * 4;
+            let threshold = (record as *const u16).read_volatile();
+            if threshold > channel {
+                break;
+            }
+            selected = ((record + 2) as *const i16).read_volatile();
+        }
+        Ok(selected)
+    }
+}
+
+/// Live translation of `phy_txpower_from_rate_table`.
+///
+/// # Safety
+///
+/// The SDD-derived rate-table pointer in PHY software state must be valid.
+pub unsafe fn channel_tx_power_from_rate_table(
+    channel: u8,
+    second_column: bool,
+) -> Result<i16, ChannelPowerError> {
+    unsafe {
+        let table = (0x0400_99d8 as *const u32).read_volatile() as usize;
+        if table == 0 {
+            return Err(ChannelPowerError::InvalidRateTable);
+        }
+        let count = usize::from(((table + 0x46) as *const u8).read_volatile());
+        if count > 64 {
+            return Err(ChannelPowerError::InvalidRateTable);
+        }
+        let records = table + 0x16;
+        let mut selected = 0_usize;
+        for index in 0..count {
+            let threshold = ((records + index * 3) as *const u8).read_volatile();
+            if channel <= threshold {
+                selected = if index != 0 && channel < threshold {
+                    index - 1
+                } else {
+                    index
+                };
+                break;
+            }
+            selected = index;
+        }
+        let column = if second_column { 1 } else { 2 };
+        let encoded = i32::from(((records + selected * 3 + column) as *const u8).read_volatile());
+        let base = i32::from((0x0400_9a04 as *const i16).read_volatile());
+        Ok(base.wrapping_add(encoded.wrapping_mul(4)) as i16)
+    }
+}
+
+/// Publish threshold and both channel TX-power values to the PHY software
+/// state used by the gain-table path.
+///
+/// # Safety
+///
+/// Both vendor SDD-derived tables and PHY software state must be initialized.
+pub unsafe fn publish_channel_power(channel: u8) -> Result<(i16, i16, i16), ChannelPowerError> {
+    unsafe {
+        let profile = (0x0400_994e as *const u8).read_volatile();
+        let threshold_id = match profile {
+            0 => 0x30,
+            1 => 0x31,
+            _ => return Err(ChannelPowerError::InvalidThresholdTable),
+        };
+        let threshold =
+            crate::configuration::channel_threshold_correction(threshold_id, u16::from(channel))
+                .ok_or(ChannelPowerError::InvalidThresholdTable)?;
+        write_u16(0x0400_9a04, threshold as u16);
+        let first = channel_tx_power_from_rate_table(channel, false)?;
+        let second = channel_tx_power_from_rate_table(channel, true)?;
+        write_u16(0x0400_99d4, first as u16);
+        write_u16(0x0400_99d6, second as u16);
+        Ok((threshold, first, second))
+    }
+}
+
+/// Prepare the profile-specific correction cache used by
+/// `phy_set_channel_full` before its mode-2 calibration call.
+///
+/// # Safety
+///
+/// The vendor channel state and correction bank must be initialized.
+pub unsafe fn prepare_channel_calibration_cache() -> ChannelCalibrationRequirement {
+    unsafe {
+        let profile = (0x0400_994e as *const u8).read_volatile();
+        let validity_address = match profile {
+            0 => 0x0400_9959,
+            1 => 0x0400_9961,
+            _ => return ChannelCalibrationRequirement::UnsupportedProfile,
+        };
+        if (validity_address as *const u8).read_volatile() != 0 {
+            return ChannelCalibrationRequirement::AlreadyValid;
+        }
+        copy_channel_configuration_slot(1);
+        let default_correction = if profile == 0 { 0x0ece_0000 } else { 0 };
+        for index in 0..16_usize {
+            write_u32(0x0abb_8068 + index * 4, default_correction);
+        }
+        ChannelCalibrationRequirement::RunCalibration
+    }
+}
+
+/// Record the channel associated with a newly valid profile cache.
+///
+/// # Safety
+///
+/// The vendor channel state must be initialized.
+pub unsafe fn record_calibrated_channel(channel: u16) {
+    unsafe {
+        match (0x0400_994e as *const u8).read_volatile() {
+            0 if (0x0400_9959 as *const u8).read_volatile() == 1 => write_u16(0x0400_9962, channel),
+            1 if (0x0400_9961 as *const u8).read_volatile() == 1 => write_u16(0x0400_99ce, channel),
+            _ => {}
+        }
+    }
+}
+
+/// Complete normal channel-transition sequence from annotated
+/// `phy_set_channel_full`. Temperature hardware-fault errors intentionally
+/// preserve the vendor's non-restoring fatal state.
+///
+/// # Safety
+///
+/// The caller must exclusively own channel programming and calibration, with
+/// initialized SDD-derived tables and RF/PHY software state.
+unsafe fn program_mode0_receive_band() {
+    unsafe {
+        let bandwidth = (0x0aba_8040 as *const u32).read_volatile();
+        write_u32(0x0aba_8040, bandwidth & !0x0002_0000);
+        let timing = (0x0ab8_0c00 as *const u32).read_volatile();
+        write_u32(
+            0x0ab8_0c00,
+            (timing & 0xfc00_ffff).wrapping_add(0x00b4_0000),
+        );
+        write_u32(0x0400_1fc0, 6);
+
+        let mut control = (0x0abb_8004 as *const u32).read_volatile();
+        control = ((control & !1) | 0x2000_0000) & 0xe000_7fff | 0x800;
+        control = (control | 2) & !4;
+        let profile = (0x0400_994c as *const u8).read_volatile();
+        if (profile == 1 || profile == 2) && control & 2 != 0 {
+            control &= !0x10;
+        }
+        write_u32(0x0abb_8004, control);
+    }
+}
+
+unsafe fn publish_completed_receive_state() {
+    unsafe {
+        // `pac_phy_start_op(1)` enters state 3 unless the dispatcher is already
+        // at terminal state 5. This synchronous path has completed the work
+        // normally advanced by vendor timers, so publish the terminal state
+        // without arming an unavailable scheduler callback.
+        write_u8(0x0400_99a9, 5);
+        write_u8(0x0400_1d30, 1);
+        write_u32(0x0400_1d2c, 5);
+        write_u8(0x0400_1d38, 5);
+        write_u32(0x0400_1d3c, 0);
+        write_u8(0x0400_1d41, 0);
+    }
+}
+
+unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
+    let control = 0x09c0_0600 as *mut u32;
+    unsafe {
+        let value = control.read_volatile();
+        if enabled {
+            control.write_volatile(value | 1);
+            let state = 0x0400_3a6d as *mut u8;
+            state.write_volatile(state.read_volatile() & !1);
+            // Tail of `phy_resume_state4` (`0x2864`). The TX scheduler call is
+            // intentionally omitted until its queues are translated.
+            (0x0400_3a6e as *mut u8).write_volatile(4);
+            true
+        } else {
+            control.write_volatile(value & !1);
+            let mut polls = 0;
+            while control.read_volatile() & (1 << 23) != 0 {
+                if polls >= max_polls {
+                    return false;
+                }
+                polls += 1;
+                core::hint::spin_loop();
+            }
+            let state = 0x0400_3a6d as *mut u8;
+            state.write_volatile(state.read_volatile() | 1);
+            true
+        }
+    }
+}
+
+pub unsafe fn run_channel_transition(
+    channel: u16,
+    calibration_max_polls: u32,
+) -> Result<ChannelTransitionResult, ChannelTransitionError> {
+    if !unsafe { set_packet_receive_enabled(false, calibration_max_polls) } {
+        return Err(ChannelTransitionError::InvalidTiming);
+    }
+    unsafe {
+        program_mode0_receive_band();
+        write_u16(0x0400_9952, channel);
+    }
+    let divider = unsafe { program_channel_pll(channel) }.map_err(ChannelTransitionError::Pll)?;
+
+    let mut calibration_ran = false;
+    if unsafe { (0x0400_995d as *const u8).read_volatile() } != 0 {
+        unsafe { run_iq_calibration(true, calibration_max_polls) }
+            .map_err(ChannelTransitionError::Calibration)?;
+        calibration_ran = true;
+    }
+
+    let timing = unsafe { program_channel_measurement_timing() }
+        .ok_or(ChannelTransitionError::InvalidTiming)?;
+    let temperature =
+        unsafe { measure_temperature_primary() }.map_err(ChannelTransitionError::Temperature)?;
+    unsafe { copy_channel_configuration_slot(0) };
+
+    if unsafe { prepare_channel_calibration_cache() }
+        == ChannelCalibrationRequirement::RunCalibration
+    {
+        unsafe { run_iq_calibration(true, calibration_max_polls) }
+            .map_err(ChannelTransitionError::Calibration)?;
+        unsafe { record_calibrated_channel(channel) };
+        calibration_ran = true;
+    }
+
+    unsafe { set_phy_agc_enabled(true) };
+    let (threshold, first_tx_power, second_tx_power) =
+        unsafe { publish_channel_power(channel as u8) }.map_err(ChannelTransitionError::Power)?;
+    let frequency_offset = unsafe { publish_channel_frequency_offset() };
+    unsafe {
+        publish_completed_receive_state();
+        set_packet_receive_enabled(true, calibration_max_polls);
+    }
+    Ok(ChannelTransitionResult {
+        divider,
+        timing,
+        temperature,
+        calibration_ran,
+        threshold,
+        first_tx_power,
+        second_tx_power,
+        frequency_offset,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PllDivider {
     pub integer: u32,
@@ -868,12 +1383,16 @@ pub struct IqCalibrationReferences {
 pub struct IqCalibrationHardwareResult {
     pub series: IqCalibrationSeries,
     pub references: IqCalibrationReferences,
+    pub secondary: Option<IqCalibrationCoefficient>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IqCalibrationHardwareError {
     BaselineTimeout { gain_index: u32 },
     TargetTimeout { gain_index: u32 },
+    SecondaryBaselineTimeout,
+    SecondaryTargetTimeout,
+    InvalidSecondaryScale,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2554,10 +3073,7 @@ pub fn build_iq_calibration_series(
     }
 }
 
-/// Detached publication half of `0x17ac8 -> 0x179ea`. Vendor ordering is
-/// preserved: all primary coefficients are written before normalized values
-/// and the evolving shift state.
-pub unsafe fn apply_iq_calibration_series(series: &IqCalibrationSeries) {
+pub unsafe fn apply_iq_calibration_primary(series: &IqCalibrationSeries) {
     unsafe {
         for iteration in &series.iterations {
             let address = 0x0abb_8118_u32.wrapping_add(iteration.gain_index.wrapping_mul(4));
@@ -2566,6 +3082,11 @@ pub unsafe fn apply_iq_calibration_series(series: &IqCalibrationSeries) {
                 pack_iq_signed8_pair(iteration.coefficient),
             );
         }
+    }
+}
+
+pub unsafe fn apply_iq_calibration_normalized(series: &IqCalibrationSeries) {
+    unsafe {
         for iteration in &series.iterations {
             if let Some(publication) = iteration.publication {
                 write_u32(
@@ -2578,6 +3099,14 @@ pub unsafe fn apply_iq_calibration_series(series: &IqCalibrationSeries) {
                 );
             }
         }
+    }
+}
+
+/// Detached publication half of `0x17ac8 -> 0x179ea`.
+pub unsafe fn apply_iq_calibration_series(series: &IqCalibrationSeries) {
+    unsafe {
+        apply_iq_calibration_primary(series);
+        apply_iq_calibration_normalized(series);
     }
 }
 
@@ -2673,15 +3202,16 @@ unsafe fn finish_iq_calibration_hardware(
     }
 }
 
-/// Complete primary acquisition/publication branch of annotated
-/// `rf_calibrate_iq_dc` (`0x17c74`, target `0x17c20`). All timeout exits restore
-/// the path, band selector, test tone and calibration-engine gate.
+/// Complete acquisition/publication envelope of annotated `rf_calibrate_iq_dc`
+/// (`0x17c74`, target `0x17c20`). All timeout exits restore the path, band
+/// selector, test tone and calibration-engine gate.
 ///
 /// # Safety
 ///
 /// The caller must exclusively own the RF calibration engine and MAC/PHY
 /// register banks.
-pub unsafe fn run_primary_iq_calibration(
+pub unsafe fn run_iq_calibration(
+    include_secondary: bool,
     max_polls: u32,
 ) -> Result<IqCalibrationHardwareResult, IqCalibrationHardwareError> {
     const EMPTY_SAMPLE: IqCalibrationSample = IqCalibrationSample {
@@ -2739,10 +3269,66 @@ pub unsafe fn run_primary_iq_calibration(
         write_u32(0x0400_9944, references.scale_i as u32);
         write_u32(0x0400_9948, references.scale_q as u32);
         write_u8(profile_base + 0x10, 1);
-        apply_iq_calibration_series(&series);
+    }
+
+    let secondary = if include_secondary {
+        let dac_i = rescale_signed(references.coefficient_i, 6, 8) as u8;
+        let dac_q = rescale_signed(references.coefficient_q, 6, 8) as u8;
+        unsafe { set_calibration_gain(0x20) };
+        let baseline = match unsafe { run_calibration_sample_mode(dac_i, dac_q, 1, max_polls) } {
+            Ok(value) => value,
+            Err(_) => {
+                unsafe { finish_iq_calibration_hardware(snapshot, selected_mode) };
+                return Err(IqCalibrationHardwareError::SecondaryBaselineTimeout);
+            }
+        };
+        let profile = unsafe { (0x0400_994e as *const u8).read_volatile() };
+        let secondary_snapshot = unsafe { begin_iq_calibration_path(1, profile) };
+        let target = match unsafe { run_calibration_sample_mode(dac_i, dac_q, 0, max_polls) } {
+            Ok(value) => value,
+            Err(_) => {
+                unsafe { end_iq_calibration_path(secondary_snapshot) };
+                unsafe { finish_iq_calibration_hardware(snapshot, selected_mode) };
+                return Err(IqCalibrationHardwareError::SecondaryTargetTimeout);
+            }
+        };
+        unsafe { end_iq_calibration_path(secondary_snapshot) };
+        let Some(correction) = secondary_iq_calibration(
+            baseline.i,
+            baseline.q,
+            target.i,
+            target.q,
+            references.scale_i,
+            references.scale_q,
+        ) else {
+            unsafe { finish_iq_calibration_hardware(snapshot, selected_mode) };
+            return Err(IqCalibrationHardwareError::InvalidSecondaryScale);
+        };
+        Some(correction)
+    } else {
+        None
+    };
+
+    unsafe {
+        apply_iq_calibration_primary(&series);
+        if let Some(correction) = secondary {
+            write_u16(0x0abb_8198, pack_iq_signed8_pair(correction));
+            write_u16(0x0abb_819c, 0);
+        }
+        apply_iq_calibration_normalized(&series);
         finish_iq_calibration_hardware(snapshot, selected_mode);
     }
-    Ok(IqCalibrationHardwareResult { series, references })
+    Ok(IqCalibrationHardwareResult {
+        series,
+        references,
+        secondary,
+    })
+}
+
+pub unsafe fn run_primary_iq_calibration(
+    max_polls: u32,
+) -> Result<IqCalibrationHardwareResult, IqCalibrationHardwareError> {
+    unsafe { run_iq_calibration(false, max_polls) }
 }
 
 pub fn derive_remap_timing(remap: u32) -> (u16, u16) {

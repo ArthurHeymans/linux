@@ -1193,6 +1193,79 @@ The module-unload debugfs crash was also identified: the wiphy debugfs parent
 was removed before the driver's child directory. The driver now removes its
 child directory before `ieee80211_unregister_hw()`.
 
+## 2026-08-08 Rust firmware hardware validation
+
+The current ordered downloader and Rust main image were deployed through a
+normal MMC unbind/bind cycle without using debugfs halt:
+
+```text
+boot SHA256 81acc379b2c5041305e9f270d67928ecd28958a49de873f7101a041eb9349788
+main SHA256 d6822114ed1ac3bf0c304fd5016292a24d20988098907250b896307783f3df4a
+main size   6804 bytes
+```
+
+Observed on `6.18.0-xr819-test+`:
+
+- firmware download and WSM startup completed;
+- Linux registered `phy5` and `wlan0`;
+- `ip link set wlan0 up` succeeded after implementing retained TX-queue, EDCA,
+  U-APSD, RCPI/RSSI, RX-filter, and template-frame requests;
+- `iw dev wlan0 scan` completed successfully in about 46 ms with an empty result
+  set;
+- BH status remained alive, WSM returned idle, and no firmware buffers remained
+  outstanding.
+
+A later image populated the minimum vendor calibration state directly from the
+retained SDD and attached the first retained scan channel to the live transition:
+
+```text
+main SHA256 5eed69dad2e8e14b40dedf7722a2fb1a5295a9c538ce74c855149ac2f1f7e60f
+main size   11528 bytes
+```
+
+The runtime now publishes the SDD reference frequency, E3/E4 and 0x48/0x49
+profiles, the 0xec three-byte channel table, its runtime pointer/count, and the
+0x46 temperature fallback into the vendor DTCM layout. An explicit scan then
+successfully executed PLL tuning, temperature acquisition, IQ/DC calibration,
+AGC and power-state publication for its first channel before returning the
+synthetic empty completion. Four consecutive scans completed in roughly
+37–67 ms; BH remained alive, WSM returned idle, and no buffers remained in use.
+No physical reset or debugfs halt was required.
+
+A subsequent experimental image added multi-channel iteration, a polling
+translation of the sequential packet-DMA FIFO consumer, beacon/probe-response
+filtering, and CW1200 receive-indication encoding. Hardware validation showed
+that channel transitions still do not enter the vendor PHY receive operation:
+postmortem register state was
+
+```text
+0x09c00600 = 0x01060418  (RX enable bit 0 clear)
+0x09c00604 = 0x00000000  (packet-DMA producer never advanced)
+0x09c00608 = 0x00000000  (consumer remained zero)
+```
+
+Thus the next required translation is the `phy_do_channel_switch` tail around
+`pac_phy_start_op(1)` and its `phy_state_cmd_dispatch` state effects, not the WSM
+receive wire format. The experimental FIFO path produced no host RX indications.
+The postmortem debugfs halt wedged SDIO teardown as expected and the target then
+required a physical power cycle.
+
+While the target awaited reset, the Rust path was extended with the exact static
+register effects of vendor `mac_program_base_regs` (`0x10a2c`) and
+`mac_program_timing_regs` (`0x10982`), SDD-provided station-address programming,
+mode-zero `phy_band_cmd_dispatch(0)`/bandwidth setup, the `phy_resume_state4`
+software publication, and vendor `fw_read_timer()` dwell arithmetic using
+`channel_time * 0x400`. These changes build and pass host tests but remain hardware-unvalidated.
+
+The temporary 384-byte copy path was then replaced with the vendor ownership
+model. The receive header is written at `frame - 16` inside the RX FIFO slot,
+the HIF descriptor points directly at that packet-memory address, and the FIFO
+slot is released only when the corresponding HIF TX descriptor is reclaimed.
+Only one FIFO-backed transfer is outstanding at a time, preserving sequential
+release without implementing the vendor's general reference-count machinery.
+This raises the supported frame payload from 368 bytes to 1600 bytes while
+remaining within the advertised 1632-byte HIF buffer size.
+
 ## Reverse-engineering priorities
 
 1. Trace `FUN_00016eec` to the exact WSM START/JOIN entry points and assign its
