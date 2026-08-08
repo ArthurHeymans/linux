@@ -457,24 +457,34 @@ pub fn encode_status_response(id: u16, status: u32, output: &mut [u8]) -> Result
 /// Confirmation layout consumed by mainline `wsm_read_mib_confirm`: status,
 /// echoed MIB ID, returned byte count, then data. Unsupported reads use a zero
 /// byte count but retain the complete fixed prefix to avoid parser underflow.
-pub fn encode_read_mib_response(
+pub fn encode_read_mib_data_response(
     status: u32,
     mib_id: u16,
+    data: &[u8],
     output: &mut [u8],
 ) -> Result<usize, Error> {
-    const LEN: usize = HEADER_LEN + 8;
-    if output.len() < LEN {
+    let len = HEADER_LEN + 8 + data.len();
+    if data.len() > u16::MAX as usize || output.len() < len {
         return Err(Error::OutputTooSmall);
     }
     Header {
-        len: LEN as u16,
+        len: len as u16,
         id: READ_MIB_RESP_ID,
     }
     .encode(output)?;
     write_u32(output, HEADER_LEN, status);
     write_u16(output, HEADER_LEN + 4, mib_id);
-    write_u16(output, HEADER_LEN + 6, 0);
-    Ok(LEN)
+    write_u16(output, HEADER_LEN + 6, data.len() as u16);
+    output[HEADER_LEN + 8..len].copy_from_slice(data);
+    Ok(len)
+}
+
+pub fn encode_read_mib_response(
+    status: u32,
+    mib_id: u16,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    encode_read_mib_data_response(status, mib_id, &[], output)
 }
 
 /// Twelve-byte payload required by mainline `wsm_join_confirm`, even when the

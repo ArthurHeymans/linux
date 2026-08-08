@@ -133,7 +133,16 @@ Implemented:
   headroom and defer slot recycling until HIF TX descriptor reclamation, so the
   full advertised 1600-byte frame size is supported instead of the temporary
   368-byte copied-frame limit. The newest MAC/RX activation and zero-copy
-  changes remain hardware-unvalidated pending a target reset.
+  changes remain hardware-unvalidated pending a target reset;
+- a cooperative PHY transition scheduler matching the vendor's two-phase
+  `phy_cal_run_step_timed` flow: hardware work enters state 1, waits 120 vendor
+  timer ticks without blocking the HIF loop, then publishes terminal state 2
+  and enables RX before channel dwell begins;
+- translated wake restoration for the represented MAC state: static MAC/RX
+  register banks, packet-DMA pipe records, producer/consumer synchronization,
+  TBTT and pipe descriptor images, bounded controller readiness, LMC pool reset,
+  PAS fallback/rate tables, IFS timing, ACK/CTS control descriptors, mode/BSSID
+  restoration, and register-context save ordering.
 
 Not yet implemented:
 

@@ -10,8 +10,8 @@ use xr819_firmware::phy::{initialize_mac_core_mode0, initialize_mac_software_sta
 use xr819_firmware::platform::{
     initialize_runtime_state, prepare_dma_and_clocks, prepare_high_platform_support,
     prepare_mac_receive_hardware, prepare_main_control, prepare_memory_and_interrupts,
-    prepare_packet_dma, program_station_address, register_post_activation_interrupts,
-    try_activate_hif, wait_for_host_download_completion,
+    prepare_packet_dma, program_station_address, register_packet_dma_interrupts,
+    register_post_activation_interrupts, try_activate_hif, wait_for_host_download_completion,
 };
 use xr819_firmware::radio;
 use xr819_firmware::scan;
@@ -19,8 +19,8 @@ use xr819_firmware::wsm::{
     CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID, EdcaParameters, JOIN_REQ_ID,
     READ_MIB_REQ_ID, START_SCAN_REQ_ID, STATUS_FAILURE, StartScanRequest, StartupIndication,
     TX_QUEUE_PARAMS_REQ_ID, TxPowerRange, TxQueueParameters, WRITE_MIB_REQ_ID, WriteMibRequest,
-    encode_configuration_response, encode_join_response, encode_read_mib_response,
-    encode_scan_complete_indication, encode_status_response,
+    encode_configuration_response, encode_join_response, encode_read_mib_data_response,
+    encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
 };
 
 unsafe extern "C" {
@@ -114,6 +114,7 @@ extern "C" fn rust_main() -> ! {
     prepare_packet_dma();
     prepare_mac_receive_hardware();
     unsafe { radio::initialize() };
+    register_packet_dma_interrupts();
     debug_stop(8, 0x5354_4708);
 
     // Vendor 0x16d24 performs the complete 0x16ac6 software and hardware
@@ -150,125 +151,170 @@ extern "C" fn rust_main() -> ! {
         unsafe { transport.publish(length as u16) };
     }
 
+    let mut pending_scan_completion: Option<scan::ScanCompletion> = None;
     loop {
         let _ = transport.service_interrupt();
 
-        // Service firmware-owned work before accepting another host command.
-        // This preserves response-before-indication ordering without allowing a
-        // queued follow-up command to overtake scan completion.
-        let scan_completion = scan::service();
+        // Retain completion until a HIF descriptor is available. This prevents
+        // a full ring from overwriting an unreclaimed zero-copy RX token.
+        if pending_scan_completion.is_none() {
+            pending_scan_completion = scan::service();
+        }
 
-        if let Some(channel) = scan::active_channel() {
+        if let (Some(if_id), Some(channel)) = (scan::active_interface(), scan::active_channel()) {
             if transport.output_available() {
-                if let Some(indication) = unsafe { radio::poll_scan_indication(channel) } {
+                if let Some(indication) = unsafe { radio::poll_scan_indication(if_id, channel) } {
                     unsafe { transport.publish_radio(indication) };
                 }
             }
         }
 
-        if let Some(completion) = scan_completion {
+        if let Some(completion) = pending_scan_completion
+            && transport.output_available()
+        {
             let output = unsafe { transport.output_buffer() };
             if let Ok(length) = encode_scan_complete_indication(
                 completion.status,
                 completion.psm,
                 completion.num_channels,
-                completion.vendor_field,
+                completion.vendor_field | radio::diagnostic_word(),
                 output,
             ) {
+                pending_scan_completion = None;
                 unsafe { transport.publish(length as u16) };
             }
         }
 
-        if let Some(request) = transport.poll_request() {
-            let output = unsafe { transport.output_buffer() };
-            let response_length = if request.if_id > 2 {
-                encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
-            } else if request.id == CONFIGURATION_REQ_ID {
-                let configured = ConfigurationRequest::parse(request.payload).ok().and_then(
-                    |configuration_request| {
-                        configuration::retain(&configuration_request).ok()?;
-                        Some((
-                            configuration::snapshot()?.station_id,
-                            configuration::tx_power_ranges()?,
-                        ))
-                    },
-                );
-                let (station_id, tx_power_ranges) = configured.unwrap_or((
-                    [0; 6],
-                    [
-                        TxPowerRange {
-                            min_power_level: -160,
-                            max_power_level: 200,
-                            stepping: 0,
+        if transport.output_available() {
+            if let Some(request) = transport.poll_request() {
+                let output = unsafe { transport.output_buffer() };
+                let response_length = if request.if_id > 2 {
+                    encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
+                } else if request.id == CONFIGURATION_REQ_ID {
+                    let configured = ConfigurationRequest::parse(request.payload).ok().and_then(
+                        |configuration_request| {
+                            configuration::retain(&configuration_request).ok()?;
+                            Some((
+                                configuration::snapshot()?.station_id,
+                                configuration::tx_power_ranges()?,
+                            ))
                         },
-                        TxPowerRange {
-                            min_power_level: -160,
-                            max_power_level: 200,
-                            stepping: 0,
+                    );
+                    let (station_id, tx_power_ranges) = configured.unwrap_or((
+                        [0; 6],
+                        [
+                            TxPowerRange {
+                                min_power_level: -160,
+                                max_power_level: 200,
+                                stepping: 0,
+                            },
+                            TxPowerRange {
+                                min_power_level: -160,
+                                max_power_level: 200,
+                                stepping: 0,
+                            },
+                        ],
+                    ));
+                    program_station_address(station_id);
+                    encode_configuration_response(station_id, tx_power_ranges, output)
+                } else if request.id == START_SCAN_REQ_ID {
+                    let status = match StartScanRequest::parse(request.payload) {
+                        Ok(scan_request) => match scan::begin(&scan_request, request.if_id) {
+                            Ok(()) => 0,
+                            Err(scan::ScanError::Busy) => 4,
+                            Err(_) => 2,
                         },
-                    ],
-                ));
-                program_station_address(station_id);
-                encode_configuration_response(station_id, tx_power_ranges, output)
-            } else if request.id == START_SCAN_REQ_ID {
-                let status = match StartScanRequest::parse(request.payload) {
-                    Ok(request) => match scan::begin(&request) {
-                        Ok(()) => 0,
-                        Err(scan::ScanError::Busy) => 4,
                         Err(_) => 2,
-                    },
-                    Err(_) => 2,
-                };
-                encode_status_response(request.id | 0x0400, status, output)
-            } else if request.id == TX_QUEUE_PARAMS_REQ_ID {
-                let status = match TxQueueParameters::parse(request.payload) {
-                    Ok(parameters) => {
-                        configuration::retain_tx_queue(parameters);
-                        0
+                    };
+                    encode_status_response(request.id | 0x0400, status, output)
+                } else if request.id == TX_QUEUE_PARAMS_REQ_ID {
+                    let status = match TxQueueParameters::parse(request.payload) {
+                        Ok(parameters) => {
+                            configuration::retain_tx_queue(parameters);
+                            0
+                        }
+                        Err(_) => 2,
+                    };
+                    encode_status_response(request.id | 0x0400, status, output)
+                } else if request.id == EDCA_PARAMS_REQ_ID {
+                    let status = match EdcaParameters::parse(request.payload) {
+                        Ok(parameters) => {
+                            configuration::retain_edca(parameters);
+                            0
+                        }
+                        Err(_) => 2,
+                    };
+                    encode_status_response(request.id | 0x0400, status, output)
+                } else if request.id == WRITE_MIB_REQ_ID {
+                    let status = match WriteMibRequest::parse(request.payload) {
+                        Ok(request)
+                            if configuration::retain_interface_mib(
+                                request.mib_id,
+                                request.data,
+                            ) =>
+                        {
+                            0
+                        }
+                        _ => STATUS_FAILURE,
+                    };
+                    encode_status_response(request.id | 0x0400, status, output)
+                } else if request.id == READ_MIB_REQ_ID {
+                    let mib_id = request
+                        .payload
+                        .get(..2)
+                        .map(|value| u16::from_le_bytes([value[0], value[1]]))
+                        .unwrap_or(0);
+                    if mib_id == 0x100c {
+                        let diagnostics = radio::diagnostics();
+                        let (scan_channels, scan_max_time) = scan::diagnostic_plan();
+                        let (dwell_arm, dwell_deadline, dwell_now, dwell_waits) =
+                            scan::diagnostic_dwell();
+                        let (scan_status, scan_error) = scan::diagnostic_error();
+                        let values = [
+                            diagnostics.producer_changes,
+                            diagnostics.bad_magic,
+                            diagnostics.valid_slots,
+                            diagnostics.indications,
+                            diagnostics.malformed_slots,
+                            diagnostics.filtered_frames,
+                            diagnostics.oversized_frames,
+                            diagnostics.released_slots,
+                            diagnostics.last_producer,
+                            scan::elapsed_ticks(),
+                            u32::from(scan_channels),
+                            scan_max_time,
+                            dwell_arm,
+                            dwell_deadline,
+                            dwell_now,
+                            dwell_waits,
+                            scan_status,
+                            scan_error,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ];
+                        let mut data = [0_u8; 88];
+                        for (index, value) in values.into_iter().enumerate() {
+                            data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                        }
+                        encode_read_mib_data_response(0, mib_id, &data, output)
+                    } else {
+                        encode_read_mib_response(STATUS_FAILURE, mib_id, output)
                     }
-                    Err(_) => 2,
+                } else if request.id == JOIN_REQ_ID {
+                    // `wsm_join_confirm` has a 12-byte payload. Supplying the full
+                    // shape prevents a BH underflow even though JOIN is detached.
+                    encode_join_response(STATUS_FAILURE, -160, 200, output)
+                } else {
+                    // Do not report success for commands whose state effects are
+                    // not implemented. A complete status word lets cw1200 fail the
+                    // command cleanly instead of proceeding on false assumptions.
+                    encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
                 };
-                encode_status_response(request.id | 0x0400, status, output)
-            } else if request.id == EDCA_PARAMS_REQ_ID {
-                let status = match EdcaParameters::parse(request.payload) {
-                    Ok(parameters) => {
-                        configuration::retain_edca(parameters);
-                        0
-                    }
-                    Err(_) => 2,
-                };
-                encode_status_response(request.id | 0x0400, status, output)
-            } else if request.id == WRITE_MIB_REQ_ID {
-                let status = match WriteMibRequest::parse(request.payload) {
-                    Ok(request)
-                        if configuration::retain_interface_mib(request.mib_id, request.data) =>
-                    {
-                        0
-                    }
-                    _ => STATUS_FAILURE,
-                };
-                encode_status_response(request.id | 0x0400, status, output)
-            } else if request.id == READ_MIB_REQ_ID {
-                // Echo the ID as required by `wsm_read_mib_confirm`, but reject
-                // cleanly until individual MIB storage and side effects exist.
-                let mib_id = request
-                    .payload
-                    .get(..2)
-                    .map(|value| u16::from_le_bytes([value[0], value[1]]))
-                    .unwrap_or(0);
-                encode_read_mib_response(STATUS_FAILURE, mib_id, output)
-            } else if request.id == JOIN_REQ_ID {
-                // `wsm_join_confirm` has a 12-byte payload. Supplying the full
-                // shape prevents a BH underflow even though JOIN is detached.
-                encode_join_response(STATUS_FAILURE, -160, 200, output)
-            } else {
-                // Do not report success for commands whose state effects are
-                // not implemented. A complete status word lets cw1200 fail the
-                // command cleanly instead of proceeding on false assumptions.
-                encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
-            };
-            if let Ok(length) = response_length {
-                unsafe { transport.publish(length as u16) };
+                if let Ok(length) = response_length {
+                    unsafe { transport.publish(length as u16) };
+                }
             }
         }
         core::hint::spin_loop();

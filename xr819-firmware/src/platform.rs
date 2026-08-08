@@ -183,6 +183,12 @@ extern "C" fn scheduler_event_irq() {
     events.set(events.get() | (1 << 27));
 }
 
+/// Exact vendor IRQ 26 callback at `0x00007e3c`.
+extern "C" fn packet_dma_irq26() {
+    let status = register32(0x09c0_0e34);
+    status.set(status.get() & 0x1f00_0003);
+}
+
 /// Literal side effects of vendor `0x00016148`: install the callback in the
 /// reverse-ordered 32-entry table and enable the interrupt source.
 fn register_interrupt_source_with(irq: u32, callback: extern "C" fn()) {
@@ -458,6 +464,16 @@ pub fn register_post_activation_interrupts() {
     register_interrupt_source(21);
 }
 
+/// Register translated sources from the tail of vendor `fw_subsystem_init`
+/// after packet-DMA and MAC/RX setup is complete.
+pub fn register_packet_dma_interrupts() {
+    register_interrupt_source_with(26, packet_dma_irq26);
+    // Vendor IRQ 27 calls `event_send_error_0x34`. Do not enable it with a
+    // no-op callback: an uncleared level source could livelock once CPU IRQ
+    // delivery is unmasked. Register it only after the event allocator and
+    // source-specific acknowledgement are translated.
+}
+
 pub fn prepare_mac_receive_hardware() {
     let control = 0x09c0_0040;
     for (offset, value) in [
@@ -551,6 +567,12 @@ pub fn prepare_mac_receive_hardware() {
 }
 
 pub fn program_station_address(address: [u8; 6]) {
+    for (index, value) in address.into_iter().enumerate() {
+        unsafe {
+            (0x0400_3acc_usize.wrapping_add(index) as *mut u8).write_volatile(value);
+            (0x0400_3ad2_usize.wrapping_add(index) as *mut u8).write_volatile(value);
+        }
+    }
     let low = u32::from_le_bytes([address[0], address[1], address[2], address[3]]);
     let high = u32::from(u16::from_le_bytes([address[4], address[5]]));
     register32(0x09c0_0030).set(low);

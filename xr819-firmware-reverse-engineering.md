@@ -1264,7 +1264,27 @@ slot is released only when the corresponding HIF TX descriptor is reclaimed.
 Only one FIFO-backed transfer is outstanding at a time, preserving sequential
 release without implementing the vendor's general reference-count machinery.
 This raises the supported frame payload from 368 bytes to 1600 bytes while
-remaining within the advertised 1632-byte HIF buffer size.
+remaining within the advertised 1632-byte HIF buffer size. Descriptor ownership
+is forced into bit 0 even for odd-length 802.11 frames, while the DMA length is
+rounded upward. The retained scan interface ID is also stamped into XR819 WSM
+ID bits 6–7 instead of assuming interface zero.
+
+The scan channel transition now uses an explicit cooperative scheduler matching
+`phy_wake_sequence` and `phy_cal_run_step_timed`: the bounded hardware phase
+publishes operation state 1, the main HIF loop waits 120 corrected vendor timer
+ticks, and a later service call publishes operation state 2, terminal PHY state
+5, and RX state 4 before beginning dwell. This intentionally does not use Rust
+`async`: there is no allocator, executor, waker, or interrupt-safe wake queue,
+and the vendor ABI is represented more faithfully by a fixed state structure.
+The completion path now consumes wake-context bytes `0x04001ade` and
+`0x04001add` in vendor order. The translated wake path restores the static
+MAC/RX register banks, packet-DMA pipe state, live FIFO producer/consumer,
+packet-RAM descriptor images, bounded controller readiness, LMC pool, PAS rate
+entries, IFS timing, ACK/CTS control descriptors, configured mode/BSSID state,
+and register-context snapshot. Normal foreground scans leave both gates zero;
+the larger restoration executes only when later power-management state requests
+it. Associated response-descriptor and statistics behavior remains dormant
+until JOIN/START create the corresponding vendor VIF state.
 
 ## Reverse-engineering priorities
 

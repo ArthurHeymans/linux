@@ -7,11 +7,10 @@
 use core::cell::UnsafeCell;
 
 use crate::configuration::{self, Mode0ChannelCalibration};
-#[cfg(target_arch = "arm")]
-use crate::phy::run_channel_transition;
 use crate::phy::{
-    ChannelProgramRequestWire, ChannelTunePlan, PllDivider, build_scan_channel_program_request,
-    channel_control_word, channel_frequency_khz_2ghz, channel_tune_plan, pll_divider,
+    ChannelProgramRequestWire, ChannelTransitionScheduler, ChannelTunePlan, PllDivider,
+    build_scan_channel_program_request, channel_control_word, channel_frequency_khz_2ghz,
+    channel_tune_plan, pll_divider,
 };
 use crate::wsm::{ScanChannel, StartScanRequest};
 
@@ -23,6 +22,27 @@ pub const MAX_SSID_LEN: usize = 32;
 #[cfg(any(target_arch = "arm", test))]
 fn deadline_reached(now: u32, deadline: u32) -> bool {
     now.wrapping_sub(deadline) as i32 >= 0
+}
+
+fn transition_error_code(error: crate::phy::ChannelTransitionError) -> u32 {
+    match error {
+        crate::phy::ChannelTransitionError::Pll(_) => 1,
+        crate::phy::ChannelTransitionError::InvalidTiming => 2,
+        crate::phy::ChannelTransitionError::Temperature(_) => 3,
+        crate::phy::ChannelTransitionError::Calibration(error) => match error {
+            crate::phy::IqCalibrationHardwareError::BaselineTimeout { gain_index } => {
+                0x400 + gain_index
+            }
+            crate::phy::IqCalibrationHardwareError::TargetTimeout { gain_index } => {
+                0x500 + gain_index
+            }
+            crate::phy::IqCalibrationHardwareError::SecondaryBaselineTimeout => 0x600,
+            crate::phy::IqCalibrationHardwareError::SecondaryTargetTimeout => 0x601,
+            crate::phy::IqCalibrationHardwareError::InvalidSecondaryScale => 0x602,
+        },
+        crate::phy::ChannelTransitionError::Power(_) => 5,
+        crate::phy::ChannelTransitionError::MacWake(_) => 6,
+    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -75,6 +95,15 @@ struct ScanStorage {
     hardware_status: u32,
     current_channel_index: u8,
     dwell_deadline: u32,
+    transition: ChannelTransitionScheduler,
+    started_at: u32,
+    elapsed_ticks: u32,
+    dwell_arm_now: u32,
+    dwell_armed_deadline: u32,
+    dwell_last_now: u32,
+    dwell_waits: u32,
+    hardware_error_code: u32,
+    if_id: u8,
     band: u8,
     scan_type: u8,
     flags: u8,
@@ -96,6 +125,15 @@ impl ScanStorage {
             hardware_status: 0,
             current_channel_index: 0,
             dwell_deadline: 0,
+            transition: ChannelTransitionScheduler::new(),
+            started_at: 0,
+            elapsed_ticks: 0,
+            dwell_arm_now: 0,
+            dwell_armed_deadline: 0,
+            dwell_last_now: 0,
+            dwell_waits: 0,
+            hardware_error_code: 0,
+            if_id: 0,
             band: 0,
             scan_type: 0,
             flags: 0,
@@ -137,9 +175,12 @@ fn set_vendor_scan_active(active: bool) {
 #[cfg(not(target_arch = "arm"))]
 fn set_vendor_scan_active(_active: bool) {}
 
-pub fn begin(request: &StartScanRequest<'_>) -> Result<(), ScanError> {
+pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError> {
     let num_channels = usize::from(request.num_channels);
     let num_ssids = usize::from(request.num_ssids);
+    if if_id > 2 {
+        return Err(ScanError::InvalidRecord);
+    }
     if num_channels > VENDOR_MAX_SCAN_CHANNELS {
         return Err(ScanError::TooManyChannels);
     }
@@ -166,6 +207,7 @@ pub fn begin(request: &StartScanRequest<'_>) -> Result<(), ScanError> {
         }
     }
 
+    storage.if_id = if_id;
     storage.band = request.band;
     storage.scan_type = request.scan_type;
     storage.flags = request.flags;
@@ -192,6 +234,17 @@ pub fn begin(request: &StartScanRequest<'_>) -> Result<(), ScanError> {
     storage.hardware_status = 0;
     storage.current_channel_index = 0;
     storage.dwell_deadline = 0;
+    storage.transition = ChannelTransitionScheduler::new();
+    #[cfg(target_arch = "arm")]
+    {
+        storage.started_at = vendor_timer();
+    }
+    storage.elapsed_ticks = 0;
+    storage.dwell_arm_now = 0;
+    storage.dwell_armed_deadline = 0;
+    storage.dwell_last_now = 0;
+    storage.dwell_waits = 0;
+    storage.hardware_error_code = 0;
     storage.active = true;
     set_vendor_scan_active(true);
     Ok(())
@@ -204,28 +257,50 @@ pub fn service() -> Option<ScanCompletion> {
         return None;
     }
 
+    #[cfg(target_arch = "arm")]
+    if storage.hardware_status == 0 && !storage.transition.is_idle() {
+        let now = vendor_timer();
+        match unsafe { storage.transition.service(now) } {
+            Ok(Some(result)) => {
+                let channel = storage.channels[usize::from(storage.current_channel_index)];
+                // Vendor scan deadlines use `channel_time * 0x400` against
+                // `fw_read_timer()` (`0xe6b8`).
+                storage.dwell_deadline =
+                    now.wrapping_add(channel.max_channel_time.saturating_mul(0x400));
+                storage.dwell_arm_now = now;
+                storage.dwell_armed_deadline = storage.dwell_deadline;
+                unsafe {
+                    (0x0900_ff98 as *mut u32).write_volatile(0x5455_4e4f);
+                    (0x0900_ff9c as *mut u32).write_volatile(result.divider.register);
+                }
+            }
+            Ok(None) => return None,
+            Err(error) => {
+                storage.hardware_error_code = transition_error_code(error);
+                storage.hardware_status = 1;
+                unsafe {
+                    (0x0900_ff98 as *mut u32).write_volatile(0x5741_4b45);
+                    (0x0900_ff9c as *mut u32).write_volatile(storage.current_channel_index.into());
+                }
+            }
+        }
+    }
+
     if storage.hardware_status == 0 && storage.hardware_tune_pending {
         storage.hardware_tune_pending = false;
         let index = usize::from(storage.current_channel_index);
         let _channel = storage.channels[index];
         #[cfg(target_arch = "arm")]
-        match unsafe { run_channel_transition(_channel.number, 100_000) } {
-            Ok(result) => unsafe {
-                let now = vendor_timer();
-                // Vendor scan deadlines use `channel_time * 0x400` against
-                // `fw_read_timer()` (`0xe6b8`). The additive timer correction
-                // at 0x0400143c cancels when comparing elapsed time.
-                storage.dwell_deadline =
-                    now.wrapping_add(_channel.max_channel_time.saturating_mul(0x400));
-                (0x0900_ff98 as *mut u32).write_volatile(0x5455_4e4f);
-                (0x0900_ff9c as *mut u32).write_volatile(result.divider.register);
-            },
-            Err(_) => {
+        {
+            if let Err(error) = unsafe { storage.transition.start(_channel.number, 100_000) } {
+                storage.hardware_error_code = transition_error_code(error);
                 storage.hardware_status = 1;
                 unsafe {
                     (0x0900_ff98 as *mut u32).write_volatile(0x5455_4e45);
                     (0x0900_ff9c as *mut u32).write_volatile(_channel.number.into());
                 }
+            } else {
+                storage.transition.arm_settle(vendor_timer());
             }
         }
         #[cfg(not(target_arch = "arm"))]
@@ -239,7 +314,9 @@ pub fn service() -> Option<ScanCompletion> {
         #[cfg(target_arch = "arm")]
         {
             let now = vendor_timer();
+            storage.dwell_last_now = now;
             if !deadline_reached(now, storage.dwell_deadline) {
+                storage.dwell_waits = storage.dwell_waits.wrapping_add(1);
                 return None;
             }
         }
@@ -259,6 +336,10 @@ pub fn service() -> Option<ScanCompletion> {
     }
 
     storage.active = false;
+    #[cfg(target_arch = "arm")]
+    {
+        storage.elapsed_ticks = vendor_timer().wrapping_sub(storage.started_at);
+    }
     set_vendor_scan_active(false);
     Some(ScanCompletion {
         status: storage.hardware_status,
@@ -268,11 +349,47 @@ pub fn service() -> Option<ScanCompletion> {
     })
 }
 
+pub fn elapsed_ticks() -> u32 {
+    let storage = unsafe { &*SCAN.0.get() };
+    storage.elapsed_ticks
+}
+
+pub fn diagnostic_plan() -> (u8, u32) {
+    let storage = unsafe { &*SCAN.0.get() };
+    let max_time = if storage.num_channels == 0 {
+        0
+    } else {
+        storage.channels[0].max_channel_time
+    };
+    (storage.num_channels, max_time)
+}
+
+pub fn diagnostic_error() -> (u32, u32) {
+    let storage = unsafe { &*SCAN.0.get() };
+    (storage.hardware_status, storage.hardware_error_code)
+}
+
+pub fn diagnostic_dwell() -> (u32, u32, u32, u32) {
+    let storage = unsafe { &*SCAN.0.get() };
+    (
+        storage.dwell_arm_now,
+        storage.dwell_armed_deadline,
+        storage.dwell_last_now,
+        storage.dwell_waits,
+    )
+}
+
+pub fn active_interface() -> Option<u8> {
+    let storage = unsafe { &*SCAN.0.get() };
+    storage.active.then_some(storage.if_id)
+}
+
 pub fn active_channel() -> Option<u16> {
     let storage = unsafe { &*SCAN.0.get() };
     (storage.active
         && storage.hardware_status == 0
         && !storage.hardware_tune_pending
+        && storage.transition.is_idle()
         && storage.current_channel_index < storage.num_channels)
         .then_some(storage.channels[usize::from(storage.current_channel_index)].number)
 }
@@ -335,7 +452,8 @@ mod tests {
         payload[36..40].copy_from_slice(&40_u32.to_le_bytes());
         let request = StartScanRequest::parse(&payload).unwrap();
 
-        begin(&request).unwrap();
+        begin(&request, 1).unwrap();
+        assert_eq!(active_interface(), Some(1));
         assert_eq!(channel(0).unwrap().number, 6);
         assert_eq!(channel_control(0), Some(0x0117));
         assert_eq!(channel_program_request(0).unwrap().control.get(), 0x0117);
@@ -366,7 +484,7 @@ mod tests {
 
         payload[20..24].copy_from_slice(&0_u32.to_le_bytes());
         let request = StartScanRequest::parse(&payload).unwrap();
-        assert_eq!(begin(&request), Err(ScanError::InvalidChannelTiming));
+        assert_eq!(begin(&request, 1), Err(ScanError::InvalidChannelTiming));
     }
 
     #[test]

@@ -56,6 +56,19 @@ pub fn diagnostics() -> ReceiveDiagnostics {
     unsafe { *DIAGNOSTICS.0.get() }
 }
 
+/// Compact scan-completion telemetry: producer changes, valid slots,
+/// indications, and malformed/bad-magic flags in four nibbles.
+pub fn diagnostic_word() -> u16 {
+    let value = diagnostics();
+    let errors = u16::from(value.malformed_slots != 0)
+        | (u16::from(value.bad_magic != 0) << 1)
+        | (u16::from(value.oversized_frames != 0) << 2);
+    (value.producer_changes.min(15) as u16)
+        | ((value.valid_slots.min(15) as u16) << 4)
+        | ((value.indications.min(15) as u16) << 8)
+        | (errors << 12)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReleaseToken {
     slot: u32,
@@ -75,14 +88,32 @@ pub struct PendingIndication {
 /// Packet DMA must already be initialized and must not have an active consumer.
 pub unsafe fn initialize() {
     unsafe {
-        CONSUMER_OFFSET = 0;
-        HOST_TRANSFER_OUTSTANDING = false;
-        ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(0);
-        ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(0);
         ((VENDOR_FIFO_STATE + 0x18) as *mut u32).write_volatile(0);
-        DMA_CONSUMER.write_volatile(0);
+        synchronize_after_wake(0);
         *DIAGNOSTICS.0.get() = ReceiveDiagnostics::default();
     }
+}
+
+/// Synchronizes the polling consumer with the live packet-DMA producer like
+/// vendor `sync_regs_10` (`0x10024`).
+///
+/// # Safety
+/// No FIFO-backed HIF transfer may remain outstanding across the wake reset.
+pub unsafe fn synchronize_after_wake(producer: u32) {
+    let producer = producer & FIFO_MASK;
+    unsafe {
+        CONSUMER_OFFSET = producer;
+        HOST_TRANSFER_OUTSTANDING = false;
+        ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(producer);
+        ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(producer);
+        DMA_CONSUMER.write_volatile(producer);
+        let control = (0x09c0_0600 as *mut u32).read_volatile();
+        (0x09c0_0600 as *mut u32).write_volatile(control);
+    }
+}
+
+fn receive_indication_id(if_id: u8) -> u16 {
+    0x0804 | (u16::from(if_id.min(2)) << 6)
 }
 
 fn scan_frame_flags(frame_control: u16) -> Option<u32> {
@@ -93,15 +124,64 @@ fn scan_frame_flags(frame_control: u16) -> Option<u32> {
     }
 }
 
-fn next_offset(offset: u32, slot_length: u16) -> u32 {
-    let mut next = offset
-        .wrapping_add(u32::from(slot_length))
-        .wrapping_add(0x2f)
-        & FIFO_MASK;
-    if next >= FIFO_SIZE {
-        next -= FIFO_SIZE;
+fn normalize_offset(mut offset: u32) -> u32 {
+    offset &= FIFO_MASK;
+    if offset >= FIFO_SIZE {
+        offset -= FIFO_SIZE;
     }
-    next
+    offset
+}
+
+fn available_bytes(consumer: u32, producer: u32) -> u32 {
+    if producer < consumer {
+        producer.wrapping_add(FIFO_SIZE).wrapping_sub(consumer)
+    } else {
+        producer - consumer
+    }
+}
+
+fn next_offset(offset: u32, slot_length: u16) -> u32 {
+    normalize_offset(
+        offset
+            .wrapping_add(u32::from(slot_length))
+            .wrapping_add(0x2f),
+    )
+}
+
+fn slot_data_fits_fifo(offset: u32, slot_length: u16) -> bool {
+    let frame_end = offset as usize + 0x20 + usize::from(slot_length);
+    let trailer = (frame_end + 3) & !3;
+    trailer + 8 <= FIFO_SIZE as usize
+}
+
+unsafe fn set_consumer_offset(next: u32) {
+    unsafe {
+        DMA_CONSUMER.write_volatile(next);
+        CONSUMER_OFFSET = next;
+        ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(next);
+        ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(next);
+    }
+}
+
+/// Vendor-style recovery for a corrupt current header: walk four-byte-aligned
+/// candidates up to the producer and adopt the next magic slot, or discard the
+/// unread region if no valid slot remains.
+unsafe fn resynchronize_consumer(consumer: u32, producer: u32) {
+    let mut candidate = consumer;
+    let mut remaining = available_bytes(consumer, producer);
+    while remaining >= 4 {
+        candidate = normalize_offset(candidate.wrapping_add(4));
+        remaining -= 4;
+        if candidate == producer {
+            break;
+        }
+        let address = FIFO_BASE + candidate as usize;
+        if unsafe { (address as *const u32).read_volatile() } == FIFO_MAGIC {
+            unsafe { set_consumer_offset(candidate) };
+            return;
+        }
+    }
+    unsafe { set_consumer_offset(producer) };
 }
 
 unsafe fn release(token: ReleaseToken) {
@@ -111,10 +191,7 @@ unsafe fn release(token: ReleaseToken) {
         let low = state.read_volatile() & 0xff;
         state.write_volatile(FIFO_RELEASED | low);
         (slot as *mut u32).write_volatile(0);
-        DMA_CONSUMER.write_volatile(token.next);
-        CONSUMER_OFFSET = token.next;
-        ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(token.next);
-        ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(token.next);
+        set_consumer_offset(token.next);
         let diagnostics = &mut *DIAGNOSTICS.0.get();
         diagnostics.released_slots = diagnostics.released_slots.wrapping_add(1);
     }
@@ -150,13 +227,13 @@ unsafe fn write_u32(address: usize, value: u32) {
 ///
 /// # Safety
 /// The fixed packet-memory window and packet-DMA registers must be accessible.
-pub unsafe fn poll_scan_indication(active_channel: u16) -> Option<PendingIndication> {
+pub unsafe fn poll_scan_indication(if_id: u8, active_channel: u16) -> Option<PendingIndication> {
     if unsafe { HOST_TRANSFER_OUTSTANDING } {
         return None;
     }
 
     let consumer = unsafe { CONSUMER_OFFSET };
-    let producer = unsafe { DMA_PRODUCER.read_volatile() } & FIFO_MASK;
+    let producer = normalize_offset(unsafe { DMA_PRODUCER.read_volatile() });
     if consumer == producer {
         return None;
     }
@@ -173,6 +250,7 @@ pub unsafe fn poll_scan_indication(active_channel: u16) -> Option<PendingIndicat
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.bad_magic = diagnostics.bad_magic.wrapping_add(1);
+            resynchronize_consumer(consumer, producer);
         }
         return None;
     }
@@ -182,26 +260,23 @@ pub unsafe fn poll_scan_indication(active_channel: u16) -> Option<PendingIndicat
     }
 
     let slot_length = unsafe { ((slot + 0x18) as *const u16).read_volatile() };
-    if slot_length < 4 || usize::from(slot_length) > MAX_FRAME_LEN + 4 {
+    let available = available_bytes(consumer, producer);
+    if slot_length < 4
+        || usize::from(slot_length) > MAX_FRAME_LEN + 4
+        || available < u32::from(slot_length)
+    {
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.malformed_slots = diagnostics.malformed_slots.wrapping_add(1);
             if usize::from(slot_length) > MAX_FRAME_LEN + 4 {
                 diagnostics.oversized_frames = diagnostics.oversized_frames.wrapping_add(1);
             }
+            resynchronize_consumer(consumer, producer);
         }
         return None;
     }
 
     let frame_len = usize::from(slot_length) - 4;
-    if consumer as usize + 0x20 + usize::from(slot_length) + 8 > FIFO_SIZE as usize {
-        unsafe {
-            let diagnostics = &mut *DIAGNOSTICS.0.get();
-            diagnostics.malformed_slots = diagnostics.malformed_slots.wrapping_add(1);
-        }
-        return None;
-    }
-
     let next = next_offset(consumer, slot_length);
     unsafe { ((slot + 4) as *mut u32).write_volatile(next) };
     let token = ReleaseToken {
@@ -211,6 +286,18 @@ pub unsafe fn poll_scan_indication(active_channel: u16) -> Option<PendingIndicat
 
     let frame_address = slot + 0x20;
     let trailer = (frame_address + usize::from(slot_length) + 3) & !3;
+    if !slot_data_fits_fifo(consumer, slot_length) {
+        unsafe {
+            let diagnostics = &mut *DIAGNOSTICS.0.get();
+            diagnostics.malformed_slots = diagnostics.malformed_slots.wrapping_add(1);
+            // The valid slot header and bounded length provide a trustworthy
+            // vendor-format next pointer even though this implementation does
+            // not consume split frame/trailer data across the FIFO boundary.
+            release(token);
+        }
+        return None;
+    }
+
     let channel = unsafe { ((trailer + 2) as *const u16).read_volatile() } & 0x03ff;
     let rcpi = unsafe { ((trailer + 7) as *const u8).read_volatile() }.max(1);
     let frame_control = if frame_len >= 2 {
@@ -233,7 +320,7 @@ pub unsafe fn poll_scan_indication(active_channel: u16) -> Option<PendingIndicat
     let message_length = frame_len + WSM_RX_HEADROOM;
     unsafe {
         write_u16(message_address, message_length as u16);
-        write_u16(message_address + 2, 0x0804);
+        write_u16(message_address + 2, receive_indication_id(if_id));
         write_u32(message_address + 4, 0);
         write_u16(message_address + 8, channel);
         ((message_address + 10) as *mut u8).write_volatile(0);
@@ -259,6 +346,10 @@ mod tests {
     fn vendor_fifo_advance_alignment_and_wrap() {
         assert_eq!(next_offset(0, 100), 0x90);
         assert_eq!(next_offset(0x6fc0, 64), 0x2c);
+        assert_eq!(normalize_offset(0x7000), 0);
+        assert_eq!(available_bytes(0x6ff0, 0x20), 0x30);
+        assert!(slot_data_fits_fifo(0x6f00, 100));
+        assert!(!slot_data_fits_fifo(0x6fc0, 64));
     }
 
     #[test]
@@ -267,6 +358,13 @@ mod tests {
         assert_eq!(scan_frame_flags(0x0050), Some(0));
         assert_eq!(scan_frame_flags(0x0008), None);
         assert_eq!(scan_frame_flags(0x00d0), None);
+    }
+
+    #[test]
+    fn receive_indication_preserves_xr819_interface_bits() {
+        assert_eq!(receive_indication_id(0), 0x0804);
+        assert_eq!(receive_indication_id(1), 0x0844);
+        assert_eq!(receive_indication_id(2), 0x0884);
     }
 
     #[test]

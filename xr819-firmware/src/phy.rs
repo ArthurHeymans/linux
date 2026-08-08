@@ -457,7 +457,13 @@ pub fn calibration_mode_timing(mode: u8) -> u32 {
 
 /// Deterministic low-reserved-bit form of vendor `0x17bf2`.
 pub fn calibration_sample_settings(i: u8, q: u8) -> u32 {
-    0x0100_0100 | u32::from(i) | (u32::from(q) << 16)
+    calibration_sample_settings_from(0, i, q)
+}
+
+fn calibration_sample_settings_from(current: u32, i: u8, q: u8) -> u32 {
+    let with_i = (current & !0x0000_02ff) | u32::from(i);
+    let with_q = (with_i & !0x02ff_0000) | (u32::from(q) << 16);
+    with_q | 0x0100_0100
 }
 
 /// Fixed `0x17b70(0x0b, 1, ...)` trigger word before hardware sets bit `0x10`.
@@ -471,8 +477,15 @@ pub unsafe fn run_calibration_sample_mode(
     max_polls: u32,
 ) -> Result<IqCalibrationCoefficient, CalibrationSampleError> {
     unsafe {
-        write_u32(0x0abb_8114, calibration_sample_settings(i, q));
-        let command = 0x0800_0009 | (u32::from(measurement_mode & 1) << 2);
+        let dac_control = (0x0abb_8114 as *const u32).read_volatile();
+        write_u32(
+            0x0abb_8114,
+            calibration_sample_settings_from(dac_control, i, q),
+        );
+        let current = (0x0abb_80f0 as *const u32).read_volatile();
+        let command =
+            (((current & 0xf000_ffff) | 0x0800_0008 | (u32::from(measurement_mode & 1) << 2)) & !3)
+                .wrapping_add(1);
         write_u32(0x0abb_80f0, command);
         for _ in 0..max_polls {
             if (0x0abb_80f0 as *const u32).read_volatile() & 0x10 != 0 {
@@ -892,6 +905,7 @@ pub enum ChannelTransitionError {
     Temperature(TemperatureMeasurementError),
     Calibration(IqCalibrationHardwareError),
     Power(ChannelPowerError),
+    MacWake(crate::mac::MacWakeError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1170,6 +1184,13 @@ pub unsafe fn record_calibrated_channel(channel: u16) {
 /// initialized SDD-derived tables and RF/PHY software state.
 unsafe fn program_mode0_receive_band() {
     unsafe {
+        // Synchronous equivalent of `phy_cal_set_flag(0, 0)` and the state
+        // publication performed by `phy_cal_set_channel_and_arm`.
+        write_u8(0x0400_994e, 0);
+        write_u8(0x0400_994f, 0);
+        write_u8(0x0400_995f, 3);
+        write_u8(0x0400_99d0, 1);
+
         let bandwidth = (0x0aba_8040 as *const u32).read_volatile();
         write_u32(0x0aba_8040, bandwidth & !0x0002_0000);
         let timing = (0x0ab8_0c00 as *const u32).read_volatile();
@@ -1196,6 +1217,9 @@ unsafe fn publish_completed_receive_state() {
         // at terminal state 5. This synchronous path has completed the work
         // normally advanced by vendor timers, so publish the terminal state
         // without arming an unavailable scheduler callback.
+        write_u8(0x0400_995f, 4);
+        // `phy_wake_sequence` has completed both timed phases.
+        write_u8(0x0400_1adc, 2);
         write_u8(0x0400_99a9, 5);
         write_u8(0x0400_1d30, 1);
         write_u32(0x0400_1d2c, 5);
@@ -1234,7 +1258,7 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
     }
 }
 
-pub unsafe fn run_channel_transition(
+unsafe fn begin_channel_transition(
     channel: u16,
     calibration_max_polls: u32,
 ) -> Result<ChannelTransitionResult, ChannelTransitionError> {
@@ -1273,10 +1297,9 @@ pub unsafe fn run_channel_transition(
     let (threshold, first_tx_power, second_tx_power) =
         unsafe { publish_channel_power(channel as u8) }.map_err(ChannelTransitionError::Power)?;
     let frequency_offset = unsafe { publish_channel_frequency_offset() };
-    unsafe {
-        publish_completed_receive_state();
-        set_packet_receive_enabled(true, calibration_max_polls);
-    }
+    // First return from vendor `phy_cal_run_step_timed`: state 1, followed by
+    // a 120-tick cooperative settle interval.
+    unsafe { write_u8(0x0400_1adc, 1) };
     Ok(ChannelTransitionResult {
         divider,
         timing,
@@ -1287,6 +1310,128 @@ pub unsafe fn run_channel_transition(
         second_tx_power,
         frequency_offset,
     })
+}
+
+unsafe fn finish_channel_transition(
+    calibration_max_polls: u32,
+) -> Result<(), ChannelTransitionError> {
+    unsafe {
+        // Preserve vendor wake ordering: full MAC reinitialization can set the
+        // channel-reprogram flag consumed immediately afterward.
+        if (0x0400_1ade as *const u8).read_volatile() != 0 {
+            crate::mac::reinitialize_after_wake(calibration_max_polls)
+                .map_err(ChannelTransitionError::MacWake)?;
+        }
+        let status = 0x0400_1681 as *mut u8;
+        let value = status.read_volatile();
+        if value & 1 != 0 {
+            status.write_volatile(value & !1);
+        } else if value & 4 == 0 && (0x0400_1add as *const u8).read_volatile() != 0 {
+            crate::mac::reprogram_after_channel();
+        }
+        publish_completed_receive_state();
+        set_packet_receive_enabled(true, calibration_max_polls);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelTransitionScheduler {
+    state: u8,
+    deadline: u32,
+    result: ChannelTransitionResult,
+    calibration_max_polls: u32,
+}
+
+impl ChannelTransitionScheduler {
+    pub const fn new() -> Self {
+        Self {
+            state: 0,
+            deadline: 0,
+            result: ChannelTransitionResult {
+                divider: PllDivider {
+                    integer: 0,
+                    fractional: 0,
+                    register: 0,
+                },
+                timing: 0,
+                temperature: TemperatureMeasurement {
+                    value: 0,
+                    accepted: false,
+                },
+                calibration_ran: false,
+                threshold: 0,
+                first_tx_power: 0,
+                second_tx_power: 0,
+                frequency_offset: 0,
+            },
+            calibration_max_polls: 0,
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.state == 0
+    }
+
+    /// Starts the hardware-producing phase and arms the vendor 120-tick settle
+    /// phase. This is cooperative rather than a Rust `Future`: no executor,
+    /// allocation, or wake infrastructure is required.
+    pub unsafe fn start(
+        &mut self,
+        channel: u16,
+        calibration_max_polls: u32,
+    ) -> Result<(), ChannelTransitionError> {
+        if !self.is_idle() {
+            return Err(ChannelTransitionError::InvalidTiming);
+        }
+        let result = unsafe { begin_channel_transition(channel, calibration_max_polls) }?;
+        self.calibration_max_polls = calibration_max_polls;
+        self.result = result;
+        self.state = 1;
+        Ok(())
+    }
+
+    /// Starts the 120-tick interval after the hardware-producing phase has
+    /// returned, matching the placement of `fw_read_timer()` in vendor
+    /// `phy_cal_run_step_timed`.
+    pub fn arm_settle(&mut self, now: u32) {
+        if self.state == 1 {
+            self.deadline = now.wrapping_add(0x78);
+            self.state = 2;
+        }
+    }
+
+    /// Advances the timer-driven phase and returns the completed transition.
+    pub unsafe fn service(
+        &mut self,
+        now: u32,
+    ) -> Result<Option<ChannelTransitionResult>, ChannelTransitionError> {
+        if self.state != 2 {
+            return Ok(None);
+        }
+        if (now.wrapping_sub(self.deadline) as i32) < 0 {
+            return Ok(None);
+        }
+        unsafe { finish_channel_transition(self.calibration_max_polls) }?;
+        self.state = 0;
+        Ok(Some(self.result))
+    }
+}
+
+impl Default for ChannelTransitionScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub unsafe fn run_channel_transition(
+    channel: u16,
+    calibration_max_polls: u32,
+) -> Result<ChannelTransitionResult, ChannelTransitionError> {
+    let result = unsafe { begin_channel_transition(channel, calibration_max_polls) }?;
+    delay_timer_ticks(0x78);
+    unsafe { finish_channel_transition(calibration_max_polls) }?;
+    Ok(result)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3386,6 +3531,13 @@ pub unsafe fn initialize_mac_software_state() {
             write_u8(STATE + 0x15, 1);
         }
 
+        // Wake-context bytes read by `mac_reprogram_after_channel` and the
+        // internally gated body of `mac_reinit_after_wake`. They sit below the
+        // vendor BSS range cleared by `initialize_runtime_state`, so initialize
+        // them explicitly before any cooperative channel transition.
+        write_u8(0x0400_1add, 0);
+        write_u8(0x0400_1ade, 0);
+
         write_u8(0x0400_997c, 0);
         write_u8(0x0400_998c, 14);
         write_u8(0x0400_99a9, 0);
@@ -3464,6 +3616,17 @@ pub unsafe fn initialize_mac_core_mode0() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cooperative_transition_waits_across_timer_wrap() {
+        let mut scheduler = ChannelTransitionScheduler::new();
+        assert!(scheduler.is_idle());
+        scheduler.state = 1;
+        scheduler.arm_settle(0xffff_fff0);
+        assert_eq!(scheduler.deadline, 0x68);
+        assert_eq!(unsafe { scheduler.service(0x20) }, Ok(None));
+        assert!(!scheduler.is_idle());
+    }
 
     #[test]
     fn vendor_calibration_tables_have_all_anchors() {

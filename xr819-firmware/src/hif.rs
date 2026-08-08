@@ -110,6 +110,14 @@ pub const SHARED_BUFFER_BASE: usize = 0x0901_49a8;
 pub const SHARED_BUFFER_SIZE: usize = 384;
 const REQUEST_PAYLOAD_CAPACITY: usize = RX_BUFFER_SIZE - 4;
 
+const fn owned_descriptor_length(length: u16) -> u32 {
+    ((length as u32).wrapping_add(1) & 0x1ffe) | 1
+}
+
+const fn tx_ring_has_capacity(producer: u32, consumer: u32) -> bool {
+    producer.wrapping_sub(consumer) < 4
+}
+
 struct RequestScratch(UnsafeCell<[u8; REQUEST_PAYLOAD_CAPACITY]>);
 
 unsafe impl Sync for RequestScratch {}
@@ -333,23 +341,45 @@ impl Transport {
 
     pub fn output_available(&mut self) -> bool {
         self.reclaim_tx();
-        self.state
-            .tx_producer
-            .get()
-            .wrapping_sub(self.state.tx_consumer.get())
-            < 4
+        tx_ring_has_capacity(self.state.tx_producer.get(), self.state.tx_consumer.get())
     }
 
     /// Returns the next vendor packet-RAM TX buffer as an ordinary byte slice.
     ///
     /// # Safety
     ///
-    /// The caller must not retain the slice after publishing it.
+    /// The caller must know that TX capacity is available (normally by first
+    /// observing `output_available() == true`) and must not retain the slice
+    /// after publishing it. Otherwise the selected packet-RAM buffer may still
+    /// be owned by the host.
     pub unsafe fn output_buffer(&mut self) -> &'static mut [u8] {
         self.reclaim_tx();
         unsafe {
             core::slice::from_raw_parts_mut(self.current_tx_buffer() as *mut u8, SHARED_BUFFER_SIZE)
         }
+    }
+
+    fn recycle_rx_buffer(&mut self, consumer: u32, buffer_address: usize) {
+        self.state.rx_consumer.set(consumer.wrapping_add(1));
+        self.software_state
+            .rx_released
+            .set(self.software_state.rx_released.get().wrapping_add(1));
+
+        if buffer_address != 0 {
+            let producer = self.state.rx_producer.get();
+            let producer_slot = (producer & 31) as usize;
+            let producer_descriptor =
+                unsafe { &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[producer_slot] };
+            self.software_state.rx_buffers[producer_slot].set(buffer_address as u32);
+            producer_descriptor
+                .address
+                .set((buffer_address as u32) & 0xf6ff_ffff);
+            producer_descriptor
+                .control
+                .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
+            self.state.rx_producer.set(producer.wrapping_add(1));
+        }
+        drain_write_buffer();
     }
 
     /// Returns one completed host-to-firmware WSM request and immediately
@@ -372,11 +402,16 @@ impl Transport {
         let buffer_address = self.software_state.rx_buffers[slot].get() as usize;
         let descriptor_len = (control & 0x1ffe) as usize;
         if buffer_address == 0 || descriptor_len < 4 {
+            self.recycle_rx_buffer(consumer, buffer_address);
             return None;
         }
 
         let wire_len = unsafe { (buffer_address as *const u16).read_volatile() as usize };
         let raw_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
+        if wire_len < 4 {
+            self.recycle_rx_buffer(consumer, buffer_address);
+            return None;
+        }
         let length = wire_len.min(descriptor_len).min(RX_BUFFER_SIZE);
         // Match vendor `wsm_dispatch_cmd` at 0x0000e5a0. Preserve the low two
         // routing bits separately because XR819 uses them as a three-entry VIF
@@ -389,24 +424,7 @@ impl Transport {
             *byte = unsafe { ((buffer_address + 4 + index) as *const u8).read_volatile() };
         }
 
-        self.state.rx_consumer.set(consumer.wrapping_add(1));
-        self.software_state
-            .rx_released
-            .set(self.software_state.rx_released.get().wrapping_add(1));
-
-        let producer = self.state.rx_producer.get();
-        let producer_slot = (producer & 31) as usize;
-        let producer_descriptor =
-            unsafe { &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[producer_slot] };
-        self.software_state.rx_buffers[producer_slot].set(buffer_address as u32);
-        producer_descriptor
-            .address
-            .set((buffer_address as u32) & 0xf6ff_ffff);
-        producer_descriptor
-            .control
-            .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
-        self.state.rx_producer.set(producer.wrapping_add(1));
-        drain_write_buffer();
+        self.recycle_rx_buffer(consumer, buffer_address);
 
         Some(ReceivedRequest {
             id,
@@ -423,8 +441,19 @@ impl Transport {
         length: u16,
         release: Option<ReleaseToken>,
     ) {
-        let queued = self.state.tx_queued.get();
+        self.reclaim_tx();
         let producer = self.state.tx_producer.get();
+        if !tx_ring_has_capacity(producer, self.state.tx_consumer.get()) {
+            // Never overwrite a descriptor still owned by the host. In the
+            // radio case, return the FIFO slot because no descriptor can retain
+            // its release token.
+            if let Some(token) = release {
+                unsafe { radio::complete_host_transfer(token) };
+            }
+            return;
+        }
+
+        let queued = self.state.tx_queued.get();
         let slot = (producer & 3) as usize;
         let descriptor = &self.shared.tx[slot];
         self.external_releases[slot] = release;
@@ -438,7 +467,7 @@ impl Transport {
             .address
             .set((buffer_address as u32) & 0xf6ff_ffff);
         descriptor.control.write(
-            DescriptorControl::LENGTH.val(u32::from(length).wrapping_add(1) & 0x1fff)
+            DescriptorControl::LENGTH.val(owned_descriptor_length(length))
                 + DescriptorControl::SEQUENCE.val(u32::from((sequenced_id >> 13) & 3)),
         );
         self.state.tx_queued.set(queued.wrapping_add(1));
@@ -467,5 +496,27 @@ impl Transport {
                 Some(indication.release),
             )
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_ownership_survives_odd_message_lengths() {
+        assert_eq!(owned_descriptor_length(20), 21);
+        assert_eq!(owned_descriptor_length(21), 23);
+        assert_eq!(owned_descriptor_length(1600 + 16), 1617);
+        assert_eq!(owned_descriptor_length(21) & 1, 1);
+        assert!(owned_descriptor_length(21) & 0x1ffe >= 21);
+    }
+
+    #[test]
+    fn tx_ring_capacity_handles_counter_wrap() {
+        assert!(tx_ring_has_capacity(3, 0));
+        assert!(!tx_ring_has_capacity(4, 0));
+        assert!(tx_ring_has_capacity(1, u32::MAX));
+        assert!(!tx_ring_has_capacity(2, u32::MAX - 1));
     }
 }
