@@ -19,6 +19,9 @@ pub extern "C" fn _start() -> ! {
         "mrs r0, cpsr",
         "orr r0, r0, #0xc0",
         "msr cpsr_c, r0",
+        // Match the vendor CP15 TCM-region setup: enable the fixed ITCM
+        // mapping at instruction address 0, then enable DTCM at 0x04000000.
+        // The streamed Thumb image is copied to ITCM; its stack uses DTCM.
         "mov r2, #1",
         "mcr p15, 0, r2, c9, c1, 1",
         "mov r1, #0x00400000",

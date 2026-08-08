@@ -2,7 +2,7 @@
 
 use core::cell::UnsafeCell;
 
-use crate::wsm::ConfigurationRequest;
+use crate::wsm::{ConfigurationRequest, TxPowerRange};
 
 pub const MAX_DPD_DATA_LEN: usize = 1536;
 
@@ -188,6 +188,30 @@ pub fn find_sdd_element(id: u8) -> Option<&'static [u8]> {
     None
 }
 
+fn tx_power_profile_maximum(element_id: u8) -> Option<i32> {
+    let element = find_sdd_element(element_id)?;
+    // Annotated SDD callback `0x00017626` copies eleven little-endian u16
+    // entries from TLVs e3/e4 to runtime profiles at 0x040034b0 and +0x92.
+    // `phy_get_tx_power_range` reads entry ten at profile offsets 0x14/0xa6.
+    let bytes: [u8; 2] = element.get(20..22)?.try_into().ok()?;
+    Some(i32::from(u16::from_le_bytes(bytes)))
+}
+
+pub fn tx_power_ranges() -> Option<[TxPowerRange; 2]> {
+    Some([
+        TxPowerRange {
+            min_power_level: -160,
+            max_power_level: tx_power_profile_maximum(0xe3)?,
+            stepping: 0,
+        },
+        TxPowerRange {
+            min_power_level: -160,
+            max_power_level: tx_power_profile_maximum(0xe4)?,
+            stepping: 0,
+        },
+    ])
+}
+
 fn validate_sdd(mut data: &[u8]) -> Result<(), ConfigurationError> {
     while !data.is_empty() {
         if data.len() < 2 {
@@ -245,5 +269,33 @@ mod tests {
             })
         );
         assert_eq!(find_sdd_element(0xeb), None);
+
+        let mut power_sdd = [0_u8; 56];
+        power_sdd[0] = 0xe3;
+        power_sdd[1] = 26;
+        power_sdd[22..24].copy_from_slice(&272_u16.to_le_bytes());
+        power_sdd[28] = 0xe4;
+        power_sdd[29] = 26;
+        power_sdd[50..52].copy_from_slice(&212_u16.to_le_bytes());
+        retain(&ConfigurationRequest {
+            dpd_data: &power_sdd,
+            ..request
+        })
+        .unwrap();
+        assert_eq!(
+            tx_power_ranges(),
+            Some([
+                TxPowerRange {
+                    min_power_level: -160,
+                    max_power_level: 272,
+                    stepping: 0,
+                },
+                TxPowerRange {
+                    min_power_level: -160,
+                    max_power_level: 212,
+                    stepping: 0,
+                },
+            ])
+        );
     }
 }

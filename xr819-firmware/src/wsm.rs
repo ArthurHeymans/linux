@@ -19,7 +19,12 @@ pub const WRITE_MIB_REQ_ID: u16 = 0x0006;
 pub const WRITE_MIB_RESP_ID: u16 = 0x0406;
 pub const START_SCAN_REQ_ID: u16 = 0x0007;
 pub const START_SCAN_RESP_ID: u16 = 0x0407;
+pub const JOIN_REQ_ID: u16 = 0x000b;
+pub const JOIN_RESP_ID: u16 = 0x040b;
 pub const RECEIVE_IND_ID: u16 = 0x0804;
+
+pub const STATUS_SUCCESS: u32 = 0;
+pub const STATUS_FAILURE: u32 = 1;
 
 #[derive(Clone, Copy, Immutable, IntoBytes)]
 #[repr(C)]
@@ -63,6 +68,13 @@ pub struct Header {
     pub id: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxPowerRange {
+    pub min_power_level: i32,
+    pub max_power_level: i32,
+    pub stepping: i32,
+}
+
 impl Header {
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() < HEADER_LEN {
@@ -91,9 +103,19 @@ impl Header {
         Ok(())
     }
 
-    /// Command ID without the transport sequence and link-ID fields.
+    /// Vendor `wsm_dispatch_cmd` (`0x0000e5a0`) applies `MsgId & 0x0c3f`.
+    /// This removes sequence bits 13..15 and the CW1200 link-routing field in
+    /// bits 6..9 while retaining the request/confirm/indication class bits.
     pub const fn base_id(self) -> u16 {
-        self.id & 0x0fff
+        self.id & 0x0c3f
+    }
+
+    /// XR819 interprets the low two routing bits as its three-entry VIF index;
+    /// value 2 is the P2P-device slot and value 3 is invalid. Upstream CW1200
+    /// names the wider bits 6..9 field `link_id`, so do not use this accessor
+    /// for per-station link-slot routing.
+    pub const fn if_id(self) -> u8 {
+        ((self.id >> 6) & 3) as u8
     }
 }
 
@@ -334,6 +356,52 @@ pub fn encode_status_response(id: u16, status: u32, output: &mut [u8]) -> Result
     Ok(LEN)
 }
 
+/// Confirmation layout consumed by mainline `wsm_read_mib_confirm`: status,
+/// echoed MIB ID, returned byte count, then data. Unsupported reads use a zero
+/// byte count but retain the complete fixed prefix to avoid parser underflow.
+pub fn encode_read_mib_response(
+    status: u32,
+    mib_id: u16,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const LEN: usize = HEADER_LEN + 8;
+    if output.len() < LEN {
+        return Err(Error::OutputTooSmall);
+    }
+    Header {
+        len: LEN as u16,
+        id: READ_MIB_RESP_ID,
+    }
+    .encode(output)?;
+    write_u32(output, HEADER_LEN, status);
+    write_u16(output, HEADER_LEN + 4, mib_id);
+    write_u16(output, HEADER_LEN + 6, 0);
+    Ok(LEN)
+}
+
+/// Twelve-byte payload required by mainline `wsm_join_confirm`, even when the
+/// operation is rejected before real association support is available.
+pub fn encode_join_response(
+    status: u32,
+    min_power_level: i32,
+    max_power_level: i32,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const LEN: usize = HEADER_LEN + 12;
+    if output.len() < LEN {
+        return Err(Error::OutputTooSmall);
+    }
+    Header {
+        len: LEN as u16,
+        id: JOIN_RESP_ID,
+    }
+    .encode(output)?;
+    write_u32(output, HEADER_LEN, status);
+    write_u32(output, HEADER_LEN + 4, min_power_level as u32);
+    write_u32(output, HEADER_LEN + 8, max_power_level as u32);
+    Ok(LEN)
+}
+
 pub fn encode_scan_complete_indication(
     status: u32,
     psm: u8,
@@ -360,6 +428,7 @@ pub fn encode_scan_complete_indication(
 
 pub fn encode_configuration_response(
     station_id: [u8; 6],
+    tx_power_ranges: [TxPowerRange; 2],
     output: &mut [u8],
 ) -> Result<usize, Error> {
     const LEN: usize = HEADER_LEN + 40;
@@ -377,11 +446,12 @@ pub fn encode_configuration_response(
     output[8..14].copy_from_slice(&station_id);
     output[14] = 1; // 2.4 GHz
     write_u32(output, 16, 0x0000_3fff);
-    // Two conservative power ranges in 0.1 dBm units.
-    for offset in [20, 32] {
-        write_u32(output, offset, 0);
-        write_u32(output, offset + 4, 200);
-        write_u32(output, offset + 8, 10);
+    // Annotated `phy_get_tx_power_range` (`0x00016e9c`) publishes these as two
+    // sign-extended triples. Their maxima are SDD profile fields, not constants.
+    for (offset, range) in [20, 32].into_iter().zip(tx_power_ranges) {
+        write_u32(output, offset, range.min_power_level as u32);
+        write_u32(output, offset + 4, range.max_power_level as u32);
+        write_u32(output, offset + 8, range.stepping as u32);
     }
     Ok(LEN)
 }
@@ -396,7 +466,6 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, Error> {
     Ok(u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
 }
 
-#[cfg(test)]
 fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
@@ -411,8 +480,9 @@ mod tests {
 
     #[test]
     fn header_masks_transport_fields() {
-        let header = Header { len: 8, id: 0xa409 };
+        let header = Header { len: 8, id: 0xa449 };
         assert_eq!(header.base_id(), CONFIGURATION_RESP_ID);
+        assert_eq!(header.if_id(), 1);
     }
 
     #[test]
@@ -424,7 +494,7 @@ mod tests {
             status: 0,
             hardware_id: 7,
             hardware_sub_id: 9,
-            firmware_capabilities: 3,
+            firmware_capabilities: 1,
             firmware_type: 2,
             firmware_api: 1060,
             firmware_build: 5258,
@@ -484,7 +554,23 @@ mod tests {
     fn configuration_response_matches_driver_layout() {
         let mut output = [0xaa; 44];
         let station_id = [0, 1, 2, 3, 4, 5];
-        let len = encode_configuration_response(station_id, &mut output).unwrap();
+        let len = encode_configuration_response(
+            station_id,
+            [
+                TxPowerRange {
+                    min_power_level: -160,
+                    max_power_level: 272,
+                    stepping: 0,
+                },
+                TxPowerRange {
+                    min_power_level: -160,
+                    max_power_level: 212,
+                    stepping: 0,
+                },
+            ],
+            &mut output,
+        )
+        .unwrap();
 
         assert_eq!(len, 44);
         assert_eq!(
@@ -495,7 +581,38 @@ mod tests {
         assert_eq!(&output[8..14], &station_id);
         assert_eq!(output[14], 1);
         assert_eq!(&output[16..20], &0x3fff_u32.to_le_bytes());
-        assert_eq!(&output[20..32], &[0, 0, 0, 0, 200, 0, 0, 0, 10, 0, 0, 0]);
+        assert_eq!(read_u32(&output, 20).unwrap(), (-160_i32) as u32);
+        assert_eq!(read_u32(&output, 24).unwrap(), 272);
+        assert_eq!(read_u32(&output, 28).unwrap(), 0);
+        assert_eq!(read_u32(&output, 32).unwrap(), (-160_i32) as u32);
+        assert_eq!(read_u32(&output, 36).unwrap(), 212);
+        assert_eq!(read_u32(&output, 40).unwrap(), 0);
+    }
+
+    #[test]
+    fn unsupported_read_mib_and_join_confirmations_are_length_correct() {
+        let mut read_mib = [0xaa; 12];
+        assert_eq!(
+            encode_read_mib_response(STATUS_FAILURE, 0x1006, &mut read_mib).unwrap(),
+            12
+        );
+        assert_eq!(
+            Header::parse(&read_mib).unwrap().base_id(),
+            READ_MIB_RESP_ID
+        );
+        assert_eq!(read_u32(&read_mib, 4).unwrap(), STATUS_FAILURE);
+        assert_eq!(read_u16(&read_mib, 8).unwrap(), 0x1006);
+        assert_eq!(read_u16(&read_mib, 10).unwrap(), 0);
+
+        let mut join = [0xaa; 16];
+        assert_eq!(
+            encode_join_response(STATUS_FAILURE, -160, 200, &mut join).unwrap(),
+            16
+        );
+        assert_eq!(Header::parse(&join).unwrap().base_id(), JOIN_RESP_ID);
+        assert_eq!(read_u32(&join, 4).unwrap(), STATUS_FAILURE);
+        assert_eq!(read_u32(&join, 8).unwrap(), (-160_i32) as u32);
+        assert_eq!(read_u32(&join, 12).unwrap(), 200);
     }
 
     #[test]

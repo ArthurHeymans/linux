@@ -14,9 +14,10 @@ use xr819_firmware::platform::{
 };
 use xr819_firmware::scan;
 use xr819_firmware::wsm::{
-    CONFIGURATION_REQ_ID, ConfigurationRequest, START_SCAN_REQ_ID, StartScanRequest,
-    StartupIndication, encode_configuration_response, encode_scan_complete_indication,
-    encode_status_response,
+    CONFIGURATION_REQ_ID, ConfigurationRequest, JOIN_REQ_ID, READ_MIB_REQ_ID, START_SCAN_REQ_ID,
+    STATUS_FAILURE, StartScanRequest, StartupIndication, TxPowerRange,
+    encode_configuration_response, encode_join_response, encode_read_mib_response,
+    encode_scan_complete_indication, encode_status_response,
 };
 
 unsafe extern "C" {
@@ -123,10 +124,13 @@ extern "C" fn rust_main() -> ! {
     let length = StartupIndication {
         input_buffers: 30,
         input_buffer_size: 1632,
+        // Mainline rejects nonzero startup status and firmware types above 4.
         status: 0,
         hardware_id: 7,
         hardware_sub_id: 9,
-        firmware_capabilities: 3,
+        // Bit 0 advertises 2.4 GHz. XR819 has no 5 GHz radio, so bit 1 must
+        // remain clear or cw1200 exposes a phantom 5 GHz band.
+        firmware_capabilities: 1,
         firmware_type: 2,
         firmware_api: 1,
         firmware_build: 1,
@@ -162,15 +166,34 @@ extern "C" fn rust_main() -> ! {
 
         if let Some(request) = transport.poll_request() {
             let output = unsafe { transport.output_buffer() };
-            let response_length = if request.id == CONFIGURATION_REQ_ID {
-                let station_id = ConfigurationRequest::parse(request.payload)
-                    .ok()
-                    .and_then(|configuration_request| {
+            let response_length = if request.if_id > 2 {
+                encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
+            } else if request.id == CONFIGURATION_REQ_ID {
+                let configured = ConfigurationRequest::parse(request.payload).ok().and_then(
+                    |configuration_request| {
                         configuration::retain(&configuration_request).ok()?;
-                        configuration::snapshot().map(|snapshot| snapshot.station_id)
-                    })
-                    .unwrap_or([0; 6]);
-                encode_configuration_response(station_id, output)
+                        Some((
+                            configuration::snapshot()?.station_id,
+                            configuration::tx_power_ranges()?,
+                        ))
+                    },
+                );
+                let (station_id, tx_power_ranges) = configured.unwrap_or((
+                    [0; 6],
+                    [
+                        TxPowerRange {
+                            min_power_level: -160,
+                            max_power_level: 200,
+                            stepping: 0,
+                        },
+                        TxPowerRange {
+                            min_power_level: -160,
+                            max_power_level: 200,
+                            stepping: 0,
+                        },
+                    ],
+                ));
+                encode_configuration_response(station_id, tx_power_ranges, output)
             } else if request.id == START_SCAN_REQ_ID {
                 let status = match StartScanRequest::parse(request.payload) {
                     Ok(request) => match scan::begin(&request) {
@@ -181,8 +204,24 @@ extern "C" fn rust_main() -> ! {
                     Err(_) => 2,
                 };
                 encode_status_response(request.id | 0x0400, status, output)
+            } else if request.id == READ_MIB_REQ_ID {
+                // Echo the ID as required by `wsm_read_mib_confirm`, but reject
+                // cleanly until individual MIB storage and side effects exist.
+                let mib_id = request
+                    .payload
+                    .get(..2)
+                    .map(|value| u16::from_le_bytes([value[0], value[1]]))
+                    .unwrap_or(0);
+                encode_read_mib_response(STATUS_FAILURE, mib_id, output)
+            } else if request.id == JOIN_REQ_ID {
+                // `wsm_join_confirm` has a 12-byte payload. Supplying the full
+                // shape prevents a BH underflow even though JOIN is detached.
+                encode_join_response(STATUS_FAILURE, -160, 200, output)
             } else {
-                encode_status_response(request.id | 0x0400, 0, output)
+                // Do not report success for commands whose state effects are
+                // not implemented. A complete status word lets cw1200 fail the
+                // command cleanly instead of proceeding on false assumptions.
+                encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
             };
             if let Ok(length) = response_length {
                 unsafe { transport.publish(length as u16) };

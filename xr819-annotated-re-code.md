@@ -160,9 +160,119 @@ performs signed division. The complete switch is represented by the allocation-
 free Rust `DynamicIqSearchState` and `apply_dynamic_iq_search_stage`; cases 6
 and 12 use separately tested pure refinement functions.
 
+The outer `rf_apply_channel_settings` arithmetic is now translated as well:
+
+- configuration bit 1 doubles the requested low-byte pass count;
+- pass zero supplies baseline metrics and is excluded from accumulation;
+- passes after pass one begin from `accumulated / (pass_index - 1)`;
+- accepted passes use wrapping four-component accumulation;
+- final values are `accumulated / accepted_count + profile seed`;
+- the primary profile seed is `(-2, 5, -1, -1)`;
+- the alternate profile uses the mode-selected initial candidate;
+- verification restores either rejected packed pair and sets two `x1024`
+  quality flags.
+
+Ghidra, Radare2 `pd:g`, and direct Thumb disassembly all expose an asymmetric
+vendor publication test: rejection of the second packed pair suppresses final
+publication, while the independently calculated first-pair rejection flag does
+not. The Rust `DynamicIqVerification` preserves and documents this behavior
+rather than silently correcting it.
+
+The complete `rf_save_band_regs`/`rf_load_band_regs` envelope is now represented
+by a typed 20-register snapshot plus detached acquisition/restoration routines.
+The implementation preserves:
+
+- the extra one-unit delay in the alternate profile;
+- profile-specific MAC/PHY override constants;
+- the derived `0x0abb801c` and `0x0abc0030` values;
+- the `0x04001ff4` bit-26 contribution to `0x0abc0020`;
+- the alternate-profile quirk that restores zero to `0x0abb81a4` instead of
+  saving its live value;
+- conditional restoration of the two packed IQ-correction registers;
+- calibration stop before final control restoration;
+- PLL restart and final six-unit delay.
+
+Both save and load paths were independently cross-checked with Radare2 `pd:g`.
+Forced cases 0 and 1 of `phy_cal_cmd_dispatch` were then recovered separately:
+stop clears `0x0abb805c..0x0abb8064`, while start publishes
+`(0x12, 0x88000000 | (command & 0xff), 0)`. These writes are now integrated
+into the envelope.
+
+Both branches of `rf_program_synth_freq` are now represented as pure Rust. The
+mode-1 branch uses constant `0x4c4b4`, the runtime reference multiplied by
+1000, and an exact 21-step restoring division before inserting the saved integer
+field at bit 21. The larger branch preserves the original wrapping 64-bit
+multiply/divide chain, remainder scaling, 21-bit packing, and zero-denominator
+failure boundary. The live wrapper now reads the mode, reference clock and
+current PLL word before touching the band registers, prepares the complete synth
+word, and aborts cleanly if the fixed-point denominator is invalid. It later
+publishes that prepared word at the original call position and performs the
+vendor PLL restart. The complete detached hardware wrapper therefore has no
+remaining synth callback and guarantees band-register restoration on every
+normal post-acquisition return.
+
+The annotated outer profile gate is now preserved too: a nonzero byte at
+`0x0400994e` skips acquisition and marks `0x04009961` valid, while profile zero
+runs the primary calibration path with fixed seed `(-2, 5, -1, -1)`.
+
+The outer routine's complete 13-stage hardware schedule is now explicit and
+allocation-free. Stages 0 and 7 publish without capture or DFT; stages 6 and 12
+capture and correlate without publishing a new candidate; all remaining stages
+capture, publish, and correlate in that order. First-pass control overrides at
+stages 0 and 1 are represented separately. `run_dynamic_iq_search_pass()` now
+drives this schedule through a hardware callback and applies all dispatcher
+state transitions, stopping immediately on acquisition failure.
+
+Pass-level orchestration is now explicit as well. The live wrapper now decodes
+its starting four signed values directly from the two correction words captured
+by `rf_save_band_regs`, rather than accepting a guessed initial candidate. Pass
+zero records the baseline verification metrics but is excluded from
+accumulation; later passes begin from
+`accumulated / (pass_index - 1)`, retain their normalized final candidates with
+wrapping addition, and finish with `accumulated / accepted_passes + seed`.
+Configuration bit 1 doubles the requested pass count. Searches with fewer than
+two total passes, missing baseline capture, or any failed stage return no result
+rather than dividing by zero or publishing partial calibration.
+
+Final verification is now combined with publication planning. The final packed
+candidate is first written to hardware and replicated across both sixteen-word
+correction banks. Rejected packed pairs are then restored independently by the
+band-register loader, both `×1024` quality flags are retained, and the vendor's
+asymmetric rule controls publication into persistent DTCM state: first-pair
+rejection still allows the original packed candidate words to be recorded,
+while second-pair rejection suppresses that software-state publication entirely.
+
+The primary `rf_calibrate_iq_dc`/target `0x17c20` hardware envelope is now
+assembled as well. It gates the calibration engine, preserves the selected band
+register set, performs bounded baseline and target measurements at all twelve
+vendor gain indices, publishes primary and normalized correction tables, stores
+the final-gain coefficient/scale references at `0x0400993c`, and restores the
+path, test tone, band selector, and engine gate on success or timeout. A direct
+annotated-C review also corrected one subtlety: every gain derives its shift
+word from the same profile value at `0x04009978`; shift output from one gain is
+not fed into the next gain.
+
 The supplied annotated container was also reparsed independently. Its ordered
 41-register type-2 section and all four MAC/PHY type-0 copies are byte-identical
 to `xr819-firmware/src/loader.rs` and `xr819-firmware/data/`.
+
+### SDD-derived configuration power ranges
+
+Annotated SDD callback `0x17626` copies eleven little-endian halfwords from each
+of TLVs `0xe3` and `0xe4` into runtime profiles at `0x040034b0` and
+`0x04003542`. `phy_get_tx_power_range` (`0x16e9c`) reads profile entry ten at
+offsets `0x14` and `0xa6`, while supplying a fixed minimum of `-160` and the
+configuration response supplies zero stepping. For the supplied 744-byte SDD:
+
+```text
+TLV e3 entry 10 = 272  (27.2 dBm)
+TLV e4 entry 10 = 212  (21.2 dBm)
+minimums        = -160 (-16.0 dBm)
+stepping        = 0
+```
+
+The Rust configuration parser now derives these maxima from the retained SDD
+instead of advertising a hard-coded 20.0 dBm maximum.
 
 ## Scan findings
 

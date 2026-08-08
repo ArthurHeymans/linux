@@ -118,6 +118,7 @@ static REQUEST_SCRATCH: RequestScratch =
 #[derive(Clone, Copy)]
 pub struct ReceivedRequest {
     pub id: u16,
+    pub if_id: u8,
     pub payload: &'static [u8],
 }
 
@@ -360,7 +361,11 @@ impl Transport {
         let wire_len = unsafe { (buffer_address as *const u16).read_volatile() as usize };
         let raw_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
         let length = wire_len.min(descriptor_len).min(RX_BUFFER_SIZE);
-        let id = raw_id & 0x0fff;
+        // Match vendor `wsm_dispatch_cmd` at 0x0000e5a0. Preserve the low two
+        // routing bits separately because XR819 uses them as a three-entry VIF
+        // selector even though CW1200 names bits 6..9 the link-ID field.
+        let id = raw_id & 0x0c3f;
+        let if_id = ((raw_id >> 6) & 3) as u8;
         let payload_len = length.saturating_sub(4).min(REQUEST_PAYLOAD_CAPACITY);
         let scratch = unsafe { &mut *REQUEST_SCRATCH.0.get() };
         for (index, byte) in scratch[..payload_len].iter_mut().enumerate() {
@@ -388,6 +393,7 @@ impl Transport {
 
         Some(ReceivedRequest {
             id,
+            if_id,
             payload: unsafe { core::slice::from_raw_parts(scratch.as_ptr(), payload_len) },
         })
     }
@@ -404,8 +410,12 @@ impl Transport {
         let buffer_address = self.current_tx_buffer();
         self.software_state.tx_buffers[(queued & 63) as usize].set(buffer_address as u32);
         let header_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
+        // CW1200 consumes a modulo-eight WSM sequence in ID bits 13..15. The
+        // software-ring producer advances exactly once per host-bound message,
+        // so its low three bits provide the required message sequence. Clear
+        // all previous sequence bits because each of the four buffers is reused.
         let sequence = ((producer as u16) & 7) << 13;
-        let sequenced_id = (header_id & 0x9fff) | sequence;
+        let sequenced_id = (header_id & 0x1fff) | sequence;
 
         unsafe { ((buffer_address + 2) as *mut u16).write_volatile(sequenced_id) };
         descriptor

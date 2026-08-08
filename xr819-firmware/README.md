@@ -18,7 +18,9 @@ and experiment ledger are in
 [`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md). Salvaged
 semantic names, structure layouts, HIF/IRQ behavior, and RF algorithms from an
 external annotated Ghidra archive are summarized in
-[`../xr819-annotated-re-code.md`](../xr819-annotated-re-code.md).
+[`../xr819-annotated-re-code.md`](../xr819-annotated-re-code.md). Complete
+address-labelled decompiler exports are available under
+[`../xr819-decompilation/`](../xr819-decompilation/).
 
 Implemented:
 
@@ -45,9 +47,14 @@ Implemented:
 - active, target-verified mode-zero MAC hardware initialization and bit-11 enable;
 - faithful IRQ 6 platform-event callback replacing its diagnostic stub;
 - vendor packet-RAM TX buffers and translated packet-DMA list setup;
-- CW1200 startup delivery accepted by Linux;
+- CW1200 startup delivery accepted by Linux, advertising only the real 2.4 GHz band;
 - polled host-to-firmware RX descriptors;
-- generic write-MIB confirmation and structured configuration confirmation;
+- structured configuration confirmation with vendor-compatible -16.0 dBm
+  minima, zero stepping, and SDD-derived `0xe3`/`0xe4` maxima;
+- length-correct failure confirmations for unsupported read-MIB and join;
+- honest failure status for other requests whose state effects are unimplemented;
+- WSM command dispatch with sequence/link fields stripped and explicit `if_id`;
+- modulo-eight sequence stamping on every normal host-bound WSM message;
 - validated and retained SDD/DPD calibration TLVs;
 - explicit clearing of linker-defined Rust `.bss` before using retained state;
 - successful registration of a Linux `phy` and `wlan0`;
@@ -83,6 +90,24 @@ Implemented:
 - pure fixed-point three-correlation DFT and candidate normalization from `0x18480`;
 - typed allocation-free translation of every `rf_op_dispatch2` search stage,
   including polynomial case 6 and bounded parabolic case 12 refinement;
+- translated dynamic-IQ pass doubling, averaging, profile-seed addition,
+  pair-restoration checks, quality flags, and asymmetric vendor publication rule;
+- detached typed `rf_save_band_regs`/`rf_load_band_regs` snapshot envelope with
+  exact profile overrides, delays, calibration start/stop words, conditional IQ
+  restores, and PLL restart;
+- pure translations of both `rf_program_synth_freq` branches, including the
+  21-step restoring divider and the larger wrapping 64-bit fixed-point chain;
+- allocation-free 13-stage dynamic-IQ pass orchestration with exact capture,
+  candidate-publication, DFT, first-pass control, and failure-stop scheduling;
+- pass-level dynamic-IQ baseline capture, doubled pass count, normalized
+  accumulation, accepted-pass averaging, and final seed addition;
+- final dynamic-IQ verification, sixteen-entry correction-bank replication,
+  conditional pair restoration, quality flags, and asymmetric DTCM-state
+  publication;
+- complete detached dynamic-IQ hardware wrapper with the vendor profile
+  shortcut, live synth preparation, exact control-word staging,
+  timeout-preserving capture, candidate publication, and guaranteed restoration
+  on every normal post-acquisition return;
 - byte verification of all loader MMIO pairs and MAC/PHY copies against the
   annotated `xr819-fw.tar.gz` firmware container;
 - vendor channel-timing validation and event-bit-10 scan activation semantics;

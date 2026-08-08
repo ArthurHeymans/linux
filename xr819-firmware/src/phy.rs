@@ -856,6 +856,26 @@ pub struct IqCalibrationSeries {
     pub final_shift_state: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IqCalibrationReferences {
+    pub coefficient_i: i32,
+    pub coefficient_q: i32,
+    pub scale_i: i32,
+    pub scale_q: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IqCalibrationHardwareResult {
+    pub series: IqCalibrationSeries,
+    pub references: IqCalibrationReferences,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IqCalibrationHardwareError {
+    BaselineTimeout { gain_index: u32 },
+    TargetTimeout { gain_index: u32 },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicIqInitialCandidate {
     pub first: i8,
@@ -885,6 +905,74 @@ pub struct DynamicIqDftResult {
     pub third: DynamicIqCorrelation,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqStageExecution {
+    pub capture_samples: bool,
+    pub program_candidate: bool,
+    pub correlate_samples: bool,
+    pub initial_control_before_program: bool,
+    pub initial_control_before_correlate: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqStageControl {
+    pub hardware: u32,
+    pub correlation: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqDftConfiguration {
+    pub mode: u8,
+    pub first_phase_seed: u32,
+    pub second_phase_seed: u32,
+    pub third_phase_seed: u32,
+    pub sample_width_shift: u8,
+    pub capture_polls: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqHardwareStageResult {
+    pub measurement: DynamicIqDftResult,
+    pub capture_ready: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqHardwareSearchResult {
+    pub search: Option<DynamicIqAveragedSearch>,
+    pub all_captures_ready: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqHardwareVerificationResult {
+    pub metrics: DynamicIqVerificationMetrics,
+    pub capture_ready: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicIqHardwareCalibrationConfiguration {
+    pub alternate_profile: bool,
+    pub table_value: u32,
+    pub synth_frequency: i32,
+    pub calibration_command: i32,
+    pub seed: [i32; 4],
+    pub common_step: i32,
+    pub first_step: i32,
+    pub second_step: i32,
+    pub requested_passes: u8,
+    pub configuration_flags: u32,
+    pub control_configuration: u32,
+    pub dft: DynamicIqDftConfiguration,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqHardwareCalibrationResult {
+    pub profile_shortcut: bool,
+    pub synth_prepared: bool,
+    pub finalization: Option<DynamicIqFinalization>,
+    pub all_search_captures_ready: bool,
+    pub verification_capture_ready: bool,
+}
+
 /// Typed state for annotated `rf_op_dispatch2` (`0x17f34`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicIqSearchState {
@@ -896,6 +984,85 @@ pub struct DynamicIqSearchState {
     pub reference_correlation: DynamicIqCorrelation,
     pub common_correlations: [DynamicIqCorrelation; 6],
     pub axis_correlations: [DynamicIqCorrelation; 5],
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqAverage {
+    pub accumulated: [i32; 4],
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqVerificationMetrics {
+    pub reference: i32,
+    pub second: i32,
+    pub third: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqAveragedSearch {
+    pub baseline: DynamicIqVerificationMetrics,
+    pub final_candidate: [i32; 4],
+    pub completed_passes: u32,
+    pub accepted_passes: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicIqFinalization {
+    pub verification: DynamicIqVerification,
+    pub publication: Option<DynamicIqCorrectionPlan>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicIqVerification {
+    pub retained_values: [i32; 4],
+    pub first_pair_rejected: bool,
+    pub second_pair_rejected: bool,
+    pub first_quality_failed: bool,
+    pub second_quality_failed: bool,
+    /// The vendor only checks rejection of the second packed pair before
+    /// publishing both words. The first-pair rejection flag is calculated but
+    /// not consulted; this odd behavior is preserved explicitly.
+    pub vendor_publication_allowed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqBandDerivedValues {
+    pub abc0020: u32,
+    pub abc0030: u32,
+    pub abb801c: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqCalibrationCommandWords {
+    pub abb805c: u32,
+    pub abb8060: u32,
+    pub abb8064: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DynamicIqBandRegisterSnapshot {
+    pub abd0000: u32,
+    pub abc0004: u32,
+    pub abc0008: u32,
+    pub abc0020: u32,
+    pub abc0024: u32,
+    pub abc0028: u32,
+    pub abc0030: u32,
+    pub abc0034: u32,
+    pub abc0050: u32,
+    pub abc006c: u32,
+    pub abc0084: u32,
+    pub abc00b4: u32,
+    pub abc00fc: u32,
+    pub abb8004: u32,
+    pub abb800c: u32,
+    pub abb801c: u32,
+    pub abb8068: u32,
+    pub abb80a8: u32,
+    pub abb81a4: u32,
+    pub abb81a8: u32,
+    pub restore_abb8068: bool,
+    pub restore_abb80a8: bool,
 }
 
 impl DynamicIqSearchState {
@@ -1055,6 +1222,11 @@ fn pack_dynamic_iq_pair(first: i32, second: i32) -> u32 {
     (first as u32 & 0x0fff) | ((second as u32 & 0x0fff) << 16)
 }
 
+pub fn unpack_dynamic_iq_pair(value: u32) -> (i32, i32) {
+    let decode = |raw: u32| ((raw << 20) as i32) >> 20;
+    (decode(value & 0x0fff), decode((value >> 16) & 0x0fff))
+}
+
 /// Pure register plan from vendor `0x18612` for four signed correction values.
 pub fn dynamic_iq_correction_plan(values: [i32; 4]) -> DynamicIqCorrectionPlan {
     DynamicIqCorrectionPlan {
@@ -1062,6 +1234,66 @@ pub fn dynamic_iq_correction_plan(values: [i32; 4]) -> DynamicIqCorrectionPlan {
         second_address: 0x0abb_80a8,
         first_value: pack_dynamic_iq_pair(values[0], values[1]),
         second_value: pack_dynamic_iq_pair(values[2], values[3]),
+    }
+}
+
+/// Publish both packed correction words in vendor order.
+///
+/// # Safety
+///
+/// The MAC/PHY register bank must be enabled and writable.
+pub unsafe fn apply_dynamic_iq_correction_plan(plan: DynamicIqCorrectionPlan) {
+    unsafe {
+        write_u32(plan.first_address as usize, plan.first_value);
+        write_u32(plan.second_address as usize, plan.second_value);
+    }
+}
+
+/// Replicate the final packed pair across the two sixteen-word correction banks
+/// before verification, matching `0x18dae..0x18dd0`.
+///
+/// # Safety
+///
+/// The MAC/PHY register bank must be enabled and writable.
+pub unsafe fn replicate_dynamic_iq_correction_banks(plan: DynamicIqCorrectionPlan) {
+    unsafe {
+        for index in 1..16_u32 {
+            write_u32(
+                plan.first_address.wrapping_add(index * 4) as usize,
+                plan.first_value,
+            );
+            write_u32(
+                plan.second_address.wrapping_add(index * 4) as usize,
+                plan.second_value,
+            );
+        }
+    }
+}
+
+/// Publish verification flags and accepted packed words into the profile's
+/// persistent software state. Existing flags are only set, never cleared.
+///
+/// # Safety
+///
+/// DTCM at `0x0400994c` must contain the initialized vendor calibration state.
+pub unsafe fn publish_dynamic_iq_final_state(
+    alternate_profile: bool,
+    finalization: DynamicIqFinalization,
+) {
+    let base = 0x0400_994c_usize;
+    unsafe {
+        if finalization.verification.second_quality_failed {
+            write_u8(base + if alternate_profile { 0x7a } else { 0x78 }, 1);
+        }
+        if finalization.verification.first_quality_failed {
+            write_u8(base + if alternate_profile { 0x7b } else { 0x79 }, 1);
+        }
+        if let Some(publication) = finalization.publication {
+            let value_offset = if alternate_profile { 0x70 } else { 0x68 };
+            write_u32(base + value_offset, publication.first_value);
+            write_u32(base + value_offset + 4, publication.second_value);
+            write_u8(base + if alternate_profile { 0x15 } else { 0x0d }, 1);
+        }
     }
 }
 
@@ -1117,6 +1349,18 @@ fn dynamic_iq_metrics<const N: usize>(correlations: [DynamicIqCorrelation; N]) -
         *metric >>= metric_shift;
     }
     metrics
+}
+
+pub fn dynamic_iq_verification_metrics(
+    measurement: DynamicIqDftResult,
+) -> DynamicIqVerificationMetrics {
+    let [reference, second, third] =
+        dynamic_iq_metrics([measurement.first, measurement.second, measurement.third]);
+    DynamicIqVerificationMetrics {
+        reference,
+        second,
+        third,
+    }
 }
 
 /// Analytical stage 6 of the thirteen-stage dynamic IQ search.
@@ -1213,6 +1457,67 @@ pub fn refine_dynamic_iq_axis_pair(
     (first, second)
 }
 
+/// Hardware-operation schedule around one dispatcher stage in annotated
+/// `rf_apply_channel_settings`. Operations occur in field order: capture,
+/// candidate publication, then DFT correlation. Stages 0 and 7 intentionally
+/// dispatch without a fresh measurement.
+pub fn dynamic_iq_stage_execution(stage: u8, first_pass: bool) -> Option<DynamicIqStageExecution> {
+    if stage >= 13 {
+        return None;
+    }
+    let measure = stage != 0 && stage != 7;
+    Some(DynamicIqStageExecution {
+        capture_samples: measure,
+        program_candidate: stage != 6 && stage != 12,
+        correlate_samples: measure,
+        initial_control_before_program: first_pass && stage == 0,
+        initial_control_before_correlate: first_pass && stage == 1,
+    })
+}
+
+/// Stage-local control-word construction from annotated
+/// `rf_apply_channel_settings`. Stage 1's first-pass override affects the DFT
+/// input but is deliberately not republished to the hardware register.
+pub fn dynamic_iq_stage_control(
+    configuration: u32,
+    stage: u8,
+    first_pass: bool,
+) -> Option<DynamicIqStageControl> {
+    if stage >= 13 {
+        return None;
+    }
+    let phase = configuration >> 22;
+    let stage_phase = if stage < 7 { phase >> 1 } else { phase };
+    let base = (configuration & 0xffff_9fff) | 0x003f_0000;
+    let control =
+        ((base & 0x003f_ffff) | stage_phase.wrapping_shl(16)) & !0xff | (stage_phase & 0xff);
+    let initial = |value: u32| (value & !0xff) | 0xff | 0xffc0_0000;
+    let hardware = if first_pass && stage == 0 {
+        initial(control)
+    } else {
+        control
+    };
+    let correlation = if first_pass && stage == 1 {
+        initial(control)
+    } else {
+        hardware
+    };
+    Some(DynamicIqStageControl {
+        hardware,
+        correlation,
+    })
+}
+
+/// Control word used by the post-average verification capture. The vendor
+/// retains the full-phase stage-12 fields, then forces the low byte and upper
+/// control mask before both hardware publication and DFT.
+pub fn dynamic_iq_verification_control(configuration: u32) -> u32 {
+    let control = dynamic_iq_stage_control(configuration, 12, false)
+        .map(|value| value.hardware)
+        .unwrap_or(0);
+    (control & !0xff) | 0xff | 0xffc0_0000
+}
+
 /// Apply the persistent search-state effects of one switch case from annotated
 /// `rf_op_dispatch2`.
 ///
@@ -1220,6 +1525,74 @@ pub fn refine_dynamic_iq_axis_pair(
 /// calculations. The retained correlations below mirror the vendor workspace;
 /// transient normalized magnitudes remain internal to the refinement helpers.
 /// Cases 6 and 12 perform the two analytical refinements.
+pub fn run_dynamic_iq_search_pass<F>(
+    state: &mut DynamicIqSearchState,
+    first_pass: bool,
+    mut execute: F,
+) -> bool
+where
+    F: FnMut(u8, [i32; 4], DynamicIqStageExecution) -> Option<DynamicIqDftResult>,
+{
+    for stage in 0..13 {
+        let Some(execution) = dynamic_iq_stage_execution(stage, first_pass) else {
+            return false;
+        };
+        let Some(measurement) = execute(stage, state.candidate, execution) else {
+            return false;
+        };
+        if !apply_dynamic_iq_search_stage(state, stage, measurement) {
+            return false;
+        }
+        state.candidate = normalize_dynamic_iq_candidate(state.candidate);
+        if stage == 6 || stage == 12 {
+            state.current = state.candidate;
+        }
+    }
+    true
+}
+
+pub fn run_dynamic_iq_averaged_search<F>(
+    initial: [i32; 4],
+    seed: [i32; 4],
+    common_step: i32,
+    first_step: i32,
+    second_step: i32,
+    requested_passes: u8,
+    configuration_flags: u32,
+    mut execute: F,
+) -> Option<DynamicIqAveragedSearch>
+where
+    F: FnMut(u32, u8, [i32; 4], DynamicIqStageExecution) -> Option<DynamicIqDftResult>,
+{
+    let completed_passes = dynamic_iq_search_pass_count(requested_passes, configuration_flags);
+    if completed_passes < 2 {
+        return None;
+    }
+    let mut average = DynamicIqAverage::default();
+    let mut baseline = None;
+    for pass_index in 0..completed_passes {
+        let candidate = average.candidate_for_pass(pass_index, initial);
+        let mut state = DynamicIqSearchState::new(candidate, common_step, first_step, second_step);
+        if !run_dynamic_iq_search_pass(&mut state, pass_index == 0, |stage, values, plan| {
+            let measurement = execute(pass_index, stage, values, plan)?;
+            if pass_index == 0 && stage == 1 {
+                baseline = Some(dynamic_iq_verification_metrics(measurement));
+            }
+            Some(measurement)
+        }) {
+            return None;
+        }
+        average.retain_pass(pass_index, state.current);
+    }
+    let accepted_passes = completed_passes - 1;
+    Some(DynamicIqAveragedSearch {
+        baseline: baseline?,
+        final_candidate: average.final_candidate(accepted_passes, seed)?,
+        completed_passes,
+        accepted_passes,
+    })
+}
+
 pub fn apply_dynamic_iq_search_stage(
     state: &mut DynamicIqSearchState,
     stage: u8,
@@ -1305,10 +1678,411 @@ pub fn apply_dynamic_iq_search_stage(
     true
 }
 
+/// Outer search-pass count from annotated `rf_apply_channel_settings`.
+/// Configuration bit 1 doubles the low-byte pass count.
+pub const fn dynamic_iq_search_pass_count(requested: u8, configuration_flags: u32) -> u32 {
+    requested as u32 * if configuration_flags & 2 == 0 { 1 } else { 2 }
+}
+
+impl DynamicIqAverage {
+    /// Candidate used to begin a vendor averaging pass. Passes zero and one use
+    /// the caller's current value; later passes start from the average of all
+    /// accepted passes 1..pass_index-1.
+    pub fn candidate_for_pass(&self, pass_index: u32, current: [i32; 4]) -> [i32; 4] {
+        if pass_index <= 1 {
+            return current;
+        }
+        self.accumulated
+            .map(|value| value.wrapping_div(pass_index as i32 - 1))
+    }
+
+    /// Pass zero is the vendor baseline pass and is deliberately excluded from
+    /// the accepted-candidate accumulator.
+    pub fn retain_pass(&mut self, pass_index: u32, values: [i32; 4]) {
+        if pass_index == 0 {
+            return;
+        }
+        for (sum, value) in self.accumulated.iter_mut().zip(values) {
+            *sum = sum.wrapping_add(value);
+        }
+    }
+
+    pub fn final_candidate(&self, accepted_count: u32, seed: [i32; 4]) -> Option<[i32; 4]> {
+        if accepted_count == 0 {
+            return None;
+        }
+        let divisor = accepted_count as i32;
+        Some(core::array::from_fn(|index| {
+            self.accumulated[index]
+                .wrapping_div(divisor)
+                .wrapping_add(seed[index])
+        }))
+    }
+}
+
+/// Final additive seed at annotated `0x18d4e..0x18db0`.
+pub fn dynamic_iq_final_seed(
+    alternate_profile: bool,
+    initial: DynamicIqInitialCandidate,
+) -> [i32; 4] {
+    if alternate_profile {
+        [
+            i32::from(initial.first),
+            i32::from(initial.second),
+            i32::from(initial.third),
+            i32::from(initial.fourth),
+        ]
+    } else {
+        [-2, 5, -1, -1]
+    }
+}
+
+/// Pure verification and restoration decisions from annotated
+/// `0x18dfe..0x18e9e`, cross-checked against Radare2 `pd:g` and Thumb
+/// disassembly. `baseline` is the pass-zero stage-one metric triplet.
+pub fn verify_dynamic_iq_candidate(
+    values: [i32; 4],
+    saved_values: [i32; 4],
+    baseline: DynamicIqVerificationMetrics,
+    measured: DynamicIqVerificationMetrics,
+) -> DynamicIqVerification {
+    let second_pair_rejected =
+        baseline.second <= measured.second >> 2 || measured.reference <= measured.second;
+    let first_pair_rejected =
+        baseline.third <= measured.third >> 2 || measured.reference <= measured.third;
+    let mut retained_values = values;
+    if second_pair_rejected {
+        retained_values[2] = saved_values[2];
+        retained_values[3] = saved_values[3];
+    }
+    if first_pair_rejected {
+        retained_values[0] = saved_values[0];
+        retained_values[1] = saved_values[1];
+    }
+    DynamicIqVerification {
+        retained_values,
+        first_pair_rejected,
+        second_pair_rejected,
+        first_quality_failed: measured.reference <= measured.third.wrapping_shl(10),
+        second_quality_failed: measured.reference <= measured.second.wrapping_shl(10),
+        // This intentionally preserves the vendor's asymmetric final test at
+        // 0x18e82: only the second-pair rejection flag suppresses publication.
+        vendor_publication_allowed: !second_pair_rejected,
+    }
+}
+
+pub fn finalize_dynamic_iq_search(
+    averaged: DynamicIqAveragedSearch,
+    saved_values: [i32; 4],
+    measured: DynamicIqVerificationMetrics,
+) -> DynamicIqFinalization {
+    let verification = verify_dynamic_iq_candidate(
+        averaged.final_candidate,
+        saved_values,
+        averaged.baseline,
+        measured,
+    );
+    // The vendor snapshots the packed candidate before verification and
+    // conditionally publishes those original words to software state. A
+    // rejected first pair is restored in hardware later but is not substituted
+    // in this asymmetric software publication.
+    let publication = verification
+        .vendor_publication_allowed
+        .then(|| dynamic_iq_correction_plan(averaged.final_candidate));
+    DynamicIqFinalization {
+        verification,
+        publication,
+    }
+}
+
+/// Forced switch case 1 of `phy_cal_cmd_dispatch` (`0x16990`). Radare2 `pd:g`
+/// confirms that the wrapper's fixed argument word `8` contributes bits 27 and
+/// 31, producing `0x88000000 | (command & 0xff)`.
+pub fn dynamic_iq_calibration_start_words(command: i32) -> DynamicIqCalibrationCommandWords {
+    DynamicIqCalibrationCommandWords {
+        abb805c: 0x12,
+        abb8060: 0x8800_0000 | (command as u32 & 0xff),
+        abb8064: 0,
+    }
+}
+
+/// Forced switch case 0 of `phy_cal_cmd_dispatch`: clear all three command
+/// words at `0x0abb805c..0x0abb8064`.
+pub const fn dynamic_iq_calibration_stop_words() -> DynamicIqCalibrationCommandWords {
+    DynamicIqCalibrationCommandWords {
+        abb805c: 0,
+        abb8060: 0,
+        abb8064: 0,
+    }
+}
+
+unsafe fn write_dynamic_iq_calibration_command(words: DynamicIqCalibrationCommandWords) {
+    unsafe {
+        write_u32(0x0abb_805c, words.abb805c);
+        write_u32(0x0abb_8060, words.abb8060);
+        write_u32(0x0abb_8064, words.abb8064);
+    }
+}
+
+/// Simple profile branch of annotated `rf_program_synth_freq` (`0x1869e`).
+/// It performs the vendor's 21-step restoring division rather than replacing
+/// it with wider host arithmetic, preserving all 32-bit wraparound behavior.
+pub fn dynamic_iq_synth_register_mode1(frequency: i32, integer: i32, reference: u32) -> u32 {
+    let mut remainder = 0x0004_c4b4_u32.wrapping_mul(frequency as u32);
+    let mut divisor = reference.wrapping_mul(1000);
+    let mut fractional = 0_u32;
+    for bit in (0..=20).rev() {
+        divisor >>= 1;
+        if divisor <= remainder {
+            remainder = remainder.wrapping_sub(divisor);
+            fractional |= 1 << bit;
+        }
+    }
+    fractional | (integer as u32).wrapping_shl(21)
+}
+
+/// Larger fixed-point branch of annotated `rf_program_synth_freq`, expressed
+/// as the same wrapping 64-bit operations performed by the firmware helpers.
+pub fn dynamic_iq_synth_register_mode0(
+    frequency: u32,
+    current_register: u32,
+    reference: u32,
+) -> Option<u32> {
+    let first = u64::from(current_register.wrapping_add(10)).wrapping_mul(u64::from(reference))
+        / 0x9c40_0000;
+    let scaled_reference = u64::from(reference).wrapping_shl(25) / 1000;
+    if scaled_reference == 0 {
+        return None;
+    }
+    let ratio = first.wrapping_shl(25) / scaled_reference;
+    let combined = scaled_reference
+        .wrapping_mul(ratio)
+        .wrapping_add(0x00a0_0000_u64.wrapping_mul(u64::from(frequency)));
+    let denominator_base = scaled_reference.wrapping_shl(3) / 10;
+    let denominator = denominator_base.wrapping_shl(3);
+    if denominator == 0 {
+        return None;
+    }
+    let combined = combined.wrapping_shl(3);
+    let quotient = combined / denominator;
+    let remainder = combined.wrapping_sub(quotient.wrapping_mul(denominator));
+    let fraction = remainder.wrapping_shl(28) / denominator;
+    let scaled_fraction = fraction.wrapping_mul(0x20_0000);
+    let packed =
+        scaled_fraction.wrapping_add((quotient & 0x7ff).wrapping_mul(0x2_0000).wrapping_shl(32));
+    Some((packed / 0x1000_0000) as u32)
+}
+
+pub fn dynamic_iq_synth_register(
+    mode: u8,
+    frequency: i32,
+    current_register: u32,
+    reference: u32,
+) -> Option<u32> {
+    if mode == 1 {
+        Some(dynamic_iq_synth_register_mode1(
+            frequency,
+            (current_register >> 21) as i32,
+            reference,
+        ))
+    } else {
+        dynamic_iq_synth_register_mode0(frequency as u32, current_register, reference)
+    }
+}
+
+/// Read the live mode, reference and current PLL word and calculate the synth
+/// result before any band register is modified.
+///
+/// # Safety
+///
+/// The DTCM calibration state and PLL register must be initialized and readable.
+pub unsafe fn prepare_dynamic_iq_synth_register(frequency: i32) -> Option<u32> {
+    unsafe {
+        let mode = (0x0400_994e as *const u8).read_volatile();
+        let reference = (0x0400_996c as *const u32).read_volatile();
+        let current_register = (0x0abc_00b4 as *const u32).read_volatile();
+        dynamic_iq_synth_register(mode, frequency, current_register, reference)
+    }
+}
+
+pub fn dynamic_iq_band_derived_values(
+    alternate_profile: bool,
+    table_value: u32,
+    source_04001ff4: u32,
+) -> DynamicIqBandDerivedValues {
+    let abc0020 = if alternate_profile {
+        0x1f00_d000
+    } else {
+        ((source_04001ff4 & 0x07ff_ffff) >> 26)
+            .wrapping_mul(0x2000_0000)
+            .wrapping_add(0x0f00_c000)
+    };
+    DynamicIqBandDerivedValues {
+        abc0020,
+        abc0030: 0x3ff_u32.wrapping_sub(table_value),
+        abb801c: table_value
+            .wrapping_mul(0x400)
+            .wrapping_add(if alternate_profile { 0x100 } else { 0xc0 }),
+    }
+}
+
+/// Detached acquisition envelope from annotated `rf_save_band_regs`
+/// (`0x187f4`), cross-checked against uninterrupted Thumb disassembly.
+///
+/// # Safety
+///
+/// The MAC/PHY banks must be enabled. `synth_register` must have been prepared
+/// from the still-unmodified live state. Pair this with
+/// [`restore_dynamic_iq_band_registers`] on every non-fatal path.
+pub unsafe fn begin_dynamic_iq_band_registers(
+    alternate_profile: bool,
+    table_value: u32,
+    synth_register: u32,
+    calibration_command: i32,
+) -> DynamicIqBandRegisterSnapshot {
+    let mut snapshot = DynamicIqBandRegisterSnapshot::default();
+    unsafe {
+        delay_units(1);
+        snapshot.abd0000 = (0x0abd_0000 as *const u32).read_volatile();
+        write_u32(0x0abd_0000, 0x0000_4000);
+        snapshot.abc0004 = (0x0abc_0004 as *const u32).read_volatile();
+        write_u32(0x0abc_0004, 0x0000_0306);
+        snapshot.abc0008 = (0x0abc_0008 as *const u32).read_volatile();
+        write_u32(0x0abc_0008, 0x0000_8000);
+
+        let derived;
+        if alternate_profile {
+            derived = dynamic_iq_band_derived_values(true, table_value, 0);
+            delay_units(1);
+            snapshot.abc0028 = (0x0abc_0028 as *const u32).read_volatile();
+            write_u32(0x0abc_0028, 0x0be0_1f01);
+            snapshot.abc00fc = (0x0abc_00fc as *const u32).read_volatile();
+            write_u32(0x0abc_00fc, 0);
+            snapshot.abc006c = (0x0abc_006c as *const u32).read_volatile();
+            write_u32(0x0abc_006c, 0x0001_70fe);
+            snapshot.abc0084 = (0x0abc_0084 as *const u32).read_volatile();
+            write_u32(0x0abc_0084, 0x0840_7872);
+            snapshot.abc0034 = (0x0abc_0034 as *const u32).read_volatile();
+            write_u32(0x0abc_0034, 0x0000_0ecf);
+            snapshot.abc0020 = (0x0abc_0020 as *const u32).read_volatile();
+            write_u32(0x0abc_0020, derived.abc0020);
+            snapshot.abc0050 = (0x0abc_0050 as *const u32).read_volatile();
+            write_u32(0x0abc_0050, 0x0021_7c63);
+            snapshot.abc0024 = (0x0abc_0024 as *const u32).read_volatile();
+            write_u32(0x0abc_0024, 0x09ff_d803);
+            delay_units(10);
+            write_u32(0x0abc_0050, 0x0020_7c63);
+            write_u32(0x0abc_0084, 0x0840_6872);
+            // The vendor leaves the zeroed workspace slot as the restore value
+            // in this branch instead of capturing the live register.
+            write_u32(0x0abb_81a4, 0x5a);
+        } else {
+            snapshot.abc0028 = (0x0abc_0028 as *const u32).read_volatile();
+            write_u32(0x0abc_0028, 0x0900_1f01);
+            snapshot.abc00fc = (0x0abc_00fc as *const u32).read_volatile();
+            write_u32(0x0abc_00fc, 0);
+            snapshot.abc006c = (0x0abc_006c as *const u32).read_volatile();
+            write_u32(0x0abc_006c, 0x0002_4f36);
+            snapshot.abc0084 = (0x0abc_0084 as *const u32).read_volatile();
+            write_u32(0x0abc_0084, 0x0840_b872);
+            snapshot.abc0034 = (0x0abc_0034 as *const u32).read_volatile();
+            write_u32(0x0abc_0034, 0x0000_06c3);
+            snapshot.abc0020 = (0x0abc_0020 as *const u32).read_volatile();
+            let source_04001ff4 = (0x0400_1ff4 as *const u32).read_volatile();
+            derived = dynamic_iq_band_derived_values(false, table_value, source_04001ff4);
+            write_u32(0x0abc_0020, derived.abc0020);
+            snapshot.abc0050 = (0x0abc_0050 as *const u32).read_volatile();
+            write_u32(0x0abc_0050, 0x0021_7c63);
+            snapshot.abc0024 = (0x0abc_0024 as *const u32).read_volatile();
+            write_u32(0x0abc_0024, 0x0987_1800);
+            delay_units(10);
+            write_u32(0x0abc_0050, 0x0020_7c63);
+            write_u32(0x0abc_0084, 0x0840_a872);
+            snapshot.abb81a4 = (0x0abb_81a4 as *const u32).read_volatile();
+            write_u32(0x0abb_81a4, 0x56);
+        }
+
+        snapshot.abb801c = (0x0abb_801c as *const u32).read_volatile();
+        write_u32(0x0abb_801c, derived.abb801c);
+        snapshot.abc0030 = (0x0abc_0030 as *const u32).read_volatile();
+        write_u32(0x0abc_0030, derived.abc0030);
+        snapshot.abc00b4 = (0x0abc_00b4 as *const u32).read_volatile();
+        let mode = (0x0400_994e as *const u8).read_volatile();
+        let extended_settle = (0x0400_9a08 as *const u8).read_volatile() != 0;
+        commit_channel_pll(synth_register, mode, extended_settle);
+        snapshot.abb800c = (0x0abb_800c as *const u32).read_volatile();
+        write_u32(0x0abb_800c, 1);
+        snapshot.abb8068 = (0x0abb_8068 as *const u32).read_volatile();
+        snapshot.abb80a8 = (0x0abb_80a8 as *const u32).read_volatile();
+        snapshot.abb81a8 = (0x0abb_81a8 as *const u32).read_volatile();
+        write_u32(0x0abb_81a8, 2);
+        write_dynamic_iq_calibration_command(dynamic_iq_calibration_start_words(
+            calibration_command,
+        ));
+        snapshot.abb8004 = (0x0abb_8004 as *const u32).read_volatile();
+        write_u32(0x0abb_8004, 0x0019_8600);
+        delay_units(6);
+    }
+    snapshot
+}
+
+/// Detached restoration envelope from annotated `rf_load_band_regs`
+/// (`0x1843e`). The correction-register restore flags intentionally remain
+/// mutable because the vendor workspace can change them during acquisition.
+///
+/// # Safety
+///
+/// The snapshot must come from the matching acquisition.
+pub unsafe fn restore_dynamic_iq_band_registers(snapshot: &DynamicIqBandRegisterSnapshot) {
+    unsafe {
+        write_u32(0x0abc_0004, snapshot.abc0004);
+        write_u32(0x0abc_0008, snapshot.abc0008);
+        write_u32(0x0abc_0028, snapshot.abc0028);
+        write_u32(0x0abc_0030, snapshot.abc0030);
+        write_u32(0x0abc_00fc, snapshot.abc00fc);
+        write_u32(0x0abc_006c, snapshot.abc006c);
+        write_u32(0x0abc_0084, snapshot.abc0084);
+        write_u32(0x0abc_0034, snapshot.abc0034);
+        write_u32(0x0abc_0020, snapshot.abc0020);
+        write_u32(0x0abc_0050, snapshot.abc0050);
+        write_u32(0x0abc_0024, snapshot.abc0024);
+        delay_units(10);
+        write_u32(0x0abb_81a4, snapshot.abb81a4);
+        write_dynamic_iq_calibration_command(dynamic_iq_calibration_stop_words());
+        write_u32(0x0abb_800c, snapshot.abb800c);
+        write_u32(0x0abb_801c, snapshot.abb801c);
+        write_u32(0x0abb_81a8, snapshot.abb81a8);
+        if snapshot.restore_abb80a8 {
+            write_u32(0x0abb_80a8, snapshot.abb80a8);
+        }
+        if snapshot.restore_abb8068 {
+            write_u32(0x0abb_8068, snapshot.abb8068);
+        }
+        write_u32(0x0abb_8004, snapshot.abb8004);
+        let mode = (0x0400_994e as *const u8).read_volatile();
+        let extended_settle = (0x0400_9a08 as *const u8).read_volatile() != 0;
+        commit_channel_pll(snapshot.abc00b4, mode, extended_settle);
+        write_u32(0x0abd_0000, snapshot.abd0000);
+        delay_units(6);
+    }
+}
+
 /// Control update from vendor `0x18600`, named `phy_set_reg2c_bit8` in the
 /// annotated firmware archive.
 pub fn dynamic_iq_capture_control(control: u32) -> u32 {
     control | 0x100
+}
+
+/// Publish the stage control to `0x0abb81ac`, matching
+/// `phy_set_reg2c_bit8` (`0x18654`).
+///
+/// # Safety
+///
+/// The MAC/PHY register bank must be enabled and writable.
+pub unsafe fn apply_dynamic_iq_capture_control(control: u32) -> u32 {
+    let published = dynamic_iq_capture_control(control);
+    unsafe { write_u32(0x0abb_81ac, published) };
+    published
 }
 
 /// Detached vendor `0x185bc`/annotated `rf_capture_adc_samples`: wait up to the
@@ -1413,6 +2187,230 @@ pub fn dynamic_iq_dft(
             imaginary: (third.1 >> 16) as i16,
         },
     }
+}
+
+/// Execute one detached hardware stage in exact vendor order. Capture timeout
+/// is reported but does not suppress the 64-word copy or DFT, matching
+/// `rf_capture_adc_samples`.
+///
+/// # Safety
+///
+/// The calibration engine and MAC/PHY register banks must already be enabled.
+pub unsafe fn execute_dynamic_iq_hardware_stage(
+    candidate: [i32; 4],
+    execution: DynamicIqStageExecution,
+    control: DynamicIqStageControl,
+    configuration: DynamicIqDftConfiguration,
+    samples: &mut [u32; 64],
+) -> DynamicIqHardwareStageResult {
+    let mut capture_ready = true;
+    if execution.capture_samples {
+        capture_ready = unsafe { capture_dynamic_iq_samples(samples, configuration.capture_polls) };
+    }
+    if execution.program_candidate {
+        unsafe { apply_dynamic_iq_correction_plan(dynamic_iq_correction_plan(candidate)) };
+        unsafe { apply_dynamic_iq_capture_control(control.hardware) };
+    }
+    let measurement = if execution.correlate_samples {
+        dynamic_iq_dft(
+            samples,
+            control.correlation,
+            configuration.mode,
+            configuration.first_phase_seed,
+            configuration.second_phase_seed,
+            configuration.third_phase_seed,
+            configuration.sample_width_shift,
+        )
+    } else {
+        DynamicIqDftResult::default()
+    };
+    DynamicIqHardwareStageResult {
+        measurement,
+        capture_ready,
+    }
+}
+
+/// Connect the pass/dispatcher state machine to the detached MMIO acquisition
+/// path. Readiness timeouts are accumulated for diagnostics but retain vendor
+/// behavior by allowing every pass to continue with the copied sample window.
+///
+/// # Safety
+///
+/// The dynamic-IQ band snapshot must already be active and all referenced
+/// MAC/PHY registers must be accessible.
+pub unsafe fn run_dynamic_iq_hardware_search(
+    initial: [i32; 4],
+    seed: [i32; 4],
+    common_step: i32,
+    first_step: i32,
+    second_step: i32,
+    requested_passes: u8,
+    configuration_flags: u32,
+    control_configuration: u32,
+    dft_configuration: DynamicIqDftConfiguration,
+    samples: &mut [u32; 64],
+) -> DynamicIqHardwareSearchResult {
+    let mut all_captures_ready = true;
+    let search = run_dynamic_iq_averaged_search(
+        initial,
+        seed,
+        common_step,
+        first_step,
+        second_step,
+        requested_passes,
+        configuration_flags,
+        |pass_index, stage, candidate, execution| {
+            let control = dynamic_iq_stage_control(control_configuration, stage, pass_index == 0)?;
+            let result = unsafe {
+                execute_dynamic_iq_hardware_stage(
+                    candidate,
+                    execution,
+                    control,
+                    dft_configuration,
+                    samples,
+                )
+            };
+            all_captures_ready &= result.capture_ready;
+            Some(result.measurement)
+        },
+    );
+    DynamicIqHardwareSearchResult {
+        search,
+        all_captures_ready,
+    }
+}
+
+/// Publish the averaged candidate and perform the vendor's final stage-one
+/// verification capture.
+///
+/// # Safety
+///
+/// The dynamic-IQ band snapshot must remain active and the calibration engine
+/// must still own the ADC path.
+pub unsafe fn execute_dynamic_iq_hardware_verification(
+    candidate: [i32; 4],
+    control_configuration: u32,
+    dft_configuration: DynamicIqDftConfiguration,
+    samples: &mut [u32; 64],
+) -> DynamicIqHardwareVerificationResult {
+    let publication = dynamic_iq_correction_plan(candidate);
+    unsafe { apply_dynamic_iq_correction_plan(publication) };
+    unsafe { replicate_dynamic_iq_correction_banks(publication) };
+    let control = dynamic_iq_verification_control(control_configuration);
+    unsafe { apply_dynamic_iq_capture_control(control) };
+    let capture_ready =
+        unsafe { capture_dynamic_iq_samples(samples, dft_configuration.capture_polls) };
+    let measurement = dynamic_iq_dft(
+        samples,
+        control,
+        dft_configuration.mode,
+        dft_configuration.first_phase_seed,
+        dft_configuration.second_phase_seed,
+        dft_configuration.third_phase_seed,
+        dft_configuration.sample_width_shift,
+    );
+    DynamicIqHardwareVerificationResult {
+        metrics: dynamic_iq_verification_metrics(measurement),
+        capture_ready,
+    }
+}
+
+/// Complete detached hardware envelope for annotated
+/// `rf_apply_channel_settings` (`0x1899c`). Every normal return restores the
+/// saved band registers. Failed searches force restoration of both original IQ
+/// words; successful verification maps each rejection flag to its matching
+/// conditional restore before applying the optional vendor publication.
+///
+/// # Safety
+///
+/// The caller must provide exclusive ownership of the calibration engine and
+/// initialized live synth inputs for the active hardware profile.
+pub unsafe fn run_dynamic_iq_hardware_calibration(
+    configuration: DynamicIqHardwareCalibrationConfiguration,
+    samples: &mut [u32; 64],
+) -> DynamicIqHardwareCalibrationResult {
+    let Some(synth_register) =
+        (unsafe { prepare_dynamic_iq_synth_register(configuration.synth_frequency) })
+    else {
+        return DynamicIqHardwareCalibrationResult::default();
+    };
+    let mut snapshot = unsafe {
+        begin_dynamic_iq_band_registers(
+            configuration.alternate_profile,
+            configuration.table_value,
+            synth_register,
+            configuration.calibration_command,
+        )
+    };
+    let first_saved = unpack_dynamic_iq_pair(snapshot.abb8068);
+    let second_saved = unpack_dynamic_iq_pair(snapshot.abb80a8);
+    let saved_values = [first_saved.0, first_saved.1, second_saved.0, second_saved.1];
+    let hardware_search = unsafe {
+        run_dynamic_iq_hardware_search(
+            saved_values,
+            configuration.seed,
+            configuration.common_step,
+            configuration.first_step,
+            configuration.second_step,
+            configuration.requested_passes,
+            configuration.configuration_flags,
+            configuration.control_configuration,
+            configuration.dft,
+            samples,
+        )
+    };
+    let mut result = DynamicIqHardwareCalibrationResult {
+        profile_shortcut: false,
+        synth_prepared: true,
+        finalization: None,
+        all_search_captures_ready: hardware_search.all_captures_ready,
+        verification_capture_ready: false,
+    };
+    if let Some(search) = hardware_search.search {
+        let verification = unsafe {
+            execute_dynamic_iq_hardware_verification(
+                search.final_candidate,
+                configuration.control_configuration,
+                configuration.dft,
+                samples,
+            )
+        };
+        let finalization = finalize_dynamic_iq_search(search, saved_values, verification.metrics);
+        snapshot.restore_abb8068 = finalization.verification.first_pair_rejected;
+        snapshot.restore_abb80a8 = finalization.verification.second_pair_rejected;
+        unsafe { publish_dynamic_iq_final_state(configuration.alternate_profile, finalization) };
+        result.finalization = Some(finalization);
+        result.verification_capture_ready = verification.capture_ready;
+    } else {
+        snapshot.restore_abb8068 = true;
+        snapshot.restore_abb80a8 = true;
+    }
+    unsafe { restore_dynamic_iq_band_registers(&snapshot) };
+    result
+}
+
+/// Exact outer profile gate from annotated `rf_apply_channel_settings`. A
+/// nonzero profile byte skips acquisition and marks the alternate-profile state
+/// valid; profile zero executes the primary path with its fixed final seed.
+///
+/// # Safety
+///
+/// The vendor DTCM state and calibration hardware must be initialized.
+pub unsafe fn run_vendor_dynamic_iq_hardware_calibration(
+    mut configuration: DynamicIqHardwareCalibrationConfiguration,
+    samples: &mut [u32; 64],
+) -> DynamicIqHardwareCalibrationResult {
+    let profile = unsafe { (0x0400_994e as *const u8).read_volatile() };
+    if profile != 0 {
+        unsafe { write_u8(0x0400_9961, 1) };
+        return DynamicIqHardwareCalibrationResult {
+            profile_shortcut: true,
+            ..DynamicIqHardwareCalibrationResult::default()
+        };
+    }
+    configuration.alternate_profile = false;
+    configuration.seed = [-2, 5, -1, -1];
+    unsafe { run_dynamic_iq_hardware_calibration(configuration, samples) }
 }
 
 /// Vendor `0x19534 -> 0x19518`: rounded signed down-scaling followed by a
@@ -1520,17 +2518,19 @@ pub fn build_iq_calibration_series(
     };
 
     let mut iterations = [EMPTY; 12];
-    let mut shift_state = initial_shift_state;
+    let mut final_shift_state = initial_shift_state;
     for index in 0..12 {
         let sample = samples[index];
         let coefficient = primary_iq_calibration(sample);
+        // Annotated `rf_compute_iq_gain_corr` reloads the same profile shift
+        // word for every gain; it does not feed one gain's result into the next.
         let publication = iq_calibration_publication(
             IQ_CALIBRATION_GAIN_INDICES[index],
             coefficient,
-            shift_state,
+            initial_shift_state,
         );
         if let Some(publication) = publication {
-            shift_state = publication.next_shift_state;
+            final_shift_state = publication.next_shift_state;
         }
         iterations[index] = IqCalibrationIteration {
             gain_index: IQ_CALIBRATION_GAIN_INDICES[index],
@@ -1550,7 +2550,7 @@ pub fn build_iq_calibration_series(
 
     IqCalibrationSeries {
         iterations,
-        final_shift_state: shift_state,
+        final_shift_state,
     }
 }
 
@@ -1658,6 +2658,91 @@ pub unsafe fn clear_calibration_sample_settings() {
         let value = (0x0abb_8114 as *const u32).read_volatile();
         write_u32(0x0abb_8114, value & !0x03ff_03ff);
     }
+}
+
+unsafe fn finish_iq_calibration_hardware(
+    snapshot: IqCalibrationRegisterSnapshot,
+    selected_mode: u8,
+) {
+    unsafe {
+        clear_calibration_sample_settings();
+        end_iq_calibration_path(snapshot);
+        configure_calibration_mode(selected_mode);
+        set_calibration_gain(-1);
+        set_calibration_engine_enabled(false);
+    }
+}
+
+/// Complete primary acquisition/publication branch of annotated
+/// `rf_calibrate_iq_dc` (`0x17c74`, target `0x17c20`). All timeout exits restore
+/// the path, band selector, test tone and calibration-engine gate.
+///
+/// # Safety
+///
+/// The caller must exclusively own the RF calibration engine and MAC/PHY
+/// register banks.
+pub unsafe fn run_primary_iq_calibration(
+    max_polls: u32,
+) -> Result<IqCalibrationHardwareResult, IqCalibrationHardwareError> {
+    const EMPTY_SAMPLE: IqCalibrationSample = IqCalibrationSample {
+        baseline_i: 0,
+        baseline_q: 0,
+        target_i: 0,
+        target_q: 0,
+    };
+
+    unsafe { set_calibration_engine_enabled(true) };
+    let selected_mode = unsafe { (0x0abb_80f0 as *const u32).read_volatile() as u8 & 3 };
+    let profile_base = 0x0400_994c_usize;
+    if unsafe { (profile_base as *const u8).add(0x10).read_volatile() } == 0 {
+        let shift_state = unsafe { (0x0abb_8680 as *const u32).read_volatile() };
+        unsafe { write_u32(profile_base + 0x2c, shift_state) };
+    }
+    let initial_shift_state = unsafe { ((profile_base + 0x2c) as *const u32).read_volatile() };
+    unsafe { configure_calibration_mode(0) };
+    let snapshot = unsafe { begin_iq_calibration_path(0, 0) };
+    let mut samples = [EMPTY_SAMPLE; 12];
+    for (index, gain_index) in IQ_CALIBRATION_GAIN_INDICES.iter().copied().enumerate() {
+        unsafe { set_calibration_gain(gain_index as i32) };
+        let baseline = match unsafe { run_calibration_sample(0x11, 0x11, max_polls) } {
+            Ok(value) => value,
+            Err(_) => {
+                unsafe { finish_iq_calibration_hardware(snapshot, selected_mode) };
+                return Err(IqCalibrationHardwareError::BaselineTimeout { gain_index });
+            }
+        };
+        let target = match unsafe { run_calibration_sample(1, 1, max_polls) } {
+            Ok(value) => value,
+            Err(_) => {
+                unsafe { finish_iq_calibration_hardware(snapshot, selected_mode) };
+                return Err(IqCalibrationHardwareError::TargetTimeout { gain_index });
+            }
+        };
+        samples[index] = IqCalibrationSample {
+            baseline_i: baseline.i,
+            baseline_q: baseline.q,
+            target_i: target.i,
+            target_q: target.q,
+        };
+    }
+    let series = build_iq_calibration_series(samples, initial_shift_state);
+    let final_iteration = &series.iterations[11];
+    let references = IqCalibrationReferences {
+        coefficient_i: final_iteration.coefficient.i,
+        coefficient_q: final_iteration.coefficient.q,
+        scale_i: final_iteration.scale_i,
+        scale_q: final_iteration.scale_q,
+    };
+    unsafe {
+        write_u32(0x0400_993c, references.coefficient_i as u32);
+        write_u32(0x0400_9940, references.coefficient_q as u32);
+        write_u32(0x0400_9944, references.scale_i as u32);
+        write_u32(0x0400_9948, references.scale_q as u32);
+        write_u8(profile_base + 0x10, 1);
+        apply_iq_calibration_series(&series);
+        finish_iq_calibration_hardware(snapshot, selected_mode);
+    }
+    Ok(IqCalibrationHardwareResult { series, references })
 }
 
 pub fn derive_remap_timing(remap: u32) -> (u16, u16) {
@@ -2074,6 +3159,100 @@ mod tests {
                 imaginary: 0,
             },
         };
+        assert_eq!(
+            dynamic_iq_stage_execution(0, true),
+            Some(DynamicIqStageExecution {
+                capture_samples: false,
+                program_candidate: true,
+                correlate_samples: false,
+                initial_control_before_program: true,
+                initial_control_before_correlate: false,
+            })
+        );
+        assert_eq!(
+            dynamic_iq_stage_execution(6, false),
+            Some(DynamicIqStageExecution {
+                capture_samples: true,
+                program_candidate: false,
+                correlate_samples: true,
+                initial_control_before_program: false,
+                initial_control_before_correlate: false,
+            })
+        );
+        assert_eq!(
+            dynamic_iq_stage_execution(7, false),
+            Some(DynamicIqStageExecution {
+                capture_samples: false,
+                program_candidate: true,
+                correlate_samples: false,
+                initial_control_before_program: false,
+                initial_control_before_correlate: false,
+            })
+        );
+        assert_eq!(dynamic_iq_stage_execution(13, false), None);
+        assert_eq!(
+            dynamic_iq_stage_control(0x1234_5678, 0, true),
+            Some(DynamicIqStageControl {
+                hardware: 0xffff_16ff,
+                correlation: 0xffff_16ff,
+            })
+        );
+        assert_eq!(
+            dynamic_iq_stage_control(0x1234_5678, 1, true),
+            Some(DynamicIqStageControl {
+                hardware: 0x003f_1624,
+                correlation: 0xffff_16ff,
+            })
+        );
+        assert_eq!(
+            dynamic_iq_stage_control(0x1234_5678, 7, false),
+            Some(DynamicIqStageControl {
+                hardware: 0x007f_1648,
+                correlation: 0x007f_1648,
+            })
+        );
+        assert_eq!(dynamic_iq_stage_control(0, 13, false), None);
+        assert_eq!(dynamic_iq_verification_control(0x1234_5678), 0xffff_16ff);
+
+        let mut pass_search = DynamicIqSearchState::new([10, 20, 30, 40], 2, 3, 4);
+        let mut executed_stages = 0_u8;
+        assert!(run_dynamic_iq_search_pass(
+            &mut pass_search,
+            true,
+            |stage, _candidate, execution| {
+                assert_eq!(stage, executed_stages);
+                assert_eq!(execution, dynamic_iq_stage_execution(stage, true).unwrap());
+                executed_stages += 1;
+                Some(measurement(
+                    i16::from(stage) + 1,
+                    i16::from(stage) + 2,
+                    i16::from(stage) + 3,
+                ))
+            }
+        ));
+        assert_eq!(executed_stages, 13);
+
+        let mut averaged_executions = 0;
+        let averaged = run_dynamic_iq_averaged_search(
+            [1, 2, 3, 4],
+            [10, 20, 30, 40],
+            0,
+            0,
+            0,
+            3,
+            0,
+            |_pass, _stage, _candidate, _execution| {
+                averaged_executions += 1;
+                Some(DynamicIqDftResult::default())
+            },
+        )
+        .unwrap_or_default();
+        assert_eq!(averaged_executions, 39);
+        assert_eq!(averaged.completed_passes, 3);
+        assert_eq!(averaged.accepted_passes, 2);
+        assert_eq!(averaged.final_candidate, [11, 22, 33, 44]);
+        assert_eq!(averaged.baseline, DynamicIqVerificationMetrics::default());
+
         let mut search = DynamicIqSearchState::new([10, 20, 30, 40], 2, 3, 4);
         assert!(apply_dynamic_iq_search_stage(
             &mut search,
@@ -2116,6 +3295,145 @@ mod tests {
             14,
             DynamicIqDftResult::default()
         ));
+
+        assert_eq!(dynamic_iq_search_pass_count(3, 0), 3);
+        assert_eq!(dynamic_iq_search_pass_count(3, 2), 6);
+        assert_eq!(
+            unpack_dynamic_iq_pair(dynamic_iq_correction_plan([-4, -11, -5, 1]).first_value),
+            (-4, -11)
+        );
+        assert_eq!(
+            dynamic_iq_calibration_start_words(7),
+            DynamicIqCalibrationCommandWords {
+                abb805c: 0x12,
+                abb8060: 0x8800_0007,
+                abb8064: 0,
+            }
+        );
+        assert_eq!(
+            dynamic_iq_calibration_stop_words(),
+            DynamicIqCalibrationCommandWords::default()
+        );
+        assert_eq!(dynamic_iq_synth_register_mode1(1, 3, 24_000), 0x0060_6aab);
+        assert_eq!(dynamic_iq_synth_register_mode1(10, 7, 24_000), 0x00e4_2aab);
+        assert_eq!(
+            dynamic_iq_synth_register(1, 1, 3 << 21, 24_000),
+            Some(0x0060_6aab)
+        );
+        assert_eq!(
+            dynamic_iq_synth_register_mode0(1, 0x0012_3456, 24_000),
+            Some(0x0000_8555)
+        );
+        assert_eq!(
+            dynamic_iq_synth_register_mode0(64, 0x0065_4321, 24_000),
+            Some(0x0071_5555)
+        );
+        assert_eq!(
+            dynamic_iq_band_derived_values(false, 0x10, 0x0400_0000),
+            DynamicIqBandDerivedValues {
+                abc0020: 0x2f00_c000,
+                abc0030: 0x3ef,
+                abb801c: 0x40c0,
+            }
+        );
+        assert_eq!(
+            dynamic_iq_band_derived_values(true, 0x10, 0),
+            DynamicIqBandDerivedValues {
+                abc0020: 0x1f00_d000,
+                abc0030: 0x3ef,
+                abb801c: 0x4100,
+            }
+        );
+        let mut average = DynamicIqAverage::default();
+        average.retain_pass(0, [100, 100, 100, 100]);
+        assert_eq!(average.accumulated, [0; 4]);
+        average.retain_pass(1, [10, 20, 30, 40]);
+        assert_eq!(
+            average.candidate_for_pass(2, [1, 2, 3, 4]),
+            [10, 20, 30, 40]
+        );
+        average.retain_pass(2, [20, 30, 40, 50]);
+        assert_eq!(
+            average.candidate_for_pass(3, [1, 2, 3, 4]),
+            [15, 25, 35, 45]
+        );
+        assert_eq!(
+            average.final_candidate(2, [-2, 5, -1, -1]),
+            Some([13, 30, 34, 44])
+        );
+        assert_eq!(
+            dynamic_iq_final_seed(false, dynamic_iq_initial_candidate(2)),
+            [-2, 5, -1, -1]
+        );
+        assert_eq!(
+            dynamic_iq_final_seed(true, dynamic_iq_initial_candidate(2)),
+            [7, -7, -5, 1]
+        );
+        assert_eq!(
+            verify_dynamic_iq_candidate(
+                [1, 2, 3, 4],
+                [10, 20, 30, 40],
+                DynamicIqVerificationMetrics {
+                    reference: 0,
+                    second: 100,
+                    third: 100,
+                },
+                DynamicIqVerificationMetrics {
+                    reference: 50,
+                    second: 60,
+                    third: 10,
+                },
+            ),
+            DynamicIqVerification {
+                retained_values: [1, 2, 30, 40],
+                first_pair_rejected: false,
+                second_pair_rejected: true,
+                first_quality_failed: true,
+                second_quality_failed: true,
+                vendor_publication_allowed: false,
+            }
+        );
+        let asymmetric_verification = verify_dynamic_iq_candidate(
+            [1, 2, 3, 4],
+            [10, 20, 30, 40],
+            DynamicIqVerificationMetrics {
+                reference: 0,
+                second: 100,
+                third: 100,
+            },
+            DynamicIqVerificationMetrics {
+                reference: 100,
+                second: 10,
+                third: 120,
+            },
+        );
+        assert_eq!(asymmetric_verification.retained_values, [10, 20, 3, 4]);
+        assert!(asymmetric_verification.first_pair_rejected);
+        assert!(!asymmetric_verification.second_pair_rejected);
+        assert!(asymmetric_verification.vendor_publication_allowed);
+        let finalized = finalize_dynamic_iq_search(
+            DynamicIqAveragedSearch {
+                baseline: DynamicIqVerificationMetrics {
+                    reference: 0,
+                    second: 100,
+                    third: 100,
+                },
+                final_candidate: [1, 2, 3, 4],
+                completed_passes: 3,
+                accepted_passes: 2,
+            },
+            [10, 20, 30, 40],
+            DynamicIqVerificationMetrics {
+                reference: 100,
+                second: 10,
+                third: 120,
+            },
+        );
+        assert_eq!(finalized.verification, asymmetric_verification);
+        assert_eq!(
+            finalized.publication,
+            Some(dynamic_iq_correction_plan([1, 2, 3, 4]))
+        );
 
         assert_eq!(rescale_signed(100, 6, 8), 25);
         assert_eq!(rescale_signed(200, 6, 8), 31);
@@ -2193,6 +3511,14 @@ mod tests {
             Some((0x0abb_8118, 0x0abb_8600, 0x0abb_8680))
         );
         assert_ne!(series.final_shift_state, 0x0025_4310);
+        assert_eq!(
+            series.iterations[0]
+                .publication
+                .map(|publication| publication.next_shift_state),
+            series.iterations[11]
+                .publication
+                .map(|publication| publication.next_shift_state)
+        );
         assert_eq!(
             iq_calibration_controls(0, 0, 0),
             IqCalibrationControls {
