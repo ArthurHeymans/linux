@@ -395,6 +395,111 @@ pub fn channel_control_gate(control: u16) -> u32 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelTunePlan {
+    pub phy_mode: u8,
+    pub recalibrate: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModeTransitionAction {
+    ReturnUnchanged,
+    ClearChannelPending,
+    Reinitialize,
+}
+
+/// Pure leading decisions from vendor `0xf78c`, called by `0xf802` with the
+/// request channel. The resulting mode and recalibration flag are passed to
+/// `0x16dd6`, the intact radio-channel transition entry.
+pub fn channel_tune_plan(operation: u8, control: u16) -> ChannelTunePlan {
+    let phy_mode = if control & 0x20 != 0 {
+        3
+    } else if control & 0x11 == 0x11 {
+        2
+    } else {
+        0
+    };
+    let recalibrate = phy_mode != 3 && !matches!(operation, 1 | 2 | 4);
+    ChannelTunePlan {
+        phy_mode,
+        recalibrate,
+    }
+}
+
+/// Leading branch structure of vendor `0x16b2e`. In the normal mode-zero
+/// startup state, a scan request remains in PHY mode 2 and skips the expensive
+/// mode/table reinitialization path.
+pub fn mode_transition_action(
+    current_mode: u8,
+    auxiliary_mode_active: bool,
+    requested_mode: u8,
+    force: bool,
+) -> ModeTransitionAction {
+    if current_mode == requested_mode && !force {
+        if auxiliary_mode_active {
+            ModeTransitionAction::ReturnUnchanged
+        } else {
+            ModeTransitionAction::ClearChannelPending
+        }
+    } else {
+        ModeTransitionAction::Reinitialize
+    }
+}
+
+/// Vendor `0x1682a` channel-to-frequency mapping for PHY band/mode byte zero.
+/// The returned unit is kHz; channel 14 uses its dedicated 2484 MHz value.
+pub fn channel_frequency_khz_2ghz(channel: u16) -> u32 {
+    if channel < 14 {
+        (2407 + u32::from(channel) * 5) * 1000
+    } else {
+        2484 * 1000
+    }
+}
+
+/// Arithmetic from vendor `0x17224`, which programs `0x0ab88020` during an RF
+/// channel transition. `reference_clock_khz` is the output of `0x1682a`.
+pub fn channel_measurement_timing(mode: u8, reference_clock_khz: u32) -> Option<i32> {
+    let clock_mhz = reference_clock_khz / 1000;
+    if clock_mhz == 0 {
+        return None;
+    }
+    let periods = if mode == 0 { 20 } else { 10 };
+    Some(-(((periods << 14) / clock_mhz) as i32))
+}
+
+/// Signed MHz offset cached by vendor `0x19928` after channel calibration.
+/// Mode zero is relative to channel 7's 2442 MHz center frequency.
+pub fn channel_frequency_offset_mhz(mode: u8, frequency_khz: u32) -> i16 {
+    let nominal_mhz = if mode == 0 { 0x098a } else { 0x157c };
+    ((frequency_khz / 1000) as i32 - nominal_mhz) as i16
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PllDivider {
+    pub integer: u32,
+    pub fractional: u32,
+    pub register: u32,
+}
+
+/// Pure translation of vendor `0x18f2c -> 0x18ef0`. It computes the integer
+/// and 21-bit fractional PLL divider later packed into `0x0abc00b4`.
+pub fn pll_divider(frequency_khz: u32, multiplier: u32, crystal_khz: u32) -> Option<PllDivider> {
+    if crystal_khz == 0 {
+        return None;
+    }
+    let product = u64::from(frequency_khz) * u64::from(multiplier);
+    let integer = product / u64::from(crystal_khz);
+    let remainder = product % u64::from(crystal_khz);
+    let fractional = (remainder << 21) / u64::from(crystal_khz);
+    let integer = integer as u32;
+    let fractional = fractional as u32;
+    Some(PllDivider {
+        integer,
+        fractional,
+        register: integer.wrapping_shl(21) | fractional,
+    })
+}
+
 pub fn derive_remap_timing(remap: u32) -> (u16, u16) {
     let mut first = ((remap << 2) >> 23) as i16;
     let mut second = ((remap << 11) >> 24) as i16;
@@ -556,6 +661,52 @@ mod tests {
         assert_eq!(channel_control_gate(0x0117), 1);
         assert_eq!(channel_control_gate(0x0122), 0x40);
         assert_eq!(channel_control_gate(0x0112), 0x40);
+        assert_eq!(
+            channel_tune_plan(0, 0x0117),
+            ChannelTunePlan {
+                phy_mode: 2,
+                recalibrate: true,
+            }
+        );
+        assert_eq!(
+            channel_tune_plan(0, 0x0137),
+            ChannelTunePlan {
+                phy_mode: 3,
+                recalibrate: false,
+            }
+        );
+        assert!(!channel_tune_plan(2, 0x0117).recalibrate);
+        assert_eq!(
+            mode_transition_action(2, false, 2, false),
+            ModeTransitionAction::ClearChannelPending
+        );
+        assert_eq!(
+            mode_transition_action(2, true, 2, false),
+            ModeTransitionAction::ReturnUnchanged
+        );
+        assert_eq!(
+            mode_transition_action(2, false, 3, false),
+            ModeTransitionAction::Reinitialize
+        );
+        assert_eq!(channel_frequency_khz_2ghz(1), 2_412_000);
+        assert_eq!(channel_frequency_khz_2ghz(6), 2_437_000);
+        assert_eq!(channel_frequency_khz_2ghz(13), 2_472_000);
+        assert_eq!(channel_frequency_khz_2ghz(14), 2_484_000);
+        assert_eq!(
+            channel_measurement_timing(0, channel_frequency_khz_2ghz(7)),
+            Some(-134)
+        );
+        assert_eq!(channel_frequency_offset_mhz(0, 2_442_000), 0);
+        assert_eq!(channel_frequency_offset_mhz(0, 2_437_000), -5);
+        assert_eq!(channel_frequency_offset_mhz(1, 2_442_000), -3058);
+        assert_eq!(
+            pll_divider(channel_frequency_khz_2ghz(6), 1250, 26_000),
+            Some(PllDivider {
+                integer: 117_163,
+                fractional: 967_916,
+                register: 0x356e_c4ec,
+            })
+        );
 
         let request = build_scan_channel_program_request(0, 4, 6);
         assert_eq!(request.as_bytes(), &[0, 1, 0x17, 0x01, 6, 0, 1, 2]);

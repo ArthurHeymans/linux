@@ -184,7 +184,23 @@ translated and tested in Rust. Retained scan channels produce the exact
 control, channel, link count, and link ID. The `0x124c0` control-gate
 classifier immediately preceding `0xf802` is also translated as pure logic.
 `0xf802`, rather than the withdrawn interior labels, is the next real
-channel-programming boundary. The terminal path is also established:
+channel-programming boundary. Its valid extent is `0xf802..0xf9ca`. The
+channel-producing subpath is now traced through intact functions:
+`0xf802 -> 0xf78c -> 0x16dd6 -> 0x16b0a -> 0x166ea`. For the normal `0x0117`
+scan control word, `0xf78c` selects PHY mode 2 and requests recalibration.
+Because startup already established mode 2, `0x16b2e` takes its short same-mode
+branch; only an actual channel change proceeds into the RF/calibration work at
+`0x166ea`. The mode and transition branches are translated as pure Rust plans.
+The next intact subpath, `0x166ea -> 0x191aa -> 0x18f2c -> 0x1682a`, computes
+the center frequency. Mode zero maps channels 1..13 as `(2407 + 5*n) MHz` and
+channel 14 as 2484 MHz. The retained vendor value `0x00254310` is 2,442,000
+kHz, exactly channel 7. Arithmetic from `0x17224` and `0x19928` is also
+translated, including the signed per-channel MHz offset from channel 7.
+`0x18f2c -> 0x18ef0` is now translated as exact 64-bit integer/fractional PLL
+synthesis. The helper region at `0x1aaf0..0x1b138` is ARM interworking code,
+not Thumb. Channel 6 with multiplier 1250 and a 26 MHz crystal produces packed
+PLL register value `0x356ec4ec` for `0x0abc00b4`.
+The terminal path is also established:
 `0x13fac` performs cleanup and calls `0x111ba`, which constructs the 12-byte
 `0x0806` scan-complete indication and queues it through `0xed4c`.
 

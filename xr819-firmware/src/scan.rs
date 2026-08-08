@@ -7,7 +7,8 @@
 use core::cell::UnsafeCell;
 
 use crate::phy::{
-    ChannelProgramRequestWire, build_scan_channel_program_request, channel_control_word,
+    ChannelProgramRequestWire, ChannelTunePlan, PllDivider, build_scan_channel_program_request,
+    channel_control_word, channel_frequency_khz_2ghz, channel_tune_plan, pll_divider,
 };
 use crate::wsm::{ScanChannel, StartScanRequest};
 
@@ -214,6 +215,21 @@ pub fn channel_program_request(index: usize) -> Option<ChannelProgramRequestWire
     })
 }
 
+pub fn channel_tuning(index: usize) -> Option<ChannelTunePlan> {
+    channel_program_request(index)
+        .map(|request| channel_tune_plan(request.operation, request.control.get()))
+}
+
+pub fn channel_frequency_khz(index: usize) -> Option<u32> {
+    let storage = unsafe { &*SCAN.0.get() };
+    (storage.band == 0 && index < usize::from(storage.num_channels))
+        .then(|| channel_frequency_khz_2ghz(storage.channels[index].number))
+}
+
+pub fn channel_pll(index: usize) -> Option<PllDivider> {
+    pll_divider(channel_frequency_khz(index)?, 1250, 26_000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +247,15 @@ mod tests {
         assert_eq!(channel(0).unwrap().number, 6);
         assert_eq!(channel_control(0), Some(0x0117));
         assert_eq!(channel_program_request(0).unwrap().control.get(), 0x0117);
+        assert_eq!(
+            channel_tuning(0),
+            Some(ChannelTunePlan {
+                phy_mode: 2,
+                recalibrate: true,
+            })
+        );
+        assert_eq!(channel_frequency_khz(0), Some(2_437_000));
+        assert_eq!(channel_pll(0).unwrap().register, 0x356e_c4ec);
         assert_eq!(
             service(),
             Some(ScanCompletion {

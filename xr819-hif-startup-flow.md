@@ -316,9 +316,78 @@ The following `0x124c0` prerequisite is also translated as a pure classifier.
 It stores gate value `0x40` when control bits `0x22` are both present or the low
 seven bits equal `0x12`; otherwise it stores `1`.
 
-`0xf802` is the true large channel-programming boundary. It configures per-link
-state, packet engines, gain/rate tables, MAC state, and downstream operations;
-its side effects are not yet enabled.
+`0xf802` is the true large channel-programming boundary. Its complete valid
+function is only 458 bytes (`0xf802..0xf9ca`), not an unbounded mixed-code
+region. The initial phase copies operation/control/option into `0x04001680`,
+prepares link state and packet-engine flags, stores the channel at
+`0x04003a68`, and calls `0xf78c`.
+
+The intact radio path below that call is now established:
+
+```text
+0xf802(request)
+  -> 0xf78c(channel)
+       -> derive PHY mode and recalibration flag
+       -> 0x16dd6(mode, channel, recalibrate)
+            -> 0x16b2e(mode, 0)       mode transition
+            -> 0x16b0a(channel)       cached-channel check
+                 -> 0x166ea(channel)  actual RF/calibration transition
+```
+
+For an ordinary operation-zero 2.4 GHz scan control word `0x0117`, `0xf78c`
+selects PHY mode 2 with recalibration enabled. Startup already leaves the
+current mode at 2, so `0x16b2e` takes its short same-mode branch rather than
+rerunning `0x1666e -> 0x171ce -> 0x173c2 -> 0x198f2`. A channel change then
+passes through `0x16b0a` to `0x166ea`. These branch decisions are translated
+as tested pure Rust plans.
+
+The first channel-dependent arithmetic inside `0x166ea` is now resolved:
+
+```text
+0x166ea(channel)
+  -> 0x191aa
+       -> 0x18f2c
+            -> 0x1682a(channel)  center frequency in kHz
+```
+
+For mode/band byte zero, `0x1682a` uses `(2407 + channel * 5) MHz` for channels
+1 through 13 and the dedicated 2484 MHz value for channel 14. Thus channel 6
+maps to `2_437_000` kHz. Vendor startup state `0x00254310` is decimal
+`2_442_000`, exactly channel 7's center frequency rather than an arbitrary
+clock constant.
+
+Two subsequent calculations are also translated:
+
+- `0x17224` derives the signed measurement timing written to `0x0ab88020`;
+- `0x19928` caches the channel's signed MHz displacement from 2442 MHz in mode
+  zero, so channel 6 produces `-5`.
+
+`0x18f2c` then calls the ARM interworking helper `0x18ef0` to synthesize the
+fractional PLL divider. The apparent code at `0x1aaf0..0x1b138` must be decoded
+as ARM, not Thumb: it provides 64-bit divide, multiply, and subtract helpers.
+The exact calculation is:
+
+```text
+product    = frequency_kHz * multiplier
+integer    = product / crystal_kHz
+remainder  = product % crystal_kHz
+fractional = (remainder << 21) / crystal_kHz
+register   = (integer << 21) | fractional
+```
+
+For channel 6 with the mode-zero vendor constants `multiplier = 1250` and
+`crystal = 26000 kHz`, this yields:
+
+```text
+integer    = 117163
+fractional = 967916
+0x0abc00b4 = 0x356ec4ec
+```
+
+Retained scan state now exposes the verified center frequency and PLL register
+value alongside its control word and tuning plan. The hardware-producing
+remainder of `0x166ea`, including measurement/calibration loops, remains
+disabled.
 
 The real scan-complete producer is now identified. Terminal scan state calls
 `0x13fac`, which clears scan state and calls `0x111ba`. `0x111ba` allocates a

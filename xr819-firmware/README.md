@@ -54,6 +54,11 @@ Implemented:
 - translated the compact `0xfdfa` channel-control encoding;
 - exact `zerocopy` eight-byte `0x14304 -> 0xf802` channel request ABI;
 - translated pure `0x124c0` channel-control gate classification;
+- traced `0xf802 -> 0xf78c -> 0x16dd6 -> 0x16b0a -> 0x166ea` radio tuning;
+- translated PHY-mode, recalibration, and same-mode transition decisions;
+- verified `0x1682a` 2.4 GHz channel-to-frequency mapping;
+- translated `0x17224` measurement timing and `0x19928` channel offsets;
+- exact `0x18f2c -> 0x18ef0` fractional PLL synthesis;
 - vendor channel-timing validation and event-bit-10 scan activation semantics;
 - verified completion path `0x13fac -> 0x111ba -> 0xed4c`;
 - vendor-aligned 12-byte asynchronous empty scan completion while the real PHY scan path is incomplete.
