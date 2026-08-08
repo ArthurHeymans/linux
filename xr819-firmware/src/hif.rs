@@ -7,6 +7,7 @@
 use core::arch::asm;
 #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
 use core::arch::global_asm;
+use core::cell::UnsafeCell;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
@@ -105,11 +106,19 @@ const RX_BUFFER_COUNT: usize = 30;
 /// pre-HIF clock transition makes this packet-memory bank CPU-accessible.
 pub const SHARED_BUFFER_BASE: usize = 0x0901_49a8;
 pub const SHARED_BUFFER_SIZE: usize = 384;
+const REQUEST_PAYLOAD_CAPACITY: usize = RX_BUFFER_SIZE - 4;
+
+struct RequestScratch(UnsafeCell<[u8; REQUEST_PAYLOAD_CAPACITY]>);
+
+unsafe impl Sync for RequestScratch {}
+
+static REQUEST_SCRATCH: RequestScratch =
+    RequestScratch(UnsafeCell::new([0; REQUEST_PAYLOAD_CAPACITY]));
 
 #[derive(Clone, Copy)]
 pub struct ReceivedRequest {
     pub id: u16,
-    pub station_id: Option<[u8; 6]>,
+    pub payload: &'static [u8],
 }
 
 pub struct DebugSnapshot {
@@ -352,15 +361,11 @@ impl Transport {
         let raw_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
         let length = wire_len.min(descriptor_len).min(RX_BUFFER_SIZE);
         let id = raw_id & 0x0fff;
-        let station_id = if id == 0x0009 && length >= 26 {
-            let mut address = [0; 6];
-            for (index, byte) in address.iter_mut().enumerate() {
-                *byte = unsafe { ((buffer_address + 20 + index) as *const u8).read_volatile() };
-            }
-            Some(address)
-        } else {
-            None
-        };
+        let payload_len = length.saturating_sub(4).min(REQUEST_PAYLOAD_CAPACITY);
+        let scratch = unsafe { &mut *REQUEST_SCRATCH.0.get() };
+        for (index, byte) in scratch[..payload_len].iter_mut().enumerate() {
+            *byte = unsafe { ((buffer_address + 4 + index) as *const u8).read_volatile() };
+        }
 
         self.state.rx_consumer.set(consumer.wrapping_add(1));
         self.software_state
@@ -381,7 +386,10 @@ impl Transport {
         self.state.rx_producer.set(producer.wrapping_add(1));
         drain_write_buffer();
 
-        Some(ReceivedRequest { id, station_id })
+        Some(ReceivedRequest {
+            id,
+            payload: unsafe { core::slice::from_raw_parts(scratch.as_ptr(), payload_len) },
+        })
     }
 
     /// Publishes one firmware-to-host WSM message.

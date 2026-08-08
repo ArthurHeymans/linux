@@ -204,6 +204,189 @@ IRQ 13                             callback registration, not only enable bit
 The `0x7f7` choice is conditional on software mode already being one and bit 10
 of the pre-existing HIF control being set. It is not a generic reset value.
 
+## Rust runtime BSS initialization
+
+The flat main image does not contain `.bss`, and the translated vendor runtime
+clear only covers the vendor range `0x04002078..0x04009c44`. Rust statics at
+`__bss_start..__bss_end` therefore retained arbitrary SRAM contents across
+reloads. This was exposed when the new scan state started in `Busy` before its
+first request.
+
+`hif-startup::_start` now clears its linker-defined Rust `.bss` before calling
+`initialize_runtime_state()`. This is required for all `UnsafeCell`-backed
+configuration, HIF scratch, and scan state. With the fix, repeated scans retain
+and release their plans correctly across ordinary MMC rebinds.
+
+## Vendor loader register section
+
+The 41-entry PHY/MAC register table is not consumed by low firmware code. It is
+container section type 2 and is applied directly by the vendor download
+bootloader before firmware entry. Radare2 at bootloader `0x080004c4` shows:
+
+```asm
+0x080004c4  ldr r0, [section_type]
+0x080004c8  cmp r0, 2
+0x080004d0  mov r2, 4
+0x080004dc  bl read_stream             ; read byte count
+...
+0x080004f0  ldr r4, [remaining]
+0x08000510  add r1, sp, 4
+0x08000514  bl read_stream             ; chunks of address/value pairs
+...
+0x0800052c  ldr r1, [r1, 4]            ; value
+0x08000530  ldr r2, [r6, r0, lsl 3]    ; address
+0x08000534  str r1, [r2]                ; direct MMIO write
+```
+
+The section begins with byte count `0x148`, meaning 41 eight-byte pairs. The
+custom Rust downloader now applies all 41 writes before jumping to the low
+image. This includes defaults in `0x0ab80000..0x0abb0078` and reproduces a
+previously omitted vendor loader side effect. Startup, probe, configuration,
+and empty-scan completion continue to work with the table enabled.
+
+## Real vendor start-scan dispatcher
+
+The WSM dispatcher at `0x0000e558` masks the command ID with `0x0c3f`, clamps
+IDs above `0x24`, and jumps through the initialized-SRAM table at
+`0x04000710`. Table index 7 contains Thumb pointer `0x00010cfb`, establishing
+the real start-scan request path:
+
+```text
+WSM ID 7
+  -> 0x00010cfa  request wrapper / confirmation builder
+       -> 0x00013d44  start-scan validation and scheduler activation
+```
+
+`0x10cfa` passes the payload at request offset four to `0x13d44`, then rewrites
+the request buffer as an eight-byte status confirmation and queues it through
+`0xed4c`.
+
+`0x13d44` validates:
+
+- no scan already active (`0x0400860c`);
+- at most 34 channels and 16 SSIDs in the vendor ABI;
+- every channel has nonzero maximum dwell;
+- maximum dwell is not below minimum dwell;
+- probe delay does not exceed `minimum_dwell * 1024`.
+
+On success it copies retained scan state, marks `0x0400860c = 1`, and sets
+platform event bit 10 at `0x04001fd4` to start scheduler processing. The Rust
+scan engine now reproduces these channel validation rules, vendor busy status
+4, the active byte, and event-bit lifecycle while preserving CW1200's public
+48-channel parser/storage limit. Linux currently submits 11-channel batches,
+which remain valid.
+
+The event callback registration block at `0x00000698..0x000006e4` maps event
+bit 10 to Thumb callback `0x00014353`. This establishes the next intact path:
+
+```text
+0x13d44 sets event bit 10
+  -> scheduler 0xf140
+  -> callback table 0x040021b4[10]
+  -> 0x14352 scan state machine
+       -> 0x14304 per-channel setup
+            -> 0xfdfa channel-control encoding
+            -> 0xf802 full MAC/channel programming
+```
+
+`0x14304` obtains the current retained channel and calls `0xfdfa`. The latter is
+fully translated as the pure Rust `channel_control_word()`: band zero starts
+with `0x17`, band one with `0x26`, bandwidth modes add `0x100/0x200/0x400`,
+and channel flag bit 8 adds `0x40`. A normal 2.4 GHz scan channel in mode zero
+therefore produces `0x0117`. Retained Rust scan state now exposes this exact
+control word per channel, forming the first tested connection from the parsed
+WSM request into the real vendor channel-setup ABI.
+
+`0x14304` then assembles an exact eight-byte call ABI for `0xf802`:
+
+```text
+byte 0    operation = 0
+byte 1    option = scan flags bit 2
+u16  2    `0xfdfa` channel-control word
+u16  4    channel number / flags
+byte 6    link count = 1
+byte 7    link ID = 2
+```
+
+This is represented with a `zerocopy` wire type and is produced directly from
+retained scan state. For band zero, flags bit 2 set, and channel 6, the bytes
+are `00 01 17 01 06 00 01 02`.
+
+The following `0x124c0` prerequisite is also translated as a pure classifier.
+It stores gate value `0x40` when control bits `0x22` are both present or the low
+seven bits equal `0x12`; otherwise it stores `1`.
+
+`0xf802` is the true large channel-programming boundary. It configures per-link
+state, packet engines, gain/rate tables, MAC state, and downstream operations;
+its side effects are not yet enabled.
+
+The real scan-complete producer is now identified. Terminal scan state calls
+`0x13fac`, which clears scan state and calls `0x111ba`. `0x111ba` allocates a
+12-byte message, assigns WSM ID `0x0806`, fills status, PSM, channel count, and
+a trailing 16-bit vendor field, then queues it through `0xed4c`:
+
+```text
+scan terminal state
+  -> 0x13fac  cleanup and completion argument assembly
+       -> 0x111ba  12-byte WSM_SCAN_COMPLETE_IND
+            -> 0xed4c
+```
+
+The Rust indication now also uses the vendor/CW1200-aligned 12-byte layout,
+with its currently unused trailing field zeroed. Repeated Linux scans accept
+this corrected length. The previously examined `0x11208` constructs a
+`0x0809` indication, not scan-complete.
+
+## MAC table generation at `0x00017008`
+
+Radare2 `pdf` and Ghidra decompilation now agree on the complete algorithm:
+
+1. Select the 22 six-byte anchors at `0x04000ca0` for mode zero or
+   `0x04000d24` for mode one.
+2. Read a signed correction from `0x040034f8` or `0x0400358a`.
+3. Normalize each signed pair as `(upper - correction + 8) >> 4` and
+   `(lower + correction + 8) >> 4`.
+4. For each of 80 target positions, search anchors from index 21 down to zero,
+   retaining the qualifying entry with the lowest signed lower value.
+5. Pack the selected selector and low seven upper bits into both halfwords of
+   one `0x0ab80800` table word.
+6. Apply the mode-specific address/value list, copy table bits into
+   `0x0ab80400`, and place the first one-based entry whose upper field is below
+   11 into the low seven bits of `0x0ab80410`.
+
+`src/phy.rs` contains both extracted anchor arrays, all five relevant register
+lists, the pure table generator, golden-value tests, and an unsafe exact
+mode-zero hardware function. With zero correction the generated table begins
+with `0x2b202b20`, has boundary entry 55, and ends with `0x001a001a`.
+
+The translated `0x16a38`, `0x198f2`, and `0x16ca4` software-state writes now
+run immediately before the hardware function. They initialize the vendor MAC
+state at `0x0400994c`, mode-zero helper pointers/state at `0x040099d4`, and the
+two signed remap-derived timing values at `0x04009990/0x04009992`. For remap
+window two `0x04118000`, the exact signed decoding produces `1032` and `-852`
+(stored as a wrapped `u16`), not an unsigned `9940`.
+
+The hardware function then runs after packet-DMA preparation, matching the
+`0x16d24` position in `0x9ac`. Probe and repeated empty scans remain stable.
+A bounded halted read verified the live values:
+
+```text
+0x0ab80c00 = 0x00b43fdb   bit 11 enabled
+0x0ab80800 = 0x2b202b20   first generated table word
+0x0ab80400 = 0x55f42b2b   table field merged
+0x0ab80410 = 0x00000037   one-based boundary 55
+0x0aba2000 = 0x00ed00ed   initialized work table
+0x0aba805c = 0x27082026   vendor fixed value
+```
+
+IRQ 6 is no longer a diagnostic stub. The vendor callback at `0x0000f1fe`
+sets bit 27 in the platform event word at `0x04001fd4`; the Rust callback now
+reproduces that operation. IRQs 18, 20, and 21 remain diagnostic stubs, so no
+channel operation is started yet. Also, resuming after a debugfs halt lost a
+subsequent HIF command
+interrupt and killed the BH; rebind recovered normally. Treat debugfs halt as a
+postmortem operation for this path rather than expecting a live resume.
+
 ## Pre-HIF platform flow
 
 ### `0x00000bb0`: do not reorder or omit the transition
@@ -488,7 +671,15 @@ They must not be mistaken for production design.
 - Host-to-firmware RX descriptor polling works.
 - `WRITE_MIB_REQ_ID` receives a successful generic confirmation.
 - `CONFIGURATION_REQ_ID` receives a structured configuration confirmation.
-- Linux completes probe and registers `phy44` / `wlan0` without a stuck command.
+- The complete SDD/DPD request is validated as TLV data and retained in static
+  firmware storage; element `0xc5` resolves to the expected 24 MHz reference.
+- Linux completes probe and registers a `phy` / `wlan0` without a stuck command.
+- Start-scan is parsed exactly as Linux serializes it: a 12-byte fixed header,
+  16-byte channel records, and 36-byte SSID records. The borrowed HIF payload is
+  copied into a fixed retained scan plan before the RX descriptor is reused.
+- Firmware-owned work is serviced before the next host request. Start-scan
+  receives `0x0407`, then an explicit empty `0x0806` on the next service pass,
+  so repeated Linux scans finish cleanly while the real PHY scan is absent.
 - Postmortem SRAM reads work after stopping BH, asserting CPU reset, restoring
   ACCESS mode, and waiting 30 ms.
 - `CONTROL = 0x3000` means host WUP + hardware RDY + zero next-message length.
@@ -541,15 +732,20 @@ HIN6  HIF ring/control initializer reached its final postcode
 
 Work from the vendor order, not by accumulating isolated writes:
 
-1. Remove temporary packet-memory probes now that the low-stack cause is proven.
-2. Parse and retain the complete configuration request, including borrowed SDD
-   data, rather than only echoing the station address.
-3. Implement the requests Linux sends after probe and their real state effects.
-4. Translate the missing middle of `0x9ac`, then restore post-`0x9ac` routing,
+1. Replace the IRQ 18/20 encoder callback and IRQ 21 MIC callback with
+   translated queue completion behavior. IRQ 6, `0x16a38`/`0x198f2`/`0x16ca4`
+   software state, mode-zero MAC hardware initialization, and bit 11 enable are
+   now active and target-tested.
+2. Translate the bounded leading portion of `0xf802`, now verified as the real
+   channel-programming boundary reached through event bit 10, `0x14352`, and
+   `0x14304`; preserve the verified `0x13fac -> 0x111ba -> 0xed4c` completion
+   path when replacing synthetic completion. The earlier `0x18836 -> 0x1856a -> 0x1814a` chain
+   remains withdrawn because those are interior calibration blocks.
+3. Replace the empty scan completion with real channel tuning and receive
+   indications, preserving the retained SDD for board-specific values.
+4. Translate the remaining middle of `0x9ac`, then restore post-`0x9ac` routing,
    the global `0x16550` barrier, real IRQ handlers, and scheduler entry.
 5. Implement faithful `0xed4c` pending/event accounting and RX/TX completion.
-6. Begin the exact PHY/SDD initialization path required for scan and channel
-   operation.
 
 ## Operational warnings
 

@@ -175,13 +175,25 @@ fn post_code(value: u32) {
 
 extern "C" fn diagnostic_irq_stub() {}
 
+/// Vendor IRQ 6 callback at `0x0000f1fe`: atomically set bit 27 in the
+/// platform event word. The original masks IRQ/FIQ around this read-modify-write;
+/// the interrupt dispatcher already invokes Rust callbacks with IRQs masked.
+extern "C" fn scheduler_event_irq() {
+    let events = register32(0x0400_1fd4);
+    events.set(events.get() | (1 << 27));
+}
+
 /// Literal side effects of vendor `0x00016148`: install the callback in the
 /// reverse-ordered 32-entry table and enable the interrupt source.
-fn register_interrupt_source(irq: u32) {
-    let callback = diagnostic_irq_stub as *const () as usize as u32 | 1;
+fn register_interrupt_source_with(irq: u32, callback: extern "C" fn()) {
+    let callback = callback as *const () as usize as u32 | 1;
     register32(IRQ_CALLBACK_TABLE + ((31 - irq) as usize * 4)).set(callback);
     let interrupts = interrupt_controller();
     interrupts.enable.set(interrupts.enable.get() | (1 << irq));
+}
+
+fn register_interrupt_source(irq: u32) {
+    register_interrupt_source_with(irq, diagnostic_irq_stub);
 }
 
 /// Reproduces the startup-image data and BSS initialization needed by the
@@ -440,7 +452,7 @@ pub fn prepare_dma_and_clocks() {
 /// Vendor `0x00000c38`, `0x00000a88`, and `0x00000b88`, called in this
 /// order after HIF activation and before `0x000009ac`.
 pub fn register_post_activation_interrupts() {
-    register_interrupt_source(6);
+    register_interrupt_source_with(6, scheduler_event_irq);
     register_interrupt_source(18);
     register_interrupt_source(20);
     register_interrupt_source(21);

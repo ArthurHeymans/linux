@@ -102,6 +102,7 @@ pub enum Error {
     Truncated,
     InvalidLength,
     InvalidDpdLength,
+    InvalidScanRequest,
     OutputTooSmall,
 }
 
@@ -111,6 +112,7 @@ impl fmt::Display for Error {
             Self::Truncated => "truncated WSM message",
             Self::InvalidLength => "invalid WSM message length",
             Self::InvalidDpdLength => "invalid WSM DPD block length",
+            Self::InvalidScanRequest => "invalid WSM start-scan request",
             Self::OutputTooSmall => "WSM output buffer is too small",
         })
     }
@@ -145,6 +147,108 @@ impl<'a> ConfigurationRequest<'a> {
             dpd_flags: wire.dpd_flags.get(),
             dpd_data: &payload[size_of::<ConfigurationRequestWire>()..12 + dpd_block_len],
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScanChannel {
+    pub number: u16,
+    pub min_channel_time: u32,
+    pub max_channel_time: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StartScanRequest<'a> {
+    pub band: u8,
+    pub scan_type: u8,
+    pub flags: u8,
+    pub max_tx_rate: u8,
+    pub auto_scan_interval: u32,
+    pub num_probes: u8,
+    pub num_channels: u8,
+    pub num_ssids: u8,
+    pub probe_delay: u8,
+    channel_bytes: &'a [u8],
+    ssid_bytes: &'a [u8],
+}
+
+impl<'a> StartScanRequest<'a> {
+    const FIXED_LEN: usize = 12;
+    const CHANNEL_LEN: usize = 16;
+    const SSID_LEN: usize = 36;
+    const MAX_CHANNELS: usize = 48;
+    const MAX_SSIDS: usize = 2;
+
+    pub fn parse(payload: &'a [u8]) -> Result<Self, Error> {
+        if payload.len() < Self::FIXED_LEN {
+            return Err(Error::Truncated);
+        }
+
+        let num_channels = usize::from(payload[9]);
+        let num_ssids = usize::from(payload[10]);
+        if num_channels > Self::MAX_CHANNELS || num_ssids > Self::MAX_SSIDS {
+            return Err(Error::InvalidScanRequest);
+        }
+
+        let channels_len = num_channels
+            .checked_mul(Self::CHANNEL_LEN)
+            .ok_or(Error::InvalidScanRequest)?;
+        let ssids_len = num_ssids
+            .checked_mul(Self::SSID_LEN)
+            .ok_or(Error::InvalidScanRequest)?;
+        let ssids_offset = Self::FIXED_LEN
+            .checked_add(channels_len)
+            .ok_or(Error::InvalidScanRequest)?;
+        let end = ssids_offset
+            .checked_add(ssids_len)
+            .ok_or(Error::InvalidScanRequest)?;
+        if end != payload.len() {
+            return Err(Error::InvalidScanRequest);
+        }
+
+        let request = Self {
+            band: payload[0],
+            scan_type: payload[1],
+            flags: payload[2],
+            max_tx_rate: payload[3],
+            auto_scan_interval: read_u32(payload, 4)?,
+            num_probes: payload[8],
+            num_channels: payload[9],
+            num_ssids: payload[10],
+            probe_delay: payload[11],
+            channel_bytes: &payload[Self::FIXED_LEN..ssids_offset],
+            ssid_bytes: &payload[ssids_offset..end],
+        };
+
+        for index in 0..num_ssids {
+            request.ssid(index)?;
+        }
+        Ok(request)
+    }
+
+    pub fn channel(&self, index: usize) -> Result<ScanChannel, Error> {
+        if index >= usize::from(self.num_channels) {
+            return Err(Error::InvalidScanRequest);
+        }
+        let offset = index * Self::CHANNEL_LEN;
+        Ok(ScanChannel {
+            number: read_u16(self.channel_bytes, offset)?,
+            min_channel_time: read_u32(self.channel_bytes, offset + 4)?,
+            max_channel_time: read_u32(self.channel_bytes, offset + 8)?,
+        })
+    }
+
+    pub fn ssid(&self, index: usize) -> Result<&'a [u8], Error> {
+        if index >= usize::from(self.num_ssids) {
+            return Err(Error::InvalidScanRequest);
+        }
+        let offset = index * Self::SSID_LEN;
+        let length = usize::try_from(read_u32(self.ssid_bytes, offset)?)
+            .map_err(|_| Error::InvalidScanRequest)?;
+        if length > 32 {
+            return Err(Error::InvalidScanRequest);
+        }
+        Ok(&self.ssid_bytes[offset + 4..offset + 4 + length])
     }
 }
 
@@ -230,6 +334,30 @@ pub fn encode_status_response(id: u16, status: u32, output: &mut [u8]) -> Result
     Ok(LEN)
 }
 
+pub fn encode_scan_complete_indication(
+    status: u32,
+    psm: u8,
+    num_channels: u8,
+    vendor_field: u16,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const LEN: usize = HEADER_LEN + 8;
+    if output.len() < LEN {
+        return Err(Error::OutputTooSmall);
+    }
+
+    Header {
+        len: LEN as u16,
+        id: 0x0806,
+    }
+    .encode(output)?;
+    write_u32(output, 4, status);
+    output[8] = psm;
+    output[9] = num_channels;
+    output[10..12].copy_from_slice(&vendor_field.to_le_bytes());
+    Ok(LEN)
+}
+
 pub fn encode_configuration_response(
     station_id: [u8; 6],
     output: &mut [u8],
@@ -256,6 +384,11 @@ pub fn encode_configuration_response(
         write_u32(output, offset + 8, 10);
     }
     Ok(LEN)
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, Error> {
+    let value = bytes.get(offset..offset + 2).ok_or(Error::Truncated)?;
+    Ok(u16::from_le_bytes([value[0], value[1]]))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, Error> {
@@ -311,6 +444,40 @@ mod tests {
             &output[152..168],
             &[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn start_scan_request_borrows_channel_and_ssid_records() {
+        let mut payload = [0; 12 + 2 * 16 + 36];
+        payload[..4].copy_from_slice(&[0, 1, 2, 6]);
+        write_u32(&mut payload, 4, 30_000);
+        payload[8..12].copy_from_slice(&[3, 2, 1, 5]);
+        write_u16(&mut payload, 12, 1);
+        write_u32(&mut payload, 16, 10);
+        write_u32(&mut payload, 20, 40);
+        write_u16(&mut payload, 28, 11);
+        write_u32(&mut payload, 32, 20);
+        write_u32(&mut payload, 36, 50);
+        write_u32(&mut payload, 44, 4);
+        payload[48..52].copy_from_slice(b"test");
+
+        let request = StartScanRequest::parse(&payload).unwrap();
+        assert_eq!(request.num_channels, 2);
+        assert_eq!(request.channel(0).unwrap().number, 1);
+        assert_eq!(request.channel(1).unwrap().number, 11);
+        assert_eq!(request.channel(1).unwrap().max_channel_time, 50);
+        assert_eq!(request.ssid(0).unwrap(), b"test");
+    }
+
+    #[test]
+    fn scan_complete_matches_driver_layout() {
+        let mut output = [0xaa; 12];
+        let len = encode_scan_complete_indication(0, 1, 13, 0x1234, &mut output).unwrap();
+
+        assert_eq!(len, 12);
+        assert_eq!(Header::parse(&output).unwrap().base_id(), 0x0806);
+        assert_eq!(&output[4..8], &[0; 4]);
+        assert_eq!(&output[8..12], &[1, 13, 0x34, 0x12]);
     }
 
     #[test]

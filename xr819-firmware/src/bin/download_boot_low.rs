@@ -4,6 +4,7 @@
 use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use xr819_firmware::download::Control;
+use xr819_firmware::loader::apply_vendor_register_initialization;
 
 const LOW_MAIN_IMAGE_BASE: usize = 0;
 const THUMB_ENTRY: usize = 1;
@@ -11,7 +12,7 @@ const THUMB_ENTRY: usize = 1;
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start() -> ! {
+pub extern "C" fn _start() -> ! {
     naked_asm!(
         "mrs r0, cpsr",
         "orr r0, r0, #0xc0",
@@ -47,6 +48,7 @@ extern "C" fn rust_main() -> ! {
     control.advertise();
     let size = control.wait_for_image_size();
     if control.copy_image_to(size, LOW_MAIN_IMAGE_BASE).is_ok() {
+        apply_vendor_register_initialization();
         for _ in 0..1_000_000 {
             core::hint::spin_loop();
         }

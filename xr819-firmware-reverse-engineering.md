@@ -154,71 +154,43 @@ frequency/clock or gain calibration is plausible.
 Confidence: **high** that this is active PHY calibration; **medium-low** on the
 specific calibration type.
 
-## Channel/PHY configuration path
+## Channel/PHY configuration path correction
 
-A probable channel configuration call chain is:
+Earlier analysis incorrectly promoted interior Thumb offsets to standalone
+functions. Radare2 `af` at `0x1856a` and `0x1814a` created artificial function
+boundaries and therefore a false call chain.
 
-```text
-FUN_0001856a
-  -> FUN_0001814a
-       -> FUN_0001ac0a
-            -> FUN_0001a98c
-       -> FUN_00018c84
-       -> FUN_0001b9ee
-       -> FUN_0001813e
-       -> FUN_0001b830
-       -> FUN_0001bb72
-       -> FUN_0001b388
-```
+Cross-checking with uninterrupted `pdf` output and Ghidra shows:
 
-### `FUN_0001856a`
+- `0x1856a` is inside the large routine beginning at `0x18480`; it is part of a
+  64-iteration transform accumulating signed calibration outputs.
+- `0x1814a` is an interior arithmetic block reached by branches in a larger
+  calibration routine, not a callable channel-setup entry.
+- The previously listed `0x18836` and `0x111ec` relationships must therefore
+  not be used to drive the Rust scan implementation without fresh caller and
+  boundary analysis.
 
-This function compares a requested 16-bit value with the currently stored
-value. If it changed, or a reconfiguration flag is set, it calls
-`FUN_0001814a` and clears the flag.
+The region remains clearly PHY/calibration-related and contains direct hardware
+references including `0x0abb8300` and `0x0abb8040`, but it is not the WSM entry.
+The real start-scan dispatch is now established independently: the ID-masked
+jump table at `0x04000710` sends command ID 7 to `0x10cfa`, which calls the
+valid function `0x13d44`. That function validates channel timing, copies scan
+state, marks `0x0400860c`, and raises platform event bit 10. The event callback
+registration at `0x698..0x6e4` maps bit 10 to `0x14352`; its scan state machine
+calls per-channel setup `0x14304`, which calls `0xfdfa` and then the large MAC
+programmer `0xf802`. `0xfdfa`'s compact channel-control encoding is now
+translated and tested in Rust. Retained scan channels produce the exact
+`zerocopy` eight-byte ABI assembled by `0x14304`, including operation, option,
+control, channel, link count, and link ID. The `0x124c0` control-gate
+classifier immediately preceding `0xf802` is also translated as pure logic.
+`0xf802`, rather than the withdrawn interior labels, is the next real
+channel-programming boundary. The terminal path is also established:
+`0x13fac` performs cleanup and calls `0x111ba`, which constructs the 12-byte
+`0x0806` scan-complete indication and queues it through `0xed4c`.
 
-The value is very likely a channel number or channel/frequency selector.
-
-### `FUN_0001814a`
-
-This is currently the strongest candidate for the main channel/PHY setup
-routine. It:
-
-- stores the requested 16-bit channel/frequency value;
-- invokes the hardware/calibration path;
-- invokes `FUN_0001b9ee`;
-- derives channel-indexed values through `FUN_0001b830` and `FUN_0001bb72`;
-- updates a sixteen-entry table;
-- finishes with another correction update through `FUN_0001b388`.
-
-Its literal pool includes direct hardware addresses such as:
-
-```text
-0x0abb8300
-0x0abb8040
-```
-
-### `FUN_0001a98c`
-
-This function computes a channel-dependent value and writes it to a register at
-a base selected through its literal pool. It caches the input and derived
-values to avoid recomputation. It calls another hardware-update routine after
-the register write.
-
-### `FUN_00018c84` and `FUN_0001b388`
-
-These functions calculate signed corrections from reference/calibration values
-and store them in shared PHY state. Their arithmetic depends on a hardware or
-board reference value divided/scaled by 1000.
-
-### External entry points
-
-`FUN_00018836` accepts an operation/mode, a 16-bit channel-like value and a
-third mode argument. It updates state, invokes a mode transition and calls
-`FUN_0001856a` with the channel-like value.
-
-It is called from `FUN_000111ec`, which is a useful next point for connecting
-this PHY path back to a WSM command or internal MAC state transition.
+`0x1a98c`, `0x18c84`, and `0x1b388` still contain channel-dependent hardware
+and signed-correction behavior, but their callers need to be re-established
+from valid function boundaries.
 
 ## Additional PHY register banks
 
@@ -303,10 +275,11 @@ and portions of the algorithm differ. The open implementation should therefore
 follow the newer 2018 behavior and use the 2016 routine only as supporting
 evidence.
 
-The code that consumes this table has not yet been identified. It may be
-addressed indirectly through an enclosing configuration object rather than by
-an absolute pointer to `0x1ee80`, or it may be a dormant/default table selected
-only for a particular configuration.
+The consumer is now identified: this is firmware-container section type 2, not
+a low-firmware data object. The vendor download bootloader reads a `0x148`-byte
+section as 41 address/value pairs and performs each MMIO write directly before
+jumping to firmware. The Rust downloader now reproduces all 41 writes. This
+explains why no low-code reference to file offset `0x1ee80` existed.
 
 ### Additional static PHY profiles
 
@@ -908,8 +881,34 @@ also translated from `0x000000bc`, `0x0000f608`, `0x0000f4f4`, and
 channel records, and the `0x09016a28` hardware list before publishing startup.
 A clean reboot test still produced `CONTROL = 0x3000`. Packet-DMA omission was
 a reasonable hypothesis but is now a recorded negative result, not a path to
-repeat unchanged. The final `0x00016d24` write setting bit 11 at `0x0ab80c00`
-was then added separately and also left CONTROL at `0x3000`.
+repeat unchanged. An early isolated experiment with the final `0x00016d24`
+write setting bit 11 at `0x0ab80c00` also left CONTROL at `0x3000`; it is not
+part of the current minimal path because the vendor first executes `0x16ac6`.
+
+That prerequisite is now bounded more precisely. `0x16a38` initializes MAC
+software state, `0x16ca4` derives timing values, and `0x171ce` performs the
+hardware-producing tail. `0x171ce` initializes `0x0aba2000`, applies four
+address/value lists via `0x171a6`, and invokes `0x17008`. The latter derives 22
+calibration anchors from initialized-SRAM tables at `0x04000ca0` or
+`0x04000d24`, expands them into the 80-word hardware table at `0x0ab80800`,
+and updates `0x0ab80400/0x0ab80410`. Radare2 `pdf` and Ghidra decompilation
+now agree on the full selection and packing algorithm. It has been translated
+as a pure Rust generator with golden values and as an unsafe mode-zero hardware
+routine applying the exact `0x171ce` constants and five register lists. The
+routine is now called after packet-DMA preparation and sets MAC bit 11 only
+after those effects. Probe and repeated empty scans remain stable. Halted AHB
+verification observed `0x2b202b20` at `0x0ab80800`, boundary 55 at
+`0x0ab80410`, and bit 11 set at `0x0ab80c00`. The fixed software-state portion of `0x16a38`, mode-zero pointer setup from
+`0x198f2`, and signed remap timing derivation from `0x16ca4` are now active
+before the hardware routine. The signed second field derived from remap window
+`0x04118000` is `-852`, stored as wrapped `u16`; treating its sign bit as an
+unsigned field would incorrectly produce `9940`. Repeated target scans remain
+stable with this state enabled.
+
+Software channel policy remains inactive. IRQ 6 now faithfully sets
+platform-event bit 27 at `0x04001fd4`,
+matching vendor callback `0x0000f1fe`; IRQs 18, 20, and 21 remain diagnostic
+stubs pending their encoder/MIC queue completion translations.
 
 Parsing the vendor firmware container clarified its memory layout:
 
@@ -926,14 +925,21 @@ fill  0x04002078  0x007bcc   firmware BSS
 The Rust loader had previously copied one flat image only to `0xfff00000`.
 Low-address Thumb linker/loader variants now reproduce the main-code placement,
 and Rust explicitly clears the vendor BSS range plus initializes the platform
-state used by translated startup. This is architecturally closer to the vendor
-image, although it does not yet make HIF visible to the host. Both the original
+state used by translated startup. The flat binary also omits Rust's own
+`.bss`; linker-defined `__bss_start..__bss_end` clearing is now performed at
+main entry. Without it, retained SRAM made the first parsed scan appear busy
+and could silently corrupt configuration and HIF scratch statics. This is
+architecturally closer to the vendor image, although it does not yet make HIF
+visible to the host. Both the original
 high-address ARM main and the low-address Thumb main have now produced the same
 zero next-message length; changing execution address or instruction mode alone
 is not the missing HIF step.
 
 Live indirect APB and AHB reads while the device remains in queue mode still
-fail with `Prefetch bit is not cleared`. This was reconfirmed for HIF MMIO
+fail with `Prefetch bit is not cleared`. A debugfs halt permits bounded reads,
+but resuming the new MAC-initialized path lost a later HIF command interrupt
+and killed the BH; MMC rebind recovered. Halt should therefore be treated as a
+postmortem operation, not a transparent pause/resume mechanism. This was reconfirmed for HIF MMIO
 addresses `0x0ab00104`, `0x0ab00120`, `0x0ab00134`, and `0x0ab00140`; their
 returned zeros are unusable.
 
@@ -1045,8 +1051,16 @@ WSM firmware [XR819 open Rust WSM], ver: 1, build: 1, api: 1, cap: 0x0003
 
 A polling translation of the RX descriptor ring plus generic write-MIB and
 structured configuration confirmations now lets Linux complete probe and
-register `phy44` and `wlan0` without a stuck command. PHY/channel/scan behavior
-is still absent.
+register a PHY and `wlan0` without a stuck command. The full SDD/DPD payload is
+validated and retained in firmware memory. Start-scan is now parsed into exact
+fixed, channel, and SSID records and copied into persistent fixed storage before
+the HIF RX descriptor is recycled. It also reproduces `0x13d44`'s 34-channel
+hardware limit, nonzero/ordered dwell checks, probe-delay bound, active byte,
+event bit 10, and vendor busy status. Firmware work is serviced before the next
+host command, producing a response followed by an empty scan-complete
+indication. Its encoder now matches vendor `0x111ba`'s 12-byte wire length,
+including a zeroed trailing 16-bit vendor field. Two consecutive target scans complete without timeout while real
+channel tuning and RX remain absent.
 
 ### Reboot-free firmware iteration
 

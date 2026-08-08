@@ -34,11 +34,29 @@ Implemented:
   and runtime-state initialization;
 - bounded firmware-side HIF interrupt servicing for bring-up;
 - the exact `0x0aa80004 = 0x200` clock/remap transition;
+- vendor loader section-type-2 MMIO initialization (41 PHY/MAC pairs);
+- extracted `0x16ac6` MAC calibration anchors and register lists in `src/phy.rs`;
+- complete pure-Rust translation of the `0x17008` 22-to-80 MAC table generator;
+- active vendor `0x16a38`/`0x198f2`/`0x16ca4` MAC software state;
+- active, target-verified mode-zero MAC hardware initialization and bit-11 enable;
+- faithful IRQ 6 platform-event callback replacing its diagnostic stub;
 - vendor packet-RAM TX buffers and translated packet-DMA list setup;
 - CW1200 startup delivery accepted by Linux;
 - polled host-to-firmware RX descriptors;
 - generic write-MIB confirmation and structured configuration confirmation;
-- successful registration of a Linux `phy` and `wlan0`.
+- validated and retained SDD/DPD calibration TLVs;
+- explicit clearing of linker-defined Rust `.bss` before using retained state;
+- successful registration of a Linux `phy` and `wlan0`;
+- borrowed parsing and fixed-storage retention of scan channels/SSIDs;
+- corrected false channel-function boundaries at `0x1856a`/`0x1814a`;
+- verified vendor start-scan dispatch `0x10cfa -> 0x13d44`;
+- traced event bit 10 through `0x14352 -> 0x14304 -> 0xfdfa -> 0xf802`;
+- translated the compact `0xfdfa` channel-control encoding;
+- exact `zerocopy` eight-byte `0x14304 -> 0xf802` channel request ABI;
+- translated pure `0x124c0` channel-control gate classification;
+- vendor channel-timing validation and event-bit-10 scan activation semantics;
+- verified completion path `0x13fac -> 0x111ba -> 0xed4c`;
+- vendor-aligned 12-byte asynchronous empty scan completion while the real PHY scan path is incomplete.
 
 Not yet implemented:
 
