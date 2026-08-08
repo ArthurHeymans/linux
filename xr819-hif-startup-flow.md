@@ -385,9 +385,265 @@ fractional = 967916
 ```
 
 Retained scan state now exposes the verified center frequency and PLL register
-value alongside its control word and tuning plan. The hardware-producing
-remainder of `0x166ea`, including measurement/calibration loops, remains
-disabled.
+value alongside its control word and tuning plan.
+
+The hardware publication surrounding that value is also translated, but kept
+detached from scan execution. `0x18f2c` writes `0x0abc00b4`, then `0x1838c`
+performs the exact latch sequence:
+
+```text
+clear 0x2000 in 0x0abc00b8
+wait 1 * 0x22 loop iterations
+set   0x2000 in 0x0abc00b8
+optionally wait 0x78 units
+mode zero only:
+  clear 0x40  in 0x0abc0084
+  clear 0x200 in 0x0abc0050
+  wait 10 units
+  restore both bits
+  wait 10 units
+```
+
+`0x17e92` is likewise translated as the complete channel-measurement path
+enable/disable sequence over `0x0ab80c38`, `0x0abb81a0`, `0x0ab8006c`, and
+`0x0ab80068`.
+
+Finally, the save/override/restore envelope around vendor measurement routine
+`0x19f8e` is translated from `0x1a1fc` and the tail of `0x19f8e`. It preserves
+and restores `0x0abb800c` plus `0x0abc0004/0034/0050/006c/0084` in exact order.
+The mode-zero result scaling inside `0x19f8e` is now translated as well. It
+reads the raw counter at `0x0abb82f0` and computes:
+
+```text
+scaled = (raw * 71 - signed_remap_second) * 1000
+         / signed_remap_first
+```
+
+Using the verified remap values `1032` and `-852`, raw counter `715` produces
+`50016`. Mode zero accepts the inclusive range `41000..58988`; values outside
+that range use fallback `0x9470` (`38000`). The mode-zero trigger word is
+`0x0000e080` at `0x0abb800c`; completion is indicated when status bit `0x20`
+clears after the first 10-unit delay. Those constants and the predicate are
+translated and tested. The complete mode-zero MMIO round is now implemented
+as a detached unsafe routine: it applies the save envelope, writes zero then
+`0xe080`, waits, checks bit `0x20`, reads `0x0abb82f0`, scales/selects the
+result, waits one final unit, and restores the envelope. It also preserves the
+vendor's unusual not-ready behavior: the early failure returns before register
+restoration, so callers must treat it as fatal rather than continuing.
+
+Post-measurement table publication is now connected back to retained SDD data.
+Vendor parser `0x176bc` loads SDD elements `0x30` and `0x31` as:
+
+```text
+s16 default
+repeat {
+  u16 upper_channel
+  s16 correction
+}
+```
+
+`0x19dd0` selects the last correction whose threshold is not greater than the
+current channel. Vendor parser `0x17614` similarly loads SDD element `0xec` as:
+
+```text
+u16 count
+repeat count times {
+  u8 upper_channel
+  u8 first
+  u8 second
+}
+```
+
+`0x1a112` selects the lower channel step and returns `base + value * 4` for
+each of its two selectors. Both table formats and selection rules are now
+parsed directly from the retained configuration buffer without allocation.
+The combined mode-zero helper reproduces `0x19dd0 -> 0x1a112` from a channel
+number to the final base/first/second values.
+
+The actual target `/lib/firmware/xr819/sdd_xr819.bin` was copied and parsed as
+46 valid TLVs (744 bytes). Its relevant values are:
+
+```text
+0x30 length 2: default = 0, no threshold records
+0x31 length 2: default = 8, no threshold records
+0xec length 18:
+  count = 5
+  (1, 120, 120)
+  (2, 120, 120)
+  (11, 120, 120)
+  (12, 120, 120)
+  (13, 120, 120)
+```
+
+Consequently the real mode-zero SDD result for channel 6 is deterministic:
+`base = 0`, `first = 480`, `second = 480`.
+
+The remaining major active-calibration boundary is no longer table decoding.
+For startup state byte zero equal to 2, `0x166ae(2)` invokes:
+
+```text
+0x168a8 -> 0x17c20
+0x16928 -> 0x18e5c(0) -> 0x18948
+```
+
+`0x17c20` is a bounded 626-byte calibration producer and is called with
+arguments `(1, 1)`. Its core arithmetic is now translated. The first stage
+performs twelve hardware sample pairs. For each pair it measures a baseline at
+settings `(0x11, 0x11)` and a target at `(1, 1)`, then computes each I/Q axis:
+
+```text
+delta = (target - baseline) * -256
+if delta == 0: delta = 1
+coefficient = ((-baseline << 14) / delta) + 0x44
+```
+
+After these twelve entries it marks state byte `0x0400995c` initialized. The
+second stage rescales previous values from signed 8-bit to signed 6-bit using
+`0x19534 -> 0x19518`, measures another pair, and computes:
+
+```text
+refinement = (baseline - target) * 0x4000 / scale
+```
+
+Both primary and secondary coefficient arithmetic, including signed rounding
+and clamping, are tested pure Rust. Three surrounding hardware helpers are now
+translated but remain detached:
+
+- `0x168b8` toggles calibration-engine bits `0x00048000` in the dynamically
+  selected `0x0abb8004 + state[0x38]` control word;
+- `0x17884` writes gain selector `0` for negative input or `0x40 | (gain & 0x3f)`
+  to `0x0abb81a4`;
+- `0x178be -> 0x17898` writes mode, timing, and control words to
+  `0x0abb80f0/80f4/80f8` (`0x00200190` normally, `0x00200078` for modes 2/3).
+
+`0x17b70` accumulator result handling is also resolved. After its command
+completes, it reads I/Q words from `0x0abb810c` and `0x0abb8110`, sign-extends
+each as 23-bit, then calls `0x19534(value, 12, 23)` for rounded saturation to
+signed 12-bit. This decoder is translated and tested.
+
+The `0x178ce` register envelope is now fully translated in detached form. It
+snapshots `0x0abc0004/0034/0050`, constructs path- and band-specific control
+words, waits 10 hardware timer ticks, applies the post-settle path-zero bit
+change, and restores the three registers in vendor order. The timer helper is
+`0xe65c`, which polls the counter at `0x0ac00004`; this corrected the detached
+`0x19f8e` implementation, whose waits are timer ticks rather than `0xf2d4`
+software-loop units.
+
+Most of `0x179ea` coefficient publication is also translated as pure logic. It
+normalizes each I/Q coefficient pair until the largest magnitude reaches
+`0x40000`, divides signed `-0x20000000` by each normalized axis, rescales from
+signed 12-bit to signed 10-bit, and packs two 9-bit fields into the hardware
+word. For example `(132, 4)` normalizes with shift 11 to `(270336, 8192)` and
+packs as `0x00000010`.
+
+The rest of `0x179ea` and the useful low half of `0x17ac8` are now represented
+as a tested publication plan. `0x17ac8` saturates each primary I/Q coefficient
+to signed 8-bit and packs the pair into the low 16 bits. `0x179ea` writes the
+normalized 9-bit pair to two gain-indexed tables and applies its exact
+rotate/subtract shift-state update.
+
+For gain index `g`, the three destinations are:
+
+```text
+primary signed-8 pair: 0x0abb8118 + 4*g
+normalized pair A:     0x0abb8600 + 4*g
+normalized pair B:     0x0abb8680 + 4*g
+```
+
+The plan returns all addresses, values, and the next shift state without
+performing MMIO.
+
+The twelve-entry gain-index table is now recovered by correctly parsing the
+vendor container's variable-sized section headers. `0x04000e18` contains:
+
+```text
+1a 19 18 16 15 14 12 11 10 02 01 00
+```
+
+The same corrected parser exposed four previously omitted type-zero copies
+after the type-2 MMIO section:
+
+```text
+copy 0x0ab81000  0x0400
+copy 0x0ab88400  0x0330
+copy 0x0ab88800  0x0330
+copy 0x0ab88c00  0x0330
+```
+
+These 3472 bytes are now retained under `xr819-firmware/data/`. Both Rust
+downloaders preserve container order: the 41 MMIO pairs are applied first,
+then these four copies, then firmware entry. The new
+4352-byte low downloader fits below the vendor boot image's 6708-byte copied
+region. It was deployed successfully; probe and two empty scans remained
+stable on `phy63`.
+
+A halted postmortem read verified the copied endpoints exactly:
+
+```text
+0x0ab81000 = 0x0003401a   0x0ab813fc = 0x80000000
+0x0ab88400 = 0x000000e0   0x0ab8872c = 0x0000fdbb
+0x0ab88800 = 0x0000ff93   0x0ab88b2c = 0x000001e6
+0x0ab88c00 = 0x00000089   0x0ab88f2c = 0x00000000
+```
+
+This also reconfirmed that debugfs halt is strictly postmortem: the following
+MMC unbind remained in uninterruptible sleep, and a software reboot did not
+return. A physical power cycle recovered the target. The corrected
+container-ordered downloader was then deployed; probe and two empty scans
+succeeded on `phy1`. Do not halt it again during the active bring-up path.
+
+The implicit-register sample-command template is now reconstructed in a
+deterministic reserved-zero form. The two `0x17bf2` settings used by
+`0x17c20(1,1)` are:
+
+```text
+(0x11, 0x11) -> 0x01110111
+(0x01, 0x01) -> 0x01010101
+```
+
+`0x17b70(0x0b, 1, ...)` writes trigger `0x0800000d` to `0x0abb80f0`, waits for
+hardware status bit `0x10`, then reads `0x0abb810c/8110`. A detached bounded
+Rust implementation now replaces the vendor's unbounded poll. It is not yet
+called by scan execution.
+
+The twelve-gain arithmetic is now assembled as an allocation-free detached
+series. It retains every baseline/target sample, vendor scale, primary
+coefficient, gain-indexed primary/normalized addresses, packed values, and the
+evolving shift state. A detached publisher preserves the exact two-pass order:
+all `0x17ac8` primary writes first, followed by all `0x179ea` normalized and
+shift-state writes. `0x179c0` is also translated as a masked clear of
+`0x0abb8114` (`value &= !0x03ff03ff`).
+
+`0x168fa` is now bounded as a trivial four-word store to `0x0400993c`. After
+the twelve iterations, `0x17c20` passes the final gain's primary I/Q
+coefficients and two scale values to it; the later `0x16902..0x16914` getters
+simply reload those four words for the optional secondary stage.
+
+The remaining `0x17c20` work is safe hardware acquisition/restoration and the
+optional secondary summary publication, followed by the separate `0x18948`
+dynamic IQ/DC routine.
+
+The full `0x18948..0x18e54` boundary is now confirmed at 1196 bytes with a
+`0x2ec`-byte (748-byte) local stack allocation. Its first reusable pieces are translated:
+
+- mode 1/2 initial candidate `(7, -7, -5, 1)`;
+- other-mode initial candidate `(-4, -11, -4, 0)`;
+- `0x18612` correction packing, which publishes two signed 12-bit pairs to
+  `0x0abb8068` and `0x0abb80a8`.
+
+Its surrounding envelope is split cleanly into `0x187a0` save/override and
+`0x183ea` restoration. The external annotated Ghidra archive names these
+`rf_save_band_regs` and `rf_load_band_regs`, and exposes the core as thirteen
+measurement/search stages per averaging pass. Target `0x185bc`
+(`rf_capture_adc_samples` in that archive) polls `0x0abb81ac` bit 15 for at
+most 10000 iterations and then copies 64 words from `0x0abb81c4`, even after
+timeout. A detached Rust translation now preserves that behavior. Target
+`0x18480` fixed-point DFT is also translated in pure Rust using the exact two
+64-entry signed trigonometric tables, including all mode-dependent accumulator
+selection and phase stepping. Candidate normalization/rejection at
+`0x18c3e..0x18cb8` is translated. The thirteen-stage update dispatcher and
+final scoring/refinement remain. `0x18948` remains the separate 1196-byte dynamic
+IQ/DC calibration routine.
 
 The real scan-complete producer is now identified. Terminal scan state calls
 `0x13fac`, which clears scan state and calls `0x111ba`. `0x111ba` allocates a
@@ -451,7 +707,12 @@ A bounded halted read verified the live values:
 IRQ 6 is no longer a diagnostic stub. The vendor callback at `0x0000f1fe`
 sets bit 27 in the platform event word at `0x04001fd4`; the Rust callback now
 reproduces that operation. IRQs 18, 20, and 21 remain diagnostic stubs, so no
-channel operation is started yet. Also, resuming after a debugfs halt lost a
+channel operation is started yet. The annotated archive identifies IRQ 18/20
+as encoder-transfer completion: clear the active pointer, update transfer byte
+`+5`, defer completion, and start the next transfer. IRQ 21 queues the completed
+MIC object at `0x04009928` and sets event bit 29. They must remain detached
+until their queue initialization and consumers are translated. Also, resuming
+after a debugfs halt lost a
 subsequent HIF command
 interrupt and killed the BH; rebind recovered normally. Treat debugfs halt as a
 postmortem operation for this path rather than expecting a live resume.

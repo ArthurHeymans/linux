@@ -15,7 +15,10 @@ receives the initial host commands, and completes Linux probe. It remains an
 instrumented bring-up image rather than a complete vendor-order implementation.
 The exact vendor call order, Radare2 excerpts, current implementation delta,
 and experiment ledger are in
-[`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md).
+[`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md). Salvaged
+semantic names, structure layouts, HIF/IRQ behavior, and RF algorithms from an
+external annotated Ghidra archive are summarized in
+[`../xr819-annotated-re-code.md`](../xr819-annotated-re-code.md).
 
 Implemented:
 
@@ -35,6 +38,7 @@ Implemented:
 - bounded firmware-side HIF interrupt servicing for bring-up;
 - the exact `0x0aa80004 = 0x200` clock/remap transition;
 - vendor loader section-type-2 MMIO initialization (41 PHY/MAC pairs);
+- four vendor type-zero MAC/PHY copies totaling 3472 bytes;
 - extracted `0x16ac6` MAC calibration anchors and register lists in `src/phy.rs`;
 - complete pure-Rust translation of the `0x17008` 22-to-80 MAC table generator;
 - active vendor `0x16a38`/`0x198f2`/`0x16ca4` MAC software state;
@@ -59,6 +63,28 @@ Implemented:
 - verified `0x1682a` 2.4 GHz channel-to-frequency mapping;
 - translated `0x17224` measurement timing and `0x19928` channel offsets;
 - exact `0x18f2c -> 0x18ef0` fractional PLL synthesis;
+- detached exact `0x1838c` PLL latch and `0x17e92` measurement-path MMIO;
+- translated `0x1a1fc`/`0x19f8e` measurement register save/restore envelope;
+- detached complete mode-zero `0x19f8e` trigger/poll/read/restore routine;
+- translated mode-zero counter scaling, limits, fallback, and fatal early return;
+- allocation-free SDD `0x30/0x31` threshold-table parsing for `0x19dd0`;
+- allocation-free SDD `0xec` channel-step parsing for `0x1a112`;
+- combined mode-zero SDD channel calibration, verified against the target's 744-byte SDD;
+- translated primary and refinement arithmetic from `0x17c20(1,1)`;
+- detached `0x168b8`, `0x17884`, and `0x178be` calibration MMIO helpers;
+- translated `0x17b70` 23-bit I/Q accumulator decoding;
+- detached complete `0x178ce` calibration register envelope and timer waits;
+- translated `0x179ea` normalization, shift-state update, and gain-indexed publication plan;
+- translated `0x17ac8` signed-8 primary coefficient packing;
+- detached bounded `0x17bf2 -> 0x17b70` sample command and accumulator read;
+- allocation-free twelve-gain `0x17c20` arithmetic/publication series;
+- initial candidate and signed-12 correction packing from dynamic IQ/DC calibration;
+- detached bounded 64-word ADC capture from dynamic IQ/DC calibration;
+- pure fixed-point three-correlation DFT and candidate normalization from `0x18480`;
+- typed allocation-free translation of every `rf_op_dispatch2` search stage,
+  including polynomial case 6 and bounded parabolic case 12 refinement;
+- byte verification of all loader MMIO pairs and MAC/PHY copies against the
+  annotated `xr819-fw.tar.gz` firmware container;
 - vendor channel-timing validation and event-bit-10 scan activation semantics;
 - verified completion path `0x13fac -> 0x111ba -> 0xed4c`;
 - vendor-aligned 12-byte asynchronous empty scan completion while the real PHY scan path is incomplete.
@@ -116,3 +142,7 @@ This fast path is intended for firmware-only iterations after a failed probe.
 A reboot remains required after experiments that alter persistent CP15/cache
 state or initialize the packet-DMA/platform engines, and is recommended after
 replacing kernel modules or a fatal BH/IRQ state.
+
+A postmortem halt followed by MMC unbind once left the target in uninterruptible
+sleep and required a physical power cycle. The corrected ordered downloader is
+now deployed and stable on `phy1`; avoid debugfs halt during active bring-up.

@@ -1,9 +1,20 @@
 //! Loader-applied XR819 hardware initialization sections.
 //!
-//! Vendor firmware container section type 2 is a sequence of MMIO
-//! address/value pairs. The vendor download bootloader applies this section
-//! before jumping to the low firmware image. A flat custom image must reproduce
-//! that loader side effect explicitly.
+//! Vendor firmware container loader side effects needed by flat custom images.
+//!
+//! Besides the 41 type-2 MMIO address/value pairs, the vendor container carries
+//! four later type-0 copies directly into MAC/PHY memory at `0x0ab81000` and
+//! `0x0ab88400..0x0ab88f2f`. The copies and all 41 ordered pairs were verified
+//! byte-for-byte against the annotated `fw_xr819.bin` supplied in
+//! `xr819-fw.tar.gz`. Both Rust downloaders reproduce all five groups before
+//! entering the main image.
+
+const VENDOR_MEMORY_INITIALIZATION: &[(usize, &[u8])] = &[
+    (0x0ab8_1000, include_bytes!("../data/vendor-ab81000.bin")),
+    (0x0ab8_8400, include_bytes!("../data/vendor-ab88400.bin")),
+    (0x0ab8_8800, include_bytes!("../data/vendor-ab88800.bin")),
+    (0x0ab8_8c00, include_bytes!("../data/vendor-ab88c00.bin")),
+];
 
 const VENDOR_REGISTER_INITIALIZATION: &[(u32, u32)] = &[
     (0x0ab8_0004, 0x0000_0023),
@@ -49,6 +60,15 @@ const VENDOR_REGISTER_INITIALIZATION: &[(u32, u32)] = &[
     (0x0abb_0078, 0x0048_0035),
 ];
 
+pub fn apply_vendor_memory_initialization() {
+    for &(destination, data) in VENDOR_MEMORY_INITIALIZATION {
+        for (index, word) in data.chunks_exact(4).enumerate() {
+            let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            unsafe { ((destination + index * 4) as *mut u32).write_volatile(value) };
+        }
+    }
+}
+
 pub fn apply_vendor_register_initialization() {
     for &(address, value) in VENDOR_REGISTER_INITIALIZATION {
         unsafe { (address as *mut u32).write_volatile(value) };
@@ -62,5 +82,12 @@ mod tests {
     #[test]
     fn vendor_section_has_all_41_pairs() {
         assert_eq!(VENDOR_REGISTER_INITIALIZATION.len(), 41);
+        assert_eq!(VENDOR_MEMORY_INITIALIZATION.len(), 4);
+        assert_eq!(VENDOR_MEMORY_INITIALIZATION[0].1.len(), 0x400);
+        assert!(
+            VENDOR_MEMORY_INITIALIZATION[1..]
+                .iter()
+                .all(|(_, data)| data.len() == 0x330)
+        );
     }
 }

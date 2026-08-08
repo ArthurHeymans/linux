@@ -1,5 +1,10 @@
 # XR819 firmware reverse engineering notes
 
+A separately annotated Ghidra archive is summarized in
+[`xr819-annotated-re-code.md`](xr819-annotated-re-code.md). It is from a
+non-byte-identical firmware build, so its names and decompiler output are used
+as semantic evidence and cross-checked against the target 2018 disassembly.
+
 This document records findings from static and differential analysis of the
 vendor-provided XR819 firmware. Function names are provisional until enough
 callers and data structures have been identified to assign semantic names.
@@ -199,7 +204,65 @@ translated, including the signed per-channel MHz offset from channel 7.
 `0x18f2c -> 0x18ef0` is now translated as exact 64-bit integer/fractional PLL
 synthesis. The helper region at `0x1aaf0..0x1b138` is ARM interworking code,
 not Thumb. Channel 6 with multiplier 1250 and a 26 MHz crystal produces packed
-PLL register value `0x356ec4ec` for `0x0abc00b4`.
+PLL register value `0x356ec4ec` for `0x0abc00b4`. The following `0x1838c`
+PLL-latch bit toggles and exact delay loop are translated but not yet invoked.
+The complete `0x17e92` measurement-path MMIO setup and the
+`0x1a1fc`/`0x19f8e` register save-and-restore envelope are also translated.
+Mode-zero `0x19f8e` result scaling is now translated: `(raw * 71 - second) *
+1000 / first`, using signed remap values. Its accepted range is
+`41000..58988`, with fallback `0x9470`. The complete mode-zero
+trigger/poll/read/scale/restore round is now translated as a detached unsafe
+routine. It deliberately preserves vendor behavior where status bit `0x20`
+remaining set causes an early return before restoration. Post-measurement SDD table publication is now understood and implemented in
+allocation-free parsing. `0x176bc` loads threshold/correction tables from SDD
+IDs `0x30/0x31` for `0x19dd0`; `0x17614` loads three-byte channel steps from
+SDD ID `0xec` for `0x1a112`. The actual 744-byte target SDD contains 46 TLVs;
+ID `0x30` has default zero and no records, while ID `0xec` contains five
+steps whose two values are all 120. Therefore channel 6 resolves to base zero
+and final calibration values 480/480. Remaining active work is the calibration producer
+chain selected by state byte zero equal to 2:
+`0x166ae(2) -> 0x17c20` and `0x18e5c(0) -> 0x18948`. `0x17c20(1,1)` performs
+12 primary sample pairs, computes `((-baseline << 14) / ((target-baseline) *
+-256)) + 0x44`, then performs a signed 8-to-6-bit refinement stage. Its primary
+and secondary arithmetic is translated and tested. The `0x168b8` calibration
+engine toggle, `0x17884` gain selector, and `0x178be -> 0x17898` mode/timing
+MMIO setup are also translated but detached. `0x17b70` I/Q readout is resolved
+as 23-bit sign extension followed by rounded signed-12 saturation, and is
+translated. `0x178ce` is now a complete detached save/configure/timer-wait/
+restore envelope. `0xe65c` was confirmed as a hardware timer wait over
+`0x0ac00004`, correcting the detached `0x19f8e` delays. `0x179ea` coefficient
+normalization, signed division/rescaling, and 9-bit I/Q packing are translated.
+`0x179ea`'s rotate/subtract shift-state update and gain-indexed publication
+addresses are now translated. `0x17ac8`'s signed-8 low-half packing is also
+translated. Rust can produce a complete publication plan for
+`0x0abb8118/8600/8680 + 4*gain` without MMIO. The twelve-gain arithmetic is now
+assembled allocation-free, and its detached publisher preserves vendor order:
+all primary writes first, then normalized values and evolving shift-state
+writes. `0x179c0` clears the sample fields with mask `!0x03ff03ff`.
+
+The formerly implicit sample template is reconstructed with reserved bits zero:
+`0x01110111` for `(0x11,0x11)`, `0x01010101` for `(1,1)`, and trigger
+`0x0800000d`. A detached bounded routine writes `0x0abb8114/80f0`, polls status
+bit `0x10`, and decodes `0x0abb810c/8110`. The twelve gain indices at
+`0x04000e18` are `1a,19,18,16,15,14,12,11,10,02,01,00`.
+
+`0x168fa` is only a four-word store to `0x0400993c`; `0x17c20` uses it to save
+the final gain's two coefficients and two scale values for the optional
+secondary stage. `0x18948..0x18e54` is confirmed as a separate 1196-byte
+dynamic IQ/DC routine with a 740-byte stack workspace. Its mode-dependent
+initial candidates are `(7,-7,-5,1)` for modes 1/2 and `(-4,-11,-4,0)`
+otherwise. The routine allocates `0x2ec` bytes (748 bytes) of local stack.
+`0x18612` packs four signed 12-bit corrections into `0x0abb8068/80a8`. The
+surrounding `0x187a0` save/override and `0x183ea`
+restore boundaries are established. The annotated archive identifies the core
+as a thirteen-stage-per-pass candidate search using 64-word ADC captures and a
+fixed-point DFT. Target `0x185bc` is now translated as a detached bounded poll
+of `0x0abb81ac` bit 15 followed by an unconditional 64-word copy from
+`0x0abb81c4`, matching the vendor behavior even on timeout. Target `0x18480` DFT is now
+translated with the exact cosine/sine tables, sample-width decoding,
+mode-dependent correlation selection, fixed-point wrapping arithmetic, and
+high-half publication. Candidate normalization/rejection is translated too;
+the thirteen-stage update dispatcher and final scoring/refinement remain.
 The terminal path is also established:
 `0x13fac` performs cleanup and calls `0x111ba`, which constructs the 12-byte
 `0x0806` scan-complete indication and queues it through `0xed4c`.
@@ -296,6 +359,26 @@ a low-firmware data object. The vendor download bootloader reads a `0x148`-byte
 section as 41 address/value pairs and performs each MMIO write directly before
 jumping to firmware. The Rust downloader now reproduces all 41 writes. This
 explains why no low-code reference to file offset `0x1ee80` existed.
+
+Correcting the parser for variable-sized section headers exposed four following
+type-zero MAC/PHY copies that the earlier section summary omitted:
+
+```text
+0x0ab81000  0x0400 bytes
+0x0ab88400  0x0330 bytes
+0x0ab88800  0x0330 bytes
+0x0ab88c00  0x0330 bytes
+```
+
+Their 3472 bytes are now embedded under `xr819-firmware/data/` and applied by
+both Rust downloaders before firmware entry. The resulting 4352-byte low
+bootloader deployed successfully, probed, and completed two scans on `phy63`.
+Halted reads verified all four first and last words against the extracted data.
+As expected for the MAC-initialized path, the following MMC unbind then stuck
+in uninterruptible sleep; a software reboot did not return. A physical target
+power cycle recovered it. The corrected container-order downloader subsequently
+probed and completed two scans on `phy1`; avoid another debugfs halt during
+active bring-up.
 
 ### Additional static PHY profiles
 
@@ -924,7 +1007,11 @@ stable with this state enabled.
 Software channel policy remains inactive. IRQ 6 now faithfully sets
 platform-event bit 27 at `0x04001fd4`,
 matching vendor callback `0x0000f1fe`; IRQs 18, 20, and 21 remain diagnostic
-stubs pending their encoder/MIC queue completion translations.
+stubs. The annotated archive identifies IRQ 18/20 as encoder transfer
+completion and target `0xee64` as MIC completion: append the incoming object to
+the queue at `0x04009928` and set event bit 29. Queue initialization, deferred
+encoder completion, and the MIC consumer still need target-image translation
+before these callbacks can be activated.
 
 Parsing the vendor firmware container clarified its memory layout:
 

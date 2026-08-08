@@ -6,6 +6,7 @@
 
 use core::cell::UnsafeCell;
 
+use crate::configuration::{self, Mode0ChannelCalibration};
 use crate::phy::{
     ChannelProgramRequestWire, ChannelTunePlan, PllDivider, build_scan_channel_program_request,
     channel_control_word, channel_frequency_khz_2ghz, channel_tune_plan, pll_divider,
@@ -228,6 +229,11 @@ pub fn channel_frequency_khz(index: usize) -> Option<u32> {
 
 pub fn channel_pll(index: usize) -> Option<PllDivider> {
     pll_divider(channel_frequency_khz(index)?, 1250, 26_000)
+}
+
+pub fn channel_calibration(index: usize) -> Option<Mode0ChannelCalibration> {
+    let channel = channel(index)?;
+    configuration::mode0_channel_calibration(channel.number as u8)
 }
 
 #[cfg(test)]

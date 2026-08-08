@@ -4,7 +4,9 @@
 use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use xr819_firmware::download::{Control, MAIN_IMAGE_BASE};
-use xr819_firmware::loader::apply_vendor_register_initialization;
+use xr819_firmware::loader::{
+    apply_vendor_memory_initialization, apply_vendor_register_initialization,
+};
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -44,6 +46,7 @@ extern "C" fn rust_main() -> ! {
     let size = control.wait_for_image_size();
     if control.copy_image(size).is_ok() {
         apply_vendor_register_initialization();
+        apply_vendor_memory_initialization();
         // Keep DOWNLOAD_STATUS_SUCCESS visible long enough for the host's
         // first completion poll before main firmware changes platform/remap
         // registers used by indirect APB access.

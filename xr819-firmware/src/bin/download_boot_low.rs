@@ -4,7 +4,9 @@
 use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use xr819_firmware::download::Control;
-use xr819_firmware::loader::apply_vendor_register_initialization;
+use xr819_firmware::loader::{
+    apply_vendor_memory_initialization, apply_vendor_register_initialization,
+};
 
 const LOW_MAIN_IMAGE_BASE: usize = 0;
 const THUMB_ENTRY: usize = 1;
@@ -49,6 +51,7 @@ extern "C" fn rust_main() -> ! {
     let size = control.wait_for_image_size();
     if control.copy_image_to(size, LOW_MAIN_IMAGE_BASE).is_ok() {
         apply_vendor_register_initialization();
+        apply_vendor_memory_initialization();
         for _ in 0..1_000_000 {
             core::hint::spin_loop();
         }

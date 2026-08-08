@@ -12,6 +12,19 @@ pub enum ConfigurationError {
     MalformedSdd,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelCalibrationValues {
+    pub first: i16,
+    pub second: i16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Mode0ChannelCalibration {
+    pub base: i16,
+    pub first: i16,
+    pub second: i16,
+}
+
 struct ConfigurationStorage {
     configured: bool,
     max_tx_msdu_lifetime: u32,
@@ -102,6 +115,61 @@ pub fn reference_frequency_khz() -> Option<u16> {
     Some(u16::from_le_bytes(bytes))
 }
 
+/// Vendor `0x176bc` loads SDD elements `0x30` and `0x31` as a signed default
+/// followed by four-byte `(upper_channel, correction)` records. `0x19dd0`
+/// selects the last correction whose threshold is not greater than the channel.
+pub fn channel_threshold_correction(element_id: u8, channel: u16) -> Option<i16> {
+    let element = find_sdd_element(element_id)?;
+    if element.len() < 2 || (element.len() - 2) % 4 != 0 {
+        return None;
+    }
+    let mut correction = i16::from_le_bytes(element[..2].try_into().ok()?);
+    for record in element[2..].chunks_exact(4) {
+        let upper_channel = u16::from_le_bytes(record[..2].try_into().ok()?);
+        if upper_channel > channel {
+            break;
+        }
+        correction = i16::from_le_bytes(record[2..4].try_into().ok()?);
+    }
+    Some(correction)
+}
+
+/// Vendor `0x17614` loads SDD element `0xec` as a 16-bit count followed by
+/// three-byte `(upper_channel, first, second)` records consumed by `0x1a112`.
+pub fn channel_calibration_values(channel: u8, base: i16) -> Option<ChannelCalibrationValues> {
+    let element = find_sdd_element(0xec)?;
+    if element.len() < 2 {
+        return None;
+    }
+    let count = usize::from(u16::from_le_bytes(element[..2].try_into().ok()?));
+    let records = element.get(2..2 + count.checked_mul(3)?)?;
+    let mut selected = records.get(..3)?;
+    for (index, record) in records.chunks_exact(3).enumerate() {
+        if channel <= record[0] {
+            selected = if channel < record[0] && index != 0 {
+                &records[(index - 1) * 3..index * 3]
+            } else {
+                record
+            };
+            break;
+        }
+    }
+    Some(ChannelCalibrationValues {
+        first: base.wrapping_add(i16::from(selected[1]) * 4),
+        second: base.wrapping_add(i16::from(selected[2]) * 4),
+    })
+}
+
+pub fn mode0_channel_calibration(channel: u8) -> Option<Mode0ChannelCalibration> {
+    let base = channel_threshold_correction(0x30, u16::from(channel))?;
+    let values = channel_calibration_values(channel, base)?;
+    Some(Mode0ChannelCalibration {
+        base,
+        first: values.first,
+        second: values.second,
+    })
+}
+
 pub fn find_sdd_element(id: u8) -> Option<&'static [u8]> {
     let configuration = snapshot()?;
     let mut remaining = configuration.dpd_data;
@@ -148,13 +216,34 @@ mod tests {
             dpd_version: 1,
             station_id: [0, 1, 2, 3, 4, 5],
             dpd_flags: 5,
-            dpd_data: &[0xc5, 2, 0xc0, 0x5d, 0xfe, 2, 0, 0],
+            dpd_data: &[
+                0xc5, 2, 0xc0, 0x5d, 0xfe, 2, 0, 0, 0x30, 10, 0xff, 0xff, 3, 0, 10, 0, 8, 0, 20, 0,
+                0xec, 8, 2, 0, 3, 2, 4, 8, 5, 7,
+            ],
         };
 
         retain(&request).unwrap();
         assert_eq!(snapshot().unwrap().station_id, request.station_id);
         assert_eq!(find_sdd_element(0xc5), Some(&[0xc0, 0x5d][..]));
         assert_eq!(reference_frequency_khz(), Some(24_000));
+        assert_eq!(channel_threshold_correction(0x30, 2), Some(-1));
+        assert_eq!(channel_threshold_correction(0x30, 6), Some(10));
+        assert_eq!(channel_threshold_correction(0x30, 11), Some(20));
+        assert_eq!(
+            channel_calibration_values(6, 100),
+            Some(ChannelCalibrationValues {
+                first: 108,
+                second: 116,
+            })
+        );
+        assert_eq!(
+            mode0_channel_calibration(6),
+            Some(Mode0ChannelCalibration {
+                base: 10,
+                first: 18,
+                second: 26,
+            })
+        );
         assert_eq!(find_sdd_element(0xeb), None);
     }
 }
