@@ -10,9 +10,11 @@ behind that protocol boundary.
 
 ## Current state
 
-The current `hif-startup` binary now delivers a CW1200 startup indication,
-receives the initial host commands, and completes Linux probe. It remains an
-instrumented bring-up image rather than a complete vendor-order implementation.
+The current `hif-startup` binary delivers a CW1200 startup indication, completes
+Linux probe, performs calibrated multi-channel passive receive scans, and
+returns real beacon/probe-response indications. It remains an instrumented
+bring-up image rather than a complete vendor-order implementation: foreground
+probe-request TX, association, and normal data traffic are not implemented.
 The exact vendor call order, Radare2 excerpts, current implementation delta,
 and experiment ledger are in
 [`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md). Salvaged
@@ -126,9 +128,17 @@ Implemented:
   running the live channel transition for the first retained scan channel;
 - repeated hardware scans complete with BH alive, WSM idle, and no outstanding
   firmware buffers;
-- an experimental passive-RX path with multi-channel dwell, packet-DMA FIFO
-  recycling, beacon/probe-response filtering, WSM receive indications, and
-  fixed diagnostic counters;
+- continuously serviced packet-DMA RX outside scan state, matching the vendor
+  receive task and preventing idle-era frames from contaminating later dwells;
+- active scan requests are explicitly downgraded to bounded passive dwells until
+  probe-request TX exists: 220/250 ms for a single channel and 110/120 ms for
+  multi-channel batches constrained by the Linux command timeout;
+- hardware-validated cold channel-1 scans returning 2–3 BSS records around
+  -66 dBm, repeated channel-1 scans returning up to 3 BSS records, and full
+  scans returning 4–6 BSS records without FIFO leaks or BH failure;
+- a passive-RX path with multi-channel dwell, packet-DMA FIFO recycling,
+  beacon/probe-response and on-air DS-channel filtering, WSM receive
+  indications, and fixed diagnostic counters;
 - vendor-style zero-copy RX indications that use the FIFO slot's 16-byte
   headroom and defer slot recycling until HIF TX descriptor reclamation, so the
   full advertised 1600-byte frame size is supported instead of the temporary
@@ -146,12 +156,15 @@ Implemented:
 
 Not yet implemented:
 
-- interrupt vectors and exception reporting;
-- real IRQ-driven HIF receive/completion handling;
+- hardware publication, retry timing, and completion of active scan probes;
+  the exact allocation-free probe template/SSID/channel builder and vendor
+  three-context internal TX-pool initialization are implemented, but prepared
+  probes are not made DMA-owned yet, so active requests still use the documented
+  passive fallback;
+- IRQ 18/20/21 completion consumers and faithful IRQ-driven HIF scheduling;
 - complete HIF queue/scheduler accounting;
-- WSM dispatcher/state machine beyond initial probe requests;
-- PHY initialization and calibration;
-- TX/RX data path.
+- JOIN/VIF state effects, association, and normal TX/RX data traffic;
+- production exception reporting and recovery behavior.
 
 ## Intended bring-up order
 

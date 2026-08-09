@@ -211,14 +211,39 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     storage.band = request.band;
     storage.scan_type = request.scan_type;
     storage.flags = request.flags;
-    storage.num_probes = request.num_probes;
-    storage.probe_delay = request.probe_delay;
+    // Active probe TX and its completion IRQ are not translated yet. Execute
+    // active requests as honest passive scans with the XR819 passive dwell,
+    // rather than pretending that a 35 ms no-probe dwell is equivalent.
+    let passive_fallback = request.num_probes != 0;
+    storage.num_probes = if passive_fallback {
+        0
+    } else {
+        request.num_probes
+    };
+    storage.probe_delay = if passive_fallback {
+        0
+    } else {
+        request.probe_delay
+    };
     storage.num_channels = request.num_channels;
     for index in 0..num_channels {
-        storage.channels[index] = request
+        let mut channel: RetainedScanChannel = request
             .channel(index)
             .map(Into::into)
             .map_err(|_| ScanError::InvalidRecord)?;
+        if passive_fallback {
+            if request.num_channels == 1 {
+                // Two beacon intervals compensate for absent probe responses.
+                channel.min_channel_time = channel.min_channel_time.max(220);
+                channel.max_channel_time = channel.max_channel_time.max(250);
+            } else {
+                // Keep multi-channel batches below the driver's scan-command
+                // timeout until active probe TX is available.
+                channel.min_channel_time = channel.min_channel_time.max(110);
+                channel.max_channel_time = channel.max_channel_time.max(120);
+            }
+        }
+        storage.channels[index] = channel;
     }
 
     storage.num_ssids = request.num_ssids;
@@ -263,11 +288,11 @@ pub fn service() -> Option<ScanCompletion> {
         match unsafe { storage.transition.service(now) } {
             Ok(Some(result)) => {
                 let channel = storage.channels[usize::from(storage.current_channel_index)];
-                // Vendor scan deadlines use `channel_time * 0x400` against
-                // `fw_read_timer()` (`0xe6b8`).
+                // Vendor arms the dwell after the transition has enabled RX.
+                let armed = vendor_timer();
                 storage.dwell_deadline =
-                    now.wrapping_add(channel.max_channel_time.saturating_mul(0x400));
-                storage.dwell_arm_now = now;
+                    armed.wrapping_add(channel.max_channel_time.saturating_mul(0x400));
+                storage.dwell_arm_now = armed;
                 storage.dwell_armed_deadline = storage.dwell_deadline;
                 unsafe {
                     (0x0900_ff98 as *mut u32).write_volatile(0x5455_4e4f);

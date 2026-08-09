@@ -1575,31 +1575,42 @@ unsafe fn begin_channel_transition(
     if !unsafe { set_packet_receive_enabled(false, calibration_max_polls) } {
         return Err(ChannelTransitionError::InvalidTiming);
     }
-    unsafe {
-        // First channel-switch path `thunk_16c92`: initialize the detector and
-        // expanded AGC table before the requested channel operation.
-        if (0x0400_3a6e as *const u8).read_volatile() != 4 {
-            apply_first_channel_detector_state();
+    let same_mode_channel = unsafe {
+        (0x0400_994f as *const u8).read_volatile() == 2
+            && (0x0400_994e as *const u8).read_volatile() == 0
+            && (0x0400_9952 as *const u16).read_volatile() == channel
+            && (0x0400_99d0 as *const u8).read_volatile() == 0
+    };
+    if !same_mode_channel {
+        unsafe {
+            // First channel-switch path `thunk_16c92`: initialize the detector and
+            // expanded AGC table before the requested channel operation.
+            if (0x0400_3a6e as *const u8).read_volatile() != 4 {
+                apply_first_channel_detector_state();
+            }
+            // `phy_cal_advance_stage` (0x16bfa) reapplies these four initialized
+            // register lists before `phy_cal_set_flag`, whose mode-zero path runs
+            // the four RF initialization stages before dispatching the band mode.
+            for list in COMMON_INITIALIZATION_LISTS {
+                apply_register_list(list);
+            }
+            // Scan rate configuration 0x0117 selects dispatcher mode 2 in
+            // `phy_do_channel_switch` (0xf7fc). The first channel performs a
+            // pre-calibration dispatch, RF initialization, then the requested
+            // mode-2 dispatch.
+            program_mode2_band_hardware();
+            prepare_rf_mode0_stage();
+            // Vendor `phy_init_once` keeps this outside its one-shot guard and
+            // rebuilds the SDD-corrected AGC table after RF initialization.
+            build_mode0_gain_tables();
+            program_scan_receive_band();
+            write_u16(0x0400_9952, channel);
         }
-        // `phy_cal_advance_stage` (0x16bfa) reapplies these four initialized
-        // register lists before `phy_cal_set_flag`, whose mode-zero path runs
-        // the four RF initialization stages before dispatching the band mode.
-        for list in COMMON_INITIALIZATION_LISTS {
-            apply_register_list(list);
-        }
-        // Scan rate configuration 0x0117 selects dispatcher mode 2 in
-        // `phy_do_channel_switch` (0xf7fc). The first channel performs a
-        // pre-calibration dispatch, RF initialization, then the requested
-        // mode-2 dispatch.
-        program_mode2_band_hardware();
-        prepare_rf_mode0_stage();
-        program_scan_receive_band();
-        write_u16(0x0400_9952, channel);
     }
     let divider = unsafe { program_channel_pll(channel) }.map_err(ChannelTransitionError::Pll)?;
 
     let mut calibration_ran = false;
-    if unsafe { (0x0400_995d as *const u8).read_volatile() } != 0 {
+    if !same_mode_channel && unsafe { (0x0400_995d as *const u8).read_volatile() } != 0 {
         unsafe { run_vendor_mode_calibration(calibration_max_polls) }
             .map_err(ChannelTransitionError::Calibration)?;
         calibration_ran = true;
@@ -1611,8 +1622,9 @@ unsafe fn begin_channel_transition(
         unsafe { measure_temperature_primary() }.map_err(ChannelTransitionError::Temperature)?;
     unsafe { copy_channel_configuration_slot(0) };
 
-    if unsafe { prepare_channel_calibration_cache() }
-        == ChannelCalibrationRequirement::RunCalibration
+    if !same_mode_channel
+        && unsafe { prepare_channel_calibration_cache() }
+            == ChannelCalibrationRequirement::RunCalibration
     {
         unsafe { run_vendor_mode_calibration(calibration_max_polls) }
             .map_err(ChannelTransitionError::Calibration)?;
@@ -1626,7 +1638,10 @@ unsafe fn begin_channel_transition(
     let frequency_offset = unsafe { publish_channel_frequency_offset() };
     // First return from vendor `phy_cal_run_step_timed`: state 1, followed by
     // a 120-tick cooperative settle interval.
-    unsafe { write_u8(0x0400_1adc, 1) };
+    unsafe {
+        write_u8(0x0400_99d0, 0);
+        write_u8(0x0400_1adc, 1);
+    };
     Ok(ChannelTransitionResult {
         divider,
         timing,
@@ -1712,6 +1727,26 @@ impl ChannelTransitionScheduler {
         if !self.is_idle() {
             return Err(ChannelTransitionError::InvalidTiming);
         }
+        // Vendor `mac_set_channel` returns immediately when the requested MAC
+        // channel is already active. Preserve RX/FIFO state instead of cycling
+        // the analogue front end for every repeated single-channel scan.
+        if unsafe {
+            (0x0400_3a68 as *const u16).read_volatile() == channel
+                && (0x0400_3a6e as *const u8).read_volatile() == 4
+                && (0x0400_994f as *const u8).read_volatile() == 2
+        } {
+            let integer = unsafe { (0x0400_99f8 as *const u32).read_volatile() };
+            let fractional = unsafe { (0x0400_99fc as *const u32).read_volatile() };
+            self.result.divider = PllDivider {
+                integer,
+                fractional,
+                register: integer.wrapping_shl(21) | fractional,
+            };
+            self.result.calibration_ran = false;
+            self.calibration_max_polls = calibration_max_polls;
+            self.state = 3;
+            return Ok(());
+        }
         let result = unsafe { begin_channel_transition(channel, calibration_max_polls) }?;
         self.calibration_max_polls = calibration_max_polls;
         self.result = result;
@@ -1734,6 +1769,10 @@ impl ChannelTransitionScheduler {
         &mut self,
         now: u32,
     ) -> Result<Option<ChannelTransitionResult>, ChannelTransitionError> {
+        if self.state == 3 {
+            self.state = 0;
+            return Ok(Some(self.result));
+        }
         if self.state != 2 {
             return Ok(None);
         }
@@ -3924,6 +3963,26 @@ pub unsafe fn initialize_mac_software_state() {
 /// installed. The current startup calls this only for static mode-zero hardware
 /// preparation; channel policy remains inactive while callbacks are diagnostic
 /// stubs.
+unsafe fn build_mode0_gain_tables() {
+    let correction = unsafe { (0x0400_34f8 as *const i16).read_volatile() };
+    let mut table = [0; 80];
+    build_rate_table(&MODE0_CALIBRATION_ANCHORS, correction, &mut table);
+    for (index, value) in table.iter().copied().enumerate() {
+        unsafe { ((0x0ab8_0800 + index * 4) as *mut u32).write_volatile(value) };
+    }
+
+    unsafe { apply_register_list(MODE0_INITIALIZATION_LIST) };
+
+    unsafe {
+        let control = (0x0ab8_0400 as *mut u32).read_volatile();
+        (0x0ab8_0400 as *mut u32)
+            .write_volatile((control & 0xffff_80ff) | (table[0] & 0x0000_7f00));
+        let boundary = (0x0ab8_0410 as *mut u32).read_volatile();
+        (0x0ab8_0410 as *mut u32)
+            .write_volatile((boundary & 0xffff_ff80) | u32::from(rate_table_boundary(&table)));
+    }
+}
+
 pub unsafe fn initialize_mac_core_mode0() {
     for index in 0..=0x40 {
         unsafe { ((0x0aba_2000 + index * 4) as *mut u32).write_volatile(0x00ed_00ed) };
@@ -3946,23 +4005,9 @@ pub unsafe fn initialize_mac_core_mode0() {
         unsafe { apply_register_list(list) };
     }
 
-    let correction = unsafe { (0x0400_34f8 as *const i16).read_volatile() };
-    let mut table = [0; 80];
-    build_rate_table(&MODE0_CALIBRATION_ANCHORS, correction, &mut table);
-    for (index, value) in table.iter().copied().enumerate() {
-        unsafe { ((0x0ab8_0800 + index * 4) as *mut u32).write_volatile(value) };
-    }
-
-    unsafe { apply_register_list(MODE0_INITIALIZATION_LIST) };
+    unsafe { build_mode0_gain_tables() };
 
     unsafe {
-        let control = (0x0ab8_0400 as *mut u32).read_volatile();
-        (0x0ab8_0400 as *mut u32)
-            .write_volatile((control & 0xffff_80ff) | (table[0] & 0x0000_7f00));
-        let boundary = (0x0ab8_0410 as *mut u32).read_volatile();
-        (0x0ab8_0410 as *mut u32)
-            .write_volatile((boundary & 0xffff_ff80) | u32::from(rate_table_boundary(&table)));
-
         let mac_control = (0x0ab8_0c00 as *mut u32).read_volatile();
         (0x0ab8_0c00 as *mut u32).write_volatile(mac_control | (1 << 11));
     }

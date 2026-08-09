@@ -122,6 +122,7 @@ extern "C" fn rust_main() -> ! {
     // real channel request is serviced.
     unsafe {
         initialize_mac_software_state();
+        xr819_firmware::tx::initialize_internal_pool();
         initialize_mac_core_mode0();
     }
     debug_stop(9, 0x5354_4709);
@@ -167,6 +168,12 @@ extern "C" fn rust_main() -> ! {
                     unsafe { transport.publish_radio(indication) };
                 }
             }
+        } else {
+            // Vendor RX processing never stops between scans. Recycle one slot
+            // per cooperative pass so a later dwell cannot consume idle-era
+            // beacons as if they had just arrived.
+            let channel = unsafe { (0x0400_3a68 as *const u16).read_volatile() };
+            unsafe { radio::discard_one_idle(channel) };
         }
 
         if let Some(completion) = pending_scan_completion

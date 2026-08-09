@@ -1286,6 +1286,38 @@ the larger restoration executes only when later power-management state requests
 it. Associated response-descriptor and statistics behavior remains dormant
 until JOIN/START create the corresponding vendor VIF state.
 
+## Current scan receive result
+
+The receive path is now hardware-active and the earlier zero-producer state is
+obsolete. Packet DMA advances, zero-copy WSM receive indications reach Linux,
+and SDD-derived calibration provides vendor-level channel-1 sensitivity around
+-65 to -66 dBm.
+
+A cold-scan investigation identified two independent semantic gaps:
+
+1. The vendor receive task (`rx_handler_main_loop`, `0x8e2c`) drains packet DMA
+   continuously. The Rust loop previously polled RX only while scan state was
+   active, allowing idle-era frames to accumulate and contaminate a later scan.
+2. Linux requests XR819 foreground scans with two probes and a 35 ms maximum
+   dwell. Vendor functions `0x141b0`, `0x14332`, and `0x147c6` build, submit,
+   and complete probe requests. Rust retained the scan fields but did not use
+   them, so the same request silently became an unreliable 35 ms passive scan.
+
+RX is now recycled continuously outside scan state. Until active TX completion
+is translated, requests with nonzero probe count use a declared passive
+fallback: 220/250 ms for one channel, or 110/120 ms for multi-channel batches to
+avoid the Linux command timeout. The receive ABI boundary also validates the
+802.11 DS Parameter Set when present, preventing old-channel management frames
+from being published under a new dwell.
+
+Hardware validation of image
+`48c05bb3304c64557a75ea5250ccc121834097d454492bfed3b77c7166ea70cb`
+returned 2–3 BSS records on five independent cold channel-1 scans, up to 3 on
+repeated channel-1 scans, and 4–6 on full scans. BH remained alive, WSM and scan
+state returned idle, and used HIF buffers returned to zero. This does not make
+the firmware complete: active probe TX, IRQ 18/20/21 completion handling,
+JOIN/VIF effects, association, and normal traffic remain open.
+
 ## Reverse-engineering priorities
 
 1. Trace `FUN_00016eec` to the exact WSM START/JOIN entry points and assign its

@@ -964,6 +964,50 @@ Do not infer CPU death solely from loss of the `0x0900ff98` postcode after a
 clock/remap write. The postcode address itself may have moved or become owned
 by another hardware view.
 
+## 2026 scan-RX status update
+
+The Rust image now performs calibrated channel transitions and returns real
+CW1200 receive indications. Investigation of unreliable first scans established
+that the primary issue was not a cold-retune failure:
+
+- Linux XR819 foreground scans request two probes with a 35 ms maximum dwell.
+- Rust retained `num_probes`, `probe_delay`, and SSIDs but did not transmit a
+  probe request, so it was effectively performing a 35 ms passive scan.
+- Rust serviced packet-DMA RX only while a scan was active. Frames accumulated
+  between scans and made repeated same-channel scans appear more reliable by
+  consuming idle-era beacons.
+- Vendor `rx_handler_main_loop` at `0x8e2c` continuously drains RX, while
+  `syn_scan_build_probe_req` (`0x141b0`), `syn_scan_maybe_send_probe`
+  (`0x14332`), and `syn_scan_probe_tx_done` (`0x147c6`) implement active scan
+  transmission and completion.
+
+The current correction continuously recycles RX FIFO slots outside scans and
+uses an explicit passive fallback until probe TX is translated. Single-channel
+active requests use 220/250 ms dwells; multi-channel batches use 110/120 ms to
+remain below the Linux scan-command timeout. On-air DS-channel validation
+prevents a frame from a previous channel being relabeled with the current dwell.
+
+Target validation with image
+`48c05bb3304c64557a75ea5250ccc121834097d454492bfed3b77c7166ea70cb`
+produced 2–3 channel-1 BSS records on five independent cold reloads, 3 records
+on repeated long single-channel scans, and 4–6 records on full scans. Signal was
+approximately -65 to -66 dBm; BH stayed alive, WSM and scan state returned idle,
+and used HIF buffers returned to zero. This is reliable passive compatibility,
+not vendor-equivalent 35 ms active scanning. Exact behavior still requires
+probe-request TX and IRQ-driven TX completion.
+
+The first active-TX foundation is now in `src/tx.rs`. It reproduces the
+three-entry `0x170`-byte internal management-context pool from vendor
+`tx_ctx_pool_init` (`0x12574`), using the exact context and 1 KiB packet-buffer
+addresses, and implements an allocation-free translation of the frame-building
+portion of `syn_scan_build_probe_req`: consume the four-byte WSM template
+header, substitute wildcard or directed SSID, replace the DS Parameter Set with
+the active channel, and retain the requested template rate. Host tests cover
+SSID/channel substitution and malformed template rejection. Hardware scan
+validation remained stable after enabling pool initialization. Descriptor
+publication remains deliberately disabled until the queue-to-pipe ownership
+and completion path is reconstructed.
+
 ## Current Rust implementation delta
 
 As of this note, `xr819-firmware/src/bin/hif_startup.rs` is still an
@@ -1088,6 +1132,7 @@ Work from the vendor order, not by accumulating isolated writes:
   vermagic and must **not** be installed on the 6.18 target. The target still
   has the earlier matching diagnostic module. Recover a matching 6.18 build
   tree or update the target before further module deployment.
-- The currently installed image delivers startup, handles initial write-MIB and
-  configuration requests, and registers `phy44` / `wlan0`. It still lacks real
-  PHY/channel/scan behavior.
+- The currently installed image delivers startup, applies retained SDD
+  calibration, performs real PHY/channel transitions, continuously recycles RX,
+  and returns passive scan BSS records. Active probe TX, TX completion,
+  association, and normal traffic remain unimplemented.

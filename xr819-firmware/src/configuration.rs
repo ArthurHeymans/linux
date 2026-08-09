@@ -140,6 +140,12 @@ pub fn retain_tx_queue(parameters: TxQueueParameters) {
     storage.tx_queues[usize::from(parameters.queue_id)] = parameters;
 }
 
+pub fn template_frame() -> Option<&'static [u8]> {
+    let storage = unsafe { &*XR819_CONFIGURATION.0.get() };
+    (storage.template_frame_len != 0)
+        .then_some(&storage.template_frame[..storage.template_frame_len])
+}
+
 pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
     let storage = unsafe { &mut *XR819_CONFIGURATION.0.get() };
     match (mib_id, data) {
@@ -221,6 +227,11 @@ unsafe fn populate_vendor_calibration_state() {
         copy_u16_profile(0xe4, 0x0400_3542);
         copy_u16_profile(0x48, 0x0400_3504);
         copy_u16_profile(0x49, 0x0400_3596);
+
+        // Reference handlers 0x1774a: signed AGC threshold correction for
+        // profile zero/one, consumed by `phy_build_gain_tables`.
+        copy_u16_profile(0xe0, 0x0400_34f8);
+        copy_u16_profile(0xe1, 0x0400_358a);
 
         // Annotated callback 0x17668: count plus three-byte channel records.
         if let Some(data) = find_sdd_element(0xec) {

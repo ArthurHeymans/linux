@@ -134,6 +134,25 @@ fn scan_frame_flags(frame_control: u16) -> Option<u32> {
     }
 }
 
+unsafe fn management_ds_channel(frame: usize, frame_len: usize) -> Option<u8> {
+    // Beacon and probe-response bodies both begin with twelve fixed bytes after
+    // the 24-byte management header.
+    let mut offset = 36;
+    while offset + 2 <= frame_len {
+        let id = unsafe { ((frame + offset) as *const u8).read_volatile() };
+        let length = usize::from(unsafe { ((frame + offset + 1) as *const u8).read_volatile() });
+        let next = offset.checked_add(2 + length)?;
+        if next > frame_len {
+            return None;
+        }
+        if id == 3 && length >= 1 {
+            return Some(unsafe { ((frame + offset + 2) as *const u8).read_volatile() });
+        }
+        offset = next;
+    }
+    None
+}
+
 fn normalize_offset(mut offset: u32) -> u32 {
     offset &= FIFO_MASK;
     if offset >= FIFO_SIZE {
@@ -218,6 +237,15 @@ pub unsafe fn complete_host_transfer(token: ReleaseToken) {
             HOST_TRANSFER_OUTSTANDING = false;
             release(token);
         }
+    }
+}
+
+/// Continuously consumes receive FIFO entries when no host scan owns them.
+/// Vendor `rx_handler_main_loop` runs independently of scan state; without
+/// this path, old beacons accumulate and contaminate the next scan dwell.
+pub unsafe fn discard_one_idle(channel: u16) {
+    if let Some(indication) = unsafe { poll_scan_indication(0, channel) } {
+        unsafe { complete_host_transfer(indication.release) };
     }
 }
 
@@ -327,9 +355,12 @@ pub unsafe fn poll_scan_indication(if_id: u8, active_channel: u16) -> Option<Pen
         diagnostics.last_trailer_word = (trailer as *const u32).read_volatile();
     }
 
-    // The vendor receive loop does not compare trailer channel metadata with
-    // the requested scan channel before forwarding management frames.
-    if frame_len < 24 || indication_flags.is_none() {
+    // The vendor drains old frames before retuning. Reject a management frame
+    // whose on-air DS element proves it belongs to a previous channel rather
+    // than relabeling it with the active CW1200 dwell.
+    let wrong_ds_channel = unsafe { management_ds_channel(frame_address, frame_len) }
+        .is_some_and(|channel| u16::from(channel) != active_channel);
+    if frame_len < 24 || indication_flags.is_none() || wrong_ds_channel {
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);

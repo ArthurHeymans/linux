@@ -714,8 +714,14 @@ unsafe fn program_mode_registers() {
 /// state, FIFO synchronization, descriptor images, bounded controller wait,
 /// and configured-mode publication.
 pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError> {
-    unsafe { write_u8(WAKE + 0x1e, 0) };
+    unsafe {
+        if read_u8(WAKE + 0x1e) == 0 {
+            return Ok(());
+        }
+        write_u8(WAKE + 0x1e, 0);
+    }
     platform::prepare_mac_receive_hardware();
+    platform::prepare_packet_dma();
     unsafe {
         program_mac_address(0x0400_3acc, 0x09c0_0030, 0x101);
         program_mac_address(0x0400_3ad2, 0x09c0_0048, 0x101);
