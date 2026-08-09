@@ -129,7 +129,7 @@ Working names and status:
 | `0x94c` | Allocate four TX buffers and 30 RX buffers; call HIF init | Partial/manual |
 | `0xf6` | Packet/DMA peripheral setup | Partial; destructive/incomplete |
 | `0x16d24` | PHY/MAC subsystem setup | Partial fixed writes only |
-| `0x14c` | Larger MAC/packet-memory state initialization | Not translated |
+| `0x14c` | Larger MAC/packet-memory state initialization | Translated; hardware validated |
 | `0x5a8` | Timer/state initialization | Not translated |
 | `0x774` | Fixed state/register initialization | Not translated |
 | `0xfff0104c` | High-bootstrap support routine | Not translated |
@@ -1007,6 +1007,186 @@ SSID/channel substitution and malformed template rejection. Hardware scan
 validation remained stable after enabling pool initialization. Descriptor
 publication remains deliberately disabled until the queue-to-pipe ownership
 and completion path is reconstructed.
+
+## Probe TX queue-to-pipe reconstruction
+
+The next vendor ownership chain is now bounded with instruction-level evidence:
+
+```text
+syn_scan_build_probe_req 0x141b0
+  -> tx_ctx_alloc_init 0xd08c
+  -> lmc_tx_assign_default_rate 0x456c
+     -> tx_classify_hdr_len 0xe3c6
+     -> txq_list_insert 0xdc40
+     -> event 0x00200000
+  -> scheduler task 0xb88e
+  -> txp_scheduler_run 0xaa5e
+  -> txp_build_pipe_descriptor 0xa712
+  -> txp_submit_to_pipe 0xadd0
+```
+
+`txq_list_insert` prepends the context to the head/tail pair at `0x04008ad8`.
+The registered event-`0x00200000` task is Thumb entry `0xb88e`; it applies VIF,
+queue, lifetime, and power-state gates before entering `txp_scheduler_run`.
+This means directly calling `txp_submit_to_pipe` would bypass observable vendor
+legality checks and is not an acceptable shortcut.
+
+The four pipe records begin at `0x04001680 + pipe * 0x6c + 0xa0`. Each record
+tracks a four-entry ring and points at hardware descriptors
+`0x09c60000`, `0x09c60080`, `0x09c60100`, and `0x09c60180`. Descriptor command
+storage is backed by four `0x54`-byte records per pipe starting at packet RAM
+`0x09007080`, `0x090071d0`, `0x09007320`, and `0x09007470`.
+
+The final scheduler publication sequence includes:
+
+- update the selected pipe descriptor through `txp_build_pipe_descriptor`;
+- publish a descriptor/list pointer through `0x09c00e64` when it changes;
+- publish the duration quantum through the per-pipe pointer table rooted at
+  `0x040010d4`;
+- trigger the selected pipe by writing `1 << (pipe + 25)` to `0x09c00e98`;
+- mark the pipe record busy and retain the originating TX context until
+  completion.
+
+IRQ 18 and IRQ 20 both dispatch to `0xea08`, the encryption-engine completion
+handler. IRQ 21 dispatches to `0xef1c`, the MIC-engine completion handler.
+They are preprocessing completions, not proof that the MAC packet has left the
+TX pipe.
+
+Final packet completion is delivered through the ARM **FIQ** vector, not those
+IRQ sources. Vendor vector `0x1c` calls `mac_irq_handler` at `0x9eb4`, which
+drains the MAC event FIFO at `0x09c00a20/0x09c00a24`. A successful pipe event
+calls `txp_pipe_tx_success` (`0x9cdc`); failed/retry events call
+`txp_pipe_tx_done_retry` (`0x9550`). The success path advances the pipe consumer,
+invokes `txp_fn_2441` (`0x91ec`), and eventually queues the internal context
+through `tx_ctx_free_inner` (`0xd010`) so class-specific completion can reach
+`syn_scan_probe_tx_done` (`0x147c6`).
+
+The Rust image currently enters directly at address zero and keeps CPU IRQ/FIQ
+masked; it has no exception vector table. Therefore publishing a TX descriptor
+now would guarantee that the required MAC completion consumer cannot run. The
+next safe implementation must either install the vendor-style FIQ vector and
+mode stack or cooperatively poll and translate the MAC event FIFO before any
+probe becomes hardware-owned. Pipe reset/quiesce routine `0xad76` is not a TX
+completion substitute.
+
+`src/tx.rs` now contains the first ownership model for this boundary. A
+`ProbeTxTracker` permits only `Idle -> Prepared -> PipeOwned -> Started ->
+Completed -> Idle`, retains retry status separately, rejects success before a
+matching start event, rejects completion for the wrong pipe, and returns a
+context only once. The model is driven by decoded `0x9eb4` MAC-event bitfields
+and has host tests for success ordering, retry retention, duplicate reclamation,
+and the FIFO empty sentinel. A bounded `service_probe_mac_events` implements the
+vendor `0x09c00a20` pop plus `0x09c00a24` more/empty observation and reports
+handled versus unhandled events, but it is deliberately not called by the main
+loop: unknown MAC event classes must not be consumed until their acknowledgement
+and state effects are mapped.
+
+The tracker now distinguishes the two status paths used by `0x9eb4`: a pending
+pipe with status `4` or `0x19` enters retry handling, while a non-pending status
+event completes through `txp_pipe_tx_status` (`0x9a32`). The earlier model
+incorrectly treated every pending status marker as a retry.
+
+The exact non-control/non-aggregate branch of `txp_submit_to_pipe` (`0xadd0`) is
+also translated as a pure `SingleFramePipeDescriptor` builder. It emits the
+`0x51`, `0x50`, `0x52`, `0x31`, `0x47`, `0x208`, `0x32`, `0x29`, payload
+`0x40`, terminal, and `0xf0` command words in vendor order. Policy-derived rate,
+duration, metadata, address-mask, secondary-command, and terminal values remain
+explicit inputs, so the builder cannot invent values that are not yet proven.
+A host test verifies the complete 13-word probe-shaped descriptor.
+
+Vendor `pas_build_phy_rate_words` (`0x834e`) is now translated as pure
+arithmetic as well. Legacy DSSS/CCK, OFDM, and HT classes preserve the exact
+`0x400`, `0x800`, `0x1000`/`0x1400` selection, control-word `2`/`6` choice,
+four-bit rate attribute, and three-bit queue flag insertion. Hardware-rate and
+rate-attribute table reads remain deferred to context preparation, where the
+existing initialized DTCM tables at `0x040001aa` and `0x04000194` can be read
+without embedding calibration-independent guesses.
+
+The software-owned TX-context constructor has also been detached. It pops the
+`0x04009080` free list, reproduces the `tx_ctx_alloc_init(6,0,1)` field order,
+resolves the normal foreground VIF default rate, classifies the 24-byte probe
+header, and derives a complete descriptor from live DTCM rate tables. The free
+list itself was hardware-validated by a pop/push round trip.
+
+Packet-RAM validation exposed a prerequisite. Before translating `0x14c`, the
+first internal context pointed at `0x09014fe8`; a volatile write to that first
+word succeeded, while the next word at `0x09014fec` terminated firmware
+execution. Bulk copies failed at the same boundary even though the context
+pointer arithmetic was correct.
+
+The uninterrupted `0x14c` translation now preserves packet-DMA stop and producer
+collapse, both 20-byte state copies, all eleven `0xff0` packet-control records,
+the 32-entry `0x09007000` pointer table, the MAC event-FIFO ready wait,
+`0x52c` hardware initialization, scheduler/list object allocation, and all four
+pipe-state records. Vendor task callbacks are represented by an inert Rust Thumb
+callback because the original callback bodies are absent from the Rust image.
+
+After this translation, an arbitrary volatile marker at `0x09014fec` could be
+written and read back while a channel-1 scan still returned three BSS entries.
+The clean translated image is:
+
+```text
+SHA256 50d9f8d741c96b2d268158a48c382e1fee04fb4751095483dae9055e94ae5244
+```
+
+A stronger detached test initially appeared to show that real probe writes
+suppressed RX. Parallel instruction-level audits and address-independent tests
+showed the address was a false lead: copying the same frame into an ITCM static
+buffer produced the same symptom, while stopping before the copy preserved RX.
+The cause was the 2304-byte `PreparedProbe` aggregate being returned and retained
+on the firmware stack. Moving runtime preparation into a fixed `UnsafeCell`
+scratch buffer eliminated the large stack temporary. Complete probe construction,
+packet-RAM copy/readback at `0x09014fe8`, sequential 13-word descriptor checksum,
+and exactly-once context release now run before every active scan without
+suppressing RX.
+
+The startup also now translates vendor `0xf6 -> 0x4c6`'s four-entry packet-RAM
+record list and final `0x9ac -> 0xc80 -> 0x1a2b0` write
+`0x09c01000 = 1`. The deployed image is:
+
+```text
+SHA256 a7e759eb22bd95834c963dd116e0efab1c34de2fb36f0738832a77ef8f763791
+```
+
+Hardware validation returned three channel-1 BSS entries on three consecutive
+scans and seven BSS entries on a full scan, with an alive BH and zero used
+buffers.
+
+The next publication audit exposed missing low-DTCM state that the raw Rust image
+did not inherit from the vendor initialized-data section. Startup now rebuilds
+all four pipe records, command-storage pointers, the `0x040010d4` quantum
+register table, both queue-to-pipe maps at `0x040002dc/0x040002e0`, and the two
+22-byte rate tables at `0x04000194/0x040001aa`. Probe preparation also preserves
+the unresolved ROM-owned `ctx+0x98`, rewrites the source address from VIF state,
+sets classifier fields `ctx+0xc8`, `ctx+0xca`, and `ctx+0xd0`, separates TX flags
+from queue bits in PHY-rate construction, and restores the vendor free sentinel
+and ownership flag on release.
+
+Active requests now perform a pipe-0/selected-slot dry run: the three-word pipe
+header and all 13 command words are written to vendor command storage and read
+back, while the slot remains software-owned and no trigger/GO write occurs. MAC
+event polling now peeks before popping, preserves the vendor pipe latch, and
+refuses to consume fatal, pipe-service, beacon, or sideband events whose effects
+are not translated. Image
+`a917d40ad2c1a21a5e6d9f14c69b7e6de1daa9dce4b0f0ba8ed9aed4a8b749b9`
+returned three BSS entries on three consecutive channel-1 scans and five on a
+full scan, with an alive BH and zero used buffers. Hardware publication remains
+disabled; command-storage and pipe-state preparation are now hardware-proven.
+
+Vendor startup calls ROM entry `0xfff01094` between its timer/task/TX-pool
+initialization and later MAC setup, and the same entry is used after
+`lmc_flush_pending_tx` during full teardown. Calling that ROM entry directly
+from the reduced Rust startup prevents Linux probe entirely, demonstrating that
+it depends on omitted scheduler/global state and is not a standalone packet-RAM
+aperture initializer. The experimental call was removed and the target restored.
+The missing access must be reconstructed from the surrounding vendor startup
+sequence rather than invoking the ROM routine out of context.
+
+Direct ROM invocation remains invalid, but translating the surrounding vendor
+startup state resolved the packet-RAM boundary without it. The next safe step is
+to rerun detached complete probe-context preparation and compare the resulting
+context/header bytes against vendor state, still without writing the hardware
+pipe trigger.
 
 ## Current Rust implementation delta
 

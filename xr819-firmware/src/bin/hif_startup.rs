@@ -6,15 +6,18 @@ use core::mem::size_of;
 use core::panic::PanicInfo;
 use xr819_firmware::configuration;
 use xr819_firmware::hif::Transport;
+use xr819_firmware::mac;
 use xr819_firmware::phy::{initialize_mac_core_mode0, initialize_mac_software_state};
 use xr819_firmware::platform::{
-    initialize_runtime_state, prepare_dma_and_clocks, prepare_high_platform_support,
-    prepare_mac_receive_hardware, prepare_main_control, prepare_memory_and_interrupts,
-    prepare_packet_dma, program_station_address, register_packet_dma_interrupts,
-    register_post_activation_interrupts, try_activate_hif, wait_for_host_download_completion,
+    enable_packet_controller, initialize_runtime_state, prepare_dma_and_clocks,
+    prepare_high_platform_support, prepare_mac_receive_hardware, prepare_main_control,
+    prepare_memory_and_interrupts, prepare_packet_dma, program_station_address,
+    register_packet_dma_interrupts, register_post_activation_interrupts, try_activate_hif,
+    wait_for_host_download_completion,
 };
 use xr819_firmware::radio;
 use xr819_firmware::scan;
+use xr819_firmware::tx;
 use xr819_firmware::wsm::{
     CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID, EdcaParameters, JOIN_REQ_ID,
     READ_MIB_REQ_ID, START_SCAN_REQ_ID, STATUS_FAILURE, StartScanRequest, StartupIndication,
@@ -122,9 +125,20 @@ extern "C" fn rust_main() -> ! {
     // real channel request is serviced.
     unsafe {
         initialize_mac_software_state();
-        xr819_firmware::tx::initialize_internal_pool();
         initialize_mac_core_mode0();
+        if let Err(error) = mac::initialize_vendor_startup_state(1_000_000) {
+            (0x0900_ff98 as *mut u32).write_volatile(0x4d41_433f);
+            (0x0900_ff9c as *mut u32).write_volatile(error as u32 + 1);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        mac::initialize_tx_pipe_state();
+        // Vendor `0x5a8` initializes this pool only after `0x14c` returns.
+        xr819_firmware::tx::initialize_internal_pool();
     }
+    // Vendor `0xc80` is the final hardware-visible step before `0x158fc`.
+    enable_packet_controller();
     debug_stop(9, 0x5354_4709);
 
     let buffer = unsafe { transport.output_buffer() };
@@ -226,11 +240,42 @@ extern "C" fn rust_main() -> ! {
                     encode_configuration_response(station_id, tx_power_ranges, output)
                 } else if request.id == START_SCAN_REQ_ID {
                     let status = match StartScanRequest::parse(request.payload) {
-                        Ok(scan_request) => match scan::begin(&scan_request, request.if_id) {
-                            Ok(()) => 0,
-                            Err(scan::ScanError::Busy) => 4,
-                            Err(_) => 2,
-                        },
+                        Ok(scan_request) => {
+                            let preparation = if scan_request.num_probes == 0 {
+                                Ok(())
+                            } else {
+                                let channel = scan_request
+                                    .channel(0)
+                                    .ok()
+                                    .and_then(|value| u8::try_from(value.number).ok());
+                                let ssid = if scan_request.num_ssids == 0 {
+                                    Some(&[][..])
+                                } else {
+                                    scan_request.ssid(0).ok()
+                                };
+                                match (channel, ssid) {
+                                    (Some(channel), Some(ssid)) => unsafe {
+                                        tx::validate_probe_preparation(
+                                            configuration::template_frame(),
+                                            ssid,
+                                            channel,
+                                            request.if_id,
+                                        )
+                                        .map(|_| ())
+                                        .map_err(|_| ())
+                                    },
+                                    _ => Err(()),
+                                }
+                            };
+                            match preparation {
+                                Ok(()) => match scan::begin(&scan_request, request.if_id) {
+                                    Ok(()) => 0,
+                                    Err(scan::ScanError::Busy) => 4,
+                                    Err(_) => 2,
+                                },
+                                Err(()) => 2,
+                            }
+                        }
                         Err(_) => 2,
                     };
                     encode_status_response(request.id | 0x0400, status, output)

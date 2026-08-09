@@ -60,6 +60,7 @@ pub enum ScanError {
     TooManySsids,
     InvalidRecord,
     InvalidChannelTiming,
+
     Busy,
 }
 
@@ -475,13 +476,18 @@ mod tests {
         payload[28..30].copy_from_slice(&11_u16.to_le_bytes());
         payload[32..36].copy_from_slice(&20_u32.to_le_bytes());
         payload[36..40].copy_from_slice(&40_u32.to_le_bytes());
-        let request = StartScanRequest::parse(&payload).unwrap();
+        let Ok(request) = StartScanRequest::parse(&payload) else {
+            panic!("valid scan request did not parse");
+        };
 
-        begin(&request, 1).unwrap();
+        assert_eq!(begin(&request, 1), Ok(()));
         assert_eq!(active_interface(), Some(1));
-        assert_eq!(channel(0).unwrap().number, 6);
+        assert_eq!(channel(0).map(|channel| channel.number), Some(6));
         assert_eq!(channel_control(0), Some(0x0117));
-        assert_eq!(channel_program_request(0).unwrap().control.get(), 0x0117);
+        assert_eq!(
+            channel_program_request(0).map(|request| request.control.get()),
+            Some(0x0117)
+        );
         assert_eq!(
             channel_tuning(0),
             Some(ChannelTunePlan {
@@ -490,8 +496,11 @@ mod tests {
             })
         );
         assert_eq!(channel_frequency_khz(0), Some(2_437_000));
-        assert_eq!(channel_pll(0).unwrap().register, 0x356e_c4ec);
-        assert_eq!(channel(1).unwrap().number, 11);
+        assert_eq!(
+            channel_pll(0).map(|divider| divider.register),
+            Some(0x356e_c4ec)
+        );
+        assert_eq!(channel(1).map(|channel| channel.number), Some(11));
         assert_eq!(service(), None);
         assert_eq!(service(), None);
         assert_eq!(service(), None);
@@ -508,7 +517,9 @@ mod tests {
         );
 
         payload[20..24].copy_from_slice(&0_u32.to_le_bytes());
-        let request = StartScanRequest::parse(&payload).unwrap();
+        let Ok(request) = StartScanRequest::parse(&payload) else {
+            panic!("invalid-timing scan request did not parse");
+        };
         assert_eq!(begin(&request, 1), Err(ScanError::InvalidChannelTiming));
     }
 

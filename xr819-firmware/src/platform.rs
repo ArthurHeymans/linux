@@ -662,6 +662,26 @@ pub fn prepare_packet_dma() {
     register32(0x09c0_140c).set(0x7ff);
     register32(0x09c0_1410).set(0);
     post_code(0x5044_4d05);
+
+    // Vendor `0xf6 -> 0x4c6`: four software-owned packet-RAM records.
+    // The final record terminates the free list rather than wrapping.
+    register32(0x0400_1f90).set(0x0400_1f94);
+    for index in 0..4 {
+        let record = 0x0400_1f90 + index * 8;
+        register32(record + 4).set(if index == 3 {
+            0
+        } else {
+            (record + 0x0c) as u32
+        });
+        register32(record + 8).set((0x0901_5fa8 + index * 0x2a0) as u32);
+    }
+    post_code(0x5044_4d06);
+}
+
+/// Vendor `0x9ac -> 0xc80 -> 0x1a2b0`, immediately before startup
+/// indication construction.
+pub fn enable_packet_controller() {
+    register32(0x09c0_1000).set(1);
 }
 
 /// Applies the final hardware enable from `FUN_00016d24` after MAC/PHY state

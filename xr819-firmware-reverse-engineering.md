@@ -1318,6 +1318,92 @@ state returned idle, and used HIF buffers returned to zero. This does not make
 the firmware complete: active probe TX, IRQ 18/20/21 completion handling,
 JOIN/VIF effects, association, and normal traffic remain open.
 
+## Active probe TX ownership boundary
+
+The active-scan transmit path has been followed beyond frame construction:
+`0x141b0 -> 0xd08c -> 0x456c -> 0xdc40` allocates and prepares a management
+context, inserts it at the `0x04008ad8` pending list, and raises scheduler event
+`0x00200000`. Its task at `0xb88e` applies queue/VIF/power gates before calling
+the general packet scheduler at `0xaa5e`.
+
+The scheduler builds one of four pipe rings through `0xa712` and `0xadd0`. Pipe
+software records are rooted at `0x04001680 + pipe * 0x6c + 0xa0`; hardware
+rings are `0x09c60000 + pipe * 0x80`; packet-RAM command records begin at
+`0x09007080 + pipe * 0x150`. Final publication writes the list pointer at
+`0x09c00e64`, a per-pipe duration value through the pointer table at
+`0x040010d4`, and trigger bit `1 << (pipe + 25)` to `0x09c00e98`.
+
+IRQ 18/20 handler `0xea08` belongs to encryption completion and IRQ 21 handler
+`0xef1c` belongs to MIC completion. Final MAC TX completion instead arrives via
+the ARM FIQ vector: `0x1c -> mac_irq_handler(0x9eb4)`. That handler drains
+`0x09c00a20/0x09c00a24`, dispatches success to `0x9cdc` and retry/give-up to
+`0x9550`, advances pipe ownership, and eventually returns the internal context
+through `0x91ec -> 0xd010`. The class-indexed callback table maps the
+class-6 context built by `0x141b0` to `0x15426`; `0x147c6` is the separate
+class-9 callback.
+
+The Rust image currently has no exception vector table and leaves FIQ masked.
+Therefore it initializes the internal pool and prepares probe bytes but does not
+transfer ownership to a hardware pipe. The next safe boundary is a translated
+FIQ path or a cooperative MAC-event FIFO consumer; publishing first would leave
+TX contexts permanently hardware-owned.
+
+Detached context preparation exposed a lower prerequisite before publication:
+the vendor internal buffer pointer for context zero is `0x09014fe8`. Before the
+complete startup state existed, the first word was writable but access at
+`0x09014fec` terminated the custom firmware. Directly calling ROM entry
+`0xfff01094` also prevented probe because that routine depends on omitted
+scheduler/global state.
+
+Vendor startup function `0x14c` is now translated in uninterrupted order. The
+Rust path preserves packet-DMA quiesce, RX producer/consumer collapse, both
+20-byte state copies, eleven packet-control descriptors, the 32-entry pointer
+table, event-FIFO readiness, MAC hardware initialization, scheduler/list object
+state, and four pipe records. Original vendor callbacks are replaced with an
+inert Rust Thumb callback because their bodies are not linked into this image.
+
+With `0x14c` present, an arbitrary marker at `0x09014fec` can be written and
+read back without disturbing a scan. Clean image
+`50d9f8d741c96b2d268158a48c382e1fee04fb4751095483dae9055e94ae5244` remains
+the stable translated baseline.
+
+Complete detached testing refined that result again. Parallel Opus and Luna
+audits found no vendor packet-memory aperture sequence and identified the large
+runtime aggregate as the stronger explanation. An address-independent test
+confirmed it: copying the same prepared frame into an ITCM static buffer also
+suppressed RX, while context preparation stopped before the copy did not.
+
+Runtime probe construction now uses a fixed `UnsafeCell<PreparedProbe>` scratch
+buffer instead of returning and retaining a 2304-byte aggregate on the main
+stack. With that change, the complete real-frame copy/readback at `0x09014fe8`,
+sequential command-list checksum, and context release execute before every
+active scan without affecting RX. Vendor `0xf6 -> 0x4c6`'s adjacent four-record
+packet-RAM list and final `0xc80 -> 0x1a2b0` write `0x09c01000 = 1` are also
+translated.
+
+Image `a7e759eb22bd95834c963dd116e0efab1c34de2fb36f0738832a77ef8f763791`
+returned three channel-1 BSS entries on three consecutive scans and seven BSS
+entries on a full scan, with an alive BH and zero used buffers.
+
+A subsequent three-model publication audit identified low-DTCM tables and pipe
+pointers that the raw image had not initialized. Startup now rebuilds all four
+pipe records and command pointers, the `0x040010d4` quantum register table,
+queue-to-pipe maps, and both legacy/HT rate tables. Context preparation now
+rewrites the source MAC, fills classifier fields `+0xc8/+0xca/+0xd0`, preserves
+the unresolved ROM-owned `+0x98`, separates TX flags from queue bits, and
+restores `+0x70 = 0xff` plus ownership bit `0x20000` during release.
+
+Active scan setup now writes and reads back the complete three-word pipe header
+and 13-word command list in the dynamically selected pipe/slot, then clears the
+slot frame pointer and releases the still-software-owned context. It never
+writes `0x09c00e98` or the final hardware GO field. Cooperative event handling
+now peeks before popping and refuses unknown side-effect classes while retaining
+the vendor pipe latch. Image
+`a917d40ad2c1a21a5e6d9f14c69b7e6de1daa9dce4b0f0ba8ed9aed4a8b749b9`
+returned three BSS entries on three consecutive channel-1 scans and five on a
+full scan, with an alive BH and zero used buffers. Command-storage preparation
+is hardware-proven; actual pipe ownership/publication remains the next boundary.
+
 ## Reverse-engineering priorities
 
 1. Trace `FUN_00016eec` to the exact WSM START/JOIN entry points and assign its

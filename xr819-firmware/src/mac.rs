@@ -66,6 +66,12 @@ pub enum MacWakeError {
     PipeControllerTimeout,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MacStartupError {
+    PacketDmaStopTimeout,
+    PipeControllerTimeout,
+}
+
 unsafe fn read_u8(address: usize) -> u8 {
     unsafe { (address as *const u8).read_volatile() }
 }
@@ -516,6 +522,28 @@ unsafe fn rebuild_pipe_state() {
     }
 }
 
+/// Builds the vendor pipe-record pointers needed before any TX descriptor can
+/// be prepared for hardware ownership.
+///
+/// # Safety
+/// Packet DMA and the four hardware pipe blocks must already be initialized.
+pub unsafe fn initialize_tx_pipe_state() {
+    unsafe { rebuild_pipe_state() };
+    for pipe in 0..4 {
+        unsafe { write_u32(0x0400_10d4 + pipe * 4, 0x09c0_0e70 + pipe as u32 * 4) };
+    }
+    for (base, values) in [
+        (0x0400_0194, &RATE_ENCODING[..]),
+        (0x0400_01aa, &RATE_ATTRIBUTE[..]),
+        (0x0400_02dc, &[1_u8, 0, 2, 3][..]),
+        (0x0400_02e0, &[1_u8, 0, 2, 3][..]),
+    ] {
+        for (offset, value) in values.iter().copied().enumerate() {
+            unsafe { write_u8(base + offset, value) };
+        }
+    }
+}
+
 unsafe fn build_tbtt(pointer: usize) {
     let n = unsafe { read_u32(SHARED + 0x30) }
         .wrapping_add(unsafe { read_u32(SHARED + 0x1c) }.wrapping_mul(8))
@@ -525,6 +553,124 @@ unsafe fn build_tbtt(pointer: usize) {
         write_u16(pointer + 6, 0xdc01);
         write_u32(pointer + 8, 0x8000_0000);
     }
+}
+
+extern "C" fn inactive_startup_task() {}
+
+/// Uninterrupted hardware and shared-state translation of vendor `0x0000014c`.
+///
+/// Vendor callback addresses cannot be retained because those Thumb routines
+/// are not present in the Rust image. Their scheduler slots are populated with
+/// an inert Rust callback while preserving the original allocation/order.
+///
+/// # Safety
+/// Packet DMA and the MAC clock domain must already be initialized.
+pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacStartupError> {
+    unsafe {
+        // 0x14e -> 0x7e50: stop packet DMA and wait for bit 23 to clear.
+        let control = read_u32(0x09c0_0600);
+        if control & 1 != 0 {
+            write_u32(0x09c0_0600, control & !1);
+            let mut polls = 0;
+            while read_u32(0x09c0_0600) & (1 << 23) != 0 {
+                if polls >= max_polls {
+                    return Err(MacStartupError::PacketDmaStopTimeout);
+                }
+                polls += 1;
+                core::hint::spin_loop();
+            }
+        }
+        write_u8(0x0400_3a6d, read_u8(0x0400_3a6d) | 1);
+
+        // 0x152 -> 0x10024: collapse producer, consumer, scan, and release.
+        let producer = read_u32(0x09c0_0604);
+        write_u32(SHARED + 0x10, producer);
+        write_u32(SHARED + 0x14, producer);
+        write_u32(0x09c0_0608, producer);
+        let dma_control = read_u32(0x09c0_0600);
+        write_u32(0x09c0_0600, dma_control);
+
+        write_u16(0x0900_7bc0, 0);
+        write_u16(0x0900_7bc2, 0);
+        for offset in (0..0x14).step_by(4) {
+            write_u32(0x0400_3768 + offset, read_u32(0x0400_0200 + offset));
+        }
+        for offset in (0..0x14).step_by(4) {
+            write_u32(0x0400_377c + offset, read_u32(0x0400_0214 + offset));
+        }
+
+        write_u8(0x0400_3a70, 0);
+        write_u8(SHARED + 4, 0);
+        write_u16(SHARED + 2, 0x13);
+        write_u8(SHARED + 5, 0);
+        write_u32(0x0400_18d0, 0);
+        write_u32(0x0400_18d4, 0);
+        write_u8(0x0400_1ab8, 2);
+        write_u32(SHARED + 0x10, 0);
+        write_u32(SHARED + 0x14, 0);
+        for address in [0x0400_1aa8, 0x0400_1aac, 0x0400_1ab0, 0x0400_1ab4] {
+            write_u32(address, 0);
+        }
+
+        for pointer in [
+            0x0900_7e64,
+            0x0900_7bc4,
+            0x0900_7c18,
+            0x0900_7c6c,
+            0x0900_7cc0,
+            0x0900_7d14,
+            0x0900_7d68,
+            0x0900_7dbc,
+            0x0900_7e10,
+            0x0900_7f60,
+            0x0900_7fb4,
+        ] {
+            build_tbtt(pointer);
+        }
+
+        write_u32(0x09c0_0c00, 0x0000_7000);
+        for index in 0..32 {
+            write_u32(0x0900_7000 + index * 4, 0x0000_7e64);
+        }
+        for index in 0..23 {
+            write_u32(0x09c0_0210 + index * 4, 0);
+        }
+
+        let mut polls = 0;
+        while read_u32(0x09c0_0a20) & 0x8000_0000 == 0 {
+            if polls >= max_polls {
+                return Err(MacStartupError::PipeControllerTimeout);
+            }
+            polls += 1;
+            core::hint::spin_loop();
+        }
+
+        // 0x26a -> 0x52c.
+        platform::prepare_mac_receive_hardware();
+
+        write_u32(0x0400_1578, 0);
+        write_u32(0x0400_157c, 0);
+
+        let callback = inactive_startup_task as *const () as usize as u32 | 1;
+        for index in [7_usize, 12, 11, 27, 13] {
+            write_u32(0x0400_21b4 + index * 4, callback);
+        }
+        for object in [0x0400_1d18, 0x0400_1ac8] {
+            write_u32(object + 0x0c, callback);
+            write_u32(object + 0x10, 0);
+            write_u32(object + 4, 0);
+        }
+        write_u8(0x0400_3a6e, 0);
+        write_u8(0x0400_1adc, 2);
+
+        for pipe in 0..4 {
+            let state = SHARED + 0xa0 + pipe * 0x6c;
+            write_u8(state + 4, 0);
+            write_u8(state + 5, 5);
+            write_u16(state + 6, 0);
+        }
+    }
+    Ok(())
 }
 
 unsafe fn reset_lmc_pool() {
