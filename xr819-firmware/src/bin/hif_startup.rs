@@ -266,7 +266,7 @@ extern "C" fn rust_main() -> ! {
                         .unwrap_or(0);
                     if mib_id == 0x100c {
                         let diagnostics = radio::diagnostics();
-                        let (scan_channels, scan_max_time) = scan::diagnostic_plan();
+                        let (_scan_channels, scan_max_time) = scan::diagnostic_plan();
                         let (dwell_arm, dwell_deadline, dwell_now, _dwell_waits) =
                             scan::diagnostic_dwell();
                         let (_scan_status, scan_error) = scan::diagnostic_error();
@@ -276,16 +276,15 @@ extern "C" fn rust_main() -> ! {
                             diagnostics.bad_magic,
                             diagnostics.valid_slots,
                             diagnostics.indications,
-                            unsafe { (0x0abd_0004 as *const u32).read_volatile() },
-                            unsafe { (0x0aba_8040 as *const u32).read_volatile() },
-                            unsafe { (0x0ab8_0c00 as *const u32).read_volatile() },
-                            unsafe { (0x0abb_8004 as *const u32).read_volatile() },
-                            unsafe {
-                                u32::from((0x0400_3c29 as *const u8).read_volatile())
-                                    | (u32::from((0x0400_3ad1 as *const u8).read_volatile()) << 8)
-                            },
-                            scan::elapsed_ticks(),
-                            u32::from(scan_channels),
+                            diagnostics.malformed_slots,
+                            diagnostics.filtered_frames,
+                            diagnostics.oversized_frames,
+                            diagnostics.released_slots,
+                            u32::from(diagnostics.last_slot_length)
+                                | (u32::from(diagnostics.last_frame_control) << 16),
+                            u32::from(diagnostics.last_channel)
+                                | (u32::from(diagnostics.last_active_channel) << 16),
+                            diagnostics.last_trailer_word,
                             scan_max_time,
                             dwell_arm,
                             dwell_deadline,

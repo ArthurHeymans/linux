@@ -34,6 +34,11 @@ pub struct ReceiveDiagnostics {
     pub indications: u32,
     pub released_slots: u32,
     pub last_producer: u32,
+    pub last_slot_length: u16,
+    pub last_frame_control: u16,
+    pub last_channel: u16,
+    pub last_active_channel: u16,
+    pub last_trailer_word: u32,
 }
 
 struct SharedDiagnostics(UnsafeCell<ReceiveDiagnostics>);
@@ -50,6 +55,11 @@ static DIAGNOSTICS: SharedDiagnostics = SharedDiagnostics(UnsafeCell::new(Receiv
     indications: 0,
     released_slots: 0,
     last_producer: 0,
+    last_slot_length: 0,
+    last_frame_control: 0,
+    last_channel: 0,
+    last_active_channel: 0,
+    last_trailer_word: 0,
 }));
 
 pub fn diagnostics() -> ReceiveDiagnostics {
@@ -298,6 +308,8 @@ pub unsafe fn poll_scan_indication(if_id: u8, active_channel: u16) -> Option<Pen
         return None;
     }
 
+    // Vendor `rx_handler_main_loop` reads the complete halfword at trailer+2
+    // and masks it to ten bits for the low PHY classes.
     let channel = unsafe { ((trailer + 2) as *const u16).read_volatile() } & 0x03ff;
     let rcpi = unsafe { ((trailer + 7) as *const u8).read_volatile() }.max(1);
     let frame_control = if frame_len >= 2 {
@@ -306,8 +318,18 @@ pub unsafe fn poll_scan_indication(if_id: u8, active_channel: u16) -> Option<Pen
         0xffff
     };
     let indication_flags = scan_frame_flags(frame_control);
+    unsafe {
+        let diagnostics = &mut *DIAGNOSTICS.0.get();
+        diagnostics.last_slot_length = slot_length;
+        diagnostics.last_frame_control = frame_control;
+        diagnostics.last_channel = channel;
+        diagnostics.last_active_channel = active_channel;
+        diagnostics.last_trailer_word = (trailer as *const u32).read_volatile();
+    }
 
-    if frame_len < 24 || channel != active_channel || indication_flags.is_none() {
+    // The vendor receive loop does not compare trailer channel metadata with
+    // the requested scan channel before forwarding management frames.
+    if frame_len < 24 || indication_flags.is_none() {
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
@@ -322,7 +344,10 @@ pub unsafe fn poll_scan_indication(if_id: u8, active_channel: u16) -> Option<Pen
         write_u16(message_address, message_length as u16);
         write_u16(message_address + 2, receive_indication_id(if_id));
         write_u32(message_address + 4, 0);
-        write_u16(message_address + 8, channel);
+        // XR819 trailer channel metadata includes PHY status bits (for example
+        // channel 11 appears as 0x010b). CW1200 WSM requires the plain channel
+        // number, which is authoritative from the active scan request.
+        write_u16(message_address + 8, active_channel);
         ((message_address + 10) as *mut u8).write_volatile(0);
         ((message_address + 11) as *mut u8).write_volatile(rcpi);
         write_u32(message_address + 12, indication_flags.unwrap_or(0));
