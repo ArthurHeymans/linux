@@ -4,8 +4,48 @@
 //! than guessed RF values. Static MAC initialization is active; per-channel
 //! programming remains bounded at the translated request ABI before `0xf802`.
 
+use core::cell::UnsafeCell;
+
 use zerocopy::byteorder::little_endian::U16;
 use zerocopy::{Immutable, IntoBytes};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IqHardwareDiagnostics {
+    pub baseline_i: i32,
+    pub target_i: i32,
+    pub baseline_polls: u32,
+    pub target_polls: u32,
+}
+
+struct SharedIqDiagnostics(UnsafeCell<IqHardwareDiagnostics>);
+unsafe impl Sync for SharedIqDiagnostics {}
+
+static IQ_DIAGNOSTICS: SharedIqDiagnostics =
+    SharedIqDiagnostics(UnsafeCell::new(IqHardwareDiagnostics {
+        baseline_i: 0,
+        target_i: 0,
+        baseline_polls: 0,
+        target_polls: 0,
+    }));
+static LAST_SAMPLE_POLLS: SharedIqDiagnostics =
+    SharedIqDiagnostics(UnsafeCell::new(IqHardwareDiagnostics {
+        baseline_i: 0,
+        target_i: 0,
+        baseline_polls: 0,
+        target_polls: 0,
+    }));
+
+pub fn iq_hardware_diagnostics() -> IqHardwareDiagnostics {
+    unsafe { *IQ_DIAGNOSTICS.0.get() }
+}
+
+fn last_sample_polls() -> u32 {
+    unsafe { (*LAST_SAMPLE_POLLS.0.get()).baseline_polls }
+}
+
+unsafe fn set_last_sample_polls(value: u32) {
+    unsafe { (*LAST_SAMPLE_POLLS.0.get()).baseline_polls = value };
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CalibrationAnchor {
@@ -477,23 +517,31 @@ pub unsafe fn run_calibration_sample_mode(
     max_polls: u32,
 ) -> Result<IqCalibrationCoefficient, CalibrationSampleError> {
     unsafe {
-        let dac_control = (0x0abb_8114 as *const u32).read_volatile();
+        // The optimized vendor call chain deliberately carries r3 from
+        // `rf_select_band_regs()` through `rf_cal_path_setup()` and
+        // `rf_set_iq_dac()`. At both `rf_set_iq_dac` (0x17c46) and
+        // `rf_measure_iq` (0x17bc4), that fourth argument is the register-base
+        // value below, not either destination register's previous contents.
+        const VENDOR_CALL_CONTEXT: u32 = 0x0abb_80c0;
         write_u32(
             0x0abb_8114,
-            calibration_sample_settings_from(dac_control, i, q),
+            calibration_sample_settings_from(VENDOR_CALL_CONTEXT, i, q),
         );
-        let current = (0x0abb_80f0 as *const u32).read_volatile();
-        let command =
-            (((current & 0xf000_ffff) | 0x0800_0008 | (u32::from(measurement_mode & 1) << 2)) & !3)
-                .wrapping_add(1);
+        let command = (((VENDOR_CALL_CONTEXT & 0xf000_ffff & !0xf0)
+            | 0x0800_0008
+            | (u32::from(measurement_mode & 1) << 2))
+            & !3)
+            .wrapping_add(1);
         write_u32(0x0abb_80f0, command);
-        for _ in 0..max_polls {
+        for polls in 0..max_polls {
             if (0x0abb_80f0 as *const u32).read_volatile() & 0x10 != 0 {
+                set_last_sample_polls(polls + 1);
                 let i = decode_calibration_accumulator((0x0abb_810c as *const u32).read_volatile());
                 let q = decode_calibration_accumulator((0x0abb_8110 as *const u32).read_volatile());
                 return Ok(IqCalibrationCoefficient { i, q });
             }
         }
+        set_last_sample_polls(max_polls);
     }
     Err(CalibrationSampleError::Timeout)
 }
@@ -853,9 +901,9 @@ pub unsafe fn copy_channel_configuration_slot(slot: u8) {
 /// The AGC and MAC/PHY register banks must be enabled.
 pub unsafe fn set_phy_agc_enabled(enabled: bool) {
     unsafe {
-        let current = (0x0abb_81b8 as *const u32).read_volatile();
+        let current = (0x0ab8_0c38 as *const u32).read_volatile();
         let updated = if enabled {
-            write_u32(0x0ab8_0c20, 0);
+            write_u32(0x0abb_81a0, 0);
             let profile = (0x0400_994e as *const u8).read_volatile();
             write_u32(0x0ab8_006c, if profile == 1 { 0 } else { 0x0ebf });
             write_u32(0x0ab8_0068, 0);
@@ -863,7 +911,7 @@ pub unsafe fn set_phy_agc_enabled(enabled: bool) {
         } else {
             current & !0x1800
         };
-        write_u32(0x0abb_81b8, updated);
+        write_u32(0x0ab8_0c38, updated);
     }
 }
 
@@ -1174,58 +1222,277 @@ pub unsafe fn record_calibrated_channel(channel: u16) {
     }
 }
 
-/// Complete normal channel-transition sequence from annotated
-/// `phy_set_channel_full`. Temperature hardware-fault errors intentionally
-/// preserve the vendor's non-restoring fatal state.
-///
-/// # Safety
-///
-/// The caller must exclusively own channel programming and calibration, with
-/// initialized SDD-derived tables and RF/PHY software state.
-unsafe fn program_mode0_receive_band() {
+unsafe fn rf_init_stage_d_mode0() {
+    const BASE: usize = 0x0abc_0040;
     unsafe {
-        // Synchronous equivalent of `phy_cal_set_flag(0, 0)` and the state
-        // publication performed by `phy_cal_set_channel_and_arm`.
-        write_u8(0x0400_994e, 0);
-        write_u8(0x0400_994f, 0);
-        write_u8(0x0400_995f, 3);
-        write_u8(0x0400_99d0, 1);
+        let state = 0x0400_994c_usize;
+        let alternate = ((state + 0x40) as *const u8).read_volatile() == 1;
+        write_u32(BASE - 0x3c, 0x304);
+        write_u32(BASE - 0x38, if alternate { 0x9200 } else { 0x9000 });
+        let remap = (0x0400_1ff4 as *const u32).read_volatile();
+        write_u32(
+            BASE - 0x20,
+            ((remap & 0x07ff_ffff) >> 26)
+                .wrapping_mul(0x2000_0000)
+                .wrapping_add(0x0f4a_c008),
+        );
+        write_u32(
+            BASE - 0x1c,
+            if alternate { 0x29ff_1800 } else { 0x2987_1800 },
+        );
+        write_u32(BASE - 0x28, 0);
+        write_u32(BASE - 0x34, 0x0050_0100);
+        write_u32(BASE + 0x10, 0x0095_0000);
+        write_u32(BASE + 0x14, 0x00b5_3830);
+        write_u32(BASE + 0x18, 0x00b5_7ff1);
+        for offset in [0x1c, 0x20, 0x24, 0x28] {
+            write_u32(BASE + offset, 0x00b4_7ff1);
+        }
+        write_u32(BASE - 0x0c, 0x0000_1c04);
+        write_u32(BASE - 8, 0x0000_1e55);
+        write_u32(BASE - 4, 0x0000_1e55);
+        for offset in [0, 4, 8, 0x0c] {
+            write_u32(BASE + offset, 0x0000_1fff);
+        }
+    }
+}
 
+unsafe fn rf_init_stage_a_mode0() {
+    const BASE: usize = 0x0abc_00c0;
+    unsafe {
+        write_u32(BASE + 0x30, 0xa0);
+        write_u32(BASE - 0x98, 0x0800_1f01);
+        write_u32(BASE - 0x90, 0x001c_0000);
+        write_u32(
+            BASE - 0xa4,
+            u32::from((0x0400_99ab as *const u8).read_volatile() == 0) * 9,
+        );
+        write_u32(BASE + 0x14, 0x0703_0100);
+        write_u32(BASE + 0x18, 0x7f3f_1f0f);
+        write_u32(BASE + 0x24, 0x0000_ffff);
+        write_u32(BASE + 0x1c, 0x0703_0100);
+        write_u32(BASE + 0x20, 0x7f3f_1f0f);
+        write_u32(BASE - 0x94, 0x0400_2730);
+        if (0x0400_1ff0 as *const u16).read_volatile() == 0 {
+            write_u32(0x0ac8_005c, 0x6a25_5800);
+            write_u32(0x0ac8_00e8, 0x10c);
+        }
+        let override_value = (0x0400_998b as *const u8).read_volatile();
+        if override_value != 0 {
+            write_u32(
+                0x0ac8_005c,
+                (0x0ac8_005c as *const u32).read_volatile() & !0x7f
+                    | u32::from(override_value & 0x7f),
+            );
+        }
+        write_u32(BASE - 0xac, 0x0027_0047);
+        write_u32(BASE - 0x54, 0);
+        write_u32(BASE - 0x40, 0x0002_0006);
+        write_u32(BASE - 0x50, 0x0002_0516);
+        write_u32(BASE - 0x4c, 0x0002_0516);
+        write_u32(BASE - 0x48, 0x0002_4f36);
+        write_u32(BASE - 0x44, 0x0002_4f36);
+        write_u32(BASE + 0x38, 0x0002_4f36);
+        write_u32(BASE - 0x3c, 0x1000);
+        write_u32(BASE - 0x28, 0x0400_1000);
+        write_u32(BASE - 0x38, 0x0e2c_aa32);
+        write_u32(BASE - 0x34, 0x0e7c_aef2);
+        write_u32(BASE - 0x30, 0x0f7c_aef2);
+        write_u32(BASE - 0x2c, 0x0ffc_aef2);
+        write_u32(BASE + 0x34, 0x0f6c_a8f2);
+    }
+}
+
+unsafe fn rf_init_stage_b_mode0() {
+    const BASE: usize = 0x0abc_00c0;
+    unsafe {
+        write_u32(BASE - 0x18, 0);
+        write_u32(BASE - 0x1c, 0);
+        write_u32(BASE - 0x20, 0x0000_140a);
+        write_u32(BASE - 0x24, 0x0030_0000);
+        write_u32(BASE, 0x1350_381e);
+        let alternate = (0x0400_998c as *const u8).read_volatile() == 1;
+        write_u32(BASE - 0xb8, if alternate { 0x8202 } else { 0x8002 });
+        write_u32(BASE - 0xbc, 0x0008_0206);
+        write_u32(BASE - 0x8c, 0x0000_0201);
+        delay_timer_ticks(10);
+        write_u32(BASE - 0x24, 0x0030_0001);
+        delay_timer_ticks(0x87);
+        write_u32(BASE - 0x24, 0x0030_0030);
+        write_u32(BASE - 0x24, 0x0030_0000);
+        write_u32(BASE - 0xb8, if alternate { 0x9200 } else { 0x9000 });
+        write_u32(BASE - 0x8c, 0x0000_1e05);
+        write_u32(BASE - 0xbc, 0x304);
+        write_u32(BASE - 0xbc, 0x0008_0306);
+        write_u32(BASE - 0x70, 0x0823_5801);
+        write_u32(BASE - 0x8c, 0x4c0);
+        delay_timer_ticks(10);
+        write_u32(BASE - 0x70, 0x0822_5801);
+        write_u32(BASE, 0x1350_381c);
+        write_u32(0x0abb_8004, 0x0008_8200);
+        write_u32(BASE, 0x1350_381d);
+        delay_timer_ticks(0x32);
+        write_u32(BASE - 0xbc, 0x304);
+        write_u32(BASE, 0x1350_381c);
+        write_u32(BASE - 0x70, 0x0095_0000);
+        write_u32(BASE - 0x8c, 0x0000_1c04);
+        write_u32(0x0abb_8004, 0);
+        delay_timer_ticks(10);
+    }
+}
+
+unsafe fn rf_init_stage_c_mode0() {
+    const BASE: usize = 0x0abc_00c0;
+    unsafe {
+        let reference = (0x0400_996c as *const u32).read_volatile();
+        let range = u32::from(reference >= 0x5dc0) + u32::from(reference >= 0xbb80);
+        let gain = if reference >= 0xbb80 {
+            2
+        } else if reference >= 0x8340 {
+            3
+        } else if reference >= 0x4e20 {
+            4
+        } else {
+            5
+        } * 0x4000;
+        write_u32(BASE - 0x14, 0x001a_3080 | gain);
+        write_u32(BASE - 0x10, range + 0x200);
+        write_u32(BASE - 4, 0);
+        write_u32(BASE - 8, 0);
+        write_u32(BASE - 0x14, 0x001a_30b8 | gain);
+        write_u32(BASE - 0x10, range + 0x200);
+        write_u32(BASE - 4, 0);
+        write_u32(BASE - 8, 0x0020_0000);
+        delay_timer_ticks(10);
+        write_u32(BASE - 0x14, 0x001a_30fb | gain);
+        write_u32(BASE - 0x10, range + 0x7200);
+        write_u32(BASE - 4, 0);
+        write_u32(BASE - 8, 0x0020_0412);
+        delay_timer_ticks(5);
+        write_u32(BASE - 0x14, gain + 0x0100_0000 | 0x03fa_30fb);
+        write_u32(BASE - 0x10, 0x0000_723c | range);
+        write_u32(BASE - 4, 0);
+        write_u32(BASE - 8, 0x0020_0412);
+        delay_timer_ticks(1);
+        write_u32(BASE - 0x10, 0x0035_723c | range);
+        delay_timer_ticks(1);
+        write_u32(BASE - 4, 0x0004_0000);
+        write_u32(BASE - 8, 0x0020_2412);
+        delay_timer_ticks(0x78);
+    }
+}
+
+unsafe fn apply_first_channel_detector_state() {
+    const SUBSTATE: &[(u32, u32)] = &[
+        (0x0abb_8004, 0x0000_0034),
+        (0x0abb_8008, 0x001f_0077),
+        (0x0abb_80e8, 0x000f_0190),
+        (0x0abb_80ec, 0x0000_001f),
+        (0x0abb_80f4, 0x0020_0190),
+        (0x0abb_80f8, 0x012c_00c8),
+        (0x0abb_80fc, 0x0036_8ccc),
+        (0x0abb_81a0, 0),
+    ];
+    const EXPANDED: [u8; 32] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0, 0, 0, 4, 8, 1, 2, 0, 0, 0, 0,
+        2, 8,
+    ];
+    const TAIL: &[(u32, u32)] = &[
+        (0x0abb_82c4, 0x0005_0082),
+        (0x0abb_82c8, 0x0005_0070),
+        (0x0abb_82cc, 0x000d_0010),
+        (0x0abb_82d0, 0),
+        (0x0abb_82d4, 0),
+        (0x0abb_8388, 1),
+    ];
+    unsafe {
+        prepare_rf_mode0_stage();
+        if (0x0400_994c as *const u8).read_volatile() == 2 {
+            apply_register_list(SUBSTATE);
+        }
+        for (index, value) in EXPANDED.into_iter().enumerate() {
+            write_u32(0x0abb_8300 + index * 4, u32::from(value));
+        }
+        apply_register_list(TAIL);
+    }
+}
+
+unsafe fn prepare_rf_mode0_stage() {
+    unsafe {
+        let control = (0x0ac8_0064 as *const u32).read_volatile();
+        if control & 1 == 0 {
+            write_u32(0x0ac8_0064, 0x11);
+            delay_timer_ticks(0x28);
+            write_u32(0x0ac8_0064, 1);
+        }
+        rf_init_stage_d_mode0();
+        rf_init_stage_a_mode0();
+        rf_init_stage_b_mode0();
+        rf_init_stage_c_mode0();
+        if (0x0400_9960 as *const u8).read_volatile() == 0 {
+            write_u8(0x0400_9960, 2);
+            initialize_mac_core_mode0();
+        }
+    }
+}
+
+unsafe fn program_mode2_band_hardware() {
+    unsafe {
         let bandwidth = (0x0aba_8040 as *const u32).read_volatile();
-        write_u32(0x0aba_8040, bandwidth & !0x0002_0000);
+        write_u32(0x0aba_8040, bandwidth | 0x0002_0000);
         let timing = (0x0ab8_0c00 as *const u32).read_volatile();
         write_u32(
             0x0ab8_0c00,
             (timing & 0xfc00_ffff).wrapping_add(0x00b4_0000),
         );
-        write_u32(0x0400_1fc0, 6);
+        write_u32(0x0abd_0004, 4);
 
         let mut control = (0x0abb_8004 as *const u32).read_volatile();
         control = ((control & !1) | 0x2000_0000) & 0xe000_7fff | 0x800;
-        control = (control | 2) & !4;
-        let profile = (0x0400_994c as *const u8).read_volatile();
-        if (profile == 1 || profile == 2) && control & 2 != 0 {
+        // Dispatcher case 2 at 0x1745c clears r0 (bit 1), sets r2 (bit 2),
+        // and selects bandwidth mode 2. The shared tail clears bit 4 for PHY
+        // profile 2.
+        control = (control & !2) | 4;
+        if (0x0400_994c as *const u8).read_volatile() == 2 {
             control &= !0x10;
         }
         write_u32(0x0abb_8004, control);
     }
 }
 
+unsafe fn program_scan_receive_band() {
+    unsafe {
+        // `phy_do_channel_switch` derives dispatcher mode 2 from scan rate
+        // configuration 0x0117: bits 0 and 4 are both set and bit 5 is clear.
+        // Profile byte +2 remains zero for the 2.4 GHz synth/calibration path.
+        write_u8(0x0400_994e, 0);
+        write_u8(0x0400_994f, 2);
+        write_u8(0x0400_995f, 3);
+        write_u8(0x0400_99d0, 1);
+        program_mode2_band_hardware();
+    }
+}
+
 unsafe fn publish_completed_receive_state() {
     unsafe {
-        // `pac_phy_start_op(1)` enters state 3 unless the dispatcher is already
-        // at terminal state 5. This synchronous path has completed the work
-        // normally advanced by vendor timers, so publish the terminal state
-        // without arming an unavailable scheduler callback.
-        write_u8(0x0400_995f, 4);
-        // `phy_wake_sequence` has completed both timed phases.
+        // The active channel path leaves the PHY controller running at
+        // 0x0ac80064 == 1. Writing 0x10 here is vendor radio-stop behavior.
+        write_u8(0x0400_995f, 3);
         write_u8(0x0400_1adc, 2);
-        write_u8(0x0400_99a9, 5);
+
+        let mut state = (0x0400_99a9 as *const u8).read_volatile();
+        if state != 5 {
+            state = 3;
+            write_u8(0x0400_99a9, state);
+        }
         write_u8(0x0400_1d30, 1);
-        write_u32(0x0400_1d2c, 5);
-        write_u8(0x0400_1d38, 5);
-        write_u32(0x0400_1d3c, 0);
+        write_u32(0x0400_1d2c, u32::from(state));
+        write_u8(0x0400_1d38, state);
+        write_u32(0x0400_1d3c, 0x0098_9680);
         write_u8(0x0400_1d41, 0);
+
+        let keep_awake = (0x0400_1fd8 as *const u32).read_volatile();
+        write_u32(0x0400_1fd8, keep_awake | 0x0004_0000);
     }
 }
 
@@ -1258,22 +1525,82 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
     }
 }
 
+unsafe fn run_vendor_mode_calibration(
+    calibration_max_polls: u32,
+) -> Result<(), IqCalibrationHardwareError> {
+    unsafe { run_iq_calibration(true, calibration_max_polls) }?;
+
+    // Fixed mode-zero arguments assembled by `rf_apply_channel_settings(0,
+    // 0x07ff0110)` at 0x1899c. At 0x18a54 the vendor stores 12 in snapshot
+    // offset 0x290; `rf_save_band_regs` uses that field as the mode-zero index
+    // into the halfword table at 0x04000dd0. The DFT phase seeds and all search
+    // steps likewise come directly from the stack image built there.
+    let control_configuration = 0x07ff_0110_u32;
+    let table_value = unsafe { (0x0400_0de8 as *const u16).read_volatile() as u32 };
+    let sample_width_shift = unsafe { (0x0400_9982 as *const u16).read_volatile() as u8 };
+    let configuration = DynamicIqHardwareCalibrationConfiguration {
+        alternate_profile: false,
+        table_value,
+        synth_frequency: 12,
+        calibration_command: 3,
+        seed: [-2, 5, -1, -1],
+        common_step: 0x100,
+        first_step: 0x100,
+        second_step: 0x100,
+        requested_passes: 0x10,
+        configuration_flags: unsafe { (0x0abb_8004 as *const u32).read_volatile() },
+        control_configuration,
+        dft: DynamicIqDftConfiguration {
+            mode: 0,
+            first_phase_seed: 0x10,
+            second_phase_seed: 0x0c,
+            third_phase_seed: 8,
+            sample_width_shift,
+            capture_polls: 0x2710,
+        },
+    };
+    let mut samples = [0_u32; 64];
+    let _ = unsafe { run_vendor_dynamic_iq_hardware_calibration(configuration, &mut samples) };
+    Ok(())
+}
+
 unsafe fn begin_channel_transition(
     channel: u16,
     calibration_max_polls: u32,
 ) -> Result<ChannelTransitionResult, ChannelTransitionError> {
+    unsafe { crate::mac::prepare_scan_context(channel) };
+    unsafe { crate::mac::reinitialize_after_wake(calibration_max_polls) }
+        .map_err(ChannelTransitionError::MacWake)?;
+    unsafe { crate::mac::program_before_scan_channel(channel) };
     if !unsafe { set_packet_receive_enabled(false, calibration_max_polls) } {
         return Err(ChannelTransitionError::InvalidTiming);
     }
     unsafe {
-        program_mode0_receive_band();
+        // First channel-switch path `thunk_16c92`: initialize the detector and
+        // expanded AGC table before the requested channel operation.
+        if (0x0400_3a6e as *const u8).read_volatile() != 4 {
+            apply_first_channel_detector_state();
+        }
+        // `phy_cal_advance_stage` (0x16bfa) reapplies these four initialized
+        // register lists before `phy_cal_set_flag`, whose mode-zero path runs
+        // the four RF initialization stages before dispatching the band mode.
+        for list in COMMON_INITIALIZATION_LISTS {
+            apply_register_list(list);
+        }
+        // Scan rate configuration 0x0117 selects dispatcher mode 2 in
+        // `phy_do_channel_switch` (0xf7fc). The first channel performs a
+        // pre-calibration dispatch, RF initialization, then the requested
+        // mode-2 dispatch.
+        program_mode2_band_hardware();
+        prepare_rf_mode0_stage();
+        program_scan_receive_band();
         write_u16(0x0400_9952, channel);
     }
     let divider = unsafe { program_channel_pll(channel) }.map_err(ChannelTransitionError::Pll)?;
 
     let mut calibration_ran = false;
     if unsafe { (0x0400_995d as *const u8).read_volatile() } != 0 {
-        unsafe { run_iq_calibration(true, calibration_max_polls) }
+        unsafe { run_vendor_mode_calibration(calibration_max_polls) }
             .map_err(ChannelTransitionError::Calibration)?;
         calibration_ran = true;
     }
@@ -1287,7 +1614,7 @@ unsafe fn begin_channel_transition(
     if unsafe { prepare_channel_calibration_cache() }
         == ChannelCalibrationRequirement::RunCalibration
     {
-        unsafe { run_iq_calibration(true, calibration_max_polls) }
+        unsafe { run_vendor_mode_calibration(calibration_max_polls) }
             .map_err(ChannelTransitionError::Calibration)?;
         unsafe { record_calibrated_channel(channel) };
         calibration_ran = true;
@@ -1331,6 +1658,7 @@ unsafe fn finish_channel_transition(
         }
         publish_completed_receive_state();
         set_packet_receive_enabled(true, calibration_max_polls);
+        crate::mac::program_scan_station_mode();
     }
     Ok(())
 }
@@ -2925,14 +3253,13 @@ pub unsafe fn run_dynamic_iq_hardware_search(
         configuration_flags,
         |pass_index, stage, candidate, execution| {
             let control = dynamic_iq_stage_control(control_configuration, stage, pass_index == 0)?;
+            // Vendor `rf_dft_correlate_samples` reads the current dispatcher
+            // stage from calibration-state offset 0x94. It is not a fixed
+            // caller-supplied DFT mode.
+            let mut stage_dft = dft_configuration;
+            stage_dft.mode = stage;
             let result = unsafe {
-                execute_dynamic_iq_hardware_stage(
-                    candidate,
-                    execution,
-                    control,
-                    dft_configuration,
-                    samples,
-                )
+                execute_dynamic_iq_hardware_stage(candidate, execution, control, stage_dft, samples)
             };
             all_captures_ready &= result.capture_ready;
             Some(result.measurement)
@@ -2964,10 +3291,11 @@ pub unsafe fn execute_dynamic_iq_hardware_verification(
     unsafe { apply_dynamic_iq_capture_control(control) };
     let capture_ready =
         unsafe { capture_dynamic_iq_samples(samples, dft_configuration.capture_polls) };
+    // The vendor verification path stores stage 1 before its final capture.
     let measurement = dynamic_iq_dft(
         samples,
         control,
-        dft_configuration.mode,
+        1,
         dft_configuration.first_phase_seed,
         dft_configuration.second_phase_seed,
         dft_configuration.third_phase_seed,
@@ -3386,6 +3714,7 @@ pub unsafe fn run_iq_calibration(
                 return Err(IqCalibrationHardwareError::BaselineTimeout { gain_index });
             }
         };
+        let baseline_polls = last_sample_polls();
         let target = match unsafe { run_calibration_sample(1, 1, max_polls) } {
             Ok(value) => value,
             Err(_) => {
@@ -3393,12 +3722,23 @@ pub unsafe fn run_iq_calibration(
                 return Err(IqCalibrationHardwareError::TargetTimeout { gain_index });
             }
         };
+        let target_polls = last_sample_polls();
         samples[index] = IqCalibrationSample {
             baseline_i: baseline.i,
             baseline_q: baseline.q,
             target_i: target.i,
             target_q: target.q,
         };
+        if index == 11 {
+            unsafe {
+                *IQ_DIAGNOSTICS.0.get() = IqHardwareDiagnostics {
+                    baseline_i: baseline.i,
+                    target_i: target.i,
+                    baseline_polls,
+                    target_polls,
+                };
+            }
+        }
     }
     let series = build_iq_calibration_series(samples, initial_shift_state);
     let final_iteration = &series.iterations[11];
@@ -3497,6 +3837,21 @@ pub fn derive_remap_timing(remap: u32) -> (u16, u16) {
 /// # Safety
 ///
 /// The vendor BSS range and boot/remap state must already be initialized.
+unsafe fn detect_rf_silicon_variant() -> u8 {
+    unsafe {
+        let first = (0xfff1_7f90 as *const u32).read_volatile();
+        let second = (0xfff1_7f94 as *const u32).read_volatile();
+        let third = (0xfff1_7f98 as *const u32).read_volatile();
+        if first == 0x302e_3530 && second == 0x3130_2e36 && third == 0x0000_3631 {
+            1
+        } else if first == 0x302e_3830 && second == 0x3130_2e32 && third == 0x0000_3036 {
+            2
+        } else {
+            6
+        }
+    }
+}
+
 pub unsafe fn initialize_mac_software_state() {
     const STATE: usize = 0x0400_994c;
 
@@ -3539,7 +3894,7 @@ pub unsafe fn initialize_mac_software_state() {
         write_u8(0x0400_1ade, 0);
 
         write_u8(0x0400_997c, 0);
-        write_u8(0x0400_998c, 14);
+        write_u8(0x0400_998c, detect_rf_silicon_variant());
         write_u8(0x0400_99a9, 0);
         write_u16(0x0400_99ce, 100);
         write_u8(0x0400_99d0, 1);

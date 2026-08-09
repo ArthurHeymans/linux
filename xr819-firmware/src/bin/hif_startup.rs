@@ -267,32 +267,41 @@ extern "C" fn rust_main() -> ! {
                     if mib_id == 0x100c {
                         let diagnostics = radio::diagnostics();
                         let (scan_channels, scan_max_time) = scan::diagnostic_plan();
-                        let (dwell_arm, dwell_deadline, dwell_now, dwell_waits) =
+                        let (dwell_arm, dwell_deadline, dwell_now, _dwell_waits) =
                             scan::diagnostic_dwell();
-                        let (scan_status, scan_error) = scan::diagnostic_error();
+                        let (_scan_status, scan_error) = scan::diagnostic_error();
+                        let _iq = xr819_firmware::phy::iq_hardware_diagnostics();
                         let values = [
                             diagnostics.producer_changes,
                             diagnostics.bad_magic,
                             diagnostics.valid_slots,
                             diagnostics.indications,
-                            diagnostics.malformed_slots,
-                            diagnostics.filtered_frames,
-                            diagnostics.oversized_frames,
-                            diagnostics.released_slots,
-                            diagnostics.last_producer,
+                            unsafe { (0x0abd_0004 as *const u32).read_volatile() },
+                            unsafe { (0x0aba_8040 as *const u32).read_volatile() },
+                            unsafe { (0x0ab8_0c00 as *const u32).read_volatile() },
+                            unsafe { (0x0abb_8004 as *const u32).read_volatile() },
+                            unsafe {
+                                u32::from((0x0400_3c29 as *const u8).read_volatile())
+                                    | (u32::from((0x0400_3ad1 as *const u8).read_volatile()) << 8)
+                            },
                             scan::elapsed_ticks(),
                             u32::from(scan_channels),
                             scan_max_time,
                             dwell_arm,
                             dwell_deadline,
                             dwell_now,
-                            dwell_waits,
-                            scan_status,
+                            unsafe { (0x0400_1ae4 as *const u32).read_volatile() },
+                            unsafe {
+                                u32::from((0x0400_9959 as *const u8).read_volatile())
+                                    | (u32::from((0x0400_995c as *const u8).read_volatile()) << 8)
+                                    | (u32::from((0x0400_99c4 as *const u8).read_volatile()) << 16)
+                                    | (u32::from((0x0400_998c as *const u8).read_volatile()) << 24)
+                            },
                             scan_error,
-                            0,
-                            0,
-                            0,
-                            0,
+                            unsafe { (0x09c0_0600 as *const u32).read_volatile() },
+                            unsafe { (0x09c0_0604 as *const u32).read_volatile() },
+                            unsafe { (0x09c0_0608 as *const u32).read_volatile() },
+                            unsafe { (0x0940_0000 as *const u32).read_volatile() },
                         ];
                         let mut data = [0_u8; 88];
                         for (index, value) in values.into_iter().enumerate() {

@@ -361,6 +361,87 @@ unsafe fn save_register_context() {
 
 /// Full vendor `mac_reprogram_after_channel` for the currently represented VIF
 /// and packet-RAM state.
+/// Build the temporary mode-zero channel/VIF image used by
+/// `syn_scan_program_channel()` before `mac_apply_channel_and_vif_config()`.
+pub unsafe fn prepare_scan_context(channel: u16) {
+    unsafe {
+        let rate_config = 0x0117_u16;
+        write_u16(0x0400_3e98, rate_config);
+        write_u16(0x0400_3e9a, channel);
+        write_u8(0x0400_3e9c, 0);
+
+        write_u32(0x09c0_0200, 0);
+        write_u8(SHARED, 0);
+        write_u16(SHARED + 2, rate_config);
+        write_u8(SHARED + 5, 0);
+
+        // `syn_scan_program_channel` publishes the temporary VIF index and
+        // active-record mask before entering `mac_apply_channel_and_vif_config`.
+        write_u8(0x0400_4611, 2);
+        write_u32(0x0400_4614, 0x0000_4000);
+
+        // Synthetic scan record 2 (`0x04003678 + 2 * 0x98`) is marked as
+        // scan-active by `phy_set_band_reg`/`mac_apply_channel_and_vif_config`.
+        write_u8(0x0400_3c18, 2);
+        write_u8(0x0400_3c1a, 0x0f);
+        write_u32(0x0400_3c20, 1);
+        // Base 0x07e3b85c plus the non-matching temporary-record mask
+        // 0x00100502 from the vendor scan path.
+        write_u32(0x0400_1ae4, 0x07f3_bd5e);
+    }
+}
+
+/// Temporary station-mode register image installed by the vendor synthetic
+/// scan path after `phy_do_channel_switch()` returns.
+pub unsafe fn program_before_scan_channel(channel: u16) {
+    unsafe {
+        write_u32(0x09c0_0800, 0x0000_75c0);
+        let scan_vif = PAS_BASE + 2 * 0x98;
+        program_slot_timings(read_u16(SHARED + 2), read_u32(scan_vif + 0x88));
+
+        let mut first_active = false;
+        let mut second_active = false;
+        for index in 0..3 {
+            let vif = PAS_BASE + index * 0x98;
+            if read_u8(vif) != 2 {
+                continue;
+            }
+            write_u8(vif + 0x21, 0);
+            if first_active && !second_active {
+                second_active = true;
+                write_u8(vif + 0x21, 1);
+                write_u32(
+                    0x09c0_0270,
+                    if read_u8(vif + 3) == 0 {
+                        0x0100_0000
+                    } else {
+                        0x0400_0000
+                    },
+                );
+            } else {
+                first_active = true;
+            }
+            program_rate_tables(vif);
+        }
+        write_u32(0x09c0_0314, if second_active { 0x0100_0000 } else { 0 });
+        program_ifs_timing();
+        write_u16(0x0400_3a68, channel);
+    }
+}
+
+pub unsafe fn program_scan_station_mode() {
+    unsafe {
+        // Final publication at 0xfa34 in `mac_apply_channel_and_vif_config`.
+        write_u16(SHARED + 8, 0x1000);
+        write_u32(0x0400_1ab4, 0x0018_0180);
+        write_u32(0x09c0_0a04, 0x0018_0180);
+        write_u32(0x09c0_0a1c, 0x827b_ffdf);
+        write_u32(0x09c0_0204, 0x0019_8000);
+        write_u32(0x09c0_0200, read_u32(0x0400_1ae4));
+        write_u32(0x09c0_0310, 0x7800_0000);
+    }
+}
+
 pub unsafe fn reprogram_after_channel() {
     unsafe {
         write_u8(WAKE + 0x1d, 0);
@@ -406,7 +487,7 @@ unsafe fn rebuild_pipe_state() {
         }
     }
     for index in 0..4 {
-        let record = SHARED + index * 0x6c - 0x80;
+        let record = SHARED + index * 0x6c;
         let descriptor = descriptors[index];
         let slot = ((unsafe { read_u32(descriptor + 0x20) } & 0x07ff_ffff) >> 24) as u8;
         unsafe {

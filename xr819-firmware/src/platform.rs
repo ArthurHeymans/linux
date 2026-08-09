@@ -549,6 +549,7 @@ pub fn prepare_mac_receive_hardware() {
         (0x06c, 0),
         (0x074, 0x2080_0010),
         (0x078, 0x2082_0080),
+        (0x07c, 0x0000_2000),
         (0x098, 0),
         (0x0c0, 0),
         (0x0e4, 0),
@@ -647,6 +648,12 @@ pub fn prepare_packet_dma() {
     // Hardware-visible head of FUN_00000044, called here by FUN_000000f6.
     register32(0x09c0_1300).set(0);
     register32(0x09c0_1300).set(0x0100_0000);
+    for index in 0..4 {
+        let slot = 0x09c0_0060 + index * 0x0c;
+        register32(slot).set(u32::MAX);
+        register32(slot + 4).set(0xff);
+        register32(slot + 8).set(0xff);
+    }
     post_code(0x5044_4d04);
 
     register32(0x09c0_1400).set(0);
