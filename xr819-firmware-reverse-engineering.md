@@ -451,6 +451,22 @@ hardware reports completion, and reads two signed 23-bit results. This is
 strong evidence for a dedicated PHY measurement engine in hardware controlled
 directly by firmware.
 
+## Safe XR819 TX service boundary
+
+The firmware now has inactive, injectable executors for the already-snapshotted
+`mac_pipe_irq_service` word and ordinary `txp_pipe_tx_status`. Bit-23 service
+publishes the current pipe/slot scratch pointers before applying low/middle/high
+priority, writes the middle quantum (`0x00000fff`) through `0x040010d4`, and
+uses literal complement acknowledgements at `0x09c00e84`. Low-nibble backoff is
+an infallible policy callback limited to pipes 0--2. The pre-service scheduler
+word remains the sole input to the later bit-24 pending test.
+
+Ordinary status now models the state-3-to-5-before-suppression ordering, the
+kind-2 cursor-only branch, exact counters, cursor transitions, and the
+`txp_fn_2441`/`complete_tx_pipe_slot` completion boundary. Neither executor is
+connected to destructive event-FIFO reads, descriptor publication, or the
+hardware trigger path.
+
 ### `FUN_0001a3a8`: iterative four-component calibration
 
 `FUN_0001a3a8` is a large iterative routine. It:
@@ -1299,9 +1315,11 @@ A cold-scan investigation identified two independent semantic gaps:
    continuously. The Rust loop previously polled RX only while scan state was
    active, allowing idle-era frames to accumulate and contaminate a later scan.
 2. Linux requests XR819 foreground scans with two probes and a 35 ms maximum
-   dwell. Vendor functions `0x141b0`, `0x14332`, and `0x147c6` build, submit,
-   and complete probe requests. Rust retained the scan fields but did not use
-   them, so the same request silently became an unreliable 35 ms passive scan.
+   dwell. Vendor paths rooted at `0x141b0` and `0x14332` build and submit probe
+   requests; class-6 completion reaches matching-payload Thumb entry `0x15426`.
+   `0x147c6` is the separate class-9 callback. Rust retained the scan fields but
+   did not use them, so the same request silently became an unreliable 35 ms
+   passive scan.
 
 RX is now recycled continuously outside scan state. Until active TX completion
 is translated, requests with nonzero probe count use a declared passive
@@ -1336,11 +1354,14 @@ rings are `0x09c60000 + pipe * 0x80`; packet-RAM command records begin at
 IRQ 18/20 handler `0xea08` belongs to encryption completion and IRQ 21 handler
 `0xef1c` belongs to MIC completion. Final MAC TX completion instead arrives via
 the ARM FIQ vector: `0x1c -> mac_irq_handler(0x9eb4)`. That handler drains
-`0x09c00a20/0x09c00a24`, dispatches success to `0x9cdc` and retry/give-up to
-`0x9550`, advances pipe ownership, and eventually returns the internal context
-through `0x91ec -> 0xd010`. The class-indexed callback table maps the
-class-6 context built by `0x141b0` to `0x15426`; `0x147c6` is the separate
-class-9 callback.
+`0x09c00a20/0x09c00a24`, dispatches success through the helper rooted at
+`0x9cb8` and retry/give-up through `0x952c/0x9550`, and advances pipe ownership.
+The success release loop calls `0x91c8`; `0x91ec` is an interior accounting
+block, not the completion helper entry. Completed frame nodes are queued by
+`0xcfb8`, drained by the scheduler handler rooted at `0xd1fc`, dispatched by
+`0xb6f4` through RAM table `0x04000260 + class*4`, and returned to the internal
+free list by `0xd0a8`. Initialized class 6 selects matching-payload Thumb entry
+`0x15426`; class 9 selects `0x147c6`.
 
 The Rust image currently has no exception vector table and leaves FIQ masked.
 Therefore it initializes the internal pool and prepares probe bytes but does not
@@ -1393,16 +1414,291 @@ rewrites the source MAC, fills classifier fields `+0xc8/+0xca/+0xd0`, preserves
 the unresolved ROM-owned `+0x98`, separates TX flags from queue bits, and
 restores `+0x70 = 0xff` plus ownership bit `0x20000` during release.
 
-Active scan setup now writes and reads back the complete three-word pipe header
-and 13-word command list in the dynamically selected pipe/slot, then clears the
-slot frame pointer and releases the still-software-owned context. It never
-writes `0x09c00e98` or the final hardware GO field. Cooperative event handling
-now peeks before popping and refuses unknown side-effect classes while retaining
-the vendor pipe latch. Image
-`a917d40ad2c1a21a5e6d9f14c69b7e6de1daa9dce4b0f0ba8ed9aed4a8b749b9`
-returned three BSS entries on three consecutive channel-1 scans and five on a
-full scan, with an alive BH and zero used buffers. Command-storage preparation
-is hardware-proven; actual pipe ownership/publication remains the next boundary.
+Active scan setup writes and reads back the complete three-word pipe header and
+13-word command list in the dynamically selected pipe/slot. It never writes
+`0x09c00e98` or the final hardware GO field.
+
+Instruction-level review of FIQ handler `0x9e90` corrected an audit conclusion:
+`0x09c00a24` is not a raw-event peek. The handler treats it as a signed
+empty/readiness result, then reads the event destructively from `0x09c00a20`.
+The Rust cooperative path therefore does not pop a non-empty FIFO until the
+side effects of every event class that may be interleaved with TX are mapped.
+
+The dry-run boundary is now encoded as an owning
+`PreparedProbePublication`. It snapshots the vendor-imported slot header and
+frame pointer, installs the probe reference, writes and verifies command
+storage, and can only return the context through an ownership-checking
+`cancel()`. Initial hardware tests disproved treating the imported slot frame
+pointer or `pipe+3` as zero-valued busy predicates; both are persistent startup
+state and must be restored exactly. Image
+`b3de19b5059386da6806d6df4a71490cf978a676425e5cbb01cc43dee69c6f24`
+returned three BSS entries on three consecutive channel-1 scans, with an alive
+BH and zero used buffers. Reversible ownership through the final pre-trigger
+boundary is hardware-proven; actual pipe publication remains next.
+
+Parallel DeepSeek V4, Claude Opus 5, and OpenAI Terra audits converged on the
+important negative result: because `0x09c00a20` is destructive and one raw word
+may carry several independent marker bits, a probe-only selective consumer
+cannot preserve unknown side effects. They also agreed that `mac_hw_idle` is
+used as a flush diagnostic and cannot replace slot release, callback dispatch,
+or context return.
+
+The combined audit incorrectly proposed changing `slot+0x0c` from
+`context+0x54` to the context base. Uninterrupted caller and field tracking
+rejects that change. `0xa712` receives the frame node rooted at `context+0x54`:
+its `+4/+8/+0xa/+0xf` accesses resolve to context TX flags, length, frame
+control, and rate/VIF fields. Its kind-0 `+0x56` marker resolves to
+`context+0xaa`, which success handler `0x9cdc` compares with `0xff`. Completion
+helper `0x91c8` accesses frame-node `+0x2c`, resolving to ownership flags at
+`context+0x80`. The existing Rust slot layout is therefore instruction-level
+consistent and was retained.
+
+`PreparedProbePublication::cancel()` now restores all 16 command-storage words
+as well as the imported slot header and frame pointer. `MacEvent` accessors now
+encode that `[19:18]` may be latched only for bit-25/type-`0x37`, and `[5:0]` is
+TX status only on bit 24. Image
+`96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`
+returned three BSS entries on three consecutive channel-1 scans and seven BSS
+entries on a full scan, with an alive BH and zero used buffers.
+
+A second segmented DeepSeek/Opus/Terra pass reconstructed the event dispatcher
+and deferred completion chain. Some long Opus/DeepSeek runs timed out and one
+Opus retry hit a rate limit, but every segment retained at least two completed
+independent reports except callback-target initialization, which remains
+explicitly unresolved. All accepted claims were checked against uninterrupted
+Thumb disassembly and ARM interworking bytes.
+
+The ARM FIQ vector at payload `0x1c` saves `r0-r3/lr` and calls Thumb handler
+`0x9eb4` (r2 frame `0x9e90`). One raw event executes independent effects in
+this fixed order: trace; terminal assertion bit 30; pipe phase bit 25; pipe
+service bit 23; TX status bit 24, including a second bit-23 escalation test;
+beacon bit 26; sideband bit 7; last-event archive. The bit-30 ARM target at
+payload `0x16610` captures CPSR/SPSR and registers, permanently masks IRQ/FIQ,
+publishes the postmortem record, and enters an infinite loop. It is not a
+returning diagnostic call.
+
+Normal success ownership follows:
+
+```text
+0x9cb8 / state clear at 0x9cdc
+  -> release loop 0x9d1e..0x9d4e
+  -> 0x91c8(frame_node, slot, status)
+  -> slot detachment and frame-node flag updates
+  -> 0xcfb8 completion-ring enqueue
+  -> scheduler bit 20 and handler 0xd1fc
+  -> frame_node - 0x54 = context base
+  -> 0xb6f4 indirect class callback
+  -> 0xd0a8 free-list insertion at 0x04009080
+```
+
+The callback table is read at `0x04000260 + context_class*4`; initialized class
+6 slot `0x04000278` contains `0x00015427`, selecting matching-payload Thumb entry
+`0x15426`. Class 9 contains `0x000147c7`. The r2 image has piecewise layout
+shifts, so interpreting those numeric addresses in the r2 frame produced the
+false interior-function conclusion. Class-6 callback effects are now bounded:
+it checks frame control and raises scheduler event bit 10 while scan completion
+state is active. The downstream scheduler effect and remaining event helpers
+still block publication.
+
+Rust now represents the proven independent marker sequence as a fixed-capacity
+`MacEventDispatchPlan`. Fatal events terminate the plan after trace/fatal;
+multi-marker events preserve pipe-phase, service, status/escalation, beacon,
+sideband, and archive order. Vendor predicates `0x9070` and `0x9038` are
+translated as non-destructive hardware/pipe-idle diagnostics only. They are not
+used to infer completion or reclaim contexts.
+
+A follow-up Terra/DeepSeek/Muse Spark implementation-design pass was requested.
+Terra and DeepSeek completed through the workflow. Muse Spark was unavailable
+in the workflow registry, and a direct Pi launch failed because no OpenRouter
+credential is configured; no Muse findings were used. The validated requirement
+remains that once a destructive FIFO pop occurs, effect execution must be
+infallible and complete. The resulting Rust foundation has no production MMIO
+backend yet, but it now
+models the exact bounded loop: zero budget touches nothing; budget exhaustion
+stops before readiness or another pop and does not run the drain tail; empty
+FIFO does run the tail; fatal stops after trace/fatal.
+
+Typed `ContextAddress` and `FrameNodeAddress` preserve the `+0x54` identity.
+The probe tracker no longer offers direct terminal reclamation. Its completion
+states are `TerminalObserved -> CompletionQueued -> CallbackRunning -> Returned`,
+and the context-return operation is accepted exactly once only after callback
+entry. This encodes the full vendor ownership boundary without pretending that
+phase success or hardware idle is completion.
+
+Exact but inactive helpers now cover the matching 32-entry trace ring, bit-7
+sideband capture and counter update, last-event archive, and the empty-FIFO drain
+tail. Completion-ring enqueue `0xcfb8` is translated with the vendor's raw
+producer index, modulo-64 next index, frame-node flag updates, status-`0x16`
+branch, scheduler bits 21/20, and rare `0xebe8` gate. Context return `0xd0a8` is
+translated through free-list insertion, class-specific accounting, optional
+pending-queue service, pending-control acknowledgement, and scheduler bit 22.
+The core `0xd1fc` ring consumer is represented by a typed snapshot cursor that
+captures the producer once, clears each consumed slot, advances the consumer
+modulo 64, and leaves concurrent enqueues for the next bit-20 task. Typed
+tracker adapters reject wrong-context callback entry and prevent duplicate
+enqueue or return. Callback wrapper `0xb6f4` is translated through saved-status
+transfer, aggregate-budget accounting, interface retry/countdown state, callback
+presence and ownership flags, scheduler bit 21, class-zero ownership, retry
+window correction, and nonzero-class `0xd0a8` return. The class-6 probe adapter
+runs `0x15426` semantics and marks the tracker returned only after that complete
+wrapper returns the context.
+
+The full annotated `tx_complete_tala_adapt` drain (Ghidra `0xd254`, r2
+`0xd1fc`) is translated behind an infallible helper backend. It preserves the
+snapshotted producer boundary, zero-class counting, TALA retry/penalty windows,
+all four multiplicative reduction bands, slow-growth hysteresis, global
+smoothing, AMPDU clamp/publication, completion statistics and message fields,
+BA failure state, active counters, power-save followup, callback input flags,
+and the final PHY/radio-release condition. None is connected to `0x09c00a20`.
+Exact leaf translations now cover message-ring allocation `0x5c5a`, BA
+state-5 gating `0x6dae`, inter-VIF radio arbitration/release `0x699a`, and the
+power-save completion state machine `0xda40`. Timer operations, pipe lookup,
+TBTT processing, fatal assertion, PHY command dispatch, and final callback
+dispatch remain explicit infallible backend boundaries. The command-7 PHY leaf
+is resolved: ARM helper `switch8_r3` reads inline table entry 7 (`0x1a`), which
+branches to Thumb `0x16fb6`; the path sets state 1, stores timeout
+`0x00989680`, publishes current state, and arms timer `0x04001d18`. Host tests increased
+to 47, while dead-code
+elimination keeps the deployed release image byte-identical at
+`96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`.
+
+The upstream success chain is now represented by exact inactive translations
+of `txp_fn_2441` (Ghidra `0x91ec`, r2 `0x91c8`) and
+`txp_pipe_tx_success` (`0x9cdc`/`0x9cb8`). The implementation preserves
+descriptor return, chained-frame metadata, slot-kind divergence, completion
+enqueue, BA frame matching and bitmap state, link-state transitions, global
+active accounting, success-slot release/cursor updates, lifetime and backoff
+conditions, per-pipe latch clearing, and scheduler bit 18. Command 3's inline
+switch entry (`0x0f` -> Thumb `0x16fa0`) is decoded and implemented without a
+legacy function-pointer call.
+
+Phase-2 start `txp_pipe_tx_start` (Ghidra `0x9dea`, r2 `0x9dc6`) is translated
+through DMA producer capture, pending-state diagnostics, slot marker 2,
+command-2 PHY handling, duration rewrite at both header and frame metadata,
+ownership/rate publication, and the hardware-state-gated slot cursor advance.
+Inline switch entry 2 (`0x08`) resolves to Thumb `0x16f92`; when the current
+PHY state is not 5, the exact `0x19fc4 -> 0x19f90` register sequence executes
+before state 4 and timeout output are published.
+
+Workflow `132052ad-e984-453d-9f2b-1e45aa0a465a` reconciled Terra's
+instruction-level phase/service audit with Luna's status and minimal-low-MAC
+analysis. The important correction is that status `0x0b` is not intrinsically
+terminal. The pre-service `0x09c00e84` word directly routes pending status `4`
+or `0x19` to retry without a slot-state gate. Ordinary status instead requires
+active pipe, expected-byte match, and slot state 3; it writes slot state 5
+before the busy test. The post-dispatch bit-23 mismatch tail rereads the active
+slot but remains gated by the pending mask derived from the saved scheduler
+word, and retries on its third mismatch.
+The Rust tracker now separates observation from resolution, carries a monotonic
+`(context, pipe, slot, generation)` identity, and has explicit fatal-quiesced/
+reset transitions. A pure status resolver preserves the saved pre-service
+`0x09c00e84` word and models ordinary dispatch, exact terminal eligibility,
+direct retry, mismatch increments, and third-mismatch escalation.
+The bit-23 service planner now models low-, middle-, and high-nibble priority,
+pipe selection, the restricted backoff mask, quantum-table pointer, trigger,
+and acknowledgement arithmetic without touching MMIO. Host tests increased to
+52.
+
+The requested Kimi K3 branch in workflow
+`aab2d622-2721-49f9-8c58-91f6640d4e74` failed with a Kimi-provider 401; no
+Kimi result was accepted. Recovery workflow
+`569c2d91-8bd2-4c7b-9acb-64cd87740938` used the persisted Terra/Luna reports
+for sequential Luna implementation and Terra review. The inactive executor now
+publishes temporary pipe/slot pointers first, preserves low/middle/high write
+order, passes the actual slot backoff/PAS words to an infallible policy leaf,
+and writes literal complement acknowledgements. Ordinary status marks slot
+state 5 before busy suppression, advances kind 2 without completion, and
+otherwise reaches `txp_fn_2441`. Independent local review restored the saved
+pending-mask gate on mismatch escalation and corrected the matching-payload
+kind-2 counter to `0xfff01aa4`. Host tests increased to 56.
+
+The minimal retry boundary is now explicit rather than folded into status
+observation. An injectable translation of `txp_pipe_tx_done_retry` preserves
+the saved pending-mask and slot-state gates, state `3 -> 4`, global busy
+publication, inactive-pipe command sentinel `0xff00ffff`, and exact negative
+acknowledgements. Its non-aggregate give-up branch preserves trigger-before-
+completion ordering, status `0x0b`, command completion, cursor/reset behavior,
+and retained ownership until `txp_fn_2441` is invoked. The fixed-rate one-slot hardware re-arm tail now publishes the trigger, calls
+the exact mode-1 duration builder, applies exact `desc_or_flags`, handles the
+`0x04001e6c` bit-1 sentinel branch, clears the current command ownership bit,
+and emits the matching normal or `0xf010` acknowledgement. Matching-payload
+Thumb disassembly corrected the sentinel to `0xff00ffff`; `0xc7ff00ff` is a
+different literal mask in the same pool. Duration construction includes the
+matching 24-bit LFSR state at `0x0400142c`, mask table rooted at `0x04003678`,
+histogram at `0xfff02e7c`, frame `+0x5a` publication, and timing lookup through
+`0x04001aec`/`0x04000138`. The executor cannot report a recoverable error after
+a destructive event pop.
+Status class 6 is outside the single-outstanding feature subset and must enter
+fatal quiescence. `BoundedSingleTxRetry` provides the intended replacement
+policy, counting only successful re-arm decisions. Host tests increased to 62.
+
+The terminal bit-30 backend is now concrete. ARM code masks IRQ/FIQ without
+restoring CPSR, captures vendor assertion `(line 222, code 0x29)` plus the raw
+event and pre-acknowledgement ownership/MMIO state, publishes a versioned static
+record with validity written last, and spins until reset. This is deliberately
+postmortem-only and cannot free a slot or context.
+
+The next integration layer executes one already-destructively-popped event with
+no error return. It preserves trace/fatal/phase/service/status/beacon/sideband/
+archive order and captures the scheduler pending word once between pipe phase
+and bit-23 service, passing the same typed snapshot to bit-24 status. The real
+FIFO remains disconnected until concrete leaves for every enabled effect are
+installed. Host tests increased to 64.
+
+Beacon marker handling is no longer an abstract leaf. Matching path
+`0x9fea -> 0x81c4 -> 0x9038` now writes MAC beacon state 5, conditionally arms
+the beacon timer from `0x04001aac` and `0x04003a6a`, publishes the timer at
+`0x09c00e14`, and raises scheduler bit 24 with the vendor's direct in-handler
+RMW. Host tests increased to 65.
+
+The target-only popped-event adapter now connects type-`0x37` phase 2/3 to the
+translated start/success paths and connects bit 23/24 to pipe service, ordinary
+status, bounded retry/give-up, and third-mismatch escalation. The phase-3
+prelude preserves scheduler bit 4 and the `0x09007bc0` duration adjustment.
+Direct and escalation retry receive only `saved & (0x100 << pipe)`, matching
+the `r6` argument at `0x9f98`; passing the whole saved scheduler word would
+incorrectly mark unrelated pipe commands in the inactive-pipe branch.
+
+`mac_irq_tx_status_dispatch` (`0x9ae6`) is now represented before ordinary
+status completion, including status-range/specific counters and status-`0x0e`
+control effects. Unsupported phase/event shapes deliberately enter fatal
+quiescence. The adapter remains disconnected from the destructive FIFO. Host
+tests increased to 66.
+
+A concrete target-only `SingleProbeMacBackend` now closes the policy side of
+the one-slot adapter. It provides exact `mac_program_random_backoff`, bounded
+fixed-rate retry, give-up completion through the existing completion ring,
+start/success leaves, per-pipe mismatch state, and terminal handling for
+unsupported ownership shapes. Advanced TALA/rate-recovery, BA, and link policy
+remain intentionally inert for the non-aggregate probe subset.
+
+Non-type-`0x37` phase behavior is also translated: `0x9d9e` phase-2 counters
+and type-`0x19` retained state, plus `0x9c4e` type-`0x19` beacon dispatch and
+type-`0x35` radio-scheduler state. Unknown event types follow the vendor no-op
+branches rather than causing an invented acknowledgement or reclamation.
+
+The concrete one-probe backend now has a complete bounded destructive-consumer
+entry point. It performs the initial `0x09c00a20` pop, executes every effect of
+the word, checks budget before any subsequent access, uses signed readiness at
+`0x09c00a24`, and runs the exact drain tail only on confirmed empty. Fatal
+events do not return. The entry point remains unreferenced; merely compiling it
+does not enable FIFO consumption or descriptor publication.
+
+Completion-ring ownership can now reach class-6 callback and context return in
+the concrete probe backend. The remaining command-7 timer leaf is translated
+through matching `timer_start`/`timer_cancel`: save/restore IRQ+FIQ masking,
+sorted intrusive-list insertion at `0x04002014`, exact backlink unlinking,
+deadline construction from `0x0ac00004` and `0x0400143c`, scheduler timer-event
+clearing, and compare/control writes at `0x0ac00014/1c`. Host tests cover list
+ordering and removal. Cooperative scheduler-bit integration remains inactive;
+the IRQ/FIQ restore helper follows ARM `0xf018` and restores only bits 7/6 of
+the current CPSR. Host tests increased to 67.
+
+Scheduler ownership for completion bit 20 is now explicit: an IRQ/FIQ-masked
+claim clears only that bit from `0x04001fd4`, then runs one completion-ring
+snapshot. Other pending bits are preserved exactly. This remains an inactive
+leaf rather than a partial replacement for the vendor highest-bit-first main
+loop. Host tests increased to 68.
 
 ## Reverse-engineering priorities
 
