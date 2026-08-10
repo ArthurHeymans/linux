@@ -8,6 +8,10 @@ description = "Experimental open firmware for the XRadio XR819"
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = []
+probe-tx-experiment = []
+
 [[bin]]
 name = "mailbox"
 path = "src/bin/mailbox.rs"

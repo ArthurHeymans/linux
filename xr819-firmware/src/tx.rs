@@ -198,6 +198,7 @@ pub enum ProbeBuildError {
     PipeSlotBusy,
     PipeSlotOwnershipMismatch,
     DescriptorReadbackMismatch,
+    UnsupportedPublicationShape,
 }
 
 pub struct PreparedProbe {
@@ -953,8 +954,6 @@ pub unsafe fn enter_mac_fatal_quiescence(
     event: MacEvent,
     saved_scheduler_word: SchedulerWord,
 ) -> ! {
-    use core::sync::atomic::{Ordering, compiler_fence};
-
     let cpsr = unsafe { mask_irq_fiq_terminal() };
     let record = MAC_FATAL_POSTMORTEM.0.get();
     unsafe { core::ptr::addr_of_mut!((*record).valid).write_volatile(0) };
@@ -967,9 +966,21 @@ pub unsafe fn enter_mac_fatal_quiescence(
             &mut *record,
         );
     }
-    compiler_fence(Ordering::SeqCst);
+    unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
     unsafe { core::ptr::addr_of_mut!((*record).valid).write_volatile(MAC_FATAL_MAGIC) };
-    compiler_fence(Ordering::SeqCst);
+    unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
+    unsafe {
+        let mirror = 0x0900_ffb0_usize;
+        write_u32(mirror, 0);
+        write_u32(mirror + 4, event.raw);
+        write_u32(mirror + 8, saved_scheduler_word.raw());
+        write_u32(mirror + 0x0c, read_u32(CURRENT_PIPE as usize));
+        write_u32(mirror + 0x10, read_u32(CURRENT_SLOT as usize));
+        write_u32(mirror + 0x14, read_u32(PIPE_IRQ_PENDING as usize));
+        write_u32(mirror + 0x18, read_u32(PIPE_IRQ_TRIGGER as usize));
+        core::arch::asm!("", options(nostack, preserves_flags));
+        write_u32(mirror, MAC_FATAL_MAGIC);
+    }
     loop {
         unsafe { core::arch::asm!("nop", options(nomem, nostack)) };
     }
@@ -1289,13 +1300,11 @@ fn next_retry_random24<M: MacPipeMmio>(mmio: &mut M) -> u32 {
     next & 0x00ff_ffff
 }
 
-/// Exact mode-1 `tx_build_duration_desc` used by a fixed-rate, non-aggregate
-/// retry. The wider mode-2/mode-5 protection branches remain outside the
-/// enabled one-frame subset.
-pub fn build_fixed_rate_retry_duration<M: MacPipeMmio>(
+fn build_single_frame_duration<M: MacPipeMmio>(
     mmio: &mut M,
     descriptor: u32,
     frame_node: FrameNodeAddress,
+    expects_ack: bool,
 ) {
     let frame = frame_node.raw();
     mmio.write_u32(descriptor, 0);
@@ -1327,16 +1336,40 @@ pub fn build_fixed_rate_retry_duration<M: MacPipeMmio>(
     mmio.write_u16(frame + 0x5a, random);
     mmio.write_u32(descriptor + 4, (u32::from(random) & 0x0fff) << 10);
 
-    let rate = u32::from(mmio.read_u8(frame + 0x0f));
-    let timing_index = u32::from(mmio.read_u8(PIPE_RETRY_RATE_MAP + rate));
-    let timing = u32::from(mmio.read_u16(PIPE_RETRY_TIMING_TABLE + timing_index * 2));
-    let duration = mmio
-        .read_u32(PIPE_RECORDS + 0x20)
-        .wrapping_add(mmio.read_u32(PIPE_RECORDS + 0x1c).wrapping_mul(2))
-        .wrapping_add(timing)
-        & 0xffff;
-    let duration_word = 0xd800_0000 | (((duration & 0x03ff) * 8).wrapping_add(0x2000));
+    let duration_word = if expects_ack {
+        let rate = u32::from(mmio.read_u8(frame + 0x0f));
+        let timing_index = u32::from(mmio.read_u8(PIPE_RETRY_RATE_MAP + rate));
+        let timing = u32::from(mmio.read_u16(PIPE_RETRY_TIMING_TABLE + timing_index * 2));
+        let duration = mmio
+            .read_u32(PIPE_RECORDS + 0x20)
+            .wrapping_add(mmio.read_u32(PIPE_RECORDS + 0x1c).wrapping_mul(2))
+            .wrapping_add(timing)
+            & 0xffff;
+        0xd800_0000 | (((duration & 0x03ff) * 8).wrapping_add(0x2000))
+    } else {
+        0xdc00_0000
+    };
     mmio.write_u32(descriptor + 8, duration_word);
+}
+
+/// Exact mode-1 `tx_build_duration_desc` used by a fixed-rate, non-aggregate
+/// retry. The wider mode-2/mode-5 protection branches remain outside the
+/// enabled one-frame subset.
+pub fn build_fixed_rate_retry_duration<M: MacPipeMmio>(
+    mmio: &mut M,
+    descriptor: u32,
+    frame_node: FrameNodeAddress,
+) {
+    build_single_frame_duration(mmio, descriptor, frame_node, true);
+}
+
+/// Exact mode-0 duration descriptor for the no-ACK broadcast probe.
+pub fn build_no_ack_single_frame_duration<M: MacPipeMmio>(
+    mmio: &mut M,
+    descriptor: u32,
+    frame_node: FrameNodeAddress,
+) {
+    build_single_frame_duration(mmio, descriptor, frame_node, false);
 }
 
 /// Fatal boundary for retry shapes outside the fixed-rate one-frame subset.
@@ -1907,6 +1940,7 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) {
 pub struct SingleProbeMacBackend {
     retry: BoundedSingleTxRetry,
     mismatch: [u8; 4],
+    completed: Option<(ContextAddress, u16)>,
 }
 
 #[cfg(target_arch = "arm")]
@@ -1915,12 +1949,18 @@ impl SingleProbeMacBackend {
         Self {
             retry: BoundedSingleTxRetry::new(max_retries),
             mismatch: [0; 4],
+            completed: None,
         }
     }
 
     pub fn reset_for_publication(&mut self) {
         self.retry.reset();
         self.mismatch = [0; 4];
+        self.completed = None;
+    }
+
+    pub fn take_completion(&mut self) -> Option<(ContextAddress, u16)> {
+        self.completed.take()
     }
 }
 
@@ -2042,8 +2082,8 @@ impl PowerSaveCompletionEffects for SingleProbeMacBackend {
 #[cfg(target_arch = "arm")]
 impl CompletionDrainEffects for SingleProbeMacBackend {
     fn complete_context(&mut self, context: ContextAddress, status: u16) {
-        unsafe {
-            let _ = dispatch_completed_context(
+        let dispatch = unsafe {
+            dispatch_completed_context(
                 context,
                 status,
                 |completion_class, context| {
@@ -2053,7 +2093,12 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
                     service_class6_probe_completion(context.raw());
                 },
                 || {},
-            );
+            )
+        };
+        if dispatch == CompletedContextDispatch::Returned {
+            self.completed = Some((context, status));
+        } else {
+            terminal_probe_backend_fault(0);
         }
     }
 }
@@ -2203,6 +2248,38 @@ pub unsafe fn service_single_probe_scheduler_inactive(backend: &mut SingleProbeM
     }
     unsafe { service_single_probe_completion_drain_inactive(backend) };
     true
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProbeTxRuntimeReport {
+    pub events: Option<MacEventLoopReport>,
+    pub completion_drained: bool,
+    pub completion: Option<(ContextAddress, u16)>,
+}
+
+/// One bounded cooperative service pass for an already-published probe. It
+/// checks readiness before the first destructive read, then services completion
+/// bit 20 and reports a context only after callback-driven return.
+///
+/// # Safety
+/// The caller must exclusively own the active probe, MAC event FIFO, scheduler
+/// bit 20, and completion ring.
+#[cfg(target_arch = "arm")]
+pub unsafe fn service_single_probe_runtime_inactive(
+    backend: &mut SingleProbeMacBackend,
+    max_events: u32,
+) -> ProbeTxRuntimeReport {
+    let events = if unsafe { read_u32(MAC_EVENT_READINESS as usize) as i32 } >= 0 {
+        Some(unsafe { service_single_probe_mac_fifo_inactive(backend, max_events) })
+    } else {
+        None
+    };
+    let completion_drained = unsafe { service_single_probe_scheduler_inactive(backend) };
+    ProbeTxRuntimeReport {
+        events,
+        completion_drained,
+        completion: backend.take_completion(),
+    }
 }
 
 /// Exact bounded loop shape from vendor FIQ handler `0x9e90..0xa038`.
@@ -4115,6 +4192,77 @@ impl PreparedProbeContext {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SingleProbePublicationInput {
+    pub pipe: u8,
+    pub slot: u8,
+    pub pipe_state: u32,
+    pub slot_record: u32,
+    pub command_storage: u32,
+    pub hardware_ring: u32,
+    pub frame_node: FrameNodeAddress,
+}
+
+/// Final matching-payload publication sequence for one kind-0 no-ACK frame.
+/// The caller must validate software ownership before entering this function;
+/// after `PIPE_IRQ_TRIGGER` is written, no recoverable error is permitted.
+pub fn execute_single_probe_publication<M: MacPipeMmio>(
+    mmio: &mut M,
+    input: SingleProbePublicationInput,
+) {
+    let pipe = input.pipe & 3;
+    let slot = input.slot & 3;
+    let frame = input.frame_node.raw();
+
+    mmio.write_u8(input.pipe_state + 2, slot);
+    let ownership_flags = mmio.read_u32(frame + 0x2c) | 0x100;
+    mmio.write_u32(frame + 0x2c, ownership_flags);
+    let timestamp = mmio.read_u32(0x0ac0_0004);
+    mmio.write_u32(frame + 0x18, timestamp);
+    mmio.write_u32(frame + 0x3c, 0);
+    let slot_duration = u32::from(mmio.read_u16(frame + 0x3a)).wrapping_mul(0x8000);
+    mmio.write_u32(input.slot_record + 8, slot_duration);
+    build_no_ack_single_frame_duration(mmio, input.command_storage, input.frame_node);
+    mmio.write_u8(input.pipe_state + 1, slot);
+    mmio.write_u32(input.hardware_ring + 0x14, 0);
+
+    let interface = u32::from(mmio.read_u8(frame + 0x69));
+    let vif = 0x0400_3678_u32 + interface * 0x98;
+    let power = mmio.read_u32(vif + 0x4fc);
+    if mmio.read_u32(0x0400_1b04) != power {
+        mmio.write_u32(0x09c0_0e64, power);
+        mmio.write_u32(0x0400_1b04, power);
+    }
+
+    let queue = u32::from(mmio.read_u8(0x0400_02dc + u32::from(pipe)));
+    let mut quantum = u32::from(mmio.read_u16(vif + 0x4e0 + queue * 2));
+    if quantum == 0 && (mmio.read_u32(frame + 4) & 0x0fff) >> 10 != 0 {
+        quantum = mmio.read_u32(frame + 0x48) & 0xffff;
+    }
+    let quantum_destination = mmio.read_u32(PIPE_QUANTUM_POINTERS + u32::from(pipe) * 4);
+    mmio.write_u32(quantum_destination, quantum.wrapping_add(0x1f) >> 5);
+    mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
+
+    let active_count = mmio.read_u8(0x0400_3a6c).wrapping_add(1);
+    mmio.write_u8(0x0400_3a6c, active_count);
+    mmio.write_u8(input.slot_record + 3, 1);
+    let duration = mmio.read_u32(input.slot_record + 8);
+    mmio.write_u32(input.hardware_ring, duration);
+    mmio.write_u8(input.pipe_state + 3, 1);
+    let pipe_flags = mmio.read_u8(input.pipe_state + 4) | 1;
+    mmio.write_u8(input.pipe_state + 4, pipe_flags);
+    mmio.write_u8(input.pipe_state + 5, 5);
+    mmio.write_u32(input.hardware_ring + 0x14, 1);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublishedProbePublication {
+    pub context: ContextAddress,
+    pub pipe: u8,
+    pub slot: u8,
+    pub checksum: u32,
+}
+
 /// Software-owned pipe reservation with a fully written command list.
 ///
 /// The slot points at the context, but neither the hardware ring nor the MAC
@@ -4147,6 +4295,63 @@ impl PreparedProbePublication {
 
     pub fn checksum(&self) -> u32 {
         self.checksum
+    }
+
+    /// Transfers the prepared single probe to MAC ownership. This is target-
+    /// only and remains uncalled by the firmware main loop.
+    ///
+    /// # Safety
+    /// The reservation and all pipe/MMIO state must remain exclusively owned;
+    /// the concrete event and completion services must run after publication.
+    #[cfg(target_arch = "arm")]
+    pub unsafe fn publish(
+        self,
+        backend: &mut SingleProbeMacBackend,
+    ) -> Result<PublishedProbePublication, ProbeBuildError> {
+        unsafe {
+            let frame_node = FrameNodeAddress::new(self.context.context + FRAME_NODE_OFFSET);
+            let slot_record = self.slot_record as usize;
+            let valid = read_u32(slot_record + 0x0c) == frame_node.raw()
+                && read_u8(slot_record) == 0
+                && read_u8(slot_record + 1) == 0xff
+                && read_u8(frame_node.raw() as usize + 0x56) == 0xff;
+            if !valid {
+                let cancellation = self.cancel();
+                return Err(cancellation
+                    .err()
+                    .unwrap_or(ProbeBuildError::UnsupportedPublicationShape));
+            }
+
+            backend.reset_for_publication();
+            let pipe_state = pipe_state_address(self.pipe);
+            let hardware_ring = read_u32(pipe_state as usize + 8);
+            if hardware_ring == 0 {
+                let cancellation = self.cancel();
+                return Err(cancellation
+                    .err()
+                    .unwrap_or(ProbeBuildError::PipeStateUnavailable));
+            }
+            write_u32(0x0900_ffa0, 0x5055_4230);
+            execute_single_probe_publication(
+                &mut VolatileMacPipeMmio,
+                SingleProbePublicationInput {
+                    pipe: self.pipe,
+                    slot: self.slot,
+                    pipe_state,
+                    slot_record: self.slot_record,
+                    command_storage: self.command,
+                    hardware_ring,
+                    frame_node,
+                },
+            );
+            write_u32(0x0900_ffa0, 0x5055_4231);
+            Ok(PublishedProbePublication {
+                context: ContextAddress::new(self.context.context),
+                pipe: self.pipe,
+                slot: self.slot,
+                checksum: self.checksum,
+            })
+        }
     }
 
     /// Cancels a reservation that has not been transferred to hardware.
@@ -4493,6 +4698,146 @@ pub unsafe fn prepare_probe_publication(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProbeExperimentReport {
+    Idle,
+    Published {
+        opportunity: crate::scan::ProbeOpportunity,
+        publication: PublishedProbePublication,
+    },
+    Servicing,
+    Completed {
+        opportunity: crate::scan::ProbeOpportunity,
+        context: ContextAddress,
+        status: u16,
+    },
+    Failed {
+        opportunity: crate::scan::ProbeOpportunity,
+        error: ProbeBuildError,
+    },
+}
+
+#[cfg(target_arch = "arm")]
+struct ProbeExperimentRuntime {
+    backend: SingleProbeMacBackend,
+    published: Option<PublishedProbePublication>,
+    opportunity: Option<crate::scan::ProbeOpportunity>,
+    completed_count: u32,
+    diagnostic: u16,
+}
+
+#[cfg(target_arch = "arm")]
+impl ProbeExperimentRuntime {
+    const fn new() -> Self {
+        Self {
+            backend: SingleProbeMacBackend::new(2),
+            published: None,
+            opportunity: None,
+            completed_count: 0,
+            diagnostic: 0,
+        }
+    }
+}
+
+#[cfg(target_arch = "arm")]
+struct SharedProbeExperiment(UnsafeCell<ProbeExperimentRuntime>);
+
+#[cfg(target_arch = "arm")]
+unsafe impl Sync for SharedProbeExperiment {}
+
+#[cfg(target_arch = "arm")]
+static PROBE_EXPERIMENT: SharedProbeExperiment =
+    SharedProbeExperiment(UnsafeCell::new(ProbeExperimentRuntime::new()));
+
+/// Guarded one-shot wildcard channel-1 probe experiment. It never republishes
+/// after a preparation failure or completed probe during the same boot.
+///
+/// # Safety
+/// The caller must own probe preparation, event FIFO and completion servicing.
+#[cfg(target_arch = "arm")]
+pub unsafe fn service_guarded_probe_experiment(
+    template: Option<&[u8]>,
+    opportunity: Option<crate::scan::ProbeOpportunity>,
+    ssid: &[u8],
+    max_events: u32,
+) -> ProbeExperimentReport {
+    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    if let Some(published) = runtime.published {
+        let report =
+            unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
+        let Some((context, status)) = report.completion else {
+            runtime.diagnostic = 0x2000;
+            return ProbeExperimentReport::Servicing;
+        };
+        if context != published.context {
+            terminal_probe_backend_fault(published.pipe);
+        }
+        let Some(opportunity) = runtime.opportunity.take() else {
+            terminal_probe_backend_fault(published.pipe);
+        };
+        runtime.published = None;
+        runtime.completed_count = runtime.completed_count.saturating_add(1);
+        runtime.diagnostic =
+            0x3000 | ((runtime.completed_count.min(0x0f) as u16) << 8) | (status & 0x00ff);
+        return ProbeExperimentReport::Completed {
+            opportunity,
+            context,
+            status,
+        };
+    }
+
+    let Some(opportunity) = opportunity else {
+        return ProbeExperimentReport::Idle;
+    };
+
+    let prepared = match unsafe {
+        prepare_probe_publication(template, ssid, opportunity.channel, opportunity.if_id)
+    } {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            runtime.diagnostic = 0xf000 | error as u16;
+            return ProbeExperimentReport::Failed { opportunity, error };
+        }
+    };
+    let published = match unsafe { prepared.publish(&mut runtime.backend) } {
+        Ok(published) => published,
+        Err(error) => {
+            runtime.diagnostic = 0xf100 | error as u16;
+            return ProbeExperimentReport::Failed { opportunity, error };
+        }
+    };
+    runtime.published = Some(published);
+    runtime.opportunity = Some(opportunity);
+    runtime.diagnostic = 0x1000 | u16::from(published.pipe) | (u16::from(published.slot) << 4);
+    ProbeExperimentReport::Published {
+        opportunity,
+        publication: published,
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn probe_experiment_diagnostic_word() -> u16 {
+    unsafe { (*PROBE_EXPERIMENT.0.get()).diagnostic }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn probe_experiment_diagnostic_value() -> u32 {
+    unsafe {
+        let runtime = &*PROBE_EXPERIMENT.0.get();
+        u32::from(runtime.diagnostic) | (runtime.completed_count << 16)
+    }
+}
+
+#[cfg(not(target_arch = "arm"))]
+pub const fn probe_experiment_diagnostic_word() -> u16 {
+    0
+}
+
+#[cfg(not(target_arch = "arm"))]
+pub const fn probe_experiment_diagnostic_value() -> u32 {
+    0
+}
+
 /// Exercises complete detached preparation and cancellation without publishing.
 ///
 /// # Safety
@@ -4697,18 +5042,18 @@ mod tests {
     }
 
     struct MockPipeMmio {
-        values: [(u32, u32); 32],
+        values: [(u32, u32); 64],
         value_count: usize,
-        writes: [(u32, u32); 32],
+        writes: [(u32, u32); 64],
         write_count: usize,
     }
 
     impl MockPipeMmio {
         fn new() -> Self {
             Self {
-                values: [(0, 0); 32],
+                values: [(0, 0); 64],
                 value_count: 0,
-                writes: [(0, 0); 32],
+                writes: [(0, 0); 64],
                 write_count: 0,
             }
         }
@@ -5215,6 +5560,67 @@ mod tests {
         );
         assert_eq!(mmio.get(0x9018), 0xff00_ffff);
         assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_0df0);
+    }
+
+    #[test]
+    fn single_probe_publication_preserves_vendor_trigger_and_go_order() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe_state = pipe_state_address(0);
+        let slot = pipe_state + 0x0c;
+        let hardware_ring = 0x8000;
+        let command = 0x9000;
+        let frame = FrameNodeAddress::new(0x0400_90d8);
+        mmio.set(frame.raw() + 0x2c, 3);
+        mmio.set(frame.raw() + 0x3a, 0);
+        mmio.set(frame.raw() + 0x69, 0);
+        mmio.set(frame.raw() + 0x0c, 0);
+        mmio.set(0x0ac0_0004, 0x1234);
+        mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
+        mmio.set(PIPE_RETRY_MASK_TABLE + 0x4bc, 0);
+        mmio.set(0x0400_3678 + 0x4fc, 0x55);
+        mmio.set(0x0400_1b04, 0x44);
+        mmio.set(0x0400_02dc, 1);
+        mmio.set(0x0400_3678 + 0x4e2, 64);
+        mmio.set(PIPE_QUANTUM_POINTERS, 0x09c0_0e70);
+        mmio.set(pipe_state + 4, 8);
+        mmio.set(0x0400_3a6c, 2);
+
+        execute_single_probe_publication(
+            &mut mmio,
+            SingleProbePublicationInput {
+                pipe: 0,
+                slot: 0,
+                pipe_state,
+                slot_record: slot,
+                command_storage: command,
+                hardware_ring,
+                frame_node: frame,
+            },
+        );
+
+        assert_eq!(mmio.get(frame.raw() + 0x2c), 0x103);
+        assert_eq!(mmio.get(frame.raw() + 0x18), 0x1234);
+        assert_eq!(mmio.get(frame.raw() + 0x3c), 0);
+        assert_eq!(mmio.get(command + 8), 0xdc00_0000);
+        assert_eq!(mmio.get(0x09c0_0e64), 0x55);
+        assert_eq!(mmio.get(0x09c0_0e70), 2);
+        assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
+        assert_eq!(mmio.get(0x0400_3a6c), 3);
+        assert_eq!(mmio.get(slot + 3), 1);
+        assert_eq!(mmio.get(pipe_state + 3), 1);
+        assert_eq!(mmio.get(pipe_state + 4), 9);
+        assert_eq!(mmio.get(pipe_state + 5), 5);
+        assert_eq!(mmio.get(hardware_ring + 0x14), 1);
+
+        let trigger_index = mmio.writes[..mmio.write_count]
+            .iter()
+            .position(|&(address, _)| address == PIPE_IRQ_TRIGGER)
+            .unwrap_or_else(|| panic!("missing trigger write"));
+        let go_index = mmio.writes[..mmio.write_count]
+            .iter()
+            .rposition(|&(address, value)| address == hardware_ring + 0x14 && value == 1)
+            .unwrap_or_else(|| panic!("missing GO write"));
+        assert!(trigger_index < go_index);
     }
 
     #[test]

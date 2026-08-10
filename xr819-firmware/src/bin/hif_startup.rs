@@ -26,6 +26,11 @@ use xr819_firmware::wsm::{
     encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
 };
 
+// Compile-time guard for the first destructive one-probe hardware experiment.
+// Keep false in normal images; enabling it intentionally changes the firmware
+// image and permits one wildcard channel-1 probe per boot.
+const ENABLE_SINGLE_PROBE_EXPERIMENT: bool = cfg!(feature = "probe-tx-experiment");
+
 unsafe extern "C" {
     static mut __bss_start: u32;
     static mut __bss_end: u32;
@@ -176,6 +181,63 @@ extern "C" fn rust_main() -> ! {
             pending_scan_completion = scan::service();
         }
 
+        #[cfg(feature = "probe-tx-experiment")]
+        {
+            let mut probe_ssid = [0_u8; scan::MAX_SSID_LEN];
+            let mut opportunity = scan::claim_probe_opportunity();
+            let ssid_length =
+                opportunity.and_then(|value| scan::copy_probe_ssid(value, &mut probe_ssid));
+            if let (Some(value), None) = (opportunity, ssid_length) {
+                opportunity = None;
+                let _ = scan::fail_probe(value);
+            }
+            let report = unsafe {
+                tx::service_guarded_probe_experiment(
+                    configuration::template_frame(),
+                    opportunity,
+                    &probe_ssid[..ssid_length.unwrap_or(0)],
+                    32,
+                )
+            };
+            unsafe {
+                match report {
+                    tx::ProbeExperimentReport::Published {
+                        opportunity,
+                        publication,
+                    } => {
+                        (0x0900_ffa0 as *mut u32).write_volatile(0x5055_4231);
+                        (0x0900_ffa4 as *mut u32).write_volatile(publication.context.raw());
+                        (0x0900_ffa8 as *mut u32).write_volatile(
+                            u32::from(publication.pipe)
+                                | (u32::from(publication.slot) << 8)
+                                | (u32::from(opportunity.ssid_index) << 16),
+                        );
+                    }
+                    tx::ProbeExperimentReport::Completed {
+                        opportunity,
+                        context,
+                        status,
+                    } => {
+                        if !scan::complete_probe(opportunity, status) {
+                            (0x0900_ffa0 as *mut u32).write_volatile(0x5458_3f3f);
+                            loop {
+                                core::hint::spin_loop();
+                            }
+                        }
+                        (0x0900_ffa0 as *mut u32).write_volatile(0x5458_444e);
+                        (0x0900_ffa4 as *mut u32).write_volatile(context.raw());
+                        (0x0900_ffa8 as *mut u32).write_volatile(u32::from(status));
+                    }
+                    tx::ProbeExperimentReport::Failed { opportunity, error } => {
+                        let _ = scan::fail_probe(opportunity);
+                        (0x0900_ffa0 as *mut u32).write_volatile(0x5458_463f);
+                        (0x0900_ffa4 as *mut u32).write_volatile(error as u32);
+                    }
+                    tx::ProbeExperimentReport::Idle | tx::ProbeExperimentReport::Servicing => {}
+                }
+            }
+        }
+
         if let (Some(if_id), Some(channel)) = (scan::active_interface(), scan::active_channel()) {
             if transport.output_available() {
                 if let Some(indication) = unsafe { radio::poll_scan_indication(if_id, channel) } {
@@ -198,7 +260,13 @@ extern "C" fn rust_main() -> ! {
                 completion.status,
                 completion.psm,
                 completion.num_channels,
-                completion.vendor_field | radio::diagnostic_word(),
+                completion.vendor_field
+                    | radio::diagnostic_word()
+                    | if ENABLE_SINGLE_PROBE_EXPERIMENT {
+                        tx::probe_experiment_diagnostic_word()
+                    } else {
+                        0
+                    },
                 output,
             ) {
                 pending_scan_completion = None;
@@ -352,7 +420,11 @@ extern "C" fn rust_main() -> ! {
                             unsafe { (0x09c0_0600 as *const u32).read_volatile() },
                             unsafe { (0x09c0_0604 as *const u32).read_volatile() },
                             unsafe { (0x09c0_0608 as *const u32).read_volatile() },
-                            unsafe { (0x0940_0000 as *const u32).read_volatile() },
+                            if ENABLE_SINGLE_PROBE_EXPERIMENT {
+                                tx::probe_experiment_diagnostic_value()
+                            } else {
+                                unsafe { (0x0940_0000 as *const u32).read_volatile() }
+                            },
                         ];
                         let mut data = [0_u8; 88];
                         for (index, value) in values.into_iter().enumerate() {

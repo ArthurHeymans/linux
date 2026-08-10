@@ -1491,6 +1491,74 @@ snapshotted completion prefix through the concrete probe backend. This matches
 the vendor scheduler's clear-before-dispatch ownership rule without pretending
 to service bits 10, 21, or other tasks. Host coverage is now 68 tests.
 
+The final one-frame publication sequence is now executable but remains
+unreferenced. It distinguishes command storage (`0x09007080 + pipe*0x150`)
+from the hardware ring (`0x09c60000 + pipe*0x80`), builds the exact mode-0
+no-ACK duration words, publishes frame timestamp/ownership and slot duration,
+updates the retained `0x09c00e64` value, programs the selected quantum register,
+writes the MAC trigger, then performs the post-trigger slot-state, hardware-ring
+duration, pipe-active, and final ring-`+0x14 = 1` GO writes in vendor order.
+The trigger-before-GO relationship is host-tested. `PreparedProbePublication`
+can now consume itself into a non-cancellable `PublishedProbePublication` only
+after validating kind-0/frame-marker ownership. Host coverage is now 69 tests.
+
+An inactive runtime pass now composes the remaining cooperative ownership
+steps for an already-published probe. It checks signed readiness before the
+first destructive pop, runs a bounded event pass, atomically claims and drains
+completion bit 20, and reports completion only after the class-6 callback has
+returned the context. The concrete backend records completion only when
+`dispatch_completed_context` reports `Returned`; missing/class-zero callbacks
+are terminal. This pass is still uncalled by `hif_startup`.
+
+`hif_startup` now contains a compile-time-false one-shot experiment hook. When
+explicitly rebuilt with the guard enabled, the first active channel-1 dwell
+publishes one wildcard probe, services at most four MAC events per cooperative
+pass, drains completion bit 20, and records publication/completion/failure at
+`0x0900ffa0..a8`. The runtime never republishes during the same boot and checks
+that the returned context matches the published identity. With the guard false,
+LLVM removes the hook and the release image remains byte-identical.
+
+The guarded experiment is now hardware-proven. Feature image
+`c82366b1e3bdd3a011ba29100615a9a517378b0cb1d3d206e170491a43198222`
+published one wildcard channel-1 probe and reported diagnostic `0x3000`
+(`Completed`, status 0) through the temporary counters-table field. The first
+and repeated channel-1 scans both completed with 1222 output lines, an alive
+BH, zero used buffers, idle WSM state, and idle scan state. The one-shot guard
+prevented republication on the second scan while retaining the completed
+diagnostic.
+
+An earlier feature image
+`8596595f70ac1cb7b8b76515bdfe8d6b5b154e21ae37cd9f3bfca92ec2a1d901`
+timed out with one used buffer and a terminated BH; it was immediately removed.
+Subsequent instrumented runs completed cleanly, but the failed run remains part
+of the evidence and repeated-TX activation is still gated. The target was
+restored to stable image
+`96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`;
+a post-restore channel-1 scan completed with an alive BH and zero used buffers.
+
+The next guarded controller moved probe ownership into the retained scan state:
+`WaitingForTune -> WaitingForDelay -> InFlight -> WaitingForDelay/Done`. It
+does not expose an opportunity until channel programming and RX enable finish,
+uses the host probe delay, serializes each publication through class-6 context
+return, retains directed SSIDs, and prevents dwell completion or retuning while
+a probe is outstanding.
+
+An initially unbounded feature image
+`76a11f0d7416cd8888308ce2f7a1be003d72f814986b317ece5478928f4948f4`
+completed at least fifteen publications but eventually lost one completion:
+the scan timed out, BH terminated, and one buffer remained used. This proves
+that successful early reuse does not authorize unrestricted repetition. The
+controller now has a destructive boot-wide publication budget of two.
+
+Bounded state-machine image
+`24b069f4b32420cfe4bc6b77891d152dada8727a3e9eeec53c7b4d9247cdb06e`
+completed exactly two serialized probes (`0x3200`, status 0). Three consecutive
+channel-1 scans each completed with 1222 lines, alive BH, zero used buffers,
+idle WSM/scan state, and no further publication after the budget was consumed.
+The target was then restored to stable image
+`96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`;
+its verification scan completed with alive BH and zero used buffers.
+
 | Complete all of `0x9ac` | HIF and packet-DMA translated; intervening MAC/timer routines remain partial |
 | Vendor four-buffer allocator | Four packet-RAM buffers at `0x090149a8`, selected by TX producer |
 | `0xed4c -> 0xec82` two-level queue | Direct publication plus descriptor reclaim; scheduler accounting remains partial |

@@ -1700,6 +1700,68 @@ snapshot. Other pending bits are preserved exactly. This remains an inactive
 leaf rather than a partial replacement for the vendor highest-bit-first main
 loop. Host tests increased to 68.
 
+Initial kind-0 publication is now represented end-to-end behind an uncalled
+target method. A critical pointer distinction is encoded: slot `+0x14` names
+packet-RAM command storage, while pipe `+8` names the `0x09c60000` hardware
+ring whose word zero and `+0x14` GO field are published after the trigger.
+The sequence preserves mode-0 no-ACK duration/backoff construction, timestamp
+and ownership flags, slot duration, retained `0x09c00e64` update, quantum
+selection, trigger-before-slot publication, active accounting, pipe state, and
+final GO. Host tests increased to 69. The method remains unreferenced and thus
+does not transmit on deployed firmware.
+
+The inactive one-probe runtime now composes readiness-gated event consumption
+with scheduler-bit-20 completion draining. Completion becomes observable only
+after `dispatch_completed_context` reaches its `Returned` result, so a queued
+frame or callback entry cannot be mistaken for reusable context ownership.
+Unexpected missing/class-zero callbacks enter fatal quiescence. The runtime
+entry remains unreferenced by the firmware main loop.
+
+A compile-time-false hook now connects the one-shot controller to active
+channel-1 dwell in `hif_startup`. An explicitly enabled build publishes one
+wildcard probe per boot, services four events per cooperative pass, drains
+completion bit 20, validates returned context identity, and records state at
+`0x0900ffa0..0x0900ffa8`. The normal build keeps the guard false; dead-code
+elimination preserves the stable image hash.
+
+Hardware validation crossed the first legal publication/completion boundary.
+Feature image
+`c82366b1e3bdd3a011ba29100615a9a517378b0cb1d3d206e170491a43198222`
+published one wildcard channel-1 probe and returned the context through class-6
+completion. The feature-only counters diagnostic was `0x3000`, meaning
+completed status 0. Two channel-1 scans each produced 1222 lines with BH alive,
+zero used buffers, and idle WSM/scan state; the second scan did not republish.
+
+The first feature attempt, image
+`8596595f70ac1cb7b8b76515bdfe8d6b5b154e21ae37cd9f3bfca92ec2a1d901`,
+timed out with one outstanding buffer and terminated BH. It was recovered by
+MMC rebind and stable-image restoration. Because later instrumented runs
+succeeded, this is retained as a potentially transient or layout-sensitive
+failure rather than discarded. The target currently runs the stable
+`96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`
+image and passed a post-restore scan.
+
+Probe scheduling is now scan-owned rather than triggered merely by observing
+an active channel. The retained state waits for tuning and RX enable, applies
+the host probe delay, claims one immutable generation/channel/SSID opportunity,
+blocks dwell progression while hardware owns the context, and advances only
+after class-6 callback and context return.
+
+The first unrestricted reuse image,
+`76a11f0d7416cd8888308ce2f7a1be003d72f814986b317ece5478928f4948f4`,
+completed at least fifteen probes before a later publication failed to produce
+a legal completion. The scan timed out with terminated BH and one used buffer.
+The state machine was retained, but destructive publication is therefore
+bounded to two completions per boot.
+
+Image `24b069f4b32420cfe4bc6b77891d152dada8727a3e9eeec53c7b4d9247cdb06e`
+then completed exactly two serialized wildcard probes, reporting `0x3200`.
+Three consecutive channel-1 scans completed with 1222 lines, alive BH, zero
+used buffers, and idle WSM/scan state. Later scans remained passive after the
+budget reached zero. Stable image
+`96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`
+was restored and passed its post-restore scan.
+
 ## Reverse-engineering priorities
 
 1. Trace `FUN_00016eec` to the exact WSM START/JOIN entry points and assign its

@@ -19,7 +19,7 @@ pub const VENDOR_MAX_SCAN_CHANNELS: usize = 34;
 pub const MAX_SCAN_SSIDS: usize = 2;
 pub const MAX_SSID_LEN: usize = 32;
 
-#[cfg(any(target_arch = "arm", test))]
+#[cfg(any(target_arch = "arm", test, feature = "probe-tx-experiment"))]
 fn deadline_reached(now: u32, deadline: u32) -> bool {
     now.wrapping_sub(deadline) as i32 >= 0
 }
@@ -89,6 +89,25 @@ pub struct ScanCompletion {
     pub vendor_field: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProbeOpportunity {
+    pub generation: u32,
+    pub if_id: u8,
+    pub channel: u8,
+    pub ssid_index: u8,
+}
+
+#[cfg(feature = "probe-tx-experiment")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActiveProbePhase {
+    Disabled,
+    WaitingForTune,
+    WaitingForDelay,
+    InFlight,
+    Done,
+    Failed,
+}
+
 struct ScanStorage {
     active: bool,
     completion_delay: u8,
@@ -115,6 +134,22 @@ struct ScanStorage {
     num_ssids: u8,
     ssid_lengths: [u8; MAX_SCAN_SSIDS],
     ssids: [[u8; MAX_SSID_LEN]; MAX_SCAN_SSIDS],
+    #[cfg(feature = "probe-tx-experiment")]
+    probe_deadline: u32,
+    #[cfg(feature = "probe-tx-experiment")]
+    probe_generation: u32,
+    #[cfg(feature = "probe-tx-experiment")]
+    probe_phase: ActiveProbePhase,
+    #[cfg(feature = "probe-tx-experiment")]
+    probe_round: u8,
+    #[cfg(feature = "probe-tx-experiment")]
+    probe_ssid_index: u8,
+    #[cfg(feature = "probe-tx-experiment")]
+    probe_last_status: u16,
+    /// Destructive boot-wide guard. Increase only after the previous bounded
+    /// publication/reclamation count has completed repeatedly on hardware.
+    #[cfg(feature = "probe-tx-experiment")]
+    probe_publication_budget: u8,
 }
 
 impl ScanStorage {
@@ -149,6 +184,20 @@ impl ScanStorage {
             num_ssids: 0,
             ssid_lengths: [0; MAX_SCAN_SSIDS],
             ssids: [[0; MAX_SSID_LEN]; MAX_SCAN_SSIDS],
+            #[cfg(feature = "probe-tx-experiment")]
+            probe_deadline: 0,
+            #[cfg(feature = "probe-tx-experiment")]
+            probe_generation: 0,
+            #[cfg(feature = "probe-tx-experiment")]
+            probe_phase: ActiveProbePhase::Disabled,
+            #[cfg(feature = "probe-tx-experiment")]
+            probe_round: 0,
+            #[cfg(feature = "probe-tx-experiment")]
+            probe_ssid_index: 0,
+            #[cfg(feature = "probe-tx-experiment")]
+            probe_last_status: 0,
+            #[cfg(feature = "probe-tx-experiment")]
+            probe_publication_budget: 8,
         }
     }
 }
@@ -212,20 +261,28 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     storage.band = request.band;
     storage.scan_type = request.scan_type;
     storage.flags = request.flags;
-    // Active probe TX and its completion IRQ are not translated yet. Execute
-    // active requests as honest passive scans with the XR819 passive dwell,
-    // rather than pretending that a 35 ms no-probe dwell is equivalent.
+    // Keep the passive-duration safety margin while active TX remains behind
+    // its diagnostic feature. The feature build retains the requested probe
+    // policy; normal builds preserve the established passive fallback.
     let passive_fallback = request.num_probes != 0;
-    storage.num_probes = if passive_fallback {
-        0
-    } else {
-        request.num_probes
-    };
-    storage.probe_delay = if passive_fallback {
-        0
-    } else {
-        request.probe_delay
-    };
+    #[cfg(feature = "probe-tx-experiment")]
+    {
+        storage.num_probes = request.num_probes;
+        storage.probe_delay = request.probe_delay;
+    }
+    #[cfg(not(feature = "probe-tx-experiment"))]
+    {
+        storage.num_probes = if passive_fallback {
+            0
+        } else {
+            request.num_probes
+        };
+        storage.probe_delay = if passive_fallback {
+            0
+        } else {
+            request.probe_delay
+        };
+    }
     storage.num_channels = request.num_channels;
     for index in 0..num_channels {
         let mut channel: RetainedScanChannel = request
@@ -271,6 +328,22 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     storage.dwell_last_now = 0;
     storage.dwell_waits = 0;
     storage.hardware_error_code = 0;
+    #[cfg(feature = "probe-tx-experiment")]
+    {
+        storage.probe_deadline = 0;
+        storage.probe_generation = storage.probe_generation.wrapping_add(1);
+        storage.probe_phase = if storage.num_probes != 0
+            && storage.num_channels != 0
+            && storage.probe_publication_budget != 0
+        {
+            ActiveProbePhase::WaitingForTune
+        } else {
+            ActiveProbePhase::Disabled
+        };
+        storage.probe_round = 0;
+        storage.probe_ssid_index = 0;
+        storage.probe_last_status = 0;
+    }
     storage.active = true;
     set_vendor_scan_active(true);
     Ok(())
@@ -293,6 +366,18 @@ pub fn service() -> Option<ScanCompletion> {
                 let armed = vendor_timer();
                 storage.dwell_deadline =
                     armed.wrapping_add(channel.max_channel_time.saturating_mul(0x400));
+                #[cfg(feature = "probe-tx-experiment")]
+                {
+                    storage.probe_deadline = armed.wrapping_add(u32::from(storage.probe_delay));
+                    storage.probe_phase =
+                        if storage.num_probes == 0 || storage.probe_publication_budget == 0 {
+                            ActiveProbePhase::Disabled
+                        } else {
+                            ActiveProbePhase::WaitingForDelay
+                        };
+                    storage.probe_round = 0;
+                    storage.probe_ssid_index = 0;
+                }
                 storage.dwell_arm_now = armed;
                 storage.dwell_armed_deadline = storage.dwell_deadline;
                 unsafe {
@@ -304,6 +389,10 @@ pub fn service() -> Option<ScanCompletion> {
             Err(error) => {
                 storage.hardware_error_code = transition_error_code(error);
                 storage.hardware_status = 1;
+                #[cfg(feature = "probe-tx-experiment")]
+                {
+                    storage.probe_phase = ActiveProbePhase::Failed;
+                }
                 unsafe {
                     (0x0900_ff98 as *mut u32).write_volatile(0x5741_4b45);
                     (0x0900_ff9c as *mut u32).write_volatile(storage.current_channel_index.into());
@@ -337,6 +426,14 @@ pub fn service() -> Option<ScanCompletion> {
     }
 
     if storage.hardware_status == 0 {
+        #[cfg(feature = "probe-tx-experiment")]
+        if !matches!(
+            storage.probe_phase,
+            ActiveProbePhase::Disabled | ActiveProbePhase::Done | ActiveProbePhase::Failed
+        ) {
+            return None;
+        }
+
         #[cfg(target_arch = "arm")]
         {
             let now = vendor_timer();
@@ -357,6 +454,15 @@ pub fn service() -> Option<ScanCompletion> {
         storage.current_channel_index = storage.current_channel_index.wrapping_add(1);
         if storage.current_channel_index < storage.num_channels {
             storage.hardware_tune_pending = true;
+            #[cfg(feature = "probe-tx-experiment")]
+            {
+                storage.probe_phase =
+                    if storage.num_probes == 0 || storage.probe_publication_budget == 0 {
+                        ActiveProbePhase::Disabled
+                    } else {
+                        ActiveProbePhase::WaitingForTune
+                    };
+            }
             return None;
         }
     }
@@ -418,6 +524,126 @@ pub fn active_channel() -> Option<u16> {
         && storage.transition.is_idle()
         && storage.current_channel_index < storage.num_channels)
         .then_some(storage.channels[usize::from(storage.current_channel_index)].number)
+}
+
+/// Claims the next probe opportunity for the current channel. An opportunity
+/// is visible only after tuning, RX enable, and the scheduled probe delay.
+#[cfg(feature = "probe-tx-experiment")]
+fn claim_probe_opportunity_at(storage: &mut ScanStorage, now: u32) -> Option<ProbeOpportunity> {
+    if !storage.active
+        || storage.hardware_status != 0
+        || storage.hardware_tune_pending
+        || !storage.transition.is_idle()
+        || storage.current_channel_index >= storage.num_channels
+        || storage.num_probes == 0
+        || storage.probe_phase != ActiveProbePhase::WaitingForDelay
+        || !deadline_reached(now, storage.probe_deadline)
+    {
+        return None;
+    }
+
+    let channel =
+        u8::try_from(storage.channels[usize::from(storage.current_channel_index)].number).ok()?;
+    storage.probe_phase = ActiveProbePhase::InFlight;
+    Some(ProbeOpportunity {
+        generation: storage.probe_generation,
+        if_id: storage.if_id,
+        channel,
+        ssid_index: storage.probe_ssid_index,
+    })
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub fn claim_probe_opportunity() -> Option<ProbeOpportunity> {
+    let storage = unsafe { &mut *SCAN.0.get() };
+    claim_probe_opportunity_at(storage, vendor_timer())
+}
+
+#[cfg(not(all(target_arch = "arm", feature = "probe-tx-experiment")))]
+pub const fn claim_probe_opportunity() -> Option<ProbeOpportunity> {
+    None
+}
+
+#[cfg(feature = "probe-tx-experiment")]
+pub fn copy_probe_ssid(
+    opportunity: ProbeOpportunity,
+    output: &mut [u8; MAX_SSID_LEN],
+) -> Option<usize> {
+    let storage = unsafe { &*SCAN.0.get() };
+    if storage.probe_generation != opportunity.generation
+        || storage.probe_phase != ActiveProbePhase::InFlight
+        || storage.if_id != opportunity.if_id
+        || storage.probe_ssid_index != opportunity.ssid_index
+    {
+        return None;
+    }
+    if storage.num_ssids == 0 {
+        output.fill(0);
+        return Some(0);
+    }
+    let index = usize::from(opportunity.ssid_index);
+    if index >= usize::from(storage.num_ssids) {
+        return None;
+    }
+    let length = usize::from(storage.ssid_lengths[index]);
+    output[..length].copy_from_slice(&storage.ssids[index][..length]);
+    output[length..].fill(0);
+    Some(length)
+}
+
+#[cfg(feature = "probe-tx-experiment")]
+fn complete_probe_at(
+    storage: &mut ScanStorage,
+    opportunity: ProbeOpportunity,
+    status: u16,
+    now: u32,
+) -> bool {
+    if storage.probe_generation != opportunity.generation
+        || storage.probe_phase != ActiveProbePhase::InFlight
+        || storage.if_id != opportunity.if_id
+        || storage.probe_ssid_index != opportunity.ssid_index
+    {
+        return false;
+    }
+
+    storage.probe_last_status = status;
+    storage.probe_publication_budget = storage.probe_publication_budget.saturating_sub(1);
+    let ssid_count = storage.num_ssids.max(1);
+    storage.probe_ssid_index = storage.probe_ssid_index.wrapping_add(1);
+    if storage.probe_ssid_index >= ssid_count {
+        storage.probe_ssid_index = 0;
+        storage.probe_round = storage.probe_round.wrapping_add(1);
+    }
+
+    if storage.probe_round >= storage.num_probes || storage.probe_publication_budget == 0 {
+        storage.probe_phase = ActiveProbePhase::Done;
+    } else {
+        // The XR819 driver's dwell calculation budgets two milliseconds per
+        // SSID/probe pair. Serialize publications through legal context return
+        // and schedule the next pair at that same conservative interval.
+        storage.probe_deadline = now.wrapping_add(2 * 0x400);
+        storage.probe_phase = ActiveProbePhase::WaitingForDelay;
+    }
+    true
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub fn complete_probe(opportunity: ProbeOpportunity, status: u16) -> bool {
+    let storage = unsafe { &mut *SCAN.0.get() };
+    complete_probe_at(storage, opportunity, status, vendor_timer())
+}
+
+#[cfg(feature = "probe-tx-experiment")]
+pub fn fail_probe(opportunity: ProbeOpportunity) -> bool {
+    let storage = unsafe { &mut *SCAN.0.get() };
+    if storage.probe_generation != opportunity.generation
+        || storage.probe_phase != ActiveProbePhase::InFlight
+    {
+        return false;
+    }
+    storage.probe_phase = ActiveProbePhase::Failed;
+    storage.hardware_status = 1;
+    true
 }
 
 pub fn channel(index: usize) -> Option<RetainedScanChannel> {
@@ -528,5 +754,37 @@ mod tests {
         assert!(!deadline_reached(0xffff_fff0, 0x0000_0010));
         assert!(deadline_reached(0x0000_0010, 0xffff_fff0));
         assert!(deadline_reached(1234, 1234));
+    }
+
+    #[cfg(feature = "probe-tx-experiment")]
+    #[test]
+    fn active_probe_state_serializes_requested_publications() {
+        let mut storage = ScanStorage::new();
+        storage.active = true;
+        storage.if_id = 1;
+        storage.num_channels = 1;
+        storage.channels[0].number = 1;
+        storage.num_probes = 2;
+        storage.probe_generation = 7;
+        storage.probe_deadline = 100;
+        storage.probe_phase = ActiveProbePhase::WaitingForDelay;
+        storage.probe_publication_budget = 2;
+
+        assert_eq!(claim_probe_opportunity_at(&mut storage, 99), None);
+        let first = claim_probe_opportunity_at(&mut storage, 100).unwrap();
+        assert_eq!(first.generation, 7);
+        assert_eq!(storage.probe_phase, ActiveProbePhase::InFlight);
+        assert!(complete_probe_at(&mut storage, first, 0, 200));
+        assert_eq!(storage.probe_round, 1);
+        assert_eq!(storage.probe_deadline, 200 + 2 * 0x400);
+        assert_eq!(storage.probe_phase, ActiveProbePhase::WaitingForDelay);
+
+        assert_eq!(claim_probe_opportunity_at(&mut storage, 2247), None);
+        let second = claim_probe_opportunity_at(&mut storage, 2248).unwrap();
+        assert!(complete_probe_at(&mut storage, second, 0, 2300));
+        assert_eq!(storage.probe_round, 2);
+        assert_eq!(storage.probe_publication_budget, 0);
+        assert_eq!(storage.probe_phase, ActiveProbePhase::Done);
+        assert_eq!(claim_probe_opportunity_at(&mut storage, u32::MAX), None);
     }
 }
