@@ -28,8 +28,14 @@ fn main() {
         );
         println!("cargo:rustc-link-arg-bin={binary}=--nmagic");
     }
+    println!(
+        "cargo:rustc-link-arg-bin=hif-extension-probe=-T{}",
+        manifest_dir.join("link-extension.x").display()
+    );
+    println!("cargo:rustc-link-arg-bin=hif-extension-probe=--nmagic");
     println!("cargo:rerun-if-changed=link.x");
     println!("cargo:rerun-if-changed=link-download.x");
     println!("cargo:rerun-if-changed=link-main.x");
     println!("cargo:rerun-if-changed=link-main-low.x");
+    println!("cargo:rerun-if-changed=link-extension.x");
 }

@@ -190,6 +190,27 @@ cargo +nightly build --release --bin mailbox \
 
 The raw payload is produced from the ELF with `arm-none-eabi-objcopy -O binary`.
 
+### Split high-SRAM extensions
+
+The validated low Thumb startup occupies exactly `0x7500` downloaded bytes and
+is timing/layout sensitive. `download-boot-low` preserves that low image while
+copying later payload bytes to executable SRAM at `0xfff00000`. It installs a
+low Thumb/ARM veneer at `0x00009720` after vendor SRAM initialization.
+
+Build and package an extension with:
+
+```sh
+cargo +nightly build --release --bin hif-extension-probe \
+    --target armv5te-none-eabi -Z build-std=core
+llvm-objcopy -O binary \
+    target/armv5te-none-eabi/release/hif-extension-probe extension.bin
+./tools/build-split-extension.py stable.bin extension.bin combined.bin
+```
+
+The packaging tool verifies the stable image hash and original startup call
+before applying the four-byte call redirection. It must not be used with an
+arbitrary low image.
+
 ## Fast hardware iteration
 
 A failed experimental startup leaves XR819 in queue mode. The driver can

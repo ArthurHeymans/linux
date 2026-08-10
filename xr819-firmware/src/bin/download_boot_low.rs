@@ -10,6 +10,18 @@ use xr819_firmware::loader::{
 
 const LOW_MAIN_IMAGE_BASE: usize = 0;
 const THUMB_ENTRY: usize = 1;
+const LOW_EXTENSION_VENEER: usize = 0x0000_9720;
+
+unsafe fn install_high_extension_veneer() {
+    unsafe {
+        // Thumb `bx pc; b .-2` switches to the aligned ARM literal veneer.
+        (LOW_EXTENSION_VENEER as *mut u16).write_volatile(0x4778);
+        ((LOW_EXTENSION_VENEER + 2) as *mut u16).write_volatile(0xe7fd);
+        // ARM `ldr pc, [pc, #-4]`, followed by its high-SRAM target literal.
+        ((LOW_EXTENSION_VENEER + 4) as *mut u32).write_volatile(0xe51f_f004);
+        ((LOW_EXTENSION_VENEER + 8) as *mut u32).write_volatile(0xfff0_0000);
+    }
+}
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -52,9 +64,17 @@ extern "C" fn rust_main() -> ! {
     let control = unsafe { Control::get() };
     control.advertise();
     let size = control.wait_for_image_size();
-    if control.copy_image_to(size, LOW_MAIN_IMAGE_BASE).is_ok() {
+    // Keep the validated low startup image byte-for-byte while placing any
+    // extension payload in the vendor high-SRAM executable window.
+    if control
+        .copy_image_split_to(size, 0x7500, LOW_MAIN_IMAGE_BASE, 0xfff0_0000)
+        .is_ok()
+    {
         apply_vendor_register_initialization();
         apply_vendor_memory_initialization();
+        if size > 0x7500 {
+            unsafe { install_high_extension_veneer() };
+        }
         for _ in 0..1_000_000 {
             core::hint::spin_loop();
         }

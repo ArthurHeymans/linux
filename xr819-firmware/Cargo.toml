@@ -42,6 +42,12 @@ path = "src/bin/hif_startup.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "hif-extension-probe"
+path = "src/bin/hif_extension_probe.rs"
+test = false
+bench = false
+
 [dependencies]
 tock-registers = "0.10.1"
 zerocopy = { version = "0.8", features = ["derive"] }
