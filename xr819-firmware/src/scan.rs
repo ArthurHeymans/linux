@@ -269,9 +269,11 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     storage.band = request.band;
     storage.scan_type = request.scan_type;
     storage.flags = request.flags;
-    // Keep the passive-duration safety margin while active TX remains behind
-    // its diagnostic feature. The feature build retains the requested probe
-    // policy; normal builds preserve the established passive fallback.
+    // Active builds retain the host's requested dwell. The no-default-features
+    // image remains the conservative passive rollback.
+    #[cfg(feature = "probe-tx-experiment")]
+    let passive_fallback = false;
+    #[cfg(not(feature = "probe-tx-experiment"))]
     let passive_fallback = request.num_probes != 0;
     #[cfg(feature = "probe-tx-experiment")]
     {
@@ -372,6 +374,11 @@ unsafe fn service_unjoined_scan_finish(storage: &mut ScanStorage) -> bool {
                 return false;
             }
             unsafe {
+                // The class-6 callback raises vendor scheduler bit 21 after
+                // returning the context. For the single-probe domain there is
+                // no remaining TX confirmation work, so consume that narrow
+                // scheduler task before resetting MAC state.
+                crate::tx::clear_scheduler_bits(1 << 21);
                 crate::mac::begin_unjoined_scan_radio_stop();
                 crate::phy::begin_scan_stop_rx_disable();
             }
@@ -553,6 +560,14 @@ pub fn service() -> Option<ScanCompletion> {
 
     #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
     if storage.num_probes != 0 && storage.hardware_status == 0 {
+        // JOIN is not accepted yet, but distinguish the vendor active-VIF
+        // branch now so future activation can never destructively execute the
+        // no-VIF radio-stop path. The restore implementation lands with JOIN.
+        if crate::vif::any_active() {
+            storage.hardware_status = 1;
+            storage.hardware_error_code = 9;
+            return publish_scan_completion(storage);
+        }
         storage.finish_state = 1;
         return None;
     }

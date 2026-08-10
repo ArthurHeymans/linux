@@ -26,9 +26,9 @@ use xr819_firmware::wsm::{
     encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
 };
 
-// Compile-time guard for the first destructive one-probe hardware experiment.
-// Keep false in normal images; enabling it intentionally changes the firmware
-// image and permits one wildcard channel-1 probe per boot.
+// Explicit rollback boundary for scan-owned active probe TX. This feature is
+// enabled by default after repeated cross-scan hardware validation; building
+// with `--no-default-features` retains the passive fallback.
 const ENABLE_SINGLE_PROBE_EXPERIMENT: bool = cfg!(feature = "probe-tx-experiment");
 
 unsafe extern "C" {

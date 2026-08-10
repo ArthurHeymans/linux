@@ -1576,6 +1576,30 @@ completed ten consecutive scans and twenty active probe publications with alive
 BH, zero used buffers, and idle WSM/scan after every command. A preceding
 budget-32 run completed 32 active publications across sixteen scan commands.
 
+The active-probe feature is now in Cargo's default feature set; the passive
+rollback remains available with `--no-default-features`. Default image
+`c96764d6e54dc4da9ebf1b9db80d6fcaf544c40747a9e5deae1ab7b1add6c1be`
+passed six repeated channel-1 scans, a directed-SSID scan, and a channel-1/6
+request with alive BH and zero used buffers. `src/vif.rs` records the three
+vendor VIF layouts and keeps activity under firmware ownership so synthetic
+scan-context writes cannot accidentally select the joined restore branch.
+
+The requested 35 ms dwell is not yet production-safe. It completed one scan
+but the next command lost completion; bounded late-event draining and a 50 ms
+post-callback tail did not fix the boundary. Conservative dwell inflation is
+not the fix: class-6 return had raised scheduler bit 21 and the reduced firmware
+never consumed it. The no-active-VIF finish path now atomically claims that
+narrow empty completion sweep after proving the context/ring idle and before
+partial MAC reset.
+
+Default image
+`60f35ecdd9df94c84cd508e596ee4aca0b670533df865764cf8324822b92f338`
+completed twelve consecutive host-dwell channel-1 scans and directed/two-channel
+requests with alive BH and zero used buffers. Single-channel commands completed
+in roughly 70--90 ms including full transition and teardown. Scheduler bit 10
+remains represented by the cooperative scan owner; active-VIF bit-21 work waits
+for JOIN and power-save state.
+
 | Complete all of `0x9ac` | HIF and packet-DMA translated; intervening MAC/timer routines remain partial |
 | Vendor four-buffer allocator | Four packet-RAM buffers at `0x090149a8`, selected by TX producer |
 | `0xed4c -> 0xec82` two-level queue | Direct publication plus descriptor reclaim; scheduler accounting remains partial |

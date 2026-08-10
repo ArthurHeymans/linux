@@ -10,4 +10,5 @@ pub mod platform;
 pub mod radio;
 pub mod scan;
 pub mod tx;
+pub mod vif;
 pub mod wsm;

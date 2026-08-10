@@ -1782,6 +1782,30 @@ budget-32 validation reached 32 active completions across sixteen scan commands
 without losing ownership. The destructive budget is now reset to four per scan
 rather than being consumed once per boot.
 
+Active probe scanning is now selected by Cargo's default feature set, with
+`--no-default-features` retaining the passive rollback. Default image
+`c96764d6e54dc4da9ebf1b9db80d6fcaf544c40747a9e5deae1ab7b1add6c1be`
+completed six repeated channel-1 scans plus directed-SSID and two-channel
+requests with alive BH and zero used buffers. VIF scaffolding now owns a
+three-bit activity mask and the vendor `0x04003e98 + vif*0x3b0` field layout;
+scan finish refuses to run the no-VIF stop branch once JOIN activates a VIF.
+
+Removing the conservative dwell inflation was hardware-disproved: the first
+35 ms active scan completed, while the second lost completion and left one used
+buffer. A bounded post-completion FIFO pass and a 50 ms callback-return tail did
+not correct it. The missing operation was the scheduler-bit-21 completion sweep
+raised by class-6 callback return. For the proven one-context domain, atomically
+claiming bit 21 after complete ownership return and before `mac_radio_stop`
+executes the narrow empty sweep without touching any live context.
+
+Default image
+`60f35ecdd9df94c84cd508e596ee4aca0b670533df865764cf8324822b92f338`
+then completed twelve consecutive host-dwell channel-1 scans, plus directed
+SSID and channel-1/6 requests, with alive BH and zero used buffers. Typical
+single-channel command time was 70--90 ms including tuning, calibration, TX,
+dwell, teardown, and HIF completion. Conservative dwell inflation is now used
+only by the `--no-default-features` passive rollback.
+
 ## Reverse-engineering priorities
 
 1. Trace `FUN_00016eec` to the exact WSM START/JOIN entry points and assign its

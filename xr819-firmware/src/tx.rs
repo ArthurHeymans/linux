@@ -4846,6 +4846,7 @@ pub unsafe fn service_guarded_probe_experiment(
         };
         runtime.published = None;
         runtime.completed_count = runtime.completed_count.saturating_add(1);
+
         runtime.diagnostic =
             0x3000 | ((runtime.completed_count.min(0x0f) as u16) << 8) | (status & 0x00ff);
         return ProbeExperimentReport::Completed {

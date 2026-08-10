@@ -11,10 +11,11 @@ behind that protocol boundary.
 ## Current state
 
 The current `hif-startup` binary delivers a CW1200 startup indication, completes
-Linux probe, performs calibrated multi-channel passive receive scans, and
-returns real beacon/probe-response indications. It remains an instrumented
-bring-up image rather than a complete vendor-order implementation: foreground
-probe-request TX, association, and normal data traffic are not implemented.
+Linux probe, performs calibrated multi-channel active scans, transmits retained
+probe-request templates, and returns real beacon/probe-response indications.
+It remains an instrumented bring-up image rather than a complete vendor-order
+implementation: JOIN/VIF activation, association, and normal data traffic are
+not implemented.
 The exact vendor call order, Radare2 excerpts, current implementation delta,
 and experiment ledger are in
 [`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md). Salvaged
@@ -130,9 +131,8 @@ Implemented:
   firmware buffers;
 - continuously serviced packet-DMA RX outside scan state, matching the vendor
   receive task and preventing idle-era frames from contaminating later dwells;
-- active scan requests are explicitly downgraded to bounded passive dwells until
-  probe-request TX exists: 220/250 ms for a single channel and 110/120 ms for
-  multi-channel batches constrained by the Linux command timeout;
+- active scan requests publish directed or wildcard probe templates through a
+  bounded one-context TX/completion path and retain the host-requested dwell;
 - hardware-validated cold channel-1 scans returning 2–3 BSS records around
   -66 dBm, repeated channel-1 scans returning up to 3 BSS records, and full
   scans returning 4–6 BSS records without FIFO leaks or BH failure;
@@ -156,11 +156,8 @@ Implemented:
 
 Not yet implemented:
 
-- hardware publication, retry timing, and completion of active scan probes;
-  the exact allocation-free probe template/SSID/channel builder and vendor
-  three-context internal TX-pool initialization are implemented, but prepared
-  probes are not made DMA-owned yet, so active requests still use the documented
-  passive fallback;
+- active-VIF channel restoration, power-save resumption, and scheduler-bit-21
+  work beyond the returned single-probe domain;
 - IRQ 18/20/21 completion consumers and faithful IRQ-driven HIF scheduling;
 - complete HIF queue/scheduler accounting;
 - JOIN/VIF state effects, association, and normal TX/RX data traffic;
@@ -180,6 +177,9 @@ Run host-side protocol tests with:
 ```sh
 cargo test
 ```
+
+Active probe scanning is enabled by the default Cargo feature set. Build with
+`--no-default-features` for the retained passive rollback image.
 
 Build the hardware mailbox payload with:
 
