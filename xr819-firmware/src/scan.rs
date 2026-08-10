@@ -123,6 +123,10 @@ struct ScanStorage {
     dwell_last_now: u32,
     dwell_waits: u32,
     hardware_error_code: u32,
+    #[cfg(feature = "probe-tx-experiment")]
+    finish_state: u8,
+    #[cfg(feature = "probe-tx-experiment")]
+    finish_deadline: u32,
     if_id: u8,
     band: u8,
     scan_type: u8,
@@ -169,6 +173,10 @@ impl ScanStorage {
             dwell_last_now: 0,
             dwell_waits: 0,
             hardware_error_code: 0,
+            #[cfg(feature = "probe-tx-experiment")]
+            finish_state: 0,
+            #[cfg(feature = "probe-tx-experiment")]
+            finish_deadline: 0,
             if_id: 0,
             band: 0,
             scan_type: 0,
@@ -197,7 +205,7 @@ impl ScanStorage {
             #[cfg(feature = "probe-tx-experiment")]
             probe_last_status: 0,
             #[cfg(feature = "probe-tx-experiment")]
-            probe_publication_budget: 8,
+            probe_publication_budget: 4,
         }
     }
 }
@@ -330,6 +338,12 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     storage.hardware_error_code = 0;
     #[cfg(feature = "probe-tx-experiment")]
     {
+        storage.finish_state = 0;
+        storage.finish_deadline = 0;
+    }
+    #[cfg(feature = "probe-tx-experiment")]
+    {
+        storage.probe_publication_budget = 4;
         storage.probe_deadline = 0;
         storage.probe_generation = storage.probe_generation.wrapping_add(1);
         storage.probe_phase = if storage.num_probes != 0
@@ -349,11 +363,81 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     Ok(())
 }
 
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+unsafe fn service_unjoined_scan_finish(storage: &mut ScanStorage) -> bool {
+    match storage.finish_state {
+        0 => false,
+        1 => {
+            if !crate::tx::probe_runtime_quiescent() || crate::radio::host_transfer_outstanding() {
+                return false;
+            }
+            unsafe {
+                crate::mac::begin_unjoined_scan_radio_stop();
+                crate::phy::begin_scan_stop_rx_disable();
+            }
+            storage.finish_deadline = vendor_timer().wrapping_add(0x0040_0000);
+            storage.finish_state = 2;
+            false
+        }
+        2 => {
+            if !unsafe { crate::phy::scan_stop_rx_hardware_drained() } {
+                if (vendor_timer().wrapping_sub(storage.finish_deadline) as i32) >= 0 {
+                    unsafe { crate::tx::fatal_scan_stop_timeout() };
+                }
+                return false;
+            }
+            unsafe {
+                crate::tx::stop_phy_operation_7();
+                crate::phy::start_scan_stop_calibration_state();
+            }
+            storage.finish_state = 3;
+            false
+        }
+        3 => {
+            if !crate::radio::fifo_quiescent() {
+                let index = usize::from(storage.num_channels.saturating_sub(1));
+                unsafe { crate::radio::discard_one_idle(storage.channels[index].number) };
+                return false;
+            }
+            unsafe {
+                (0x0400_3e9a as *mut u16).write_volatile(0);
+                crate::mac::finish_unjoined_scan_radio_stop();
+            }
+            storage.finish_state = 4;
+            true
+        }
+        _ => true,
+    }
+}
+
+fn publish_scan_completion(storage: &mut ScanStorage) -> Option<ScanCompletion> {
+    storage.active = false;
+    #[cfg(target_arch = "arm")]
+    {
+        storage.elapsed_ticks = vendor_timer().wrapping_sub(storage.started_at);
+    }
+    set_vendor_scan_active(false);
+    Some(ScanCompletion {
+        status: storage.hardware_status,
+        psm: 0,
+        num_channels: storage.num_channels,
+        vendor_field: 0,
+    })
+}
+
 /// Advance tuning and dwell for the cooperative scan engine.
 pub fn service() -> Option<ScanCompletion> {
     let storage = unsafe { &mut *SCAN.0.get() };
     if !storage.active {
         return None;
+    }
+
+    #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+    if storage.finish_state != 0 {
+        if !unsafe { service_unjoined_scan_finish(storage) } {
+            return None;
+        }
+        return publish_scan_completion(storage);
     }
 
     #[cfg(target_arch = "arm")]
@@ -467,18 +551,13 @@ pub fn service() -> Option<ScanCompletion> {
         }
     }
 
-    storage.active = false;
-    #[cfg(target_arch = "arm")]
-    {
-        storage.elapsed_ticks = vendor_timer().wrapping_sub(storage.started_at);
+    #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+    if storage.num_probes != 0 && storage.hardware_status == 0 {
+        storage.finish_state = 1;
+        return None;
     }
-    set_vendor_scan_active(false);
-    Some(ScanCompletion {
-        status: storage.hardware_status,
-        psm: 0,
-        num_channels: storage.num_channels,
-        vendor_field: 0,
-    })
+
+    publish_scan_completion(storage)
 }
 
 pub fn elapsed_ticks() -> u32 {
@@ -771,7 +850,12 @@ mod tests {
         storage.probe_publication_budget = 2;
 
         assert_eq!(claim_probe_opportunity_at(&mut storage, 99), None);
-        let first = claim_probe_opportunity_at(&mut storage, 100).unwrap();
+        let first = claim_probe_opportunity_at(&mut storage, 100).unwrap_or(ProbeOpportunity {
+            generation: 0,
+            if_id: 0,
+            channel: 0,
+            ssid_index: 0,
+        });
         assert_eq!(first.generation, 7);
         assert_eq!(storage.probe_phase, ActiveProbePhase::InFlight);
         assert!(complete_probe_at(&mut storage, first, 0, 200));
@@ -780,7 +864,12 @@ mod tests {
         assert_eq!(storage.probe_phase, ActiveProbePhase::WaitingForDelay);
 
         assert_eq!(claim_probe_opportunity_at(&mut storage, 2247), None);
-        let second = claim_probe_opportunity_at(&mut storage, 2248).unwrap();
+        let second = claim_probe_opportunity_at(&mut storage, 2248).unwrap_or(ProbeOpportunity {
+            generation: 0,
+            if_id: 0,
+            channel: 0,
+            ssid_index: 0,
+        });
         assert!(complete_probe_at(&mut storage, second, 0, 2300));
         assert_eq!(storage.probe_round, 2);
         assert_eq!(storage.probe_publication_budget, 0);

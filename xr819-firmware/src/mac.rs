@@ -544,6 +544,45 @@ pub unsafe fn initialize_tx_pipe_state() {
     }
 }
 
+/// Hardware-owning prefix of vendor `mac_radio_stop` for the current
+/// no-active-VIF scan branch. TX ownership must already be proven empty.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn begin_unjoined_scan_radio_stop() {
+    unsafe {
+        write_u32(SHARED + 0x18, 0);
+        let previous = crate::tx::disable_irq_fiq_save();
+        write_u16(SHARED + 8, 0);
+        write_u16(0x0400_1572, 0);
+        write_u32(0x0400_1ab0, 0);
+        write_u8(0x0400_1ab8, 4);
+        write_u32(0x09c0_0a28, 0);
+        write_u32(0x09c0_0a00, 0x1030_0000);
+        write_u32(0x09c0_0a04, read_u32(0x0400_1ab4));
+        for index in 0..32 {
+            write_u32(0x0900_7000 + index * 4, 0x0000_7e64);
+        }
+        crate::tx::restore_irq_fiq_saved(previous);
+    }
+}
+
+/// Final state publication from vendor `mac_radio_stop`, after packet RX,
+/// PHY command 7, and software RX draining have completed.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn finish_unjoined_scan_radio_stop() {
+    unsafe {
+        write_u16(0x0400_3a68, 0);
+        write_u8(0x0400_3a6e, 0);
+        write_u8(0x0400_1adc, 2);
+        write_u8(SHARED + 0x0a, 0);
+        write_u8(SHARED + 0x0b, 0);
+        write_u8(0x0400_1d12, 0);
+        for vif in 0..3 {
+            write_u8(0x0400_3ae8 + vif * 0x98, 1);
+        }
+    }
+    unsafe { crate::tx::clear_scheduler_bits(1 << 18) };
+}
+
 unsafe fn build_tbtt(pointer: usize) {
     let n = unsafe { read_u32(SHARED + 0x30) }
         .wrapping_add(unsafe { read_u32(SHARED + 0x1c) }.wrapping_mul(8))

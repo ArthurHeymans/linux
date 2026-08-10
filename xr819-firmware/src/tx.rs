@@ -1095,7 +1095,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
         write_u8(slot + 3, 5);
         match plan {
             OrdinaryTxPipeStatusPlan::Ineligible => unreachable!(),
-            OrdinaryTxPipeStatusPlan::SuppressedAfterSlotMark => return,
+            OrdinaryTxPipeStatusPlan::SuppressedAfterSlotMark => (),
             OrdinaryTxPipeStatusPlan::AdvanceWithoutCompletion {
                 initialize_pipe_status,
                 next_current,
@@ -2045,6 +2045,14 @@ impl PipeStartEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 impl MessageCompletionEffects for SingleProbeMacBackend {
+    fn completion_messages_enabled(&self) -> bool {
+        // Vendor type-7 LMC messages feed the BA policy task on scheduler bit
+        // 22. The single management-frame low-MAC intentionally has no BA
+        // policy, so allocating them would fill the unserviced 16-entry ring
+        // after fifteen otherwise legal completions.
+        false
+    }
+
     fn message_allocation_failed(&mut self) {
         terminal_probe_backend_fault(0)
     }
@@ -2068,6 +2076,14 @@ impl RadioCompletionEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 impl PowerSaveCompletionEffects for SingleProbeMacBackend {
+    fn completion_idle_policy_enabled(&self) -> bool {
+        // Command 7 and radio-owner release depend on the vendor timer/task
+        // scheduler. Leaving that policy half-executed poisons the next scan
+        // generation, so the cooperative management-frame subset keeps the
+        // already-active scan radio instead.
+        false
+    }
+
     fn timer_start(&mut self, timer: u32, duration: u32) {
         unsafe { start_scheduler_timer(timer, duration) };
     }
@@ -2861,6 +2877,7 @@ pub trait CompletionDrainEffects {
 }
 
 pub trait MessageCompletionEffects {
+    fn completion_messages_enabled(&self) -> bool;
     fn message_allocation_failed(&mut self);
 }
 
@@ -3305,6 +3322,7 @@ pub unsafe fn release_lmc_radio_scheduler<B: RadioCompletionEffects>(owner: u32,
 }
 
 pub trait PowerSaveCompletionEffects {
+    fn completion_idle_policy_enabled(&self) -> bool;
     fn timer_start(&mut self, timer: u32, duration: u32);
     fn send_pending_poll_or_qos_null(&mut self, interface: u8);
     fn try_enter_sleep_all(&mut self);
@@ -3622,7 +3640,10 @@ where
 
                 if flags & (1 << 6) != 0 {
                     write_u32(stats, read_u32(stats).wrapping_add(1));
-                    if (flags >> 20) & 3 != 0 && read_u8(0x0400_8ba8) & 1 != 0 {
+                    if backend.completion_messages_enabled()
+                        && (flags >> 20) & 3 != 0
+                        && read_u8(0x0400_8ba8) & 1 != 0
+                    {
                         if let Some(message) =
                             allocate_lmc_message(|| backend.message_allocation_failed())
                         {
@@ -3668,7 +3689,7 @@ where
             backend.complete_context(context, status);
         }
 
-        if read_u16(0x0400_8f76) == 0 {
+        if read_u16(0x0400_8f76) == 0 && backend.completion_idle_policy_enabled() {
             start_phy_operation_7(backend);
             let owner = read_u32(0x0400_8b2c);
             if owner != 0 {
@@ -4033,12 +4054,10 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
                 }
                 write_u32(0x0400_1aa8, 1);
             }
-            0x35 => {
-                if read_u8(0x0400_8b95) == 2 {
-                    write_u8(0x0400_8b95, 4);
-                    let pending = 0x0400_1fd4_usize;
-                    write_u32(pending, read_u32(pending) | (1 << 31));
-                }
+            0x35 if read_u8(0x0400_8b95) == 2 => {
+                write_u8(0x0400_8b95, 4);
+                let pending = 0x0400_1fd4_usize;
+                write_u32(pending, read_u32(pending) | (1 << 31));
             }
             _ => {}
         }
@@ -4332,6 +4351,14 @@ impl PreparedProbePublication {
                     .unwrap_or(ProbeBuildError::PipeStateUnavailable));
             }
             write_u32(0x0900_ffa0, 0x5055_4230);
+            // Vendor queue accounting increments the global active-completion
+            // count before hardware ownership. `service_completion_drain`
+            // performs the matching decrement before callback return.
+            #[cfg(feature = "probe-tx-experiment")]
+            write_u16(
+                0x0400_8f76,
+                read_u16(0x0400_8f76).wrapping_add(1),
+            );
             execute_single_probe_publication(
                 &mut VolatileMacPipeMmio,
                 SingleProbePublicationInput {
@@ -4722,6 +4749,8 @@ struct ProbeExperimentRuntime {
     backend: SingleProbeMacBackend,
     published: Option<PublishedProbePublication>,
     opportunity: Option<crate::scan::ProbeOpportunity>,
+    #[cfg(not(feature = "probe-tx-experiment"))]
+    pipe_generation: Option<u32>,
     completed_count: u32,
     diagnostic: u16,
 }
@@ -4733,6 +4762,8 @@ impl ProbeExperimentRuntime {
             backend: SingleProbeMacBackend::new(2),
             published: None,
             opportunity: None,
+            #[cfg(not(feature = "probe-tx-experiment"))]
+            pipe_generation: None,
             completed_count: 0,
             diagnostic: 0,
         }
@@ -4749,8 +4780,46 @@ unsafe impl Sync for SharedProbeExperiment {}
 static PROBE_EXPERIMENT: SharedProbeExperiment =
     SharedProbeExperiment(UnsafeCell::new(ProbeExperimentRuntime::new()));
 
-/// Guarded one-shot wildcard channel-1 probe experiment. It never republishes
-/// after a preparation failure or completed probe during the same boot.
+#[cfg(all(target_arch = "arm", not(feature = "probe-tx-experiment")))]
+unsafe fn reset_single_probe_pipe_cursors() {
+    if unsafe { read_u8(0x0400_8f70) } != 0
+        || unsafe { read_u16(0x0400_8f76) } != 0
+        || unsafe { read_u8(COMPLETION_RING_STATE + 0x0c) }
+            != unsafe { read_u8(COMPLETION_RING_STATE + 0x10) }
+    {
+        terminal_probe_backend_fault(0);
+    }
+
+    unsafe {
+        (0x0400_1ade as *mut u8).write_volatile(1);
+        if crate::mac::reinitialize_after_wake(100_000).is_err() {
+            terminal_probe_backend_fault(0);
+        }
+        initialize_internal_pool();
+    }
+
+    for pipe in 0..4_u8 {
+        let state = 0x0400_1720_usize + usize::from(pipe) * 0x6c;
+        if unsafe { ((state + 3) as *const u8).read_volatile() } != 0 {
+            terminal_probe_backend_fault(pipe);
+        }
+        unsafe {
+            (state as *mut u8).write_volatile(0);
+            ((state + 1) as *mut u8).write_volatile(0);
+            ((state + 2) as *mut u8).write_volatile(0);
+            ((state + 4) as *mut u8).write_volatile(0);
+            ((state + 5) as *mut u8).write_volatile(5);
+            (0x0400_1f8c_usize.wrapping_add(usize::from(pipe)) as *mut u8).write_volatile(0);
+        }
+    }
+    unsafe {
+        let _ = claim_scheduler_mask_atomic((1 << 20) | (1 << 21) | (1 << 22));
+    }
+}
+
+
+/// Guarded scan-owned probe experiment. Publications are serialized through
+/// complete hardware return before another scan opportunity can publish.
 ///
 /// # Safety
 /// The caller must own probe preparation, event FIFO and completion servicing.
@@ -4790,6 +4859,12 @@ pub unsafe fn service_guarded_probe_experiment(
         return ProbeExperimentReport::Idle;
     };
 
+    #[cfg(not(feature = "probe-tx-experiment"))]
+    if runtime.pipe_generation != Some(opportunity.generation) {
+        unsafe { reset_single_probe_pipe_cursors() };
+        runtime.pipe_generation = Some(opportunity.generation);
+    }
+
     let prepared = match unsafe {
         prepare_probe_publication(template, ssid, opportunity.channel, opportunity.if_id)
     } {
@@ -4813,6 +4888,60 @@ pub unsafe fn service_guarded_probe_experiment(
         opportunity,
         publication: published,
     }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub fn probe_runtime_quiescent() -> bool {
+    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
+    runtime.published.is_none()
+        && unsafe { read_u8(0x0400_8f70) } == 0
+        && unsafe { read_u16(0x0400_8f76) } == 0
+        && unsafe { read_u8(COMPLETION_RING_STATE + 0x0c) }
+            == unsafe { read_u8(COMPLETION_RING_STATE + 0x10) }
+        && unsafe { read_u8(0x0400_3a6c) } == 0
+}
+
+/// Exact `pac_phy_stop_op`: enter command 7, arm its vendor timer, then cancel
+/// that timer immediately.
+///
+/// # Safety
+/// PHY command and scheduler-timer state must be exclusively owned.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn stop_phy_operation_7() {
+    unsafe {
+        let state = 0x0400_1d20_usize;
+        write_u8(state + 0x10, 7);
+        write_u8(state + 0x21, 0);
+        write_u8(state + 0x18, 1);
+        let (timer, duration) = phy_operation_7_timer();
+        write_u32(state + 0x1c, duration);
+        write_u32(state + 0x0c, u32::from(read_u8(state + 0x18)));
+        // `pac_phy_stop_op` cancels this timer immediately. The detached
+        // low-MAC does not install the vendor callback/list ownership for this
+        // object, so execute the identical stable end state without briefly
+        // publishing an unreachable timer callback.
+        let _ = cancel_scheduler_timer(timer);
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn fatal_scan_stop_timeout() -> ! {
+    terminal_probe_backend_fault(0)
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn clear_scheduler_bits(mask: u32) {
+    let _ = unsafe { claim_scheduler_mask_atomic(mask) };
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn disable_irq_fiq_save() -> u32 {
+    unsafe { mask_irq_fiq_terminal() }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn restore_irq_fiq_saved(previous: u32) {
+    unsafe { restore_irq_fiq(previous) };
 }
 
 #[cfg(target_arch = "arm")]

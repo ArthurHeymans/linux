@@ -1762,6 +1762,26 @@ budget reached zero. Stable image
 `96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`
 was restored and passed its post-restore scan.
 
+The cross-scan failure was subsequently isolated to the missing vendor
+no-active-VIF finish boundary. `syn_scan_finish_and_confirm` clears scan state
+and calls `mac_radio_stop` when all three VIF activity bytes are zero. The Rust
+feature path now cooperatively waits for complete probe/context and zero-copy RX
+return, performs the hardware-owning prefix of `mac_radio_stop`, disables RX
+and observes the vendor `0x00400000`-tick drain deadline, executes the stable
+command-7/cancel state, starts the stopped calibration state, drains residual RX
+slots, publishes the stopped channel/PAS state, and only then emits scan
+completion. TX publication also now increments `0x04008f76` before ownership,
+matching the existing completion-drain decrement.
+
+Feature image
+`835b6c104bd833fa73a2f5c59ebd397a736bc29bd363dc4c37f29a38229079db`
+completed ten consecutive channel-1 scans with two active probe completions per
+scan. Diagnostics advanced from `0x00023200` through `0x00143200`; every run
+finished with alive BH, zero used buffers, and idle WSM/scan state. An earlier
+budget-32 validation reached 32 active completions across sixteen scan commands
+without losing ownership. The destructive budget is now reset to four per scan
+rather than being consumed once per boot.
+
 ## Reverse-engineering priorities
 
 1. Trace `FUN_00016eec` to the exact WSM START/JOIN entry points and assign its

@@ -79,6 +79,19 @@ pub fn diagnostic_word() -> u16 {
         | (errors << 12)
 }
 
+#[cfg(feature = "probe-tx-experiment")]
+pub fn host_transfer_outstanding() -> bool {
+    unsafe { HOST_TRANSFER_OUTSTANDING }
+}
+
+#[cfg(feature = "probe-tx-experiment")]
+pub fn fifo_quiescent() -> bool {
+    unsafe {
+        !HOST_TRANSFER_OUTSTANDING
+            && CONSUMER_OFFSET == DMA_PRODUCER.read_volatile() & FIFO_MASK
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReleaseToken {
     slot: u32,

@@ -238,20 +238,6 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
-        if let (Some(if_id), Some(channel)) = (scan::active_interface(), scan::active_channel()) {
-            if transport.output_available() {
-                if let Some(indication) = unsafe { radio::poll_scan_indication(if_id, channel) } {
-                    unsafe { transport.publish_radio(indication) };
-                }
-            }
-        } else {
-            // Vendor RX processing never stops between scans. Recycle one slot
-            // per cooperative pass so a later dwell cannot consume idle-era
-            // beacons as if they had just arrived.
-            let channel = unsafe { (0x0400_3a68 as *const u16).read_volatile() };
-            unsafe { radio::discard_one_idle(channel) };
-        }
-
         if let Some(completion) = pending_scan_completion
             && transport.output_available()
         {
@@ -271,6 +257,27 @@ extern "C" fn rust_main() -> ! {
             ) {
                 pending_scan_completion = None;
                 unsafe { transport.publish(length as u16) };
+            }
+        }
+
+        // Control indications take priority over scan RX. Otherwise a steady
+        // stream of probe responses can consume the last HIF descriptor every
+        // pass and leave a completed scan pending until the host times out.
+        if pending_scan_completion.is_none() {
+            if let (Some(if_id), Some(channel)) = (scan::active_interface(), scan::active_channel())
+            {
+                if transport.output_available() {
+                    if let Some(indication) = unsafe { radio::poll_scan_indication(if_id, channel) }
+                    {
+                        unsafe { transport.publish_radio(indication) };
+                    }
+                }
+            } else {
+                // Vendor RX processing never stops between scans. Recycle one
+                // slot per cooperative pass so a later dwell cannot consume
+                // idle-era beacons as if they had just arrived.
+                let channel = unsafe { (0x0400_3a68 as *const u16).read_volatile() };
+                unsafe { radio::discard_one_idle(channel) };
             }
         }
 
@@ -309,6 +316,9 @@ extern "C" fn rust_main() -> ! {
                 } else if request.id == START_SCAN_REQ_ID {
                     let status = match StartScanRequest::parse(request.payload) {
                         Ok(scan_request) => {
+                            #[cfg(feature = "probe-tx-experiment")]
+                            let preparation: Result<(), ()> = Ok(());
+                            #[cfg(not(feature = "probe-tx-experiment"))]
                             let preparation = if scan_request.num_probes == 0 {
                                 Ok(())
                             } else {

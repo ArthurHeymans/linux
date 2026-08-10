@@ -1369,7 +1369,7 @@ unsafe fn rf_init_stage_c_mode0() {
         write_u32(BASE - 4, 0);
         write_u32(BASE - 8, 0x0020_0412);
         delay_timer_ticks(5);
-        write_u32(BASE - 0x14, gain + 0x0100_0000 | 0x03fa_30fb);
+        write_u32(BASE - 0x14, (gain + 0x0100_0000) | 0x03fa_30fb);
         write_u32(BASE - 0x10, 0x0000_723c | range);
         write_u32(BASE - 4, 0);
         write_u32(BASE - 8, 0x0020_0412);
@@ -1523,6 +1523,41 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
             true
         }
     }
+}
+
+/// Exact `phy_cal_step_start` used by `mac_radio_stop` after command 7 has
+/// been stopped.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn start_scan_stop_calibration_state() {
+    unsafe {
+        (0x0ac8_0064 as *mut u32).write_volatile(0x10);
+        (0x0400_995f as *mut u8).write_volatile(1);
+        if (0x0400_994f as *const u8).read_volatile() == 3 {
+            (0x0400_9961 as *mut u8).write_volatile(0);
+            (0x0400_99ce as *mut u16).write_volatile(100);
+            (0x0400_99d0 as *mut u8).write_volatile(1);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn begin_scan_stop_rx_disable() {
+    unsafe {
+        let control = (0x09c0_0600 as *mut u32).read_volatile();
+        (0x09c0_0600 as *mut u32).write_volatile(control & !1);
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn scan_stop_rx_hardware_drained() -> bool {
+    let drained = unsafe { (0x09c0_0600 as *const u32).read_volatile() & (1 << 23) == 0 };
+    if drained {
+        unsafe {
+            let state = (0x0400_3a6d as *mut u8).read_volatile();
+            (0x0400_3a6d as *mut u8).write_volatile(state | 1);
+        }
+    }
+    drained
 }
 
 unsafe fn run_vendor_mode_calibration(
