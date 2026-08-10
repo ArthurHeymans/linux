@@ -42,6 +42,7 @@ fn transition_error_code(error: crate::phy::ChannelTransitionError) -> u32 {
         },
         crate::phy::ChannelTransitionError::Power(_) => 5,
         crate::phy::ChannelTransitionError::MacWake(_) => 6,
+        crate::phy::ChannelTransitionError::Gain(_) => 7,
     }
 }
 

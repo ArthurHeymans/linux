@@ -32,6 +32,7 @@ pub const RECEIVE_IND_ID: u16 = 0x0804;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_FAILURE: u32 = 1;
+pub const MIB_ID_DOT11_CURRENT_TX_POWER_LEVEL: u16 = 0x0006;
 pub const MIB_ID_TEMPLATE_FRAME: u16 = 0x1002;
 pub const MIB_ID_RX_FILTER: u16 = 0x1003;
 pub const MIB_ID_BEACON_FILTER_TABLE: u16 = 0x1004;
