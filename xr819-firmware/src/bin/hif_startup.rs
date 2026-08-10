@@ -6,6 +6,8 @@ use core::mem::size_of;
 use core::panic::PanicInfo;
 use xr819_firmware::configuration;
 use xr819_firmware::hif::Transport;
+#[cfg(feature = "join-sta-experiment")]
+use xr819_firmware::join;
 use xr819_firmware::mac;
 use xr819_firmware::phy::{initialize_mac_core_mode0, initialize_mac_software_state};
 use xr819_firmware::platform::{
@@ -18,13 +20,21 @@ use xr819_firmware::platform::{
 use xr819_firmware::radio;
 use xr819_firmware::scan;
 use xr819_firmware::tx;
+use xr819_firmware::vif;
+#[cfg(feature = "tcm-size-diagnostic")]
+use xr819_firmware::tcm;
 use xr819_firmware::wsm::{
     CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID, EdcaParameters, JOIN_REQ_ID,
-    READ_MIB_REQ_ID, START_SCAN_REQ_ID, STATUS_FAILURE, StartScanRequest, StartupIndication,
-    TX_QUEUE_PARAMS_REQ_ID, TxPowerRange, TxQueueParameters, WRITE_MIB_REQ_ID, WriteMibRequest,
-    encode_configuration_response, encode_join_response, encode_read_mib_data_response,
-    encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
+    READ_MIB_REQ_ID, RESET_REQ_ID, ResetRequest, START_SCAN_REQ_ID, STATUS_FAILURE,
+    StartScanRequest, StartupIndication, TX_QUEUE_PARAMS_REQ_ID, TX_REQ_ID, TxPowerRange,
+    TxQueueParameters, TxRequest, WRITE_MIB_REQ_ID, WriteMibRequest,
+    encode_configuration_response, encode_join_complete_indication, encode_join_response,
+    encode_read_mib_data_response, encode_read_mib_response, encode_scan_complete_indication,
+    encode_status_response, encode_tx_confirm, encode_tx_confirm_details,
+    encode_xr819_tx_confirm, encode_xr819_tx_confirm_details,
 };
+#[cfg(feature = "join-sta-experiment")]
+use xr819_firmware::wsm::JoinRequest;
 
 // Explicit rollback boundary for scan-owned active probe TX. This feature is
 // enabled by default after repeated cross-scan hardware validation; building
@@ -172,8 +182,54 @@ extern "C" fn rust_main() -> ! {
     }
 
     let mut pending_scan_completion: Option<scan::ScanCompletion> = None;
+    let mut pending_join_complete: Option<u32> = None;
+    let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     loop {
         let _ = transport.service_interrupt();
+
+        #[cfg(feature = "join-sta-experiment")]
+        if pending_tx_confirmation.is_none()
+            && let tx::HostManagementTxReport::Completed {
+                packet_id,
+                status,
+                tx_rate,
+                ack_failures,
+            } = unsafe { tx::service_host_management_tx(None, 32) }
+        {
+            pending_tx_confirmation = Some((packet_id, status, tx_rate, ack_failures));
+        }
+
+        if let Some(status) = pending_join_complete
+            && transport.output_available()
+        {
+            let output = unsafe { transport.output_buffer() };
+            if let Ok(length) = encode_join_complete_indication(status, output) {
+                pending_join_complete = None;
+                unsafe { transport.publish(length as u16) };
+            }
+        }
+
+        #[cfg(feature = "join-sta-experiment")]
+        if let Some((packet_id, status, tx_rate, ack_failures)) = pending_tx_confirmation
+            && transport.output_available()
+        {
+            let output = unsafe { transport.output_buffer() };
+            let encoded = if join::uses_cw1200_wsm() {
+                encode_tx_confirm_details(packet_id, status, tx_rate, ack_failures, output)
+            } else {
+                encode_xr819_tx_confirm_details(
+                    packet_id,
+                    status,
+                    tx_rate,
+                    ack_failures,
+                    output,
+                )
+            };
+            if let Ok(length) = encoded {
+                pending_tx_confirmation = None;
+                unsafe { transport.publish(length as u16) };
+            }
+        }
 
         // Retain completion until a HIF descriptor is available. This prevents
         // a full ring from overwriting an unreclaimed zero-copy RX token.
@@ -272,6 +328,16 @@ extern "C" fn rust_main() -> ! {
                         unsafe { transport.publish_radio(indication) };
                     }
                 }
+            } else if let Some(if_id) = vif::active_interface() {
+                let channel = unsafe { vif::snapshot(if_id) }
+                    .map(|state| state.channel)
+                    .unwrap_or(0);
+                if transport.output_available()
+                    && let Some(indication) =
+                        unsafe { radio::poll_joined_indication(if_id, channel) }
+                {
+                    unsafe { transport.publish_radio(indication) };
+                }
             } else {
                 // Vendor RX processing never stops between scans. Recycle one
                 // slot per cooperative pass so a later dwell cannot consume
@@ -284,6 +350,7 @@ extern "C" fn rust_main() -> ! {
         if transport.output_available() {
             if let Some(request) = transport.poll_request() {
                 let output = unsafe { transport.output_buffer() };
+                let mut publish_response = true;
                 let response_length = if request.if_id > 2 {
                     encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
                 } else if request.id == CONFIGURATION_REQ_ID {
@@ -401,7 +468,8 @@ extern "C" fn rust_main() -> ! {
                             scan::diagnostic_dwell();
                         let (_scan_status, scan_error) = scan::diagnostic_error();
                         let _iq = xr819_firmware::phy::iq_hardware_diagnostics();
-                        let values = [
+                        #[allow(unused_mut)]
+                        let mut values = [
                             diagnostics.producer_changes,
                             diagnostics.bad_magic,
                             diagnostics.valid_slots,
@@ -436,6 +504,15 @@ extern "C" fn rust_main() -> ! {
                                 unsafe { (0x0940_0000 as *const u32).read_volatile() }
                             },
                         ];
+                        #[cfg(feature = "tcm-size-diagnostic")]
+                        {
+                            let info = tcm::read_region_info();
+                            values[17] = info.tcm_type_register;
+                            values[18] = info.dtcm_register;
+                            values[19] = info.itcm_register;
+                            values[20] = tcm::size_kib(info.dtcm_register).unwrap_or(0xffff)
+                                | (tcm::size_kib(info.itcm_register).unwrap_or(0xffff) << 16);
+                        }
                         let mut data = [0_u8; 88];
                         for (index, value) in values.into_iter().enumerate() {
                             data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -444,17 +521,100 @@ extern "C" fn rust_main() -> ! {
                     } else {
                         encode_read_mib_response(STATUS_FAILURE, mib_id, output)
                     }
+                } else if request.id == RESET_REQ_ID {
+                    let status = match ResetRequest::parse(request.payload) {
+                        Ok(_) => {
+                            #[cfg(feature = "join-sta-experiment")]
+                            {
+                                if unsafe { join::reset(request.if_id) } {
+                                    0
+                                } else {
+                                    STATUS_FAILURE
+                                }
+                            }
+                            #[cfg(not(feature = "join-sta-experiment"))]
+                            0
+                        }
+                        Err(_) => STATUS_FAILURE,
+                    };
+                    encode_status_response(request.id | 0x0400, status, output)
                 } else if request.id == JOIN_REQ_ID {
-                    // `wsm_join_confirm` has a 12-byte payload. Supplying the full
-                    // shape prevents a BH underflow even though JOIN is detached.
-                    encode_join_response(STATUS_FAILURE, -160, 200, output)
+                    #[cfg(feature = "join-sta-experiment")]
+                    let status = match JoinRequest::parse(request.payload) {
+                        Ok(join_request) => unsafe {
+                            join::activate_sta(request.if_id, &join_request)
+                                .map(|_| 0)
+                                .unwrap_or(STATUS_FAILURE)
+                        },
+                        Err(_) => STATUS_FAILURE,
+                    };
+                    #[cfg(not(feature = "join-sta-experiment"))]
+                    let status = STATUS_FAILURE;
+                    if status == 0 && request.payload.get(0x0f).is_some_and(|flags| flags & 0x20 != 0)
+                    {
+                        pending_join_complete = Some(0);
+                    }
+                    encode_join_response(status, -160, 200, output)
+                } else if request.id == TX_REQ_ID {
+                    #[cfg(feature = "join-sta-experiment")]
+                    {
+                        match TxRequest::parse(request.payload) {
+                            Ok(tx_request) => match unsafe {
+                                tx::service_host_management_tx(
+                                    Some((&tx_request, request.if_id)),
+                                    0,
+                                )
+                            } {
+                                tx::HostManagementTxReport::Published { .. } => {
+                                    publish_response = false;
+                                    encode_tx_confirm(0, STATUS_FAILURE, output)
+                                }
+                                tx::HostManagementTxReport::Failed { packet_id, .. } => {
+                                    if join::uses_cw1200_wsm() {
+                                        encode_tx_confirm(packet_id, STATUS_FAILURE, output)
+                                    } else {
+                                        encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+                                    }
+                                }
+                                _ => {
+                                    publish_response = false;
+                                    encode_tx_confirm(0, STATUS_FAILURE, output)
+                                }
+                            },
+                            Err(_) => {
+                                let packet_id = request
+                                    .payload
+                                    .get(..4)
+                                    .map(|value| {
+                                        u32::from_le_bytes([value[0], value[1], value[2], value[3]])
+                                    })
+                                    .unwrap_or(0);
+                                if join::uses_cw1200_wsm() {
+                                    encode_tx_confirm(packet_id, STATUS_FAILURE, output)
+                                } else {
+                                    encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+                                }
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "join-sta-experiment"))]
+                    {
+                        let packet_id = request
+                            .payload
+                            .get(..4)
+                            .map(|value| {
+                                u32::from_le_bytes([value[0], value[1], value[2], value[3]])
+                            })
+                            .unwrap_or(0);
+                        encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+                    }
                 } else {
                     // Do not report success for commands whose state effects are
                     // not implemented. A complete status word lets cw1200 fail the
                     // command cleanly instead of proceeding on false assumptions.
                     encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
                 };
-                if let Ok(length) = response_length {
+                if publish_response && let Ok(length) = response_length {
                     unsafe { transport.publish(length as u16) };
                 }
             }

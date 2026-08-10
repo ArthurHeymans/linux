@@ -1806,6 +1806,53 @@ single-channel command time was 70--90 ms including tuning, calibration, TX,
 dwell, teardown, and HIF completion. Conservative dwell inflation is now used
 only by the `--no-default-features` passive rollback.
 
+## Host management TX static reconstruction
+
+The vendor `wsm_h_04_tx_req` at `0x0000b600` confirms that the CW1200 TX
+payload header is twenty bytes after the WSM header, with optional two-byte
+alignment selected by TX flag bit 7. It copies packet ID, maximum rate, queue,
+flags, expiry and HT parameters into a dedicated host-TX context before
+`tx_lmac_req_submit` at `0x0000dec4`.
+
+The ordinary context differs from the internal class-6 probe context in several
+policy fields. Queue ID is translated through the four-byte table at
+`0x040002dc`; TX flag bits 3:1 become the PTA priority at context `+0x61`, bits
+6:4 become the retry-policy selector at `+0x62`, maximum rate becomes `+0x63`,
+and the initial ordinary-TX flags include `0x00800000`. Host 802.11 address
+fields must remain byte-for-byte intact; the probe initializer's substitutions
+at frame `+0x0a/+0x0c/+0x0e` are not legal for host authentication frames.
+
+`pas_compute_tx_timing` at `0x00007fa6` exposed a missing ACK descriptor input.
+For each VIF it maps the selected rate through:
+
+```text
+0x04003678 + vif*0x98 + 0x494 + rate
+```
+
+and indexes the ACK-duration table at `0x040016c8`. The resulting halfword is
+stored at frame-node `+0x36` / context `+0x8a`. `txp_submit_to_pipe` at
+`0x0000add0` emits that value in its `0x32000000` command word. Zero is the
+working probe/no-ACK shape, but was incorrect for unicast authentication and
+association. The Rust host-management path now publishes the reconstructed
+value before entering the fixed-rate ACK/retry branch.
+
+The independent retry descriptor builder `tx_build_duration_desc` at
+`0x000090c4` uses the global rate map at `0x04001aec` and timing table at
+`0x04000138`; these must not be conflated with the initial per-VIF ACK-duration
+mapping above.
+
+The complete `wsm_status_from_internal` switch at `0x0000aff8` was recovered
+from its ARM `switch8` table. Internal status zero maps to WSM success, 11 maps
+to retry-exceeded (6), 10 to TX lifetime exceeded (7), and all remaining
+special mappings are now represented explicitly in Rust rather than collapsing
+every nonzero completion to retry-exceeded.
+
+Class-6 callback return raises scheduler bit 21 for host management TX just as
+it does for probes. Consuming that bit only after complete context/ring return
+fixed the post-authentication RESET/scan poison: a hardware run completed
+multiple authentication attempts and subsequent scans with BH alive, no
+pending TX, zero used buffers, and idle WSM/scan state.
+
 ## Reverse-engineering priorities
 
 1. Trace `FUN_00016eec` to the exact WSM START/JOIN entry points and assign its

@@ -1340,7 +1340,7 @@ static void cw1200_do_join(struct cw1200_common *priv)
 	if (priv->hw->conf.ps_dtim_period)
 		priv->join_dtim_period = priv->hw->conf.ps_dtim_period;
 	join.dtim_period = priv->join_dtim_period;
-	if (priv->is_xr819 && !join.dtim_period)
+	if (cw1200_uses_xr819_wsm(priv) && !join.dtim_period)
 		join.dtim_period = 1;
 
 	join.channel_number = priv->channel->hw_value;
@@ -1373,7 +1373,7 @@ static void cw1200_do_join(struct cw1200_common *priv)
 	/* Enable asynchronous join calls. XR819 does not use the CW1200
 	 * force flags and completes the join with the command confirmation.
 	 */
-	if (!priv->is_xr819 && !priv->vif->cfg.ibss_joined) {
+	if (!cw1200_uses_xr819_wsm(priv) && !priv->vif->cfg.ibss_joined) {
 		join.flags |= WSM_JOIN_FLAGS_FORCE;
 		join.flags |= WSM_JOIN_FLAGS_FORCE_WITH_COMPLETE_IND;
 	}

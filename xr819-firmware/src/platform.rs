@@ -572,6 +572,12 @@ pub fn program_station_address(address: [u8; 6]) {
         unsafe {
             (0x0400_3acc_usize.wrapping_add(index) as *mut u8).write_volatile(value);
             (0x0400_3ad2_usize.wrapping_add(index) as *mut u8).write_volatile(value);
+            for interface in 0..3_usize {
+                (0x0400_3ecc_usize
+                    .wrapping_add(interface * 0x3b0)
+                    .wrapping_add(index) as *mut u8)
+                    .write_volatile(value);
+            }
         }
     }
     let low = u32::from_le_bytes([address[0], address[1], address[2], address[3]]);

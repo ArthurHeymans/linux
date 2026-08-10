@@ -119,6 +119,7 @@ struct cw1200_common {
 		XR819_HW_REV        = 41,
 	} hw_revision;
 	bool				is_xr819;
+	bool				wsm_cw1200_compatible;
 	int                             hw_refclk;
 	bool				hw_have_5ghz;
 	const struct firmware		*sdd;
@@ -302,6 +303,11 @@ int cw1200_core_probe_xr819(const struct hwbus_ops *hwbus_ops,
 			    int ref_clk, const u8 *macaddr,
 			    const char *sdd_path);
 void cw1200_core_release(struct cw1200_common *self);
+
+static inline bool cw1200_uses_xr819_wsm(const struct cw1200_common *priv)
+{
+	return priv->is_xr819 && !priv->wsm_cw1200_compatible;
+}
 
 #define FWLOAD_BLOCK_SIZE (1024)
 

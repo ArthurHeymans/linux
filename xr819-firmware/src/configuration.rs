@@ -161,6 +161,13 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
             storage.rx_filter = u32::from_le_bytes([*a, *b, *c, *d]);
             true
         }
+        // The cooperative joined RX path currently delivers a superset and
+        // lets mac80211 apply these optional filters. Accepting the standard
+        // CW1200 MIBs is therefore honest even before hardware offload exists.
+        (crate::wsm::MIB_ID_BEACON_FILTER_TABLE, _)
+        | (crate::wsm::MIB_ID_BEACON_FILTER_ENABLE, _)
+        | (crate::wsm::MIB_ID_DISABLE_BSSID_FILTER, _)
+        | (crate::wsm::MIB_ID_GROUP_ADDRESSES_TABLE, _) => true,
         (crate::wsm::MIB_ID_TEMPLATE_FRAME, data) if data.len() <= MAX_TEMPLATE_FRAME_LEN => {
             let previous_len = storage.template_frame_len;
             storage.template_frame[..data.len()].copy_from_slice(data);

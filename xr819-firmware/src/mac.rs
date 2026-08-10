@@ -111,9 +111,9 @@ pub const fn rate_phy_class(cfg: u16, rate: u8, stream: bool) -> u8 {
     }
 }
 
-pub fn extended_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
+pub fn base_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
     let class = rate_phy_class(cfg, rate, stream);
-    let mut value = if class < 2 {
+    let value = if class < 2 {
         ceil_div(
             u32::from(length) * 16,
             u32::from(CCK_DIVISORS[(rate & 3) as usize]),
@@ -137,6 +137,12 @@ pub fn extended_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
         }
         value
     };
+    value as u16
+}
+
+pub fn extended_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
+    let class = rate_phy_class(cfg, rate, stream);
+    let mut value = u32::from(base_airtime(cfg, rate, length, stream));
     value += if cfg & 0x40 != 0 {
         0x20
     } else if cfg & 0x10 != 0 && class < 3 {
@@ -445,6 +451,39 @@ pub unsafe fn program_scan_station_mode() {
         write_u32(0x09c0_0204, 0x0019_8000);
         write_u32(0x09c0_0200, read_u32(0x0400_1ae4));
         write_u32(0x09c0_0310, 0x7800_0000);
+    }
+}
+
+/// Exact STA-mode register tail from vendor `mac_program_mode_sta` (`0x10b80`).
+///
+/// # Safety
+/// MAC mode registers must be exclusively owned during JOIN activation.
+#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+pub unsafe fn program_joined_station_mode() {
+    unsafe {
+        write_u32(0x0400_1ab4, 0x0018_0180);
+        write_u32(0x09c0_0a04, 0x0018_0180);
+        write_u32(0x09c0_0a1c, 0x827b_ffdf);
+        write_u32(0x09c0_0204, 0x0019_8000);
+        write_u32(0x09c0_0200, read_u32(0x0400_1ae4));
+        write_u32(0x09c0_0310, 0x7800_0000);
+    }
+}
+
+/// Exact mode-1 BSSID publication from vendor `mac_program_bssid` (`0x10b1a`).
+///
+/// # Safety
+/// Address-match registers must be exclusively owned.
+#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
+    unsafe {
+        write_u32(
+            0x09c0_003c,
+            u32::from_le_bytes([bssid[0], bssid[1], bssid[2], bssid[3]]),
+        );
+        write_u32(0x09c0_0040, u32::from(u16::from_le_bytes([bssid[4], bssid[5]])));
+        write_u32(0x09c0_0044, 0x101);
+        write_u16(0x0400_8ae0, 3);
     }
 }
 

@@ -14,6 +14,8 @@ crate-type = ["rlib"]
 # `--no-default-features` retains the established passive fallback image.
 default = ["probe-tx-experiment"]
 probe-tx-experiment = []
+join-sta-experiment = ["probe-tx-experiment"]
+tcm-size-diagnostic = []
 
 [[bin]]
 name = "mailbox"

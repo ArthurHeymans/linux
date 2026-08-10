@@ -190,6 +190,31 @@ cargo +nightly build --release --bin mailbox \
 
 The raw payload is produced from the ELF with `arm-none-eabi-objcopy -O binary`.
 
+### TCM layout checks
+
+The low Thumb image currently keeps `.text`, `.rodata`, `.data`, and `.bss` in
+the writable ITCM mapping. The `0x1c000` linker bound is a conservative observed
+envelope, not a proven physical capacity: matching vendor ITCM content ends at
+the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary. Vendor
+DTCM initialization then contributes `0x2fb0` bytes at `0x04000000`, while
+runtime state reaches much higher addresses and the reset bootstrap assigns
+mode stacks within `0x0400b000..0x0400c000`.
+
+Moving normal Rust data into DTCM requires a split-image downloader and a
+complete collision map; a flat raw image cannot represent both address-zero
+ITCM and `0x04000000` DTCM without a large hole.
+
+`link-main-low.x` models the conservative ITCM envelope and the observed DTCM
+runtime/stack windows as separate `MEMORY` regions. Linker `ASSERT` expressions
+hard-fail image overflow or changes contradicting those observed boundaries;
+they deliberately do not claim undocumented physical TCM capacities.
+
+An explicit `tcm-size-diagnostic` feature adds ARM interworking helpers for the
+CP15 TCM type and region registers. The registers are read only when the host
+requests diagnostic MIB `0x100c`; normal startup remains unchanged. This is a
+destructive research feature: the XR819 core may not implement the newer TCM
+type-register format, so use it only before a planned power cycle.
+
 ## Fast hardware iteration
 
 A failed experimental startup leaves XR819 in queue mode. The driver can
