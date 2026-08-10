@@ -1559,6 +1559,47 @@ The target was then restored to stable image
 `96714ce0fee7c947ed512df54e49ec9edac32233c3446eba0cb7308818cfb765`;
 its verification scan completed with alive BH and zero used buffers.
 
+Repeated active scans now include the vendor no-active-VIF finish branch from
+`syn_scan_finish_and_confirm -> mac_radio_stop`. Completion waits for returned
+probe and HIF RX ownership, performs partial MAC reset and the 32 packet-RAM
+slot reset under saved IRQ/FIQ masking, disables/drains packet RX, applies the
+command-7/cancel stable state, starts the stopped calibration state, drains the
+software RX FIFO, clears current/synthetic channel and PAS state, and only then
+publishes `WSM_SCAN_COMPLETE_IND`. The next request therefore cannot take the
+same-channel shortcut and must run full channel setup and RX enable.
+
+The publication path now balances vendor global completion accounting at
+`0x04008f76`; previously each drain decremented an unincremented counter. Final
+feature image
+`835b6c104bd833fa73a2f5c59ebd397a736bc29bd363dc4c37f29a38229079db`
+completed ten consecutive scans and twenty active probe publications with alive
+BH, zero used buffers, and idle WSM/scan after every command. A preceding
+budget-32 run completed 32 active publications across sixteen scan commands.
+
+The active-probe feature is now in Cargo's default feature set; the passive
+rollback remains available with `--no-default-features`. Default image
+`c96764d6e54dc4da9ebf1b9db80d6fcaf544c40747a9e5deae1ab7b1add6c1be`
+passed six repeated channel-1 scans, a directed-SSID scan, and a channel-1/6
+request with alive BH and zero used buffers. `src/vif.rs` records the three
+vendor VIF layouts and keeps activity under firmware ownership so synthetic
+scan-context writes cannot accidentally select the joined restore branch.
+
+The requested 35 ms dwell is not yet production-safe. It completed one scan
+but the next command lost completion; bounded late-event draining and a 50 ms
+post-callback tail did not fix the boundary. Conservative dwell inflation is
+not the fix: class-6 return had raised scheduler bit 21 and the reduced firmware
+never consumed it. The no-active-VIF finish path now atomically claims that
+narrow empty completion sweep after proving the context/ring idle and before
+partial MAC reset.
+
+Default image
+`60f35ecdd9df94c84cd508e596ee4aca0b670533df865764cf8324822b92f338`
+completed twelve consecutive host-dwell channel-1 scans and directed/two-channel
+requests with alive BH and zero used buffers. Single-channel commands completed
+in roughly 70--90 ms including full transition and teardown. Scheduler bit 10
+remains represented by the cooperative scan owner; active-VIF bit-21 work waits
+for JOIN and power-save state.
+
 | Complete all of `0x9ac` | HIF and packet-DMA translated; intervening MAC/timer routines remain partial |
 | Vendor four-buffer allocator | Four packet-RAM buffers at `0x090149a8`, selected by TX producer |
 | `0xed4c -> 0xec82` two-level queue | Direct publication plus descriptor reclaim; scheduler accounting remains partial |

@@ -111,9 +111,9 @@ pub const fn rate_phy_class(cfg: u16, rate: u8, stream: bool) -> u8 {
     }
 }
 
-pub fn extended_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
+pub fn base_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
     let class = rate_phy_class(cfg, rate, stream);
-    let mut value = if class < 2 {
+    let value = if class < 2 {
         ceil_div(
             u32::from(length) * 16,
             u32::from(CCK_DIVISORS[(rate & 3) as usize]),
@@ -137,6 +137,12 @@ pub fn extended_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
         }
         value
     };
+    value as u16
+}
+
+pub fn extended_airtime(cfg: u16, rate: u8, length: u16, stream: bool) -> u16 {
+    let class = rate_phy_class(cfg, rate, stream);
+    let mut value = u32::from(base_airtime(cfg, rate, length, stream));
     value += if cfg & 0x40 != 0 {
         0x20
     } else if cfg & 0x10 != 0 && class < 3 {
@@ -448,6 +454,39 @@ pub unsafe fn program_scan_station_mode() {
     }
 }
 
+/// Exact STA-mode register tail from vendor `mac_program_mode_sta` (`0x10b80`).
+///
+/// # Safety
+/// MAC mode registers must be exclusively owned during JOIN activation.
+#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+pub unsafe fn program_joined_station_mode() {
+    unsafe {
+        write_u32(0x0400_1ab4, 0x0018_0180);
+        write_u32(0x09c0_0a04, 0x0018_0180);
+        write_u32(0x09c0_0a1c, 0x827b_ffdf);
+        write_u32(0x09c0_0204, 0x0019_8000);
+        write_u32(0x09c0_0200, read_u32(0x0400_1ae4));
+        write_u32(0x09c0_0310, 0x7800_0000);
+    }
+}
+
+/// Exact mode-1 BSSID publication from vendor `mac_program_bssid` (`0x10b1a`).
+///
+/// # Safety
+/// Address-match registers must be exclusively owned.
+#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
+    unsafe {
+        write_u32(
+            0x09c0_003c,
+            u32::from_le_bytes([bssid[0], bssid[1], bssid[2], bssid[3]]),
+        );
+        write_u32(0x09c0_0040, u32::from(u16::from_le_bytes([bssid[4], bssid[5]])));
+        write_u32(0x09c0_0044, 0x101);
+        write_u16(0x0400_8ae0, 3);
+    }
+}
+
 pub unsafe fn reprogram_after_channel() {
     unsafe {
         write_u8(WAKE + 0x1d, 0);
@@ -542,6 +581,45 @@ pub unsafe fn initialize_tx_pipe_state() {
             unsafe { write_u8(base + offset, value) };
         }
     }
+}
+
+/// Hardware-owning prefix of vendor `mac_radio_stop` for the current
+/// no-active-VIF scan branch. TX ownership must already be proven empty.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn begin_unjoined_scan_radio_stop() {
+    unsafe {
+        write_u32(SHARED + 0x18, 0);
+        let previous = crate::tx::disable_irq_fiq_save();
+        write_u16(SHARED + 8, 0);
+        write_u16(0x0400_1572, 0);
+        write_u32(0x0400_1ab0, 0);
+        write_u8(0x0400_1ab8, 4);
+        write_u32(0x09c0_0a28, 0);
+        write_u32(0x09c0_0a00, 0x1030_0000);
+        write_u32(0x09c0_0a04, read_u32(0x0400_1ab4));
+        for index in 0..32 {
+            write_u32(0x0900_7000 + index * 4, 0x0000_7e64);
+        }
+        crate::tx::restore_irq_fiq_saved(previous);
+    }
+}
+
+/// Final state publication from vendor `mac_radio_stop`, after packet RX,
+/// PHY command 7, and software RX draining have completed.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn finish_unjoined_scan_radio_stop() {
+    unsafe {
+        write_u16(0x0400_3a68, 0);
+        write_u8(0x0400_3a6e, 0);
+        write_u8(0x0400_1adc, 2);
+        write_u8(SHARED + 0x0a, 0);
+        write_u8(SHARED + 0x0b, 0);
+        write_u8(0x0400_1d12, 0);
+        for vif in 0..3 {
+            write_u8(0x0400_3ae8 + vif * 0x98, 1);
+        }
+    }
+    unsafe { crate::tx::clear_scheduler_bits(1 << 18) };
 }
 
 unsafe fn build_tbtt(pointer: usize) {

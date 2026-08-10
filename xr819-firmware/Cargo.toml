@@ -9,8 +9,13 @@ description = "Experimental open firmware for the XRadio XR819"
 crate-type = ["rlib"]
 
 [features]
-default = []
+# Active scan-owned probe TX is now the default firmware behavior. Keep the
+# feature name as an explicit rollback boundary while JOIN/VIF work continues;
+# `--no-default-features` retains the established passive fallback image.
+default = ["probe-tx-experiment"]
 probe-tx-experiment = []
+join-sta-experiment = ["probe-tx-experiment"]
+tcm-size-diagnostic = []
 
 [[bin]]
 name = "mailbox"

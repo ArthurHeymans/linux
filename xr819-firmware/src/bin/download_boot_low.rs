@@ -11,6 +11,7 @@ use xr819_firmware::loader::{
 const LOW_MAIN_IMAGE_BASE: usize = 0;
 const THUMB_ENTRY: usize = 1;
 const LOW_EXTENSION_VENEER: usize = 0x0000_9720;
+const LOW_GAIN_EXTENSION_VENEER: usize = 0x0000_9730;
 
 unsafe fn install_high_extension_veneer() {
     unsafe {
@@ -20,6 +21,11 @@ unsafe fn install_high_extension_veneer() {
         // ARM `ldr pc, [pc, #-4]`, followed by its high-SRAM target literal.
         ((LOW_EXTENSION_VENEER + 4) as *mut u32).write_volatile(0xe51f_f004);
         ((LOW_EXTENSION_VENEER + 8) as *mut u32).write_volatile(0xfff0_0000);
+
+        (LOW_GAIN_EXTENSION_VENEER as *mut u16).write_volatile(0x4778);
+        ((LOW_GAIN_EXTENSION_VENEER + 2) as *mut u16).write_volatile(0xe7fd);
+        ((LOW_GAIN_EXTENSION_VENEER + 4) as *mut u32).write_volatile(0xe51f_f004);
+        ((LOW_GAIN_EXTENSION_VENEER + 8) as *mut u32).write_volatile(0xfff0_0100);
     }
 }
 

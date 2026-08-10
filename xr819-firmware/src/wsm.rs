@@ -19,8 +19,11 @@ pub const WRITE_MIB_REQ_ID: u16 = 0x0006;
 pub const WRITE_MIB_RESP_ID: u16 = 0x0406;
 pub const START_SCAN_REQ_ID: u16 = 0x0007;
 pub const START_SCAN_RESP_ID: u16 = 0x0407;
+pub const TX_REQ_ID: u16 = 0x0004;
+pub const TX_CONFIRM_ID: u16 = 0x0404;
 pub const JOIN_REQ_ID: u16 = 0x000b;
 pub const JOIN_RESP_ID: u16 = 0x040b;
+pub const JOIN_COMPLETE_IND_ID: u16 = 0x080f;
 pub const TX_QUEUE_PARAMS_REQ_ID: u16 = 0x0012;
 pub const TX_QUEUE_PARAMS_RESP_ID: u16 = 0x0412;
 pub const EDCA_PARAMS_REQ_ID: u16 = 0x0013;
@@ -29,10 +32,15 @@ pub const RECEIVE_IND_ID: u16 = 0x0804;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_FAILURE: u32 = 1;
+pub const MIB_ID_DOT11_CURRENT_TX_POWER_LEVEL: u16 = 0x0006;
 pub const MIB_ID_TEMPLATE_FRAME: u16 = 0x1002;
 pub const MIB_ID_RX_FILTER: u16 = 0x1003;
+pub const MIB_ID_BEACON_FILTER_TABLE: u16 = 0x1004;
+pub const MIB_ID_BEACON_FILTER_ENABLE: u16 = 0x1005;
 pub const MIB_ID_RCPI_RSSI_THRESHOLD: u16 = 0x1009;
 pub const MIB_ID_SET_UAPSD_INFORMATION: u16 = 0x1013;
+pub const MIB_ID_DISABLE_BSSID_FILTER: u16 = 0x1026;
+pub const MIB_ID_GROUP_ADDRESSES_TABLE: u16 = 0x0004;
 
 #[derive(Clone, Copy, Immutable, IntoBytes)]
 #[repr(C)]
@@ -223,6 +231,7 @@ pub enum Error {
     InvalidLength,
     InvalidDpdLength,
     InvalidScanRequest,
+    InvalidJoinRequest,
     OutputTooSmall,
 }
 
@@ -233,6 +242,7 @@ impl fmt::Display for Error {
             Self::InvalidLength => "invalid WSM message length",
             Self::InvalidDpdLength => "invalid WSM DPD block length",
             Self::InvalidScanRequest => "invalid WSM start-scan request",
+            Self::InvalidJoinRequest => "invalid WSM join request",
             Self::OutputTooSmall => "WSM output buffer is too small",
         })
     }
@@ -373,6 +383,106 @@ impl<'a> StartScanRequest<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JoinRequest<'a> {
+    pub mode: u8,
+    pub band: u8,
+    pub channel_number: u16,
+    pub bssid: [u8; 6],
+    pub atim_window: u16,
+    pub preamble_type: u8,
+    pub probe_for_join: bool,
+    pub dtim_period: u8,
+    pub flags: u8,
+    pub ssid: &'a [u8],
+    pub beacon_interval: u32,
+    pub basic_rate_set: u32,
+}
+
+impl<'a> JoinRequest<'a> {
+    pub const PAYLOAD_LEN: usize = 60;
+
+    pub fn parse(payload: &'a [u8]) -> Result<Self, Error> {
+        if payload.len() != Self::PAYLOAD_LEN {
+            return Err(Error::InvalidJoinRequest);
+        }
+        let ssid_len = usize::try_from(read_u32(payload, 0x10)?)
+            .map_err(|_| Error::InvalidJoinRequest)?;
+        if ssid_len > 32 {
+            return Err(Error::InvalidJoinRequest);
+        }
+        let mut bssid = [0_u8; 6];
+        bssid.copy_from_slice(&payload[4..10]);
+        Ok(Self {
+            mode: payload[0],
+            band: payload[1],
+            channel_number: read_u16(payload, 2)?,
+            bssid,
+            atim_window: read_u16(payload, 0x0a)?,
+            preamble_type: payload[0x0c],
+            probe_for_join: payload[0x0d] != 0,
+            dtim_period: payload[0x0e],
+            flags: payload[0x0f],
+            ssid: &payload[0x14..0x14 + ssid_len],
+            beacon_interval: read_u32(payload, 0x34)?,
+            basic_rate_set: read_u32(payload, 0x38)?,
+        })
+    }
+
+    pub const fn supported_sta_shape(&self) -> bool {
+        self.mode == 1
+            && self.band == 0
+            && self.channel_number >= 1
+            && self.channel_number <= 14
+            && self.atim_window == 0
+            && self.preamble_type == 0
+            && self.flags & 0x1b == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxRequest<'a> {
+    pub packet_id: u32,
+    pub max_tx_rate: u8,
+    pub queue_id: u8,
+    pub more: bool,
+    pub flags: u8,
+    pub expire_time: u32,
+    pub ht_tx_parameters: u32,
+    pub frame: &'a [u8],
+}
+
+impl<'a> TxRequest<'a> {
+    pub const PAYLOAD_HEADER_LEN: usize = 20;
+
+    pub fn parse(payload: &'a [u8]) -> Result<Self, Error> {
+        if payload.len() < Self::PAYLOAD_HEADER_LEN {
+            return Err(Error::Truncated);
+        }
+        let shifted = payload[7] & 0x80 != 0;
+        let frame_offset = Self::PAYLOAD_HEADER_LEN + if shifted { 2 } else { 0 };
+        let frame = payload.get(frame_offset..).ok_or(Error::Truncated)?;
+        if frame.len() < 24 {
+            return Err(Error::Truncated);
+        }
+        Ok(Self {
+            packet_id: read_u32(payload, 0)?,
+            max_tx_rate: payload[4],
+            queue_id: payload[5],
+            more: payload[6] != 0,
+            flags: payload[7],
+            expire_time: read_u32(payload, 12)?,
+            ht_tx_parameters: read_u32(payload, 16)?,
+            frame,
+        })
+    }
+
+    pub fn is_unicast_management(&self) -> bool {
+        let frame_control = u16::from_le_bytes([self.frame[0], self.frame[1]]);
+        frame_control & 0x000c == 0 && self.frame[4] & 1 == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResetRequest {
     /// The upstream driver sends zero to reset statistics and one to retain
     /// them. Link ID is encoded in the WSM header rather than this payload.
@@ -507,6 +617,89 @@ pub fn encode_join_response(
     write_u32(output, HEADER_LEN, status);
     write_u32(output, HEADER_LEN + 4, min_power_level as u32);
     write_u32(output, HEADER_LEN + 8, max_power_level as u32);
+    Ok(LEN)
+}
+
+pub fn encode_tx_confirm(
+    packet_id: u32,
+    status: u32,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    encode_tx_confirm_details(packet_id, status, 0, 0, output)
+}
+
+pub fn encode_tx_confirm_details(
+    packet_id: u32,
+    status: u32,
+    tx_rate: u8,
+    ack_failures: u8,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const PAYLOAD_LEN: usize = 20;
+    let total_len = HEADER_LEN + PAYLOAD_LEN;
+    if output.len() < total_len {
+        return Err(Error::OutputTooSmall);
+    }
+    Header {
+        len: total_len as u16,
+        id: TX_CONFIRM_ID,
+    }
+    .encode(output)?;
+    output[HEADER_LEN..total_len].fill(0);
+    write_u32(output, HEADER_LEN, packet_id);
+    write_u32(output, HEADER_LEN + 4, status);
+    output[HEADER_LEN + 8] = tx_rate;
+    output[HEADER_LEN + 9] = ack_failures;
+    Ok(total_len)
+}
+
+pub fn encode_xr819_tx_confirm(
+    packet_id: u32,
+    status: u32,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    encode_xr819_tx_confirm_details(packet_id, status, 0, 0, output)
+}
+
+pub fn encode_xr819_tx_confirm_details(
+    packet_id: u32,
+    status: u32,
+    tx_rate: u8,
+    ack_failures: u8,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const PAYLOAD_LEN: usize = 32;
+    let total_len = HEADER_LEN + PAYLOAD_LEN;
+    if output.len() < total_len {
+        return Err(Error::OutputTooSmall);
+    }
+    Header {
+        len: total_len as u16,
+        id: TX_CONFIRM_ID,
+    }
+    .encode(output)?;
+    output[HEADER_LEN..total_len].fill(0);
+    write_u32(output, HEADER_LEN, packet_id);
+    write_u32(output, HEADER_LEN + 4, status);
+    output[HEADER_LEN + 8] = tx_rate;
+    output[HEADER_LEN + 9] = ack_failures;
+    Ok(total_len)
+}
+
+pub fn encode_join_complete_indication(
+    status: u32,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const LEN: usize = HEADER_LEN + 4;
+    if output.len() < LEN {
+        return Err(Error::OutputTooSmall);
+    }
+    Header {
+        len: LEN as u16,
+        id: JOIN_COMPLETE_IND_ID,
+    }
+    .encode(output)?;
+    write_u32(output, HEADER_LEN, status);
     Ok(LEN)
 }
 
@@ -785,6 +978,70 @@ mod tests {
         assert_eq!(read_u32(&join, 4).unwrap(), STATUS_FAILURE);
         assert_eq!(read_u32(&join, 8).unwrap(), (-160_i32) as u32);
         assert_eq!(read_u32(&join, 12).unwrap(), 200);
+    }
+
+    #[test]
+    fn join_request_matches_linux_wire_layout() {
+        let mut payload = [0_u8; JoinRequest::PAYLOAD_LEN];
+        payload[0] = 1;
+        payload[2..4].copy_from_slice(&6_u16.to_le_bytes());
+        payload[4..10].copy_from_slice(&[0x02, 1, 2, 3, 4, 5]);
+        payload[0x0d] = 1;
+        payload[0x0e] = 2;
+        payload[0x10..0x14].copy_from_slice(&4_u32.to_le_bytes());
+        payload[0x14..0x18].copy_from_slice(b"test");
+        payload[0x34..0x38].copy_from_slice(&100_u32.to_le_bytes());
+        payload[0x38..0x3c].copy_from_slice(&7_u32.to_le_bytes());
+
+        let request = JoinRequest::parse(&payload).unwrap_or(JoinRequest {
+            mode: 0,
+            band: 1,
+            channel_number: 0,
+            bssid: [0; 6],
+            atim_window: 1,
+            preamble_type: 1,
+            probe_for_join: false,
+            dtim_period: 0,
+            flags: 0xff,
+            ssid: &[],
+            beacon_interval: 0,
+            basic_rate_set: 0,
+        });
+        assert!(request.supported_sta_shape());
+        assert_eq!(request.channel_number, 6);
+        assert_eq!(request.ssid, b"test");
+        assert_eq!(request.basic_rate_set, 7);
+    }
+
+    #[test]
+    fn failed_tx_confirm_has_complete_driver_shape() {
+        let mut output = [0_u8; 24];
+        assert_eq!(
+            encode_tx_confirm(0x1234_5678, STATUS_FAILURE, &mut output),
+            Ok(24)
+        );
+        assert_eq!(&output[..4], &[24, 0, 4, 4]);
+        assert_eq!(&output[4..8], &0x1234_5678_u32.to_le_bytes());
+        assert_eq!(&output[8..12], &STATUS_FAILURE.to_le_bytes());
+        assert!(output[12..].iter().all(|value| *value == 0));
+    }
+
+    #[test]
+    fn tx_request_strips_optional_alignment_before_management_frame() {
+        let mut payload = [0_u8; TxRequest::PAYLOAD_HEADER_LEN + 2 + 24];
+        payload[..4].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
+        payload[4] = 6;
+        payload[5] = 3;
+        payload[7] = 0x80;
+        payload[22..24].copy_from_slice(&0x00b0_u16.to_le_bytes());
+        payload[26..32].copy_from_slice(&[0x02, 1, 2, 3, 4, 5]);
+
+        let request = TxRequest::parse(&payload).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(request.packet_id, 0x1234_5678);
+        assert_eq!(request.max_tx_rate, 6);
+        assert_eq!(request.queue_id, 3);
+        assert_eq!(&request.frame[..2], &0x00b0_u16.to_le_bytes());
+        assert!(request.is_unicast_management());
     }
 
     #[test]

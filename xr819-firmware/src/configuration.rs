@@ -44,6 +44,7 @@ struct ConfigurationStorage {
     template_frame_len: usize,
     template_frame: [u8; MAX_TEMPLATE_FRAME_LEN],
     rx_filter: u32,
+    current_tx_power_encoded: u32,
 }
 
 impl ConfigurationStorage {
@@ -79,6 +80,7 @@ impl ConfigurationStorage {
             template_frame_len: 0,
             template_frame: [0; MAX_TEMPLATE_FRAME_LEN],
             rx_filter: 0,
+            current_tx_power_encoded: 0,
         }
     }
 }
@@ -149,6 +151,10 @@ pub fn template_frame() -> Option<&'static [u8]> {
 pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
     let storage = unsafe { &mut *XR819_CONFIGURATION.0.get() };
     match (mib_id, data) {
+        (crate::wsm::MIB_ID_DOT11_CURRENT_TX_POWER_LEVEL, [a, b, c, d]) => {
+            storage.current_tx_power_encoded = u32::from_le_bytes([*a, *b, *c, *d]) ^ 0x8000_0000;
+            true
+        }
         (crate::wsm::MIB_ID_SET_UAPSD_INFORMATION, [a, b, c, d, e, f, g, h]) => {
             storage.uapsd_information = [*a, *b, *c, *d, *e, *f, *g, *h];
             true
@@ -161,6 +167,13 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
             storage.rx_filter = u32::from_le_bytes([*a, *b, *c, *d]);
             true
         }
+        // The cooperative joined RX path currently delivers a superset and
+        // lets mac80211 apply these optional filters. Accepting the standard
+        // CW1200 MIBs is therefore honest even before hardware offload exists.
+        (crate::wsm::MIB_ID_BEACON_FILTER_TABLE, _)
+        | (crate::wsm::MIB_ID_BEACON_FILTER_ENABLE, _)
+        | (crate::wsm::MIB_ID_DISABLE_BSSID_FILTER, _)
+        | (crate::wsm::MIB_ID_GROUP_ADDRESSES_TABLE, _) => true,
         (crate::wsm::MIB_ID_TEMPLATE_FRAME, data) if data.len() <= MAX_TEMPLATE_FRAME_LEN => {
             let previous_len = storage.template_frame_len;
             storage.template_frame[..data.len()].copy_from_slice(data);
@@ -172,6 +185,12 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
         }
         _ => false,
     }
+}
+
+pub fn current_tx_power_tenths_dbm() -> Option<i32> {
+    let storage = unsafe { &*XR819_CONFIGURATION.0.get() };
+    (storage.current_tx_power_encoded != 0)
+        .then_some((storage.current_tx_power_encoded ^ 0x8000_0000) as i32)
 }
 
 pub fn snapshot() -> Option<ConfigurationSnapshot> {
@@ -216,6 +235,19 @@ unsafe fn populate_vendor_calibration_state() {
             }
         }
     }
+    unsafe fn copy_u16_value(id: u8, destination: usize) {
+        if let Some([first, second, ..]) = find_sdd_element(id) {
+            unsafe { write_u16(destination, u16::from_le_bytes([*first, *second])) };
+        }
+    }
+    unsafe fn copy_u16_pair(id: u8, destination: usize) {
+        if let Some([a, b, c, d, ..]) = find_sdd_element(id) {
+            unsafe {
+                write_u16(destination, u16::from_le_bytes([*a, *b]));
+                write_u16(destination + 2, u16::from_le_bytes([*c, *d]));
+            }
+        }
+    }
 
     unsafe {
         if let Some(reference) = reference_frequency_khz() {
@@ -230,8 +262,24 @@ unsafe fn populate_vendor_calibration_state() {
 
         // Reference handlers 0x1774a: signed AGC threshold correction for
         // profile zero/one, consumed by `phy_build_gain_tables`.
-        copy_u16_profile(0xe0, 0x0400_34f8);
-        copy_u16_profile(0xe1, 0x0400_358a);
+        copy_u16_value(0xe0, 0x0400_34f8);
+        copy_u16_value(0xe1, 0x0400_358a);
+
+        // Exact type-3 SDD callbacks at 0x176e2..0x177d4. These coefficients
+        // are consumed directly by `phy_lookup_gain_pair` and
+        // `phy_compute_rssi`; leaving them zero produces invalid TX-gain words.
+        copy_u16_value(0x20, 0x0400_35ac);
+        copy_u16_value(0x21, 0x0400_35b0);
+        copy_u16_value(0x22, 0x0400_35ae);
+        copy_u16_value(0x23, 0x0400_35b2);
+        copy_u16_pair(0x40, 0x0400_3500);
+        copy_u16_pair(0x41, 0x0400_3592);
+        copy_u16_value(0x42, 0x0400_34fa);
+        copy_u16_value(0x43, 0x0400_358c);
+        // At configuration time the vendor ADC conversion normally lacks
+        // live samples and falls back to the first two SDD halfwords.
+        copy_u16_pair(0x46, 0x0400_34fc);
+        copy_u16_pair(0x47, 0x0400_358e);
 
         // Annotated callback 0x17668: count plus three-byte channel records.
         if let Some(data) = find_sdd_element(0xec) {
@@ -244,6 +292,21 @@ unsafe fn populate_vendor_calibration_state() {
                     }
                     write_u8(0x0400_34f6, count as u8);
                     write_u32(0x0400_99d8, 0x0400_34b0);
+                }
+            }
+        }
+
+        // Profile-one two-byte channel records from callback 0x176a8.
+        if let Some(data) = find_sdd_element(0xed) {
+            if data.len() >= 2 {
+                let count = usize::from(u16::from_le_bytes([data[0], data[1]]));
+                let records_len = count.saturating_mul(2);
+                if count <= u8::MAX as usize && data.len() >= 2 + records_len {
+                    for (index, record) in data[2..2 + records_len].chunks_exact(2).enumerate() {
+                        write_u8(0x0400_3558 + index * 3, record[0]);
+                        write_u8(0x0400_3559 + index * 3, record[1]);
+                    }
+                    write_u8(0x0400_3588, count as u8);
                 }
             }
         }
@@ -431,6 +494,12 @@ mod tests {
             ..request
         })
         .unwrap();
+        assert!(retain_interface_mib(
+            crate::wsm::MIB_ID_DOT11_CURRENT_TX_POWER_LEVEL,
+            &(-135_i32).to_le_bytes(),
+        ));
+        assert_eq!(current_tx_power_tenths_dbm(), Some(-135));
+
         assert_eq!(
             tx_power_ranges(),
             Some([

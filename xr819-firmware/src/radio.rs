@@ -79,6 +79,19 @@ pub fn diagnostic_word() -> u16 {
         | (errors << 12)
 }
 
+#[cfg(feature = "probe-tx-experiment")]
+pub fn host_transfer_outstanding() -> bool {
+    unsafe { HOST_TRANSFER_OUTSTANDING }
+}
+
+#[cfg(feature = "probe-tx-experiment")]
+pub fn fifo_quiescent() -> bool {
+    unsafe {
+        !HOST_TRANSFER_OUTSTANDING
+            && CONSUMER_OFFSET == DMA_PRODUCER.read_volatile() & FIFO_MASK
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReleaseToken {
     slot: u32,
@@ -266,6 +279,18 @@ unsafe fn write_u32(address: usize, value: u32) {
 /// # Safety
 /// The fixed packet-memory window and packet-DMA registers must be accessible.
 pub unsafe fn poll_scan_indication(if_id: u8, active_channel: u16) -> Option<PendingIndication> {
+    unsafe { poll_indication(if_id, active_channel, true) }
+}
+
+pub unsafe fn poll_joined_indication(if_id: u8, active_channel: u16) -> Option<PendingIndication> {
+    unsafe { poll_indication(if_id, active_channel, false) }
+}
+
+unsafe fn poll_indication(
+    if_id: u8,
+    active_channel: u16,
+    scan_only: bool,
+) -> Option<PendingIndication> {
     if unsafe { HOST_TRANSFER_OUTSTANDING } {
         return None;
     }
@@ -358,9 +383,10 @@ pub unsafe fn poll_scan_indication(if_id: u8, active_channel: u16) -> Option<Pen
     // The vendor drains old frames before retuning. Reject a management frame
     // whose on-air DS element proves it belongs to a previous channel rather
     // than relabeling it with the active CW1200 dwell.
-    let wrong_ds_channel = unsafe { management_ds_channel(frame_address, frame_len) }
-        .is_some_and(|channel| u16::from(channel) != active_channel);
-    if frame_len < 24 || indication_flags.is_none() || wrong_ds_channel {
+    let wrong_ds_channel = scan_only
+        && unsafe { management_ds_channel(frame_address, frame_len) }
+            .is_some_and(|channel| u16::from(channel) != active_channel);
+    if frame_len < 24 || (scan_only && indication_flags.is_none()) || wrong_ds_channel {
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);

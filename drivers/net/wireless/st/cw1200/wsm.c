@@ -276,7 +276,7 @@ int wsm_set_operational_mode(struct cw1200_common *priv,
 	if (arg->perform_ant_diversity)
 		mode |= BIT(5);
 
-	if (priv->is_xr819) {
+	if (cw1200_uses_xr819_wsm(priv)) {
 		__le32 xr819_val = cpu_to_le32(mode);
 
 		return wsm_write_mib(priv, WSM_MIB_ID_OPERATIONAL_POWER_MODE,
@@ -386,7 +386,7 @@ static int wsm_tx_confirm(struct cw1200_common *priv,
 	tx_confirm.flags = WSM_GET16(buf);
 
 	/* XR819 reports three additional per-rate attempt counters. */
-	if (priv->is_xr819) {
+	if (cw1200_uses_xr819_wsm(priv)) {
 		tx_confirm.rate_try[0] = WSM_GET32(buf);
 		tx_confirm.rate_try[1] = WSM_GET32(buf);
 		tx_confirm.rate_try[2] = WSM_GET32(buf);
@@ -477,7 +477,7 @@ int wsm_join(struct cw1200_common *priv, struct wsm_join *arg)
 
 	priv->tx_burst_idx = -1;
 	ret = wsm_cmd_send(priv, buf, &resp, WSM_JOIN_REQ_ID,
-			   priv->is_xr819 ? WSM_CMD_JOIN_TIMEOUT :
+			   cw1200_uses_xr819_wsm(priv) ? WSM_CMD_JOIN_TIMEOUT :
 			   WSM_CMD_TIMEOUT);
 	/* TODO:  Update state based on resp.min|max_power_level */
 
@@ -855,6 +855,8 @@ static int wsm_startup_indication(struct cw1200_common *priv,
 	priv->wsm_caps.fw_ver     = WSM_GET16(buf);
 	WSM_GET(buf, priv->wsm_caps.fw_label, sizeof(priv->wsm_caps.fw_label));
 	priv->wsm_caps.fw_label[sizeof(priv->wsm_caps.fw_label) - 1] = 0; /* Do not trust FW too much... */
+	if (!strcmp(priv->wsm_caps.fw_label, "XR819 open Rust WSM"))
+		priv->wsm_cw1200_compatible = true;
 
 	if (WARN_ON(priv->wsm_caps.status))
 		return -EINVAL;
@@ -1419,7 +1421,7 @@ int wsm_handle_rx(struct cw1200_common *priv, u16 id,
 					   id & ~0x0400);
 
 				/* XR819 can reject an optional request and continue. */
-				if (!priv->is_xr819 &&
+				if (!cw1200_uses_xr819_wsm(priv) &&
 				    priv->join_status >= CW1200_JOIN_STATUS_JOINING) {
 					wsm_lock_tx(priv);
 					if (queue_work(priv->workqueue, &priv->unjoin_work) <= 0)

@@ -10,6 +10,8 @@ SECTIONS
     .text ORIGIN(HIGH_EXTENSION) : ALIGN(4)
     {
         KEEP(*(.text.entry))
+        . = ORIGIN(HIGH_EXTENSION) + 0x100;
+        KEEP(*(.text.gain_entry))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } > HIGH_EXTENSION

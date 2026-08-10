@@ -11,10 +11,11 @@ behind that protocol boundary.
 ## Current state
 
 The current `hif-startup` binary delivers a CW1200 startup indication, completes
-Linux probe, performs calibrated multi-channel passive receive scans, and
-returns real beacon/probe-response indications. It remains an instrumented
-bring-up image rather than a complete vendor-order implementation: foreground
-probe-request TX, association, and normal data traffic are not implemented.
+Linux probe, performs calibrated multi-channel active scans, transmits retained
+probe-request templates, and returns real beacon/probe-response indications.
+It remains an instrumented bring-up image rather than a complete vendor-order
+implementation: JOIN/VIF activation, association, and normal data traffic are
+not implemented.
 The exact vendor call order, Radare2 excerpts, current implementation delta,
 and experiment ledger are in
 [`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md). Salvaged
@@ -130,9 +131,8 @@ Implemented:
   firmware buffers;
 - continuously serviced packet-DMA RX outside scan state, matching the vendor
   receive task and preventing idle-era frames from contaminating later dwells;
-- active scan requests are explicitly downgraded to bounded passive dwells until
-  probe-request TX exists: 220/250 ms for a single channel and 110/120 ms for
-  multi-channel batches constrained by the Linux command timeout;
+- active scan requests publish directed or wildcard probe templates through a
+  bounded one-context TX/completion path and retain the host-requested dwell;
 - hardware-validated cold channel-1 scans returning 2–3 BSS records around
   -66 dBm, repeated channel-1 scans returning up to 3 BSS records, and full
   scans returning 4–6 BSS records without FIFO leaks or BH failure;
@@ -156,11 +156,8 @@ Implemented:
 
 Not yet implemented:
 
-- hardware publication, retry timing, and completion of active scan probes;
-  the exact allocation-free probe template/SSID/channel builder and vendor
-  three-context internal TX-pool initialization are implemented, but prepared
-  probes are not made DMA-owned yet, so active requests still use the documented
-  passive fallback;
+- active-VIF channel restoration, power-save resumption, and scheduler-bit-21
+  work beyond the returned single-probe domain;
 - IRQ 18/20/21 completion consumers and faithful IRQ-driven HIF scheduling;
 - complete HIF queue/scheduler accounting;
 - JOIN/VIF state effects, association, and normal TX/RX data traffic;
@@ -180,6 +177,9 @@ Run host-side protocol tests with:
 ```sh
 cargo test
 ```
+
+Active probe scanning is enabled by the default Cargo feature set. Build with
+`--no-default-features` for the retained passive rollback image.
 
 Build the hardware mailbox payload with:
 
@@ -210,6 +210,31 @@ llvm-objcopy -O binary \
 The packaging tool verifies the stable image hash and original startup call
 before applying the four-byte call redirection. It must not be used with an
 arbitrary low image.
+
+### TCM layout checks
+
+The low Thumb image currently keeps `.text`, `.rodata`, `.data`, and `.bss` in
+the writable ITCM mapping. The `0x1c000` linker bound is a conservative observed
+envelope, not a proven physical capacity: matching vendor ITCM content ends at
+the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary. Vendor
+DTCM initialization then contributes `0x2fb0` bytes at `0x04000000`, while
+runtime state reaches much higher addresses and the reset bootstrap assigns
+mode stacks within `0x0400b000..0x0400c000`.
+
+Moving normal Rust data into DTCM requires a split-image downloader and a
+complete collision map; a flat raw image cannot represent both address-zero
+ITCM and `0x04000000` DTCM without a large hole.
+
+`link-main-low.x` models the conservative ITCM envelope and the observed DTCM
+runtime/stack windows as separate `MEMORY` regions. Linker `ASSERT` expressions
+hard-fail image overflow or changes contradicting those observed boundaries;
+they deliberately do not claim undocumented physical TCM capacities.
+
+An explicit `tcm-size-diagnostic` feature adds ARM interworking helpers for the
+CP15 TCM type and region registers. The registers are read only when the host
+requests diagnostic MIB `0x100c`; normal startup remains unchanged. This is a
+destructive research feature: the XR819 core may not implement the newer TCM
+type-register format, so use it only before a planned power cycle.
 
 ## Fast hardware iteration
 

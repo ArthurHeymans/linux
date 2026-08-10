@@ -947,12 +947,48 @@ pub enum ChannelPowerError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GainProgrammingError {
+    InvalidProfile,
+    InvalidDivisor,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GainComputationInput {
+    rate: u8,
+    first_limit: i32,
+    second_limit: i32,
+    rate_base: i32,
+    gain_coefficient_a: i32,
+    gain_coefficient_b: i32,
+    rssi_rate_scale: i32,
+    rssi_temperature_coefficient: i32,
+    rssi_divisor_coefficient: i32,
+    rssi_multiplier_coefficient: i32,
+    rssi_denominator: i32,
+    rssi_offset: i32,
+    measured_a: i32,
+    measured_b: i32,
+    analog_enabled: i32,
+    analog_word_2c: u32,
+    analog_word_30: u32,
+    state_scale: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GainComputationResult {
+    selected_power: i32,
+    gain_code: u16,
+    rssi_value: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelTransitionError {
     Pll(ChannelPllError),
     InvalidTiming,
     Temperature(TemperatureMeasurementError),
     Calibration(IqCalibrationHardwareError),
     Power(ChannelPowerError),
+    Gain(GainProgrammingError),
     MacWake(crate::mac::MacWakeError),
 }
 
@@ -1181,6 +1217,271 @@ pub unsafe fn publish_channel_power(channel: u8) -> Result<(i16, i16, i16), Chan
     }
 }
 
+fn gain_div(numerator: i32, denominator: i32) -> Result<i32, GainProgrammingError> {
+    numerator
+        .checked_div(denominator)
+        .ok_or(GainProgrammingError::InvalidDivisor)
+}
+
+/// Vendor logarithmic approximation at 0x1961c. Arithmetic deliberately
+/// wraps at 32 bits, matching the Thumb `adds`/`muls` implementation.
+fn gain_index_from_value(mut value: i32) -> i32 {
+    let mut result = 0x1_0000i32;
+    for (threshold, action) in [
+        (-363_408, 0u8),
+        (-181_704, 1),
+        (-90_852, 2),
+        (-45_426, 3),
+        (-26_573, 4),
+        (-14_623, 5),
+        (-7_719, 6),
+        (-3_973, 7),
+        (-2_017, 8),
+    ] {
+        let reduced = value.wrapping_add(threshold);
+        if reduced >= 0 {
+            result = match action {
+                0 => 0x100_0000,
+                1 => result.wrapping_shl(4),
+                2 => result.wrapping_shl(2),
+                3 => result.wrapping_shl(1),
+                4 => result.wrapping_add(result >> 1),
+                5 => result.wrapping_add(result >> 2),
+                6 => result.wrapping_add(result >> 3),
+                7 => result.wrapping_add(result >> 4),
+                _ => result.wrapping_add(result >> 5),
+            };
+            value = reduced;
+        }
+    }
+    for (threshold, shift) in [(0x3f8, 6), (0x1fe, 7)] {
+        let reduced = value.wrapping_sub(threshold);
+        if reduced >= 0 {
+            result = result.wrapping_add(result >> shift);
+            value = reduced;
+        }
+    }
+    for (bit, shift) in [
+        (8, 8),
+        (7, 9),
+        (6, 10),
+        (5, 11),
+        (4, 12),
+        (3, 13),
+        (2, 14),
+        (1, 15),
+        (0, 16),
+    ] {
+        if value & (1 << bit) != 0 {
+            result = result.wrapping_add(result >> shift);
+        }
+    }
+    result
+}
+
+fn gain_code(index: i32) -> u16 {
+    let table_index = (index.clamp(4, 32) as u32) >> 2;
+    (1u16 << (table_index + 2)).wrapping_sub(4)
+}
+
+fn compute_gain_entry(
+    input: GainComputationInput,
+) -> Result<GainComputationResult, GainProgrammingError> {
+    let measured_term = input.measured_a.wrapping_mul(0x580) >> 16;
+    let first = gain_div(
+        input
+            .gain_coefficient_a
+            .wrapping_mul(measured_term.wrapping_sub(845))
+            >> 4,
+        10_000,
+    )?;
+    let analog_value = if input.analog_enabled == 0 {
+        -80
+    } else {
+        let magnitude = (input.analog_word_2c & 0x7ff) as i32;
+        if input.analog_word_2c & 0x800 != 0 {
+            -magnitude
+        } else {
+            magnitude
+        }
+    };
+    let second_input = 480i32.wrapping_sub(
+        (9005i32.wrapping_mul(56_445i32.wrapping_sub(input.measured_b)) >> 16)
+            .wrapping_sub(analog_value),
+    );
+    let second = gain_div(input.gain_coefficient_b.wrapping_mul(second_input), 10_000)?;
+    let lookup = first
+        .wrapping_add(second)
+        .wrapping_add(input.rate_base)
+        .wrapping_sub(48);
+    let selected_power = input.first_limit.min(input.second_limit.min(lookup));
+
+    let raw_gain_input = ((input.analog_word_2c & 0x0fff_ffff) >> 12) as i32;
+    let combined = ((input.analog_word_30 & 0xfff) << 4) | (input.analog_word_2c >> 28);
+    let signed_magnitude = ((input.analog_word_2c & 0x7ff) << 12) as i32;
+    let mut analog_offset = if input.analog_word_2c & 0x800 != 0 {
+        -signed_magnitude
+    } else {
+        signed_magnitude
+    };
+    let mut analog_normalization = combined as i32;
+    if input.analog_enabled == 0 || combined.wrapping_sub(0xf00) >= 0x2101 {
+        // The second branch intentionally retains `raw_gain_input`.
+        analog_offset = -327_680;
+        analog_normalization = 0x2000;
+    }
+
+    let base_gain = gain_index_from_value(7545i32.wrapping_mul(raw_gain_input) >> 8);
+    let temperature_input = 9005i32
+        .wrapping_mul(56_445i32.wrapping_sub(input.measured_b))
+        .wrapping_sub(analog_offset.wrapping_mul(16))
+        .wrapping_sub(analog_normalization.wrapping_mul(4096));
+    let temperature = gain_div(
+        input
+            .rssi_temperature_coefficient
+            .wrapping_mul(temperature_input)
+            >> 4,
+        1000,
+    )?;
+    let combined_gain = base_gain.wrapping_add(temperature);
+    let scaled_a = gain_div(
+        combined_gain.wrapping_mul(input.rssi_multiplier_coefficient),
+        100,
+    )?;
+    let scaled_b = gain_div(
+        combined_gain
+            .wrapping_mul(input.rssi_divisor_coefficient)
+            .wrapping_mul(input.state_scale),
+        10_000,
+    )?;
+    let target = selected_power.wrapping_add(if input.rate < 2 { 64 } else { 48 });
+    let target_gain = gain_index_from_value(7545i32.wrapping_mul(target) >> 4);
+    let ratio = gain_div(target_gain.wrapping_shl(8), scaled_a.wrapping_add(scaled_b))?;
+    let ratio = gain_div(
+        ratio
+            .wrapping_mul(1000)
+            .wrapping_add(input.rssi_offset.wrapping_shl(8)),
+        input.rssi_denominator,
+    )?;
+    let scaled = gain_div(ratio.wrapping_mul(100), input.rssi_rate_scale)?.max(0);
+    let mut index = (scaled >> 8) & 0xfffc;
+    if scaled & 0x3ff != 0 {
+        index = index.wrapping_add(4);
+    }
+    index = index.clamp(4, 32);
+    let rssi_value = ((((gain_div(scaled.wrapping_mul(input.rssi_rate_scale), index)? as u32)
+        & 0x00ff_ffff)
+        >> 8)
+        .max(100)) as u16;
+
+    Ok(GainComputationResult {
+        selected_power,
+        gain_code: gain_code(index),
+        rssi_value,
+    })
+}
+
+unsafe fn gain_computation_input(
+    profile: u8,
+    rate: u8,
+    first_limit: i32,
+    second_limit: i32,
+) -> Result<GainComputationInput, GainProgrammingError> {
+    unsafe {
+        if profile > 1 {
+            return Err(GainProgrammingError::InvalidProfile);
+        }
+        let bank = 0x0400_34b0 + usize::from(profile) * 0x92;
+        let rate = rate.min(10);
+        let coefficient_base = 0x0400_35ac + usize::from(profile) * 4;
+        Ok(GainComputationInput {
+            rate,
+            first_limit,
+            second_limit,
+            rate_base: i32::from(((bank + usize::from(rate) * 2) as *const i16).read_volatile()),
+            gain_coefficient_a: i32::from((coefficient_base as *const u16).read_volatile()),
+            gain_coefficient_b: i32::from(((coefficient_base + 2) as *const u16).read_volatile()),
+            rssi_rate_scale: i32::from(
+                ((bank + 0x54 + usize::from(rate) * 2) as *const i16).read_volatile(),
+            ),
+            rssi_temperature_coefficient: i32::from(((bank + 0x4a) as *const i16).read_volatile()),
+            rssi_divisor_coefficient: i32::from(((bank + 0x4c) as *const i16).read_volatile()),
+            rssi_multiplier_coefficient: i32::from(((bank + 0x4e) as *const i16).read_volatile()),
+            rssi_denominator: i32::from(((bank + 0x50) as *const i16).read_volatile()),
+            rssi_offset: i32::from(((bank + 0x52) as *const i16).read_volatile()),
+            measured_a: (0x0400_9994 as *const i32).read_volatile(),
+            measured_b: (0x0400_9998 as *const i32).read_volatile(),
+            analog_enabled: i32::from((0x0400_1ff0 as *const i16).read_volatile()),
+            analog_word_2c: (0x0400_2000 as *const u32).read_volatile(),
+            analog_word_30: (0x0400_2004 as *const u32).read_volatile(),
+            state_scale: (0x0400_99f4 as *const i32).read_volatile(),
+        })
+    }
+}
+
+fn encoded_gain_words(gain_code: u16, rssi_value: u16) -> (u32, u32) {
+    let rssi = u32::from(rssi_value) & 0x3ff;
+    let gain = u32::from(gain_code) & 0x3ff;
+    let quotient = if rssi == 0 { 0x800 } else { 0x0003_2f53 / rssi };
+    let companion = if quotient < 0x801 {
+        0x1000 - quotient
+    } else {
+        0x800
+    };
+    ((gain << 10) | rssi, companion)
+}
+
+/// Vendor `phy_temp_compensate_all_slots`/`phy_program_gain_for_channel`
+/// sequence. One entry is produced for every hardware rate slot before PHY
+/// operation 1 and RX re-enable.
+///
+/// # Safety
+///
+/// SDD state, analog state, and the gain MMIO banks must be initialized.
+pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), GainProgrammingError> {
+    unsafe {
+        if (0x0400_995f as *const u8).read_volatile() < 2 {
+            return Ok(());
+        }
+        let profile = (0x0400_994e as *const u8).read_volatile();
+        if profile > 1 {
+            return Err(GainProgrammingError::InvalidProfile);
+        }
+        let requested_offset = gain_div(power_tenths_dbm.wrapping_shl(4), 10)?;
+        let first_table = 0x0400_34b0 + usize::from(profile) * 0x92;
+        for slot in 0..16usize {
+            let rate = (slot as u8).min(10);
+            let rate_limit =
+                i32::from(((first_table + usize::from(rate) * 2) as *const i16).read_volatile())
+                    .wrapping_add(requested_offset);
+            let second_limit_address = 0x0400_99d4 + usize::from(rate > 1) * 2;
+            let second_limit = rate_limit.min(i32::from(
+                (second_limit_address as *const i16).read_volatile(),
+            ));
+            let result = compute_gain_entry(gain_computation_input(
+                profile,
+                rate,
+                requested_offset,
+                second_limit,
+            )?)?;
+
+            let record = 0x0400_146c + slot * 0x10;
+            write_u8(record, rate);
+            write_u16(record + 2, requested_offset as u16);
+            write_u16(record + 4, result.selected_power as u16);
+            write_u16(record + 6, 0);
+            write_u32(record + 8, 0);
+            write_u16(record + 0x0c, result.gain_code);
+            write_u16(record + 0x0e, result.rssi_value);
+
+            let (entry, companion) = encoded_gain_words(result.gain_code, result.rssi_value);
+            write_u32(0x0abb_801c + slot * 4, entry);
+            write_u32(0x0abb_8400 + slot * 4, companion);
+        }
+        Ok(())
+    }
+}
+
 /// Prepare the profile-specific correction cache used by
 /// `phy_set_channel_full` before its mode-2 calibration call.
 ///
@@ -1369,7 +1670,7 @@ unsafe fn rf_init_stage_c_mode0() {
         write_u32(BASE - 4, 0);
         write_u32(BASE - 8, 0x0020_0412);
         delay_timer_ticks(5);
-        write_u32(BASE - 0x14, gain + 0x0100_0000 | 0x03fa_30fb);
+        write_u32(BASE - 0x14, (gain + 0x0100_0000) | 0x03fa_30fb);
         write_u32(BASE - 0x10, 0x0000_723c | range);
         write_u32(BASE - 4, 0);
         write_u32(BASE - 8, 0x0020_0412);
@@ -1525,6 +1826,41 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
     }
 }
 
+/// Exact `phy_cal_step_start` used by `mac_radio_stop` after command 7 has
+/// been stopped.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn start_scan_stop_calibration_state() {
+    unsafe {
+        (0x0ac8_0064 as *mut u32).write_volatile(0x10);
+        (0x0400_995f as *mut u8).write_volatile(1);
+        if (0x0400_994f as *const u8).read_volatile() == 3 {
+            (0x0400_9961 as *mut u8).write_volatile(0);
+            (0x0400_99ce as *mut u16).write_volatile(100);
+            (0x0400_99d0 as *mut u8).write_volatile(1);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn begin_scan_stop_rx_disable() {
+    unsafe {
+        let control = (0x09c0_0600 as *mut u32).read_volatile();
+        (0x09c0_0600 as *mut u32).write_volatile(control & !1);
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn scan_stop_rx_hardware_drained() -> bool {
+    let drained = unsafe { (0x09c0_0600 as *const u32).read_volatile() & (1 << 23) == 0 };
+    if drained {
+        unsafe {
+            let state = (0x0400_3a6d as *mut u8).read_volatile();
+            (0x0400_3a6d as *mut u8).write_volatile(state | 1);
+        }
+    }
+    drained
+}
+
 unsafe fn run_vendor_mode_calibration(
     calibration_max_polls: u32,
 ) -> Result<(), IqCalibrationHardwareError> {
@@ -1636,6 +1972,12 @@ unsafe fn begin_channel_transition(
     let (threshold, first_tx_power, second_tx_power) =
         unsafe { publish_channel_power(channel as u8) }.map_err(ChannelTransitionError::Power)?;
     let frequency_offset = unsafe { publish_channel_frequency_offset() };
+    // Linux normally supplies MIB 0x0006 before channel activation. Preserve
+    // its standard 20 dBm default for early scan bring-up if that write has
+    // not arrived yet; the vendor path consumes the same value in deci-dBm.
+    let tx_power_tenths_dbm = crate::configuration::current_tx_power_tenths_dbm().unwrap_or(200);
+    unsafe { program_all_tx_gain_slots(tx_power_tenths_dbm) }
+        .map_err(ChannelTransitionError::Gain)?;
     // First return from vendor `phy_cal_run_step_timed`: state 1, followed by
     // a 120-tick cooperative settle interval.
     unsafe {
@@ -4017,6 +4359,45 @@ pub unsafe fn initialize_mac_core_mode0() {
 mod tests {
     use super::*;
 
+    fn vendor_channel6_gain_input(rate: u8, power_tenths_dbm: i32) -> GainComputationInput {
+        let rate_index = rate.min(10);
+        let rate_base = if rate_index < 2 {
+            304
+        } else if rate_index < 10 {
+            288
+        } else {
+            272
+        };
+        let rate_scale = match rate_index {
+            0 | 1 => 380,
+            2..=6 => 348,
+            7 => 310,
+            8 => 276,
+            9 => 246,
+            _ => 220,
+        };
+        GainComputationInput {
+            rate: rate_index,
+            first_limit: power_tenths_dbm * 16 / 10,
+            second_limit: 480.min(rate_base + power_tenths_dbm * 16 / 10),
+            rate_base,
+            gain_coefficient_a: 23_000,
+            gain_coefficient_b: 45,
+            rssi_rate_scale: rate_scale,
+            rssi_temperature_coefficient: -14,
+            rssi_divisor_coefficient: -30,
+            rssi_multiplier_coefficient: 100,
+            rssi_denominator: 125,
+            rssi_offset: 0,
+            measured_a: 38_000,
+            measured_b: 48_000,
+            analog_enabled: 0x9600,
+            analog_word_2c: 0,
+            analog_word_30: 0,
+            state_scale: -1,
+        }
+    }
+
     #[test]
     fn cooperative_transition_waits_across_timer_wrap() {
         let mut scheduler = ChannelTransitionScheduler::new();
@@ -4026,6 +4407,50 @@ mod tests {
         assert_eq!(scheduler.deadline, 0x68);
         assert_eq!(unsafe { scheduler.service(0x20) }, Ok(None));
         assert!(!scheduler.is_idle());
+    }
+
+    #[test]
+    fn gain_entry_encoding_matches_vendor_oracle() {
+        for (rate, power, gain, rssi, entry, companion) in [
+            (0, 249, 1020, 653, 0x000f_f28d, 0x0ec1),
+            (2, 233, 1020, 519, 0x000f_f207, 0x0e6e),
+            (10, 217, 1020, 462, 0x000f_f1ce, 0x0e3d),
+        ] {
+            let result = compute_gain_entry(vendor_channel6_gain_input(rate, 200)).unwrap();
+            assert_eq!(result.selected_power, power);
+            assert_eq!(result.gain_code, gain);
+            assert_eq!(result.rssi_value, rssi);
+            assert_eq!(encoded_gain_words(gain, rssi), (entry, companion));
+        }
+    }
+
+    #[test]
+    fn gain_entries_match_vendor_across_power_levels() {
+        for (power, rate, entry, companion) in [
+            (-100, 0, 0x3113, 0x0d0a),
+            (-100, 2, 0x3114, 0x0d0c),
+            (-100, 10, 0x70b8, 0x0b92),
+            (0, 0, 0x7122, 0x0d31),
+            (0, 2, 0x7102, 0x0cd7),
+            (0, 10, 0xf0c2, 0x0bcd),
+            (100, 0, 0x000f_f158, 0x0da2),
+            (100, 2, 0x000f_f132, 0x0d56),
+            (100, 10, 0x000f_f132, 0x0d56),
+        ] {
+            let result = compute_gain_entry(vendor_channel6_gain_input(rate, power)).unwrap();
+            assert_eq!(
+                encoded_gain_words(result.gain_code, result.rssi_value),
+                (entry, companion),
+                "power={power}, rate={rate}",
+            );
+        }
+    }
+
+    #[test]
+    fn gain_index_uses_vendor_mapping_boundaries() {
+        assert_eq!(gain_index_from_value(0), 0x1_0000);
+        assert_eq!(gain_code(4), 4);
+        assert_eq!(gain_code(32), 1020);
     }
 
     #[test]

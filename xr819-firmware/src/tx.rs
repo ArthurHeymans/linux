@@ -37,6 +37,9 @@ const PIPE_RETRY_MASK_TABLE: u32 = 0x0400_3678;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const PIPE_RETRY_RATE_MAP: u32 = 0x0400_1aec;
 const PIPE_RETRY_TIMING_TABLE: u32 = 0x0400_0138;
+const PAS_VIF_STATE: usize = 0x0400_3678;
+const PAS_RATE_MAP_OFFSET: usize = 0x494;
+const PAS_ACK_TIMING_TABLE: usize = 0x0400_16c8;
 const MAC_EVENT_READINESS: u32 = 0x09c0_0a24;
 #[cfg(target_arch = "arm")]
 const MAC_FATAL_MAGIC: u32 = 0x5852_4651;
@@ -251,6 +254,59 @@ pub fn build_phy_rate_words(
         control,
         rate: class | u32::from(rate_attribute & 0x0f) | (u32::from(queue_bits & 7) << 16),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SingleFramePasTiming {
+    pub payload_extended: u16,
+    pub payload_base: u16,
+    pub ack: u16,
+    pub total_airtime: u32,
+    pub frame_kind: u8,
+}
+
+/// Single legacy-frame subset of vendor `pas_compute_tx_timing` (`0x7fa6`).
+/// Protection/preamble modes are deliberately rejected by the caller; probes
+/// and ordinary host management frames both use the direct payload branch.
+pub fn compute_single_frame_pas_timing(
+    phy_config: u16,
+    rate: u8,
+    frame_length: u16,
+    flags: u32,
+    ack_duration: u16,
+    special_peer: bool,
+) -> Option<SingleFramePasTiming> {
+    if flags & 0x0c00 != 0 {
+        return None;
+    }
+    let stream = flags & 8 != 0;
+    let payload_length = frame_length.wrapping_add(4);
+    let payload_base = crate::mac::base_airtime(phy_config, rate, payload_length, stream);
+    let payload_extended =
+        crate::mac::extended_airtime(phy_config, rate, payload_length, stream);
+    let (ack, frame_kind) = if flags & 0x0200 != 0 {
+        (0, 0xff)
+    } else if flags & 0x4000 != 0 {
+        (ack_duration, 0x0c)
+    } else {
+        (ack_duration, if special_peer { 0x0e } else { 0x11 })
+    };
+    Some(SingleFramePasTiming {
+        payload_extended,
+        payload_base,
+        ack,
+        total_airtime: u32::from(payload_base) + u32::from(ack),
+        frame_kind,
+    })
+}
+
+pub const fn single_frame_slot_duration(timing: SingleFramePasTiming) -> u32 {
+    (timing.payload_base as u32).wrapping_mul(0x8000)
+        + if timing.frame_kind == 0xff {
+            0
+        } else {
+            0x2000 + timing.ack as u32
+        }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1095,7 +1151,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
         write_u8(slot + 3, 5);
         match plan {
             OrdinaryTxPipeStatusPlan::Ineligible => unreachable!(),
-            OrdinaryTxPipeStatusPlan::SuppressedAfterSlotMark => return,
+            OrdinaryTxPipeStatusPlan::SuppressedAfterSlotMark => (),
             OrdinaryTxPipeStatusPlan::AdvanceWithoutCompletion {
                 initialize_pipe_status,
                 next_current,
@@ -2045,6 +2101,14 @@ impl PipeStartEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 impl MessageCompletionEffects for SingleProbeMacBackend {
+    fn completion_messages_enabled(&self) -> bool {
+        // Vendor type-7 LMC messages feed the BA policy task on scheduler bit
+        // 22. The single management-frame low-MAC intentionally has no BA
+        // policy, so allocating them would fill the unserviced 16-entry ring
+        // after fifteen otherwise legal completions.
+        false
+    }
+
     fn message_allocation_failed(&mut self) {
         terminal_probe_backend_fault(0)
     }
@@ -2068,6 +2132,14 @@ impl RadioCompletionEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 impl PowerSaveCompletionEffects for SingleProbeMacBackend {
+    fn completion_idle_policy_enabled(&self) -> bool {
+        // Command 7 and radio-owner release depend on the vendor timer/task
+        // scheduler. Leaving that policy half-executed poisons the next scan
+        // generation, so the cooperative management-frame subset keeps the
+        // already-active scan radio instead.
+        false
+    }
+
     fn timer_start(&mut self, timer: u32, duration: u32) {
         unsafe { start_scheduler_timer(timer, duration) };
     }
@@ -2861,6 +2933,7 @@ pub trait CompletionDrainEffects {
 }
 
 pub trait MessageCompletionEffects {
+    fn completion_messages_enabled(&self) -> bool;
     fn message_allocation_failed(&mut self);
 }
 
@@ -3007,6 +3080,32 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
         }
         write_u8(output, read_u8(global_state));
         write_u32(output + 4, 0x0098_9680);
+    }
+}
+
+/// Exact command-1 path through `pac_phy_start_op` (`0x7f10`). Vendor TX
+/// scheduling executes this before every queue/pipe pass so the pipe-start
+/// event can enter command 2 and program the TX PHY.
+///
+/// # Safety
+/// PHY operation state and the cooperative timer list must be exclusively
+/// owned.
+#[cfg(target_arch = "arm")]
+pub unsafe fn start_phy_operation_1() {
+    unsafe {
+        debug_assert_eq!(phy_dispatch_switch_target(1), 0x0001_6f8c);
+        let state = 0x0400_1d20_usize;
+        let output = state + 0x18;
+        let global_state = 0x0400_99a9_usize;
+        write_u8(state + 0x10, 1);
+        write_u8(state + 0x21, 0);
+        if read_u8(global_state) != 5 {
+            write_u8(global_state, 3);
+        }
+        write_u8(output, read_u8(global_state));
+        write_u32(output + 4, 0x0098_9680);
+        write_u32(state + 0x0c, u32::from(read_u8(output)));
+        start_scheduler_timer((state - 8) as u32, read_u32(state + 0x1c));
     }
 }
 
@@ -3305,6 +3404,7 @@ pub unsafe fn release_lmc_radio_scheduler<B: RadioCompletionEffects>(owner: u32,
 }
 
 pub trait PowerSaveCompletionEffects {
+    fn completion_idle_policy_enabled(&self) -> bool;
     fn timer_start(&mut self, timer: u32, duration: u32);
     fn send_pending_poll_or_qos_null(&mut self, interface: u8);
     fn try_enter_sleep_all(&mut self);
@@ -3622,7 +3722,10 @@ where
 
                 if flags & (1 << 6) != 0 {
                     write_u32(stats, read_u32(stats).wrapping_add(1));
-                    if (flags >> 20) & 3 != 0 && read_u8(0x0400_8ba8) & 1 != 0 {
+                    if backend.completion_messages_enabled()
+                        && (flags >> 20) & 3 != 0
+                        && read_u8(0x0400_8ba8) & 1 != 0
+                    {
                         if let Some(message) =
                             allocate_lmc_message(|| backend.message_allocation_failed())
                         {
@@ -3668,7 +3771,7 @@ where
             backend.complete_context(context, status);
         }
 
-        if read_u16(0x0400_8f76) == 0 {
+        if read_u16(0x0400_8f76) == 0 && backend.completion_idle_policy_enabled() {
             start_phy_operation_7(backend);
             let owner = read_u32(0x0400_8b2c);
             if owner != 0 {
@@ -4033,12 +4136,10 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
                 }
                 write_u32(0x0400_1aa8, 1);
             }
-            0x35 => {
-                if read_u8(0x0400_8b95) == 2 {
-                    write_u8(0x0400_8b95, 4);
-                    let pending = 0x0400_1fd4_usize;
-                    write_u32(pending, read_u32(pending) | (1 << 31));
-                }
+            0x35 if read_u8(0x0400_8b95) == 2 => {
+                write_u8(0x0400_8b95, 4);
+                let pending = 0x0400_1fd4_usize;
+                write_u32(pending, read_u32(pending) | (1 << 31));
             }
             _ => {}
         }
@@ -4172,6 +4273,7 @@ pub struct PreparedProbeContext {
     header: u32,
     length: u16,
     rate: u8,
+    expects_ack: bool,
 }
 
 impl PreparedProbeContext {
@@ -4201,6 +4303,7 @@ pub struct SingleProbePublicationInput {
     pub command_storage: u32,
     pub hardware_ring: u32,
     pub frame_node: FrameNodeAddress,
+    pub expects_ack: bool,
 }
 
 /// Final matching-payload publication sequence for one kind-0 no-ACK frame.
@@ -4220,18 +4323,31 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let timestamp = mmio.read_u32(0x0ac0_0004);
     mmio.write_u32(frame + 0x18, timestamp);
     mmio.write_u32(frame + 0x3c, 0);
-    let slot_duration = u32::from(mmio.read_u16(frame + 0x3a)).wrapping_mul(0x8000);
-    mmio.write_u32(input.slot_record + 8, slot_duration);
-    build_no_ack_single_frame_duration(mmio, input.command_storage, input.frame_node);
+    let timing = SingleFramePasTiming {
+        payload_extended: mmio.read_u16(frame + 0x38),
+        payload_base: mmio.read_u16(frame + 0x3a),
+        ack: mmio.read_u16(frame + 0x36),
+        total_airtime: mmio.read_u32(frame + 0x48),
+        frame_kind: mmio.read_u8(frame + 0x56),
+    };
+    let expects_ack = timing.frame_kind != 0xff;
+    debug_assert_eq!(input.expects_ack, expects_ack);
+    mmio.write_u32(input.slot_record + 8, single_frame_slot_duration(timing));
+    build_single_frame_duration(mmio, input.command_storage, input.frame_node, expects_ack);
+    if expects_ack {
+        let flags = mmio.read_u32(input.command_storage + 4)
+            | u32::from(timing.frame_kind).wrapping_add(0x80);
+        mmio.write_u32(input.command_storage + 4, flags);
+    }
     mmio.write_u8(input.pipe_state + 1, slot);
     mmio.write_u32(input.hardware_ring + 0x14, 0);
 
     let interface = u32::from(mmio.read_u8(frame + 0x69));
     let vif = 0x0400_3678_u32 + interface * 0x98;
-    let power = mmio.read_u32(vif + 0x4fc);
-    if mmio.read_u32(0x0400_1b04) != power {
-        mmio.write_u32(0x09c0_0e64, power);
-        mmio.write_u32(0x0400_1b04, power);
+    let edca_slot_timing = mmio.read_u32(vif + 0x4fc);
+    if mmio.read_u32(0x0400_1b04) != edca_slot_timing {
+        mmio.write_u32(0x09c0_0e64, edca_slot_timing);
+        mmio.write_u32(0x0400_1b04, edca_slot_timing);
     }
 
     let queue = u32::from(mmio.read_u8(0x0400_02dc + u32::from(pipe)));
@@ -4323,6 +4439,7 @@ impl PreparedProbePublication {
             }
 
             backend.reset_for_publication();
+            start_phy_operation_1();
             let pipe_state = pipe_state_address(self.pipe);
             let hardware_ring = read_u32(pipe_state as usize + 8);
             if hardware_ring == 0 {
@@ -4332,6 +4449,14 @@ impl PreparedProbePublication {
                     .unwrap_or(ProbeBuildError::PipeStateUnavailable));
             }
             write_u32(0x0900_ffa0, 0x5055_4230);
+            // Vendor queue accounting increments the global active-completion
+            // count before hardware ownership. `service_completion_drain`
+            // performs the matching decrement before callback return.
+            #[cfg(feature = "probe-tx-experiment")]
+            write_u16(
+                0x0400_8f76,
+                read_u16(0x0400_8f76).wrapping_add(1),
+            );
             execute_single_probe_publication(
                 &mut VolatileMacPipeMmio,
                 SingleProbePublicationInput {
@@ -4342,6 +4467,7 @@ impl PreparedProbePublication {
                     command_storage: self.command,
                     hardware_ring,
                     frame_node,
+                    expects_ack: self.context.expects_ack,
                 },
             );
             write_u32(0x0900_ffa0, 0x5055_4231);
@@ -4375,6 +4501,56 @@ impl PreparedProbePublication {
         }
         Ok(self.checksum)
     }
+}
+
+unsafe fn prepare_single_frame_pas_timing(
+    context: &mut PreparedProbeContext,
+) -> Result<(), ProbeBuildError> {
+    unsafe {
+        let frame = context.context as usize + FRAME_NODE_OFFSET as usize;
+        let interface = usize::from(read_u8(frame + 0x69));
+        if interface > 2 {
+            return Err(ProbeBuildError::InvalidInterface);
+        }
+        let flags = read_u32(frame + 4);
+        let rate = read_u8(frame + 0x0f);
+        let rate_map = PAS_VIF_STATE
+            + interface * 0x98
+            + PAS_RATE_MAP_OFFSET
+            + usize::from(rate);
+        let timing_index = usize::from(read_u8(rate_map));
+        let ack_table = if flags & 0x4000 != 0 {
+            PAS_ACK_TIMING_TABLE + (0x74 - 0x48)
+        } else {
+            PAS_ACK_TIMING_TABLE
+        };
+        let ack_duration = read_u16(ack_table + timing_index * 2);
+        let mode = read_u8(PAS_VIF_STATE + interface * 0x98 + 0x472);
+        let header = read_u32(frame) as usize;
+        let special_peer = (mode == 5 || mode == 6)
+            && (0..6).all(|offset| {
+                read_u8(header + 10 + offset) == read_u8(0x0400_3ad8 + interface * 6 + offset)
+            });
+        let timing = compute_single_frame_pas_timing(
+            read_u16(PIPE_RECORDS as usize + 2),
+            rate,
+            read_u16(frame + 8),
+            flags,
+            ack_duration,
+            special_peer,
+        )
+        .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+
+        write_u16(frame + 0x32, 0);
+        write_u16(frame + 0x34, 0);
+        write_u16(frame + 0x36, timing.ack);
+        write_u16(frame + 0x38, timing.payload_extended);
+        write_u16(frame + 0x3a, timing.payload_base);
+        write_u32(frame + 0x48, timing.total_airtime);
+        write_u8(frame + 0x56, timing.frame_kind);
+        context.expects_ack = timing.frame_kind != 0xff;
+    }
+    Ok(())
 }
 
 /// Pops and initializes one internal management context using the field order
@@ -4490,16 +4666,18 @@ pub unsafe fn prepare_probe_context(
         ((context_address + 0xc8) as *mut u16).write_volatile(0);
         ((context_address + 0xca) as *mut u8).write_volatile(9);
         ((context_address + 0xd0) as *mut u16).write_volatile(0x10);
-        // Broadcast probe requests do not expect an ACK. The general PAS
-        // timing path may replace this once queue scheduling is translated.
-        ((context_address + 0x8a) as *mut u16).write_volatile(0);
-
-        Ok(PreparedProbeContext {
+        let mut prepared = PreparedProbeContext {
             context,
             header,
             length: probe.length as u16,
             rate,
-        })
+            expects_ack: false,
+        };
+        if let Err(error) = prepare_single_frame_pas_timing(&mut prepared) {
+            release_context_address(context);
+            return Err(error);
+        }
+        Ok(prepared)
     }
 }
 
@@ -4630,6 +4808,12 @@ pub unsafe fn prepare_probe_publication(
         )?
     };
     let context = unsafe { prepare_probe_context(probe, if_id) }?;
+    unsafe { prepare_context_publication(context) }
+}
+
+unsafe fn prepare_context_publication(
+    context: PreparedProbeContext,
+) -> Result<PreparedProbePublication, ProbeBuildError> {
     unsafe {
         let address = context.context as usize;
         let queue = ((address + 0x60) as *const u8).read_volatile();
@@ -4698,6 +4882,87 @@ pub unsafe fn prepare_probe_publication(
     }
 }
 
+/// Prepare one host-supplied unicast management frame for the proven
+/// single-context MAC publication path.
+///
+/// # Safety
+/// JOIN must own the selected VIF/channel and no scan probe or host frame may
+/// currently own the shared context/pipe backend.
+#[cfg(target_arch = "arm")]
+unsafe fn prepare_host_management_publication(
+    request: &crate::wsm::TxRequest<'_>,
+    if_id: u8,
+) -> Result<PreparedProbePublication, ProbeBuildError> {
+    if if_id > 1 || !crate::vif::is_active(if_id) {
+        return Err(ProbeBuildError::InvalidInterface);
+    }
+    if !request.is_unicast_management() {
+        return Err(ProbeBuildError::WrongTemplateType);
+    }
+    if request.frame.len() > MAX_TEMPLATE_FRAME_LEN {
+        return Err(ProbeBuildError::FrameTooLarge);
+    }
+
+    let scratch = unsafe { &mut *PREPARED_PROBE_SCRATCH.0.get() };
+    scratch.bytes[..request.frame.len()].copy_from_slice(request.frame);
+    scratch.length = request.frame.len();
+    scratch.rate = request.max_tx_rate;
+
+    let mut context = unsafe { prepare_probe_context(scratch, if_id) }?;
+    let address = context.context as usize;
+    // Probe templates deliberately patch address fields at +0x0a/+0x0c/+0x0e.
+    // Host WSM frames already contain their final DA/SA/BSSID and must be
+    // restored byte-for-byte after reusing the probe context initializer.
+    unsafe { copy_to_packet_ram(context.header, request.frame) };
+    if !unsafe { packet_ram_matches(context.header, request.frame) } {
+        unsafe { release_context_address(context.context) };
+        return Err(ProbeBuildError::PacketRamMismatch);
+    }
+    let queue = request.queue_id.min(3);
+    unsafe {
+        // `ctx+0x60` is the vendor AC selected through the four-entry WSM
+        // queue map, not the raw WSM queue ID. The adjacent bytes retain the
+        // PTA priority and retry-policy selector packed in WSM TX flags.
+        let ac = (0x0400_02dc_usize.wrapping_add(usize::from(queue)) as *const u8)
+            .read_volatile();
+        ((address + 0x60) as *mut u8).write_volatile(ac);
+        ((address + 0x61) as *mut u8).write_volatile((request.flags & 0x0f) >> 1);
+        ((address + 0x62) as *mut u8).write_volatile((request.flags & 0x7f) >> 4);
+        ((address + 0xbf) as *mut u8).write_volatile(0);
+    }
+    if request.max_tx_rate < 22 {
+        context.rate = request.max_tx_rate;
+        unsafe {
+            ((address + 0x0c) as *mut u8).write_volatile(context.rate);
+            ((address + 0x63) as *mut u8).write_volatile(context.rate);
+        }
+    }
+    // `tx_lmac_req_submit` seeds bit 23, then `tx_classify_hdr_len` adds the
+    // direct-frame marker and multicast/no-ACK classification.
+    let mut tx_flags = 0x0080_1000_u32;
+    if request.frame.get(4).is_some_and(|octet| octet & 1 != 0) {
+        tx_flags |= 0x300;
+    }
+    if request.ht_tx_parameters & 3 == 1 {
+        tx_flags |= 8;
+    }
+    if request.flags & 1 != 0 {
+        tx_flags |= 0x0001_0000;
+    }
+    tx_flags |= (request.ht_tx_parameters >> 11) & 0xe0;
+    unsafe {
+        ((address + 0x58) as *mut u32).write_volatile(tx_flags);
+        ((address + 0x64) as *mut u32).write_volatile(request.expire_time);
+    }
+    // Recompute the complete PAS timing image after replacing the probe
+    // template's rate, flags, and header with the host-supplied frame.
+    if let Err(error) = unsafe { prepare_single_frame_pas_timing(&mut context) } {
+        unsafe { release_context_address(context.context) };
+        return Err(error);
+    }
+    unsafe { prepare_context_publication(context) }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProbeExperimentReport {
     Idle,
@@ -4722,6 +4987,11 @@ struct ProbeExperimentRuntime {
     backend: SingleProbeMacBackend,
     published: Option<PublishedProbePublication>,
     opportunity: Option<crate::scan::ProbeOpportunity>,
+    host_published: Option<PublishedProbePublication>,
+    host_packet_id: u32,
+    host_rate: u8,
+    #[cfg(not(feature = "probe-tx-experiment"))]
+    pipe_generation: Option<u32>,
     completed_count: u32,
     diagnostic: u16,
 }
@@ -4733,6 +5003,11 @@ impl ProbeExperimentRuntime {
             backend: SingleProbeMacBackend::new(2),
             published: None,
             opportunity: None,
+            host_published: None,
+            host_packet_id: 0,
+            host_rate: 0,
+            #[cfg(not(feature = "probe-tx-experiment"))]
+            pipe_generation: None,
             completed_count: 0,
             diagnostic: 0,
         }
@@ -4749,8 +5024,46 @@ unsafe impl Sync for SharedProbeExperiment {}
 static PROBE_EXPERIMENT: SharedProbeExperiment =
     SharedProbeExperiment(UnsafeCell::new(ProbeExperimentRuntime::new()));
 
-/// Guarded one-shot wildcard channel-1 probe experiment. It never republishes
-/// after a preparation failure or completed probe during the same boot.
+#[cfg(all(target_arch = "arm", not(feature = "probe-tx-experiment")))]
+unsafe fn reset_single_probe_pipe_cursors() {
+    if unsafe { read_u8(0x0400_8f70) } != 0
+        || unsafe { read_u16(0x0400_8f76) } != 0
+        || unsafe { read_u8(COMPLETION_RING_STATE + 0x0c) }
+            != unsafe { read_u8(COMPLETION_RING_STATE + 0x10) }
+    {
+        terminal_probe_backend_fault(0);
+    }
+
+    unsafe {
+        (0x0400_1ade as *mut u8).write_volatile(1);
+        if crate::mac::reinitialize_after_wake(100_000).is_err() {
+            terminal_probe_backend_fault(0);
+        }
+        initialize_internal_pool();
+    }
+
+    for pipe in 0..4_u8 {
+        let state = 0x0400_1720_usize + usize::from(pipe) * 0x6c;
+        if unsafe { ((state + 3) as *const u8).read_volatile() } != 0 {
+            terminal_probe_backend_fault(pipe);
+        }
+        unsafe {
+            (state as *mut u8).write_volatile(0);
+            ((state + 1) as *mut u8).write_volatile(0);
+            ((state + 2) as *mut u8).write_volatile(0);
+            ((state + 4) as *mut u8).write_volatile(0);
+            ((state + 5) as *mut u8).write_volatile(5);
+            (0x0400_1f8c_usize.wrapping_add(usize::from(pipe)) as *mut u8).write_volatile(0);
+        }
+    }
+    unsafe {
+        let _ = claim_scheduler_mask_atomic((1 << 20) | (1 << 21) | (1 << 22));
+    }
+}
+
+
+/// Guarded scan-owned probe experiment. Publications are serialized through
+/// complete hardware return before another scan opportunity can publish.
 ///
 /// # Safety
 /// The caller must own probe preparation, event FIFO and completion servicing.
@@ -4762,6 +5075,9 @@ pub unsafe fn service_guarded_probe_experiment(
     max_events: u32,
 ) -> ProbeExperimentReport {
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    if runtime.host_published.is_some() {
+        return ProbeExperimentReport::Servicing;
+    }
     if let Some(published) = runtime.published {
         let report =
             unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
@@ -4777,6 +5093,7 @@ pub unsafe fn service_guarded_probe_experiment(
         };
         runtime.published = None;
         runtime.completed_count = runtime.completed_count.saturating_add(1);
+
         runtime.diagnostic =
             0x3000 | ((runtime.completed_count.min(0x0f) as u16) << 8) | (status & 0x00ff);
         return ProbeExperimentReport::Completed {
@@ -4789,6 +5106,12 @@ pub unsafe fn service_guarded_probe_experiment(
     let Some(opportunity) = opportunity else {
         return ProbeExperimentReport::Idle;
     };
+
+    #[cfg(not(feature = "probe-tx-experiment"))]
+    if runtime.pipe_generation != Some(opportunity.generation) {
+        unsafe { reset_single_probe_pipe_cursors() };
+        runtime.pipe_generation = Some(opportunity.generation);
+    }
 
     let prepared = match unsafe {
         prepare_probe_publication(template, ssid, opportunity.channel, opportunity.if_id)
@@ -4813,6 +5136,177 @@ pub unsafe fn service_guarded_probe_experiment(
         opportunity,
         publication: published,
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostManagementTxReport {
+    Idle,
+    Published { packet_id: u32 },
+    Servicing,
+    Completed {
+        packet_id: u32,
+        status: u32,
+        tx_rate: u8,
+        ack_failures: u8,
+    },
+    Failed {
+        packet_id: u32,
+        error: ProbeBuildError,
+    },
+}
+
+/// Exact `wsm_status_from_internal` switch table at vendor `0x0000aff8`.
+pub const fn wsm_status_from_internal(status: u16) -> u32 {
+    match status {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        8 => 13,
+        10 => 7,
+        11 => 6,
+        12 => 8,
+        16 => 9,
+        17 => 10,
+        19 => 5,
+        21 => 4,
+        22 => 11,
+        23 => 14,
+        24 => 15,
+        _ => 1,
+    }
+}
+
+/// Publish or service one host-supplied authentication/association frame.
+/// The shared backend admits exactly one hardware-owned context at a time.
+///
+/// # Safety
+/// The caller must exclusively service the MAC event FIFO and completion ring.
+#[cfg(target_arch = "arm")]
+pub unsafe fn service_host_management_tx(
+    request: Option<(&crate::wsm::TxRequest<'_>, u8)>,
+    max_events: u32,
+) -> HostManagementTxReport {
+    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    if let Some(published) = runtime.host_published {
+        if let Some((request, _)) = request {
+            return HostManagementTxReport::Failed {
+                packet_id: request.packet_id,
+                error: ProbeBuildError::PipeSlotBusy,
+            };
+        }
+        let report = unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
+        let Some((context, completion_status)) = report.completion else {
+            return HostManagementTxReport::Servicing;
+        };
+        if context != published.context {
+            terminal_probe_backend_fault(published.pipe);
+        }
+        runtime.host_published = None;
+        // Class-6 callback return raises scheduler bit 21 for its owning task.
+        // Host-management TX has no separate vendor task, so consume it only
+        // after complete context/ring return before admitting RESET or scan.
+        let _ = unsafe { claim_scheduler_mask_atomic(1 << 21) };
+        let status = wsm_status_from_internal(completion_status);
+        return HostManagementTxReport::Completed {
+            packet_id: runtime.host_packet_id,
+            status,
+            tx_rate: runtime.host_rate,
+            ack_failures: runtime.backend.retry.attempts(),
+        };
+    }
+
+    let Some((request, if_id)) = request else {
+        return if runtime.published.is_some() {
+            HostManagementTxReport::Servicing
+        } else {
+            HostManagementTxReport::Idle
+        };
+    };
+    if runtime.published.is_some() {
+        return HostManagementTxReport::Failed {
+            packet_id: request.packet_id,
+            error: ProbeBuildError::PipeSlotBusy,
+        };
+    }
+    let prepared = match unsafe { prepare_host_management_publication(request, if_id) } {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return HostManagementTxReport::Failed {
+                packet_id: request.packet_id,
+                error,
+            };
+        }
+    };
+    let published = match unsafe { prepared.publish(&mut runtime.backend) } {
+        Ok(published) => published,
+        Err(error) => {
+            return HostManagementTxReport::Failed {
+                packet_id: request.packet_id,
+                error,
+            };
+        }
+    };
+    runtime.host_published = Some(published);
+    runtime.host_packet_id = request.packet_id;
+    runtime.host_rate = request.max_tx_rate;
+    HostManagementTxReport::Published {
+        packet_id: request.packet_id,
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub fn probe_runtime_quiescent() -> bool {
+    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
+    runtime.published.is_none()
+        && runtime.host_published.is_none()
+        && unsafe { read_u8(0x0400_8f70) } == 0
+        && unsafe { read_u16(0x0400_8f76) } == 0
+        && unsafe { read_u8(COMPLETION_RING_STATE + 0x0c) }
+            == unsafe { read_u8(COMPLETION_RING_STATE + 0x10) }
+        && unsafe { read_u8(0x0400_3a6c) } == 0
+}
+
+/// Exact `pac_phy_stop_op`: enter command 7, arm its vendor timer, then cancel
+/// that timer immediately.
+///
+/// # Safety
+/// PHY command and scheduler-timer state must be exclusively owned.
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn stop_phy_operation_7() {
+    unsafe {
+        let state = 0x0400_1d20_usize;
+        write_u8(state + 0x10, 7);
+        write_u8(state + 0x21, 0);
+        write_u8(state + 0x18, 1);
+        let (timer, duration) = phy_operation_7_timer();
+        write_u32(state + 0x1c, duration);
+        write_u32(state + 0x0c, u32::from(read_u8(state + 0x18)));
+        // `pac_phy_stop_op` cancels this timer immediately. The detached
+        // low-MAC does not install the vendor callback/list ownership for this
+        // object, so execute the identical stable end state without briefly
+        // publishing an unreachable timer callback.
+        let _ = cancel_scheduler_timer(timer);
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn fatal_scan_stop_timeout() -> ! {
+    terminal_probe_backend_fault(0)
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn clear_scheduler_bits(mask: u32) {
+    let _ = unsafe { claim_scheduler_mask_atomic(mask) };
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn disable_irq_fiq_save() -> u32 {
+    unsafe { mask_irq_fiq_terminal() }
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn restore_irq_fiq_saved(previous: u32) {
+    unsafe { restore_irq_fiq(previous) };
 }
 
 #[cfg(target_arch = "arm")]
@@ -5571,7 +6065,8 @@ mod tests {
         let command = 0x9000;
         let frame = FrameNodeAddress::new(0x0400_90d8);
         mmio.set(frame.raw() + 0x2c, 3);
-        mmio.set(frame.raw() + 0x3a, 0);
+        mmio.set(frame.raw() + 0x3a, 0x20);
+        mmio.set(frame.raw() + 0x56, 0xff);
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x0c, 0);
         mmio.set(0x0ac0_0004, 0x1234);
@@ -5595,6 +6090,7 @@ mod tests {
                 command_storage: command,
                 hardware_ring,
                 frame_node: frame,
+                expects_ack: false,
             },
         );
 
@@ -5607,6 +6103,8 @@ mod tests {
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
         assert_eq!(mmio.get(0x0400_3a6c), 3);
         assert_eq!(mmio.get(slot + 3), 1);
+        assert_eq!(mmio.get(slot + 8), 0x0010_0000);
+        assert_eq!(mmio.get(hardware_ring), 0x0010_0000);
         assert_eq!(mmio.get(pipe_state + 3), 1);
         assert_eq!(mmio.get(pipe_state + 4), 9);
         assert_eq!(mmio.get(pipe_state + 5), 5);
@@ -6235,6 +6733,34 @@ mod tests {
     }
 
     #[test]
+    fn single_frame_pas_timing_distinguishes_probe_and_ack_classes() {
+        let probe = compute_single_frame_pas_timing(0x117, 0, 50, 0x1300, 0x2c, false)
+            .unwrap_or_else(|| panic!("missing probe timing"));
+        assert_eq!(probe.frame_kind, 0xff);
+        assert_eq!(probe.ack, 0);
+        assert_ne!(probe.payload_base, 0);
+        assert_eq!(probe.total_airtime, u32::from(probe.payload_base));
+        assert_eq!(
+            single_frame_slot_duration(probe),
+            u32::from(probe.payload_base) * 0x8000
+        );
+
+        let authentication =
+            compute_single_frame_pas_timing(0x117, 0, 30, 0x0080_1000, 0x2c, false)
+                .unwrap_or_else(|| panic!("missing authentication timing"));
+        assert_eq!(authentication.frame_kind, 0x11);
+        assert_eq!(authentication.ack, 0x2c);
+        assert_eq!(
+            authentication.total_airtime,
+            u32::from(authentication.payload_base) + 0x2c
+        );
+        assert_eq!(
+            single_frame_slot_duration(authentication),
+            u32::from(authentication.payload_base) * 0x8000 + 0x202c
+        );
+    }
+
+    #[test]
     fn single_frame_descriptor_matches_vendor_command_shape() {
         let descriptor = build_single_frame_pipe_descriptor(SingleFramePipeInput {
             phy_rate_word: 0x123456,
@@ -6286,5 +6812,15 @@ mod tests {
                 rate: 0x0003_1407,
             }
         );
+    }
+
+    #[test]
+    fn internal_completion_status_matches_vendor_wsm_switch_table() {
+        assert_eq!(wsm_status_from_internal(0), 0);
+        assert_eq!(wsm_status_from_internal(11), 6);
+        assert_eq!(wsm_status_from_internal(10), 7);
+        assert_eq!(wsm_status_from_internal(21), 4);
+        assert_eq!(wsm_status_from_internal(24), 15);
+        assert_eq!(wsm_status_from_internal(25), 1);
     }
 }
