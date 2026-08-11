@@ -142,6 +142,11 @@ pub fn retain_tx_queue(parameters: TxQueueParameters) {
     storage.tx_queues[usize::from(parameters.queue_id)] = parameters;
 }
 
+pub fn tx_queue(queue: usize) -> Option<TxQueueParameters> {
+    let storage = unsafe { &*XR819_CONFIGURATION.0.get() };
+    storage.tx_queues.get(queue).copied()
+}
+
 pub fn template_frame() -> Option<&'static [u8]> {
     let storage = unsafe { &*XR819_CONFIGURATION.0.get() };
     (storage.template_frame_len != 0)

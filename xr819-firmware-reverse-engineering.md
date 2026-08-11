@@ -1655,6 +1655,12 @@ The target-only popped-event adapter now connects type-`0x37` phase 2/3 to the
 translated start/success paths and connects bit 23/24 to pipe service, ordinary
 status, bounded retry/give-up, and third-mismatch escalation. The phase-3
 prelude preserves scheduler bit 4 and the `0x09007bc0` duration adjustment.
+`0x09007bc0..0x09007bc3` are not VIF/JOIN configuration. Normal startup clears
+both halfwords. Only `mac_reinit_after_wake` (`0x2908`, loop
+`0x292c..0x293e`) restores them, after RX/pipe/register reinitialization, from
+`0x04003670..0x04003673`. Those retained source bytes lie in DTCM BSS and no
+normal-start producer exists in the decompiled image. Consequently VIF
+activation must not publish either zero or a connected-state sample there.
 Direct and escalation retry receive only `saved & (0x100 << pipe)`, matching
 the `r6` argument at `0x9f98`; passing the whole saved scheduler word would
 incorrectly mark unrelated pipe commands in the inactive-pipe branch.

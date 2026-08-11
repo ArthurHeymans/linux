@@ -14,7 +14,9 @@ crate-type = ["rlib"]
 # `--no-default-features` retains the established passive fallback image.
 default = ["probe-tx-experiment"]
 probe-tx-experiment = []
-join-sta-experiment = ["probe-tx-experiment"]
+# JOIN and host management TX can be exercised with passive scanning while the
+# independent active-probe preparation path is under hardware diagnosis.
+join-sta-experiment = []
 tcm-size-diagnostic = []
 
 [[bin]]
@@ -36,6 +38,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "download-boot-sectioned"
+path = "src/bin/download_boot_sectioned.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "main-mailbox"
 path = "src/bin/main_mailbox.rs"
 test = false
@@ -50,6 +58,12 @@ bench = false
 [[bin]]
 name = "hif-extension-probe"
 path = "src/bin/hif_extension_probe.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "tx_trace_extract"
+path = "src/bin/tx_trace_extract.rs"
 test = false
 bench = false
 

@@ -69,6 +69,17 @@ fn debug_stop(stage: u32, marker: u32) {
     }
 }
 
+fn encode_debug_event(event_id: u32, data: u32, output: &mut [u8]) -> Option<usize> {
+    if output.len() < 12 {
+        return None;
+    }
+    output[..2].copy_from_slice(&12_u16.to_le_bytes());
+    output[2..4].copy_from_slice(&0x0805_u16.to_le_bytes());
+    output[4..8].copy_from_slice(&event_id.to_le_bytes());
+    output[8..12].copy_from_slice(&data.to_le_bytes());
+    Some(12)
+}
+
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
@@ -184,6 +195,7 @@ extern "C" fn rust_main() -> ! {
     let mut pending_scan_completion: Option<scan::ScanCompletion> = None;
     let mut pending_join_complete: Option<u32> = None;
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
+    let mut pending_tx_debug_event: Option<(u32, u32)> = None;
     loop {
         let _ = transport.service_interrupt();
 
@@ -197,6 +209,20 @@ extern "C" fn rust_main() -> ! {
             } = unsafe { tx::service_host_management_tx(None, 32) }
         {
             pending_tx_confirmation = Some((packet_id, status, tx_rate, ack_failures));
+        }
+
+        if pending_tx_debug_event.is_none() {
+            pending_tx_debug_event = tx::take_tx_debug_event();
+        }
+
+        if let Some((event_id, data)) = pending_tx_debug_event
+            && transport.output_available()
+        {
+            let output = unsafe { transport.output_buffer() };
+            if let Some(length) = encode_debug_event(event_id, data, output) {
+                pending_tx_debug_event = None;
+                unsafe { transport.publish(length as u16) };
+            }
         }
 
         if let Some(status) = pending_join_complete
@@ -437,7 +463,11 @@ extern "C" fn rust_main() -> ! {
                     let status = match EdcaParameters::parse(request.payload) {
                         Ok(parameters) => {
                             configuration::retain_edca(parameters);
-                            0
+                            unsafe {
+                                vif::apply_edca(request.if_id, parameters)
+                                    .map(|_| 0)
+                                    .unwrap_or(2)
+                            }
                         }
                         Err(_) => 2,
                     };
@@ -565,9 +595,53 @@ extern "C" fn rust_main() -> ! {
                                     0,
                                 )
                             } {
-                                tx::HostManagementTxReport::Published { .. } => {
-                                    publish_response = false;
-                                    encode_tx_confirm(0, STATUS_FAILURE, output)
+                                tx::HostManagementTxReport::Published {
+                                    packet_id,
+                                    bisect_stage,
+                                } => {
+                                    publish_response = true;
+                                    if bisect_stage != 0 {
+                                        if join::uses_cw1200_wsm() {
+                                            encode_tx_confirm_details(
+                                                packet_id,
+                                                STATUS_FAILURE,
+                                                0,
+                                                bisect_stage,
+                                                output,
+                                            )
+                                        } else {
+                                            encode_xr819_tx_confirm_details(
+                                                packet_id,
+                                                STATUS_FAILURE,
+                                                0,
+                                                bisect_stage,
+                                                output,
+                                            )
+                                        }
+                                    } else {
+                                        let edca = unsafe {
+                                            (0x09c0_0e64 as *const u32).read_volatile()
+                                        };
+                                        let quantum0 = unsafe {
+                                            (0x09c0_0e70 as *const u32).read_volatile()
+                                        };
+                                        let quantum1 = unsafe {
+                                            (0x09c0_0e74 as *const u32).read_volatile()
+                                        };
+                                        let metadata = unsafe {
+                                            (0x0900_8008 as *const u8).read_volatile()
+                                        };
+                                        let secondary = unsafe {
+                                            (0x0900_7bc0 as *const u8).read_volatile()
+                                        };
+                                        let event_id = 0x5852_0000 | (edca & 0xffff);
+                                        let data = (quantum0 & 0xff)
+                                            | ((quantum1 & 0xff) << 8)
+                                            | (u32::from(metadata) << 16)
+                                            | (u32::from(secondary) << 24);
+                                        encode_debug_event(event_id, data, output)
+                                            .ok_or(xr819_firmware::wsm::Error::Truncated)
+                                    }
                                 }
                                 tx::HostManagementTxReport::Failed { packet_id, .. } => {
                                     if join::uses_cw1200_wsm() {

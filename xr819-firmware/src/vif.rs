@@ -108,6 +108,11 @@ fn read_u16(address: usize) -> u16 {
 }
 
 #[cfg(target_arch = "arm")]
+fn read_u32(address: usize) -> u32 {
+    unsafe { (address as *const u32).read_volatile() }
+}
+
+#[cfg(target_arch = "arm")]
 unsafe fn write_u8(address: usize, value: u8) {
     unsafe { (address as *mut u8).write_volatile(value) };
 }
@@ -127,6 +132,71 @@ unsafe fn copy_bytes(address: usize, bytes: &[u8]) {
     for (offset, value) in bytes.iter().copied().enumerate() {
         unsafe { write_u8(address + offset, value) };
     }
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn reset_pas_backoff(interface: u8) -> Result<(), JoinStateError> {
+    if interface >= VIF_COUNT as u8 {
+        return Err(JoinStateError::InvalidInterface);
+    }
+    let pas = PAS_BASE + usize::from(interface) * PAS_STRIDE;
+    let override_enabled = read_u32(0x0400_2088) != 0;
+    let override_window = read_u32(0x0400_208c);
+    for queue in 0..4 {
+        unsafe { write_u32(pas + 0x4ac + queue * 4, 0) };
+        let window = if override_enabled {
+            override_window
+        } else {
+            u32::from(read_u16(pas + 0x4cc + queue * 2))
+        };
+        unsafe { write_u32(pas + 0x4bc + queue * 4, window) };
+    }
+    Ok(())
+}
+
+/// Apply WSM EDCA through vendor `edca_apply_params` (`0x136a6`).
+///
+/// # Safety
+/// The selected PAS record and MAC EDCA registers must be exclusively owned.
+#[cfg(target_arch = "arm")]
+pub unsafe fn apply_edca(
+    interface: u8,
+    parameters: crate::wsm::EdcaParameters,
+) -> Result<(), JoinStateError> {
+    if interface >= VIF_COUNT as u8 {
+        return Err(JoinStateError::InvalidInterface);
+    }
+    let pas = PAS_BASE + usize::from(interface) * PAS_STRIDE;
+    let wire = [
+        parameters.queues[3],
+        parameters.queues[2],
+        parameters.queues[1],
+        parameters.queues[0],
+    ];
+    for (queue, entry) in wire.into_iter().enumerate() {
+        unsafe {
+            write_u16(pas + 0x4cc + queue * 2, entry.cwmin);
+            write_u16(pas + 0x4d4 + queue * 2, entry.cwmax);
+            write_u8(pas + 0x4dc + queue, entry.aifns);
+            write_u16(pas + 0x4e0 + queue * 2, entry.txop_limit);
+            write_u32(pas + 0x4e8 + queue * 4, entry.max_rx_lifetime);
+        }
+    }
+    let aifs = u32::from(wire[1].aifns)
+        .wrapping_add(u32::from(wire[3].aifns.wrapping_sub(1)) << 12)
+        .wrapping_add(u32::from(wire[2].aifns) << 8)
+        .wrapping_add(u32::from(wire[0].aifns) << 4)
+        .wrapping_sub(0x111);
+    unsafe { write_u32(pas + 0x4fc, aifs) };
+
+    if read_u16(0x0400_3a68) == 0 && read_u32(0x0400_1b04) != aifs {
+        unsafe {
+            write_u32(0x0400_1b04, aifs);
+            write_u32(0x09c0_0e64, aifs);
+            reset_pas_backoff(interface)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "arm")]
@@ -179,6 +249,12 @@ pub unsafe fn activate_sta(
         write_u8(base + 0x25, lowest_rate);
         write_u8(base + 0x27, 3);
         write_u32(base + BASIC_RATES_OFFSET, basic_rates);
+        // `vif_enter_operating_state` publishes the seven usable link slots
+        // (1..7) and clears both scheduler masks. Link zero is the vendor
+        // sentinel and must not be assigned to an ordinary STA peer.
+        write_u16(base + 0x2c, 0x00fe);
+        write_u16(base + 0x15c, 0);
+        write_u16(base + 0x15e, 0);
         copy_bytes(base + OWN_MAC_OFFSET, &own_mac);
         copy_bytes(base + BSSID_OFFSET, &request.bssid);
         write_u16(base + CHANNEL_OFFSET, request.channel_number);
@@ -208,6 +284,10 @@ pub unsafe fn activate_sta(
         write_u8(pas + 0x472, 1);
         write_u8(pas + 0x473, 0);
         write_u32(pas + 0x478, basic_rates);
+
+        // `mac_apply_channel_and_vif_config` resets all four contention
+        // windows after activating the selected PAS interface.
+        reset_pas_backoff(interface)?;
         copy_bytes(pas + 0x47c, &own_mac);
         copy_bytes(pas + 0x482, &request.bssid);
         write_u32(0x0400_3680, request.beacon_interval.wrapping_shl(10));

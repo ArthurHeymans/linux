@@ -10,6 +10,12 @@ const RATE_RAM: usize = 0x0900_75c0;
 const RATE_ENCODING: [u8; 22] = [
     0, 0, 1, 1, 0, 0, 2, 3, 4, 5, 6, 7, 8, 9, 2, 4, 5, 6, 7, 8, 9, 10,
 ];
+// Matching-container DTCM `0x04000138..0x0400014c`, consumed by vendor
+// `tx_build_duration_desc()` through the rate map at `0x04001aec`.
+const TX_DURATION_TIMING: [u16; 10] = [
+    0x00c2, 0x00c2, 0x001c, 0x0000, 0x001e, 0x0021, 0x0002, 0x0004, 0x000b, 0x0016,
+];
+
 const RATE_ATTRIBUTE: [u8; 22] = [
     0, 1, 2, 3, 3, 3, 11, 15, 10, 14, 9, 13, 8, 12, 0, 1, 2, 3, 4, 5, 6, 7,
 ];
@@ -305,6 +311,22 @@ unsafe fn program_ifs_timing() {
     };
 }
 
+/// Rebuild the selected active PAS rate tables after JOIN publishes
+/// `PAS_BASE+0x470`. Vendor `mac_apply_channel_and_vif_config` activates the
+/// PAS record before `pas_reprogram_all_vif_rate_tables`; the rebuilt JOIN
+/// path performs channel transition first, so it must make this call after
+/// VIF activation instead of silently skipping the new record.
+///
+/// # Safety
+/// The selected PAS record and shared rate RAM must be exclusively owned.
+pub unsafe fn program_active_vif_rate_tables(interface: u8) -> bool {
+    if interface >= 3 {
+        return false;
+    }
+    unsafe { program_rate_tables(PAS_BASE + usize::from(interface) * 0x98) };
+    true
+}
+
 unsafe fn program_pipe_slot(pointer: usize, slot: u8) {
     unsafe {
         write_u32(
@@ -568,6 +590,15 @@ unsafe fn rebuild_pipe_state() {
 /// Packet DMA and the four hardware pipe blocks must already be initialized.
 pub unsafe fn initialize_tx_pipe_state() {
     unsafe { rebuild_pipe_state() };
+    // `txp_submit_to_pipe` emits a 0x20800000 descriptor command sourcing
+    // one byte from this per-interface packet-SRAM metadata vector. Hardware
+    // ORs that byte into the high frame-control octet. Vendor startup clears
+    // the vector; leaving retained packet data here turned 0x00b0
+    // authentication frames into protected/ToDS/more-data 0x61b0 frames.
+    unsafe { write_u32(0x0900_8008, 0) };
+    for (index, value) in TX_DURATION_TIMING.into_iter().enumerate() {
+        unsafe { write_u16(0x0400_0138 + index * 2, value) };
+    }
     for pipe in 0..4 {
         unsafe { write_u32(0x0400_10d4 + pipe * 4, 0x09c0_0e70 + pipe as u32 * 4) };
     }
@@ -668,8 +699,18 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         let dma_control = read_u32(0x09c0_0600);
         write_u32(0x09c0_0600, dma_control);
 
+        // Normal startup clears these two descriptor-source halfwords here.
+        // Unlike the wake path below, `fw_subsystem_init` never copies them
+        // from PAS_BASE-8. Their retained DTCM counterparts at 0x04003670/72
+        // are BSS and have no producer in the decompiled normal-start path.
         write_u16(0x0900_7bc0, 0);
         write_u16(0x0900_7bc2, 0);
+        // Vendor initialized DTCM supplies zero for the EDCA hardware cache
+        // and the optional contention-window override controls. Rebuilt code
+        // consumes all three, so reconstruct them explicitly.
+        write_u32(0x0400_1b04, 0);
+        write_u32(0x0400_2088, 0);
+        write_u32(0x0400_208c, 0);
         for offset in (0..0x14).step_by(4) {
             write_u32(0x0400_3768 + offset, read_u32(0x0400_0200 + offset));
         }
@@ -733,6 +774,11 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         for index in [7_usize, 12, 11, 27, 13] {
             write_u32(0x0400_21b4 + index * 4, callback);
         }
+        // The timer objects are initialized below, but their intrusive-list
+        // root is separate retained DTCM state. Leaving it untouched makes the
+        // first timer insertion follow stale firmware pointers and corrupt the
+        // cooperative scheduler before a TX confirmation can reach the host.
+        write_u32(0x0400_2014, 0);
         for object in [0x0400_1d18, 0x0400_1ac8] {
             write_u32(object + 0x0c, callback);
             write_u32(object + 0x10, 0);
@@ -952,6 +998,9 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
         rebuild_pipe_state();
         let producer = read_u32(0x09c0_0604);
         radio::synchronize_after_wake(producer);
+        // `mac_reinit_after_wake` restores these only after RX, pipe, and
+        // register synchronization. This is wake-context restoration, not
+        // VIF/JOIN programming.
         write_u16(0x0900_7bc0, read_u16(0x0400_3670));
         write_u16(0x0900_7bc2, read_u16(0x0400_3672));
 
@@ -1033,6 +1082,8 @@ mod tests {
 
     #[test]
     fn duration_and_fallback_tables_are_bounded() {
+        assert_eq!(TX_DURATION_TIMING[0], 0x00c2);
+        assert_eq!(TX_DURATION_TIMING[9], 0x0016);
         assert_eq!(ofdm_duration(0, 14), 0);
         assert!(extended_airtime(0x17, 0, 14, true) != 0);
         let fallback = fill_fallbacks(0);

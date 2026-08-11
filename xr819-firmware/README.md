@@ -25,6 +25,37 @@ external annotated Ghidra archive are summarized in
 address-labelled decompiler exports are available under
 [`../xr819-decompilation/`](../xr819-decompilation/).
 
+## TX publication execution bisect
+
+Set `XR819_TX_BISECT_STAGE` while building `hif-startup` to stop normal
+management-frame publication at one controlled boundary and return a failed
+WSM TX confirmation instead of touching later hardware state. The confirmation
+retains the WSM packet ID and reports the selected stage in `ack_failures`, so
+Linux's ordinary TX-confirm debug logging is sufficient to observe it.
+
+The boundaries are:
+
+1. TX request parsed, before context preparation;
+2. context and command storage prepared, before publication;
+3. pipe and hardware-ring validation complete;
+4. frame ownership and timestamp initialized;
+5. PAS command built, software slot selected, and hardware GO cleared;
+6. EDCA timing published;
+7. quantum published, immediately before `PIPE_IRQ_TRIGGER`;
+8. immediately after `PIPE_IRQ_TRIGGER`.
+
+For example:
+
+```sh
+XR819_TX_BISECT_STAGE=1 cargo build --release --bin hif-startup \
+  --target thumbv5te-none-eabi -Z build-std=core \
+  --no-default-features --features join-sta-experiment
+```
+
+Stage zero or an unset variable preserves normal behavior. Start at stage 1
+and advance until the confirmation disappears; the first missing confirmation
+identifies the operation range that stops ordinary HIF progress.
+
 Implemented:
 
 - allocation-free WSM header parser/encoder;
@@ -189,6 +220,28 @@ cargo +nightly build --release --bin mailbox \
 ```
 
 The raw payload is produced from the ELF with `arm-none-eabi-objcopy -O binary`.
+
+### Vendor-style sectioned images
+
+The matching vendor firmware is a compact section stream, not a flat image: it
+loads ARM support code at `0xfff00000`, Thumb code at `0x00000000`, initialized
+data at `0x04000000`, and explicitly zero-fills later DTCM ranges. The exact
+matching-container map and corrected boundaries are documented in
+[`vendor-container-layout.md`](vendor-container-layout.md).
+
+Inspect a vendor container and package one coherent Rust ELF's `PT_LOAD`
+segments with:
+
+```sh
+python3 tools/inspect-vendor-container.py fw_xr819.bin
+python3 tools/pack-sectioned-elf.py firmware.elf firmware.sections
+```
+
+`download-boot-sectioned` is the non-default loader for the packed copy/fill
+stream. It has cold-booted both the repackaged stable ELF and a coherent
+JOIN-enabled Rust ELF; the latter published startup successfully and then
+stopped at the first start-scan request. DTCM placement still requires a
+complete ownership map for fixed vendor-compatible state.
 
 ### Split high-SRAM extensions
 

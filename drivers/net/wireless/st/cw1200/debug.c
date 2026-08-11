@@ -605,6 +605,87 @@ static const struct file_operations cw1200_debug_run_fops = {
 	.llseek = default_llseek,
 };
 
+#define XR819_TRACE_ADDRESS 0x0900fd20
+#define XR819_TRACE_WORDS 12
+#define XR819_TRACE_MAGIC 0x54584558
+
+static int cw1200_debug_fw_trace_show(struct seq_file *seq, void *v)
+{
+	struct cw1200_common *priv = seq->private;
+	struct cw1200_debug_priv *debug = priv->debug;
+	__le32 raw[XR819_TRACE_WORDS];
+	u32 config;
+	u32 words[XR819_TRACE_WORDS];
+	int ret;
+	int i;
+
+	guard(mutex)(&debug->control_lock);
+
+	/* A live BH owns the device access path. After a fatal BH exit, stop the
+	 * firmware core in place so packet SRAM can be read before any reload
+	 * destroys the failure record. */
+	if (debug->state == CW1200_DEBUG_NORMAL) {
+		if (!READ_ONCE(priv->bh_error))
+			return -EBUSY;
+		ret = cw1200_reg_read_32(priv, ST90TDS_CONFIG_REG_ID, &config);
+		if (ret)
+			return ret;
+		debug->saved_config = config;
+		config |= ST90TDS_CONFIG_CPU_RESET_BIT |
+			  ST90TDS_CONFIG_ACCESS_MODE_BIT;
+		config &= ~(ST90TDS_CONFIG_AHB_PRFETCH_BIT |
+			    ST90TDS_CONFIG_PRFETCH_BIT);
+		ret = cw1200_reg_write_32(priv, ST90TDS_CONFIG_REG_ID, config);
+		if (ret)
+			return ret;
+		debug->state = CW1200_DEBUG_HALTED;
+		msleep(30);
+	}
+
+	ret = cw1200_ahb_read(priv, XR819_TRACE_ADDRESS, raw, sizeof(raw));
+	if (ret)
+		return ret;
+	for (i = 0; i < XR819_TRACE_WORDS; i++)
+		words[i] = le32_to_cpu(raw[i]);
+
+	seq_printf(seq, "magic: 0x%08x%s\n", words[0],
+		   words[0] == XR819_TRACE_MAGIC ? " (TXEX)" : " (invalid)");
+	seq_printf(seq, "version: %u\n", words[1]);
+	seq_printf(seq, "stages: 0x%08x\n", words[2]);
+	seq_printf(seq, "  published: %u\n", !!(words[2] & BIT(0)));
+	seq_printf(seq, "  go:        %u\n", !!(words[2] & BIT(1)));
+	seq_printf(seq, "  fiq:       %u\n", !!(words[2] & BIT(2)));
+	seq_printf(seq, "  fifo_pop:  %u\n", !!(words[2] & BIT(3)));
+	seq_printf(seq, "  bit23:     %u\n", !!(words[2] & BIT(4)));
+	seq_printf(seq, "  phase2:    %u\n", !!(words[2] & BIT(5)));
+	seq_printf(seq, "  tx_start:  %u\n", !!(words[2] & BIT(6)));
+	seq_printf(seq, "  phy_cmd2:  %u\n", !!(words[2] & BIT(7)));
+	seq_printf(seq, "  success:   %u\n", !!(words[2] & BIT(8)));
+	seq_printf(seq, "first_event: 0x%08x\n", words[3]);
+	seq_printf(seq, "pipe_slot:   0x%08x\n", words[4]);
+	seq_printf(seq, "fiq_pending: 0x%08x\n", words[5]);
+	seq_printf(seq, "scheduler:   0x%08x\n", words[6]);
+	seq_printf(seq, "phase2_evt:  0x%08x\n", words[7]);
+	seq_printf(seq, "bit23_evt:   0x%08x\n", words[8]);
+	seq_printf(seq, "pipe:        0x%08x\n", words[9]);
+	seq_printf(seq, "phy_arg:     0x%08x\n", words[10]);
+	seq_printf(seq, "success_arg: 0x%08x\n", words[11]);
+	return 0;
+}
+
+static int cw1200_debug_fw_trace_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cw1200_debug_fw_trace_show, inode->i_private);
+}
+
+static const struct file_operations cw1200_debug_fw_trace_fops = {
+	.owner = THIS_MODULE,
+	.open = cw1200_debug_fw_trace_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 int cw1200_debug_init(struct cw1200_common *priv)
 {
 	int ret = -ENOMEM;
@@ -641,6 +722,8 @@ int cw1200_debug_init(struct cw1200_common *priv)
 				    &cw1200_debug_mem_fops);
 		debugfs_create_file("apb", 0600, d->debugfs_phy, &d->apb,
 				    &cw1200_debug_mem_fops);
+		debugfs_create_file("fw_trace", S_IRUSR, d->debugfs_phy, priv,
+				    &cw1200_debug_fw_trace_fops);
 	}
 
 	return 0;
