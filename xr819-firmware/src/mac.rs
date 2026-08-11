@@ -383,6 +383,23 @@ unsafe fn build_control_frame(if_id: u8, pointer: usize, ack: bool) {
     }
 }
 
+/// Build and install the vendor immediate ACK/CTS and response descriptors.
+/// Channel transition can skip `mac_reprogram_after_channel` when its retained
+/// wake flags select the already-restored branch, so JOIN must explicitly
+/// republish these slots after activating the STA record.
+///
+/// # Safety
+/// Packet RAM and the MAC pipe-controller registers must be exclusively owned.
+pub unsafe fn program_immediate_response_descriptors() {
+    unsafe {
+        build_control_frame(0, 0x0900_7d14, true);
+        build_control_frame(1, 0x0900_7d68, true);
+        build_control_frame(0, 0x0900_7dbc, false);
+        build_control_frame(1, 0x0900_7e10, false);
+        install_response_descriptors();
+    }
+}
+
 unsafe fn save_register_context() {
     unsafe {
         write_u32(0x09c0_1404, read_u32(0x0400_2078));
@@ -520,10 +537,7 @@ pub unsafe fn reprogram_after_channel() {
             }
         }
         program_ifs_timing();
-        build_control_frame(0, 0x0900_7d14, true);
-        build_control_frame(1, 0x0900_7d68, true);
-        build_control_frame(0, 0x0900_7dbc, false);
-        build_control_frame(1, 0x0900_7e10, false);
+        program_immediate_response_descriptors();
         write_u32(0x09c0_0200, read_u32(WAKE + 0x24));
         save_register_context();
     }

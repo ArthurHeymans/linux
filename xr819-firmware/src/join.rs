@@ -52,6 +52,7 @@ pub unsafe fn activate_sta(
             let _ = crate::vif::teardown(interface);
             return Err(JoinError::VifState);
         }
+        crate::mac::program_immediate_response_descriptors();
         crate::mac::program_joined_bssid(request.bssid);
         // Vendor STA mode installs the receive/address-match state required for
         // authentication and association responses after BSSID publication.

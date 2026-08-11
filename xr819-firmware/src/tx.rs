@@ -5191,7 +5191,7 @@ unsafe fn prepare_context_publication(
     }
 }
 
-/// Prepare one host-supplied unicast management frame for the proven
+/// Prepare one host-supplied unicast management or EAPOL frame for the proven
 /// single-context MAC publication path.
 ///
 /// # Safety
@@ -5205,7 +5205,7 @@ unsafe fn prepare_host_management_publication(
     if if_id > 1 || !crate::vif::is_active(if_id) {
         return Err(ProbeBuildError::InvalidInterface);
     }
-    if !request.is_unicast_management() {
+    if !request.is_unicast_management() && !request.is_unicast_eapol() {
         return Err(ProbeBuildError::WrongTemplateType);
     }
     if request.frame.len() > MAX_TEMPLATE_FRAME_LEN {
