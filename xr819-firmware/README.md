@@ -12,10 +12,11 @@ behind that protocol boundary.
 
 The current `hif-startup` binary delivers a CW1200 startup indication, completes
 Linux probe, performs calibrated multi-channel active scans, transmits retained
-probe-request templates, and returns real beacon/probe-response indications.
-It remains an instrumented bring-up image rather than a complete vendor-order
-implementation: JOIN/VIF activation, association, and normal data traffic are
-not implemented.
+probe-request templates, returns real beacon/probe-response indications, joins
+a WPA2 network, and completes the four-way handshake. It remains an instrumented
+bring-up image rather than a complete vendor-order implementation: association
+is timing-sensitive and protected payload TX still stalls after hardware-ring
+activation, so DHCP and ordinary IP traffic do not work yet.
 The exact vendor call order, Radare2 excerpts, current implementation delta,
 and experiment ledger are in
 [`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md). Salvaged
@@ -55,6 +56,72 @@ XR819_TX_BISECT_STAGE=1 cargo build --release --bin hif-startup \
 Stage zero or an unset variable preserves normal behavior. Start at stage 1
 and advance until the confirmation disappears; the first missing confirmation
 identifies the operation range that stops ordinary HIF progress.
+
+`XR819_TX_BISECT_SUBTYPE` selects the frame class: 0 through 15 select an IEEE
+802.11 subtype, 253 selects protected data, 254 selects non-authentication
+frames, and 255 selects all frames. Protected-data stage 8 returns a clean
+failed confirmation, proving that its current stall begins only after final
+hardware-ring activation.
+
+## WPA, protected data, and crypto status
+
+The STA path now performs authentication, association, immediate ACK response,
+EAPOL RX/TX, and WPA2 PTK/GTK negotiation with the unmodified Linux `cw1200`
+driver. Reinstalling immediate-response descriptors during JOIN fixed the ACK
+slot-21 pointer, and host TX accepts payload-bearing unicast data while rejecting
+null/QoS-null frames that previously killed the TX path.
+
+WSM `ADD_KEY` and `REMOVE_KEY` are implemented for AES pairwise and group keys.
+The current experimental backend uses allocation-free RustCrypto AES-CCM to fill
+host-reserved CCMP IV/MIC space on TX and authenticate/decrypt packet-DMA frames
+on RX. Its host round-trip test and an independent Python `cryptography`
+AESCCM known-answer vector both pass, including exact ciphertext/MIC and
+corrupted-ciphertext/MIC rejection. Linux no longer reports failed `0x000c`
+key installation. On hardware, both DHCP and small ARP frames still stall after
+ring activation; no DHCP lease, gateway ping, Internet ping, or HTTP transfer
+has succeeded. Clearing the Protected bit after encryption, and separately
+removing all CCMP header/MIC reservation to publish a compact plaintext ARP
+frame, do not change the stall. The remaining defect is therefore a general
+post-association payload publication/completion semantic, not AES correctness,
+CCMP expansion, frame size, HT rate, or the Protected bit itself. Vendor host
+TX ultimately requires completion class 0 and STA link slot 0, but the current
+cooperative publisher still reuses the internal class-6 pool and its validated
+link slot 1. Applying class-0/link-0 metadata without also translating the WSM
+pool and `txq_list_insert()` scheduler regressed the first EAPOL transmission,
+so that partial change was reverted. `host-pipe0-diagnostic` and
+`non-qos-data-diagnostic` also stalled, ruling out the best-effort pipe and QoS
+header shape.
+
+The ordinary vendor path is now specified end-to-end in
+[`../xr819-vendor-host-tx-lifecycle.md`](../xr819-vendor-host-tx-lifecycle.md).
+Implementation has moved away from class-6 context copying: `vendor_host_tx.rs`
+models exact host-context initialization, mode-0 pending-list append, PAS-ring
+compaction/insertion, and pending-task outcomes. HIF requests now carry an
+explicit packet-RAM release token. The opt-in `vendor-host-tx-foundation`
+feature now admits ordinary non-EAPOL data into a real host-pool context and
+retains the original request token. It now applies vendor-shaped header
+classification, per-link/TID sequence assignment, software CCMP, VIF-slot
+selection, PAS timing, descriptor construction, ownership bit `0x20`, and
+mode-0 pending-list insertion. RESET now unlinks a queued context before freeing
+it and returning the retained HIF request. Live pending-task service now applies
+VIF/link, expiry, TBTT, and power-save gates; rejected class-0 frames are
+confirmed before their HIF token is returned, while eligible frames enter the
+compacting global PAS ring with ownership bit `0x40`. The feature stops before
+hardware ownership after performing reversible non-aggregate scheduler
+selection, AC-to-pipe mapping, PAS-slot removal, pipe-slot reservation, and
+kind-0 descriptor generation. It now also advances the producer, triggers the
+MAC, services retries/completion, emits the class-0 WSM confirmation, and frees
+the context/HIF request only after confirmation publication. This is a bounded
+single-outstanding non-aggregate candidate, not yet the full production
+scheduler.
+
+The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary CCMP uses
+transfer classes 6/7, commands `0x1100`, `0x1240`, `0x1402/0x1403`, and
+`0x3008_1008/0x3008_1009`, with completion through IRQ 18 or 20. Hardware AES
+is currently treated as an optional backend optimization and diagnostic oracle;
+the immediate priority is reliable unprotected/protected MAC publication and
+TX completion. Exact engine findings and the planned known-answer/IRQ tests are
+in [`../xr819-aes-engine.md`](../xr819-aes-engine.md).
 
 Implemented:
 
@@ -189,9 +256,11 @@ Not yet implemented:
 
 - active-VIF channel restoration, power-save resumption, and scheduler-bit-21
   work beyond the returned single-probe domain;
-- IRQ 18/20/21 completion consumers and faithful IRQ-driven HIF scheduling;
+- hardware AES transfer submission and separate IRQ 18/20 completion consumers;
 - complete HIF queue/scheduler accounting;
-- JOIN/VIF state effects, association, and normal TX/RX data traffic;
+- reliable management TX across cold boots;
+- protected payload publication/completion and working DHCP/IP traffic;
+- CCMP replay protection and hardware-engine known-answer coverage;
 - production exception reporting and recovery behavior.
 
 ## Intended bring-up order

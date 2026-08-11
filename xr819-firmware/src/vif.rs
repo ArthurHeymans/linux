@@ -249,9 +249,10 @@ pub unsafe fn activate_sta(
         write_u8(base + 0x25, lowest_rate);
         write_u8(base + 0x27, 3);
         write_u32(base + BASIC_RATES_OFFSET, basic_rates);
-        // `vif_enter_operating_state` publishes the seven usable link slots
-        // (1..7) and clears both scheduler masks. Link zero is the vendor
-        // sentinel and must not be assigned to an ordinary STA peer.
+        // The vendor WSM pool uses bitmap 0x8001 with host link zero, but the
+        // current cooperative direct publisher deliberately reuses internal
+        // class-6 contexts. Keep its previously validated internal link slots
+        // active until the ordinary class-0 scheduler path is translated.
         write_u16(base + 0x2c, 0x00fe);
         write_u16(base + 0x15c, 0);
         write_u16(base + 0x15e, 0);

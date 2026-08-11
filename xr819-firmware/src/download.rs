@@ -74,7 +74,11 @@ struct DownloadStream<'a> {
 
 impl DownloadStream<'_> {
     fn read_word(&mut self) -> Result<u32, ()> {
-        if self.position.checked_add(4).is_none_or(|end| end > self.size) {
+        if self
+            .position
+            .checked_add(4)
+            .is_none_or(|end| end > self.size)
+        {
             return Err(());
         }
         loop {
@@ -198,9 +202,7 @@ impl Control {
                     let destination = stream.read_word()? as usize;
                     let length = stream.read_word()? as usize;
                     if !section_destination_allowed(destination, length) {
-                        unsafe {
-                            write_volatile(&mut stream.control.status, STATUS_BAD_FORMAT)
-                        };
+                        unsafe { write_volatile(&mut stream.control.status, STATUS_BAD_FORMAT) };
                         return Err(());
                     }
                     stream.copy_words(destination, length)?;
@@ -210,9 +212,7 @@ impl Control {
                     let value = stream.read_word()?;
                     let length = stream.read_word()? as usize;
                     if value != 0 || !section_destination_allowed(destination, length) {
-                        unsafe {
-                            write_volatile(&mut stream.control.status, STATUS_BAD_FORMAT)
-                        };
+                        unsafe { write_volatile(&mut stream.control.status, STATUS_BAD_FORMAT) };
                         return Err(());
                     }
                     for offset in (0..length).step_by(4) {
@@ -223,9 +223,7 @@ impl Control {
                     let entry = stream.read_word()? as usize;
                     let _trailer = stream.read_word()?;
                     if stream.position != size || !section_entry_allowed(entry) {
-                        unsafe {
-                            write_volatile(&mut stream.control.status, STATUS_BAD_FORMAT)
-                        };
+                        unsafe { write_volatile(&mut stream.control.status, STATUS_BAD_FORMAT) };
                         return Err(());
                     }
                     unsafe { write_volatile(&mut stream.control.status, STATUS_SUCCESS) };

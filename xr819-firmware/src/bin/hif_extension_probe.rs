@@ -71,21 +71,51 @@ unsafe fn snapshot_gain_state() {
     unsafe {
         let output = 0x0900_fc00 as *mut u32;
         output.add(0).write_volatile(0x4753_4e50);
-        output.add(1).write_volatile(u32::from((0x0400_994e as *const u8).read_volatile()));
-        output.add(2).write_volatile((0x0400_9994 as *const u32).read_volatile());
-        output.add(3).write_volatile((0x0400_9998 as *const u32).read_volatile());
-        output.add(4).write_volatile((0x0400_1ff0 as *const u32).read_volatile());
-        output.add(5).write_volatile((0x0400_2000 as *const u32).read_volatile());
-        output.add(6).write_volatile((0x0400_2004 as *const u32).read_volatile());
-        output.add(7).write_volatile((0x0400_99f4 as *const u32).read_volatile());
-        output.add(8).write_volatile((0x0400_99d4 as *const u32).read_volatile());
-        output.add(9).write_volatile((0x0400_34f8 as *const u32).read_volatile());
-        output.add(10).write_volatile((0x0400_34fc as *const u32).read_volatile());
-        output.add(11).write_volatile((0x0400_3500 as *const u32).read_volatile());
-        output.add(12).write_volatile((0x0400_35ac as *const u32).read_volatile());
-        output.add(13).write_volatile((0x0abb_801c as *const u32).read_volatile());
-        output.add(14).write_volatile((0x0abb_8024 as *const u32).read_volatile());
-        output.add(15).write_volatile((0x0abb_8044 as *const u32).read_volatile());
+        output
+            .add(1)
+            .write_volatile(u32::from((0x0400_994e as *const u8).read_volatile()));
+        output
+            .add(2)
+            .write_volatile((0x0400_9994 as *const u32).read_volatile());
+        output
+            .add(3)
+            .write_volatile((0x0400_9998 as *const u32).read_volatile());
+        output
+            .add(4)
+            .write_volatile((0x0400_1ff0 as *const u32).read_volatile());
+        output
+            .add(5)
+            .write_volatile((0x0400_2000 as *const u32).read_volatile());
+        output
+            .add(6)
+            .write_volatile((0x0400_2004 as *const u32).read_volatile());
+        output
+            .add(7)
+            .write_volatile((0x0400_99f4 as *const u32).read_volatile());
+        output
+            .add(8)
+            .write_volatile((0x0400_99d4 as *const u32).read_volatile());
+        output
+            .add(9)
+            .write_volatile((0x0400_34f8 as *const u32).read_volatile());
+        output
+            .add(10)
+            .write_volatile((0x0400_34fc as *const u32).read_volatile());
+        output
+            .add(11)
+            .write_volatile((0x0400_3500 as *const u32).read_volatile());
+        output
+            .add(12)
+            .write_volatile((0x0400_35ac as *const u32).read_volatile());
+        output
+            .add(13)
+            .write_volatile((0x0abb_801c as *const u32).read_volatile());
+        output
+            .add(14)
+            .write_volatile((0x0abb_8024 as *const u32).read_volatile());
+        output
+            .add(15)
+            .write_volatile((0x0abb_8044 as *const u32).read_volatile());
     }
 }
 
@@ -115,8 +145,7 @@ pub unsafe extern "C" fn xr819_gain_extension(dividend: u32, divisor: u32) -> u3
     };
     unsafe {
         (0x0900_fd08 as *mut u32).write_volatile(status);
-        (0x0900_fd0c as *mut u32)
-            .write_volatile((0x0abb_801c as *const u32).read_volatile());
+        (0x0900_fd0c as *mut u32).write_volatile((0x0abb_801c as *const u32).read_volatile());
         snapshot_gain_state();
     }
     quotient

@@ -7,7 +7,6 @@
 use core::arch::asm;
 #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
 use core::arch::global_asm;
-use core::cell::UnsafeCell;
 
 use crate::radio::{self, PendingIndication, ReleaseToken};
 use tock_registers::interfaces::{Readable, Writeable};
@@ -118,18 +117,23 @@ const fn tx_ring_has_capacity(producer: u32, consumer: u32) -> bool {
     producer.wrapping_sub(consumer) < 4
 }
 
-struct RequestScratch(UnsafeCell<[u8; REQUEST_PAYLOAD_CAPACITY]>);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestReleaseToken {
+    buffer_address: u32,
+}
 
-unsafe impl Sync for RequestScratch {}
-
-static REQUEST_SCRATCH: RequestScratch =
-    RequestScratch(UnsafeCell::new([0; REQUEST_PAYLOAD_CAPACITY]));
+impl RequestReleaseToken {
+    pub const fn buffer_address(self) -> u32 {
+        self.buffer_address
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct ReceivedRequest {
     pub id: u16,
     pub if_id: u8,
     pub payload: &'static [u8],
+    pub release: RequestReleaseToken,
 }
 
 pub struct DebugSnapshot {
@@ -190,6 +194,46 @@ fn drain_write_buffer() {
 
 fn postcode(value: u32) {
     unsafe { (0x0900_ff98 as *mut u32).write_volatile(value) };
+}
+
+fn publish_emergency_descriptor(shared: &HifShared, length: u16) {
+    shared
+        .emergency_address
+        .set((SHARED_BUFFER_BASE as u32) & 0xf6ff_ffff);
+    shared
+        .emergency_control
+        .set(u32::from(length).wrapping_add(1).wrapping_rem(1 << 13) | 1);
+    drain_write_buffer();
+}
+
+/// Publish a driver-readable WSM exception after the ordinary HIF ring can no
+/// longer be trusted. The payload matches `wsm_handle_exception()` exactly.
+///
+/// # Safety
+/// The fixed HIF shared registers and emergency packet buffer must still be
+/// owned by this firmware. Callers must not reuse the buffer afterward.
+pub unsafe fn publish_mac_fatal_exception(registers: [u32; 18]) {
+    const MESSAGE_LENGTH: u16 = 4 + 4 + 18 * 4 + 48;
+    let buffer = SHARED_BUFFER_BASE as *mut u8;
+    unsafe {
+        buffer.cast::<u16>().write_volatile(MESSAGE_LENGTH);
+        buffer.add(2).cast::<u16>().write_volatile(0x0800);
+        buffer.add(4).cast::<u32>().write_volatile(4);
+        for (index, value) in registers.into_iter().enumerate() {
+            buffer
+                .add(8 + index * 4)
+                .cast::<u32>()
+                .write_volatile(value);
+        }
+        let name = b"xr819-mac-event";
+        for index in 0..48 {
+            buffer
+                .add(8 + 18 * 4 + index)
+                .write_volatile(name.get(index).copied().unwrap_or(0));
+        }
+        let shared = &*(TX_DESCRIPTOR_BASE as *const HifShared);
+        publish_emergency_descriptor(shared, MESSAGE_LENGTH);
+    }
 }
 
 extern "C" fn diagnostic_hif_irq_stub() {}
@@ -282,13 +326,7 @@ impl Transport {
     /// exception path. This is a diagnostic for separating descriptor-ring
     /// failures from complete HIF-engine inactivity.
     pub fn publish_emergency(&self, length: u16) {
-        self.shared
-            .emergency_address
-            .set((SHARED_BUFFER_BASE as u32) & 0xf6ff_ffff);
-        self.shared
-            .emergency_control
-            .set(u32::from(length).wrapping_add(1).wrapping_rem(1 << 13) | 1);
-        drain_write_buffer();
+        publish_emergency_descriptor(self.shared, length);
     }
 
     /// Polls and acknowledges HIF status like the reference IRQ 13 handler
@@ -359,27 +397,39 @@ impl Transport {
         }
     }
 
-    fn recycle_rx_buffer(&mut self, consumer: u32, buffer_address: usize) {
+    fn detach_rx_buffer(&mut self, consumer: u32) {
         self.state.rx_consumer.set(consumer.wrapping_add(1));
+        drain_write_buffer();
+    }
+
+    pub fn release_request(&mut self, token: RequestReleaseToken) {
+        let buffer_address = token.buffer_address as usize;
+        if buffer_address == 0 {
+            return;
+        }
         self.software_state
             .rx_released
             .set(self.software_state.rx_released.get().wrapping_add(1));
-
-        if buffer_address != 0 {
-            let producer = self.state.rx_producer.get();
-            let producer_slot = (producer & 31) as usize;
-            let producer_descriptor =
-                unsafe { &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[producer_slot] };
-            self.software_state.rx_buffers[producer_slot].set(buffer_address as u32);
-            producer_descriptor
-                .address
-                .set((buffer_address as u32) & 0xf6ff_ffff);
-            producer_descriptor
-                .control
-                .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
-            self.state.rx_producer.set(producer.wrapping_add(1));
-        }
+        let producer = self.state.rx_producer.get();
+        let producer_slot = (producer & 31) as usize;
+        let producer_descriptor =
+            unsafe { &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[producer_slot] };
+        self.software_state.rx_buffers[producer_slot].set(buffer_address as u32);
+        producer_descriptor
+            .address
+            .set((buffer_address as u32) & 0xf6ff_ffff);
+        producer_descriptor
+            .control
+            .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
+        self.state.rx_producer.set(producer.wrapping_add(1));
         drain_write_buffer();
+    }
+
+    fn recycle_rx_buffer(&mut self, consumer: u32, buffer_address: usize) {
+        self.detach_rx_buffer(consumer);
+        self.release_request(RequestReleaseToken {
+            buffer_address: buffer_address as u32,
+        });
     }
 
     /// Returns one completed host-to-firmware WSM request and immediately
@@ -419,17 +469,21 @@ impl Transport {
         let id = raw_id & 0x0c3f;
         let if_id = ((raw_id >> 6) & 3) as u8;
         let payload_len = length.saturating_sub(4).min(REQUEST_PAYLOAD_CAPACITY);
-        let scratch = unsafe { &mut *REQUEST_SCRATCH.0.get() };
-        for (index, byte) in scratch[..payload_len].iter_mut().enumerate() {
-            *byte = unsafe { ((buffer_address + 4 + index) as *const u8).read_volatile() };
-        }
-
-        self.recycle_rx_buffer(consumer, buffer_address);
+        // Keep the packet-RAM request buffer borrowed until the dispatcher
+        // explicitly releases it. Vendor ordinary TX stores its MPDU pointer
+        // directly in the class-0 context and returns this buffer only after
+        // the WSM TX confirmation.
+        self.detach_rx_buffer(consumer);
 
         Some(ReceivedRequest {
             id,
             if_id,
-            payload: unsafe { core::slice::from_raw_parts(scratch.as_ptr(), payload_len) },
+            payload: unsafe {
+                core::slice::from_raw_parts((buffer_address + 4) as *const u8, payload_len)
+            },
+            release: RequestReleaseToken {
+                buffer_address: buffer_address as u32,
+            },
         })
     }
 

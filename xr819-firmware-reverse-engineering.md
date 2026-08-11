@@ -1899,3 +1899,273 @@ The `phy_calibrate_iq_candidate` name deliberately retains a confidence marker:
 the waveform correlation and four-component corrections strongly suggest I/Q
 or related amplitude/phase calibration, but the exact analog impairment has not
 yet been proven.
+
+## Open-firmware WPA and data-path milestone
+
+The Rust firmware now reaches authentication, association, immediate ACK
+response, EAPOL exchange, and WPA2 four-way-handshake completion with the
+unmodified Linux `cw1200` driver. The immediate-response descriptor for ACK
+slot 21 must be reinstalled during JOIN because the channel-transition path can
+leave the startup fallback pointer `0x7e64` instead of the working `0x7d14`.
+Packet-DMA RX has directly observed QoS EAPOL data (`FC 0x0288`, ethertype
+`0x888e`), and host TX accepts payload-bearing unicast data while rejecting
+null/QoS-null frames.
+
+Ordinary protected data remains blocked. Protected-data execution bisect stage
+8 returns a clean failed WSM confirmation after `PIPE_IRQ_TRIGGER`; the normal
+path stalls only after final hardware-ring activation. DHCP discovers increase
+the Linux TX counters but receive no confirmation or on-air response, followed
+by `Missed interrupt?`, outstanding-frame timeout, and BH termination. Forcing
+legacy 6 Mbit/s and disabling IPv6 do not change the result, ruling out HT-rate
+selection and unsolicited IPv6 traffic as the primary cause.
+
+WSM `ADD_KEY`/`REMOVE_KEY` and an experimental no-std RustCrypto AES-CCM backend
+are now present. Linux accepts PTK/GTK installation and the firmware completes
+WPA without the earlier `0x000c` failure, but the first protected DHCP frame
+still stalls. The software backend now also matches an independent Python
+`cryptography` AESCCM vector byte-for-byte and rejects corrupted ciphertext and
+MIC, so the remaining live failure is not explained by a basic QoS CCMP
+nonce/AAD/byte-order error. A small static-IP ARP request stalls identically to
+DHCP. Clearing the Protected bit after encryption also stalls, as does removing
+the complete CCMP header/MIC reservation and publishing a compact plaintext ARP
+frame. This isolates the blocker to general post-association payload
+publication/completion semantics rather than encryption, frame size, or the
+Protected bit.
+
+A later literal check corrected the operating-link interpretation:
+`vif_enter_operating_state()` copies `0x8001`, not `0x00fe`, to the active-link
+bitmap at VIF `+0x2c`. Host STA traffic therefore uses link slot 0, extracted
+from WSM queue-ID bits 2..5 by `tx_lmac_req_submit()`, while internal
+management/template traffic uses slot 15. Host WSM contexts also use completion
+class 0; class 6 belongs to internal probe/template contexts. However, those
+vendor fields cannot be transplanted independently into the current direct
+publisher: it still uses the internal three-context pool and bypasses
+`txq_list_insert()`. Tracing showed that the apparent post-change “associated”
+runs had only completed 802.11 association; the first 155-byte EAPOL TX then
+stalled before WPA completed. The cooperative compatibility path has therefore
+been restored to its previously validated class-6/link-1 metadata. Class
+0/link 0 remain requirements for the future complete WSM pool/scheduler path,
+not incremental fixes for the direct internal publisher. Management and EAPOL
+are now routed together through a source-identical copy of the known-good
+control-frame preparation path; only ordinary data enters the expanded
+crypto/diagnostic preparation path. After restoring the original class-6
+completion callback, this image again completed WPA (attempt 4), then compact
+plaintext ARP left three requests outstanding. The compatibility baseline is
+therefore recovered.
+
+`legacy-data-publication-diagnostic` strips the CCMP reservation into a separate
+scratch buffer and sends the resulting plaintext data bytes through the exact
+control-frame context preparation. This removes all data-specific context
+metadata changes in one experiment; its first six cold-reset attempts never
+completed WPA, so the result is inconclusive rather than a data-path failure.
+
+`host-class0-direct-diagnostic` now tests one more isolated boundary. It builds
+ordinary plaintext data with the existing direct publisher, moves the prepared
+context from the internal pool onto a real entry from the initialized
+30-context WSM pool, sets completion class 0, and returns it through the host
+free list after completion. Management and EAPOL remain untouched on the
+validated class-6 path. This does not yet implement `txq_list_insert()` or the
+vendor scheduler, but determines whether host-pool identity/class-0 ownership
+alone fixes the activation failure. WPA completed on attempt 3, but ARP still
+failed and delayed logs showed four outstanding frames followed by the usual
+fatal BH timeout. Host-pool identity and completion class 0 are therefore not
+sufficient while bypassing the queue scheduler.
+
+The next narrower scheduler diagnostic applies the exact mutations visible in
+vendor `enc` callback and `txp_scheduler_run()` before descriptor construction:
+context ownership bit 5 (`ctx+0x80 |= 0x20`) and frame-node selected bit 26
+(`ctx+0x58 |= 0x04000000`). It retains the validated internal context and direct
+publisher so these two missing state transitions are tested without introducing
+host-pool/class-0 behavior. WPA completed on attempt 4, but ARP still left two
+requests outstanding. Those two flags are not sufficient.
+
+The direct publisher's probe-only `start_phy_operation_1()` was also bypassed
+for ordinary joined data. WPA completed on the first attempt, power save was
+confirmed off, and ARP still left two requests outstanding. Neither an unwanted
+active-probe PHY transition nor station power save explains the failure.
+
+`replay-eapol-on-data-diagnostic` now retains the last visible EAPOL frame that
+completed successfully. When ARP is submitted after WPA, firmware republishes
+those retained EAPOL bytes through the exact same control-frame path while
+using the ARP packet ID for confirmation. If this post-WPA replay completes,
+ARP frame bytes/descriptor shape are the blocker; if it stalls, the decisive
+difference is post-WPA MAC state or missing queue-scheduler handoff. Replaying
+EAPOL bytes with the later ARP request's metadata still stalled, but replaying
+both the exact retained EAPOL bytes and its exact original WSM metadata completed
+without any new TX timeout. Therefore post-WPA MAC state can still transmit;
+the blocker is in frame bytes/descriptor shape or request metadata, not a
+global post-key-install TX lockout.
+
+`legacy-data-eapol-metadata-diagnostic` now keeps plaintext ARP frame bytes but
+uses the exact retained EAPOL rate, queue, flags, expiry, and HT parameters
+through the control-frame publisher. This distinguishes ARP frame shape from
+its WSM request metadata. Plaintext ARP with all EAPOL metadata still stalled,
+so frame bytes/descriptor shape are independently sufficient to trigger the
+failure. The successful exact-EAPOL replay proves the post-WPA hardware remains
+usable.
+
+The next rate-only diagnostic retains plaintext ARP and all original ARP
+metadata except `max_tx_rate`, which is replaced with the last successful EAPOL
+rate. This checks one descriptor-shaping input without conflating queue/policy
+fields. It still stalled, ruling out `max_tx_rate` by itself.
+
+`legacy-data-eapol-length-diagnostic` keeps the plaintext ARP prefix and exact
+EAPOL WSM metadata, then zero-pads the frame to the retained successful EAPOL
+total length. A successful completion would localize the problem to descriptor
+length/airtime handling; another stall would implicate the MAC-header/payload
+contents or fields derived from them. The exact-EAPOL-length variant completed
+without a TX timeout and increased the driver's TX byte counter by 155 bytes.
+Thus ARP contents are not inherently fatal: extending the same plaintext ARP
+prefix to the successful EAPOL frame length restores MAC completion. Descriptor
+length, payload segmentation, or short-frame handling is now the leading cause.
+
+`XR819_DATA_DIAGNOSTIC_LENGTH` allows fixed zero-padded lengths for a bounded
+threshold search. Results so far, all retaining EAPOL metadata, are: 96, 128,
+and 144 bytes stall; 152 bytes completes without a firmware timeout. The
+boundary search converged exactly: 146 bytes stalls, while 147, 148, and 152
+bytes complete. The direct publisher therefore has a hard minimum successful
+MPDU length of 147 bytes under this frame shape.
+
+`pad-protected-data-min-length-diagnostic` now applies that result to the real
+protected-data path. It grows a short MSDU immediately before the reserved
+CCMP MIC, then encrypts and authenticates the padded plaintext normally. This
+checks whether the 147-byte floor can serve as a functional workaround rather
+than only a publication diagnostic. Protected padded data still stalled.
+However, plaintext data padded to 147 bytes through the ordinary publisher
+completed without a firmware timeout. The ordinary publisher is therefore not
+unconditionally broken: length fixes its plaintext path, while a protected/
+CCMP-derived field remains independently fatal.
+
+The next combined diagnostic keeps valid padded CCMP bytes but clears the
+802.11 Protected bit after encryption. Unlike the earlier short-frame test,
+this holds the newly recovered minimum length constant and isolates protected
+classification from ciphertext contents. Clearing Protected and zeroing the
+entire encrypted body still stalled, so neither bit nor ciphertext content
+explains the divergence.
+
+`strip-encrypted-data-diagnostic` executes software CCMP, then removes the CCMP
+reservation again, pads to 147 bytes, and zeroes the body. Its final publication
+shape should match the successful padded-plaintext branch while retaining the
+fact that crypto executed first. This checks whether the prior contrast was a
+true frame-shape result or timing/build sensitivity. It still stalled after a
+clean reboot.
+
+Independent monitor captures `/tmp/canonical-air-retry.pcap` and
+`/tmp/plaintext-air.pcap` require filtering by transmitter address (`addr2`),
+not by logical 802.11 source address. The apparent 50-byte XR819 frames were
+actually AP-transmitted FromDS frames carrying the XR819 address as `addr3`.
+After correct filtering, the XR819 transmits authentication, association, and
+all EAPOL responses, but no ordinary post-handshake data frame reaches the air.
+The canonical and padded-plaintext variants both leave WSM requests outstanding.
+Therefore the earlier timeout-free length observations were timing-sensitive
+negative evidence, not proof of successful ordinary-data publication. The
+strong conclusion remains that the direct path fails before any ordinary MPDU
+is emitted, and the full vendor queue/scheduler handoff is the primary target.
+A coherent class-0/link-0 direct experiment using the real host pool also left
+two frames outstanding. Transmitter-address filtering of
+`/tmp/class0-link0-air.pcap` found only authentication, association, and two
+EAPOL responses from XR819—again no ordinary data MPDU. Host-pool identity,
+completion class, and link slot are therefore insufficient without queue
+insertion and scheduler selection. A padded plaintext non-QoS variant also left
+two frames outstanding, and transmitter-address filtering of
+`/tmp/pad-plaintext-nonqos.pcap` again found no post-handshake XR819 data MPDU.
+QoS classification is therefore not the immediate activation blocker. Reusing
+the exact retained successful EAPOL MAC header with a padded plaintext data
+body also left two frames outstanding; `/tmp/data-eapol-header.pcap` contains
+only authentication, association, and EAPOL transmissions from XR819. Frame
+length, crypto, Protected, QoS, rate, WSM metadata, and MAC-header bytes have
+all been isolated away. Stop descriptor-field substitution experiments: the
+next implementation must reproduce queue insertion and scheduler selection as
+a coherent lifecycle. A final legacy-path body-substitution build did not reach
+WPA completion in four bounded attempts, so it is inconclusive and should not
+justify further byte-shape experiments. The ready-bit and bounded queue-handoff
+builds likewise did not reach WPA completion, so they remain inconclusive.
+
+A later full decompilation of `txp_submit_to_pipe` at `0xadd0` corrected an
+incorrect intermediate interpretation. When PAS flags bit 0 is clear, the
+secondary command uses `0x09007bc0 + bVifSlot * 2`, where `bVifSlot` is
+`ctx+0xbe`; it is not indexed by TX rate. The global rate-index patch caused
+the prolonged authentication regression and has been removed. Rate selection
+instead feeds the PHY-rate and hardware-rate tables earlier in the descriptor.
+
+A later host-owned queue build made a real lifecycle improvement: WPA completed,
+the BH remained alive, host credits returned to zero, and each ARP attempt
+received an immediate WSM status-1 failure instead of wedging. A transmitter-
+filtered monitor capture still contained no ordinary XR819 MPDU. Review then
+found two more fields that cannot be inherited from the temporary class-6
+context: host `ctx+0xa0` is the pool-specific frame-state record, and
+`tx_wsm_buf_alloc()` initializes `ctx+0x20` to `0xfe` as the nonterminal
+completion sentinel. The next build preserves the former and reconstructs the
+latter before queue handoff. Subsequent inspection corrected the interpretation
+of those prompt status-1 confirmations: host contexts were rejected by an
+internal-pool-only packet-buffer validation before publication, so those were
+synthetic build failures. A borrowed-frame implementation now retains the
+internal packet-RAM owner until class-0 release, but repeated candidate runs
+have not reached WPA and are inconclusive. The known rate-index baseline is
+being rerun to distinguish target association health from candidate behavior
+before further lifecycle changes. That health check isolated a real regression:
+the original RustCrypto image completed WPA on attempt 4, while the globally
+rate-indexed descriptor build repeatedly failed authentication. The secondary
+descriptor source is therefore now class-aware: validated internal class-6
+management/EAPOL retains VIF-slot indexing, while class-0 host contexts use the
+vendor rate index. The bounded scheduler handoff also now applies the vendor
+selected-frame flag `ctx+0x58 |= 0x04000000` before direct descriptor
+publication. A gated baseline/candidate run confirmed the candidate regression:
+the original RustCrypto image reached WPA on baseline attempt 4, then the
+class-0 candidate failed all ten post-reboot attempts. Host-pool reconstruction
+has therefore been removed from unconditional TX-pipe startup and is now lazy
+at the first ordinary class-0 allocation, leaving authentication and EAPOL
+startup untouched.
+
+The complete decompiled ordinary host-TX lifecycle is now specified in
+[`xr819-vendor-host-tx-lifecycle.md`](xr819-vendor-host-tx-lifecycle.md).
+This supersedes the recent bounded queue/context-copy diagnostics. In
+particular, the post-crypto callback appends with `txq_list_insert(..., 0)`,
+not mode 2; raises event `0x00200000` only when WSM `more == 0`; and calls
+`txp_submit_to_pipe(ctx+0xa0, ctx+0x54, ctx+0x8a)` before insertion. The pending
+list task then applies VIF/link/expiry/pipe gates before removal. Synthetic
+immediate enqueue/dequeue bypasses those gates and is not a valid scheduler
+translation. Further live patching is paused until a direct host-context path
+implements that specification without reusing `prepare_probe_context()`.
+
+The full vendor WSM pool initialization is now reconstructed. Host contexts
+start at `0x04005a24`, have stride `0x170`, and number 30. Startup helper
+`0x11d68(base, 30)` clears the in-flight byte at `0x04003e9e`, clears free-list
+head `0x040087b0`, then for each context sets `ctx+4` to the previous head,
+`ctx+0x70` to `0xff`, initializes frame-node `ctx+0x54`, and publishes the new
+head. Frame-node initialization sets `ctx+0xa0` to
+`0x09003678 + index * 0x54`. This is separate from the three-context internal
+pool at `0x04009084`. Translating this pool is straightforward; preserving the
+borrowed HIF request buffer until class-0 confirmation and translating
+`txq_list_insert()`/`txp_scheduler_run()` remain the substantial next steps.
+
+Queue mapping gives a sharper activation test. Linux control-port/EAPOL traffic
+uses queue 0, transformed by the two vendor maps as `0 -> AC 1 -> pipe 0`.
+Ordinary best-effort ARP/DHCP uses queue 2 and therefore pipe 2. Descriptor
+construction through stage 8 is already known safe, while the stall starts at
+hardware-ring activation. `host-pipe0-diagnostic` forced the same plaintext ARP
+shape onto pipe 0, but delayed logs still showed three outstanding frames and a
+fatal BH timeout. The defect is therefore not specific to pipe 2.
+
+Repeated Linux reboots do not reliably reset the non-removable SDIO device.
+A bounded cold reset is available without rebooting the board: unload the
+CW1200 modules, unbind platform device `1c10000.mmc` from `sunxi-mmc`, wait,
+then bind it again and reload the module. Debug GPIO state confirms that this
+asserts the active-low XR819 reset on PL7 and then releases it. This reduces a
+multi-minute six-reboot association cycle to short reset/retry iterations and
+should be used after every fatal TX experiment.
+
+Removing the QoS-control field before crypto and publishing the frame as
+ordinary non-QoS data also leaves two ARP requests outstanding and kills the
+BH. Together with the pipe-0 result, this rules out QoS subtype/header shape and
+the best-effort pipe selection. The trace snapshot now records WSM request
+bytes, HT parameters, frame control/length, TX flags, header/payload lengths,
+ownership, rate, frame kind, pipe, and link slot at the GO boundary so working
+EAPOL and failing ARP can be compared directly.
+
+The vendor ordinary-data AES path uses the engine at `0x09c50000`, transfer
+classes 6/7, and completion through IRQ 18 or 20. It is documented separately
+in [`xr819-aes-engine.md`](xr819-aes-engine.md). Hardware AES is currently an
+optimization/reference target rather than the first reliability fix: the
+immediate priority is reproducing the protected-frame MAC publication and
+completion semantics after ring activation.

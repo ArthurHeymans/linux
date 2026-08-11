@@ -87,8 +87,7 @@ pub fn host_transfer_outstanding() -> bool {
 #[cfg(feature = "probe-tx-experiment")]
 pub fn fifo_quiescent() -> bool {
     unsafe {
-        !HOST_TRANSFER_OUTSTANDING
-            && CONSUMER_OFFSET == DMA_PRODUCER.read_volatile() & FIFO_MASK
+        !HOST_TRANSFER_OUTSTANDING && CONSUMER_OFFSET == DMA_PRODUCER.read_volatile() & FIFO_MASK
     }
 }
 
@@ -370,7 +369,7 @@ unsafe fn poll_indication(
     } else {
         0xffff
     };
-    let indication_flags = scan_frame_flags(frame_control);
+    let mut indication_flags = scan_frame_flags(frame_control).unwrap_or(0);
     unsafe {
         let diagnostics = &mut *DIAGNOSTICS.0.get();
         diagnostics.last_slot_length = slot_length;
@@ -386,13 +385,32 @@ unsafe fn poll_indication(
     let wrong_ds_channel = scan_only
         && unsafe { management_ds_channel(frame_address, frame_len) }
             .is_some_and(|channel| u16::from(channel) != active_channel);
-    if frame_len < 24 || (scan_only && indication_flags.is_none()) || wrong_ds_channel {
+    if frame_len < 24
+        || (scan_only && scan_frame_flags(frame_control).is_none())
+        || wrong_ds_channel
+    {
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
             release(token);
         }
         return None;
+    }
+
+    if !scan_only {
+        let frame = unsafe { core::slice::from_raw_parts_mut(frame_address as *mut u8, frame_len) };
+        match crate::crypto::decrypt_rx_frame(frame, if_id) {
+            Ok(true) => indication_flags |= 3,
+            Ok(false) => {}
+            Err(_) => {
+                unsafe {
+                    let diagnostics = &mut *DIAGNOSTICS.0.get();
+                    diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
+                    release(token);
+                }
+                return None;
+            }
+        }
     }
 
     let message_address = frame_address - WSM_RX_HEADROOM;
@@ -407,7 +425,7 @@ unsafe fn poll_indication(
         write_u16(message_address + 8, active_channel);
         ((message_address + 10) as *mut u8).write_volatile(0);
         ((message_address + 11) as *mut u8).write_volatile(rcpi);
-        write_u32(message_address + 12, indication_flags.unwrap_or(0));
+        write_u32(message_address + 12, indication_flags);
         HOST_TRANSFER_OUTSTANDING = true;
         let diagnostics = &mut *DIAGNOSTICS.0.get();
         diagnostics.indications = diagnostics.indications.wrapping_add(1);

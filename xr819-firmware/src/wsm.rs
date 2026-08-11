@@ -23,6 +23,10 @@ pub const TX_REQ_ID: u16 = 0x0004;
 pub const TX_CONFIRM_ID: u16 = 0x0404;
 pub const JOIN_REQ_ID: u16 = 0x000b;
 pub const JOIN_RESP_ID: u16 = 0x040b;
+pub const ADD_KEY_REQ_ID: u16 = 0x000c;
+pub const ADD_KEY_RESP_ID: u16 = 0x040c;
+pub const REMOVE_KEY_REQ_ID: u16 = 0x000d;
+pub const REMOVE_KEY_RESP_ID: u16 = 0x040d;
 pub const JOIN_COMPLETE_IND_ID: u16 = 0x080f;
 pub const TX_QUEUE_PARAMS_REQ_ID: u16 = 0x0012;
 pub const TX_QUEUE_PARAMS_RESP_ID: u16 = 0x0412;
@@ -149,6 +153,40 @@ impl WriteMibRequest<'_> {
             mib_id,
             data: &payload[4..],
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddKeyRequest<'a> {
+    pub key_type: u8,
+    pub index: u8,
+    pub data: &'a [u8],
+}
+
+impl AddKeyRequest<'_> {
+    pub fn parse(payload: &[u8]) -> Result<AddKeyRequest<'_>, Error> {
+        if payload.len() != 44 {
+            return Err(Error::InvalidLength);
+        }
+        Ok(AddKeyRequest {
+            key_type: payload[0],
+            index: payload[1],
+            data: &payload[4..],
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemoveKeyRequest {
+    pub index: u8,
+}
+
+impl RemoveKeyRequest {
+    pub fn parse(payload: &[u8]) -> Result<Self, Error> {
+        if payload.len() != 4 {
+            return Err(Error::InvalidLength);
+        }
+        Ok(Self { index: payload[0] })
     }
 }
 
@@ -405,8 +443,8 @@ impl<'a> JoinRequest<'a> {
         if payload.len() != Self::PAYLOAD_LEN {
             return Err(Error::InvalidJoinRequest);
         }
-        let ssid_len = usize::try_from(read_u32(payload, 0x10)?)
-            .map_err(|_| Error::InvalidJoinRequest)?;
+        let ssid_len =
+            usize::try_from(read_u32(payload, 0x10)?).map_err(|_| Error::InvalidJoinRequest)?;
         if ssid_len > 32 {
             return Err(Error::InvalidJoinRequest);
         }
@@ -489,6 +527,11 @@ impl<'a> TxRequest<'a> {
             && self.frame[24..self.frame.len().min(48)]
                 .windows(EAPOL_SNAP.len())
                 .any(|window| window == EAPOL_SNAP)
+    }
+
+    pub fn is_unicast_data(&self) -> bool {
+        let frame_control = u16::from_le_bytes([self.frame[0], self.frame[1]]);
+        frame_control & 0x000c == 0x0008 && frame_control & 0x0040 == 0 && self.frame[4] & 1 == 0
     }
 }
 
@@ -630,11 +673,7 @@ pub fn encode_join_response(
     Ok(LEN)
 }
 
-pub fn encode_tx_confirm(
-    packet_id: u32,
-    status: u32,
-    output: &mut [u8],
-) -> Result<usize, Error> {
+pub fn encode_tx_confirm(packet_id: u32, status: u32, output: &mut [u8]) -> Result<usize, Error> {
     encode_tx_confirm_details(packet_id, status, 0, 0, output)
 }
 
@@ -696,10 +735,7 @@ pub fn encode_xr819_tx_confirm_details(
     Ok(total_len)
 }
 
-pub fn encode_join_complete_indication(
-    status: u32,
-    output: &mut [u8],
-) -> Result<usize, Error> {
+pub fn encode_join_complete_indication(status: u32, output: &mut [u8]) -> Result<usize, Error> {
     const LEN: usize = HEADER_LEN + 4;
     if output.len() < LEN {
         return Err(Error::OutputTooSmall);
@@ -1055,10 +1091,9 @@ mod tests {
     }
 
     #[test]
-    fn tx_request_recognizes_qos_eapol_data() {
+    fn tx_request_recognizes_unicast_qos_data() {
         let mut payload = [0_u8; TxRequest::PAYLOAD_HEADER_LEN + 34];
-        payload[TxRequest::PAYLOAD_HEADER_LEN..][..2]
-            .copy_from_slice(&0x0188_u16.to_le_bytes());
+        payload[TxRequest::PAYLOAD_HEADER_LEN..][..2].copy_from_slice(&0x0188_u16.to_le_bytes());
         payload[TxRequest::PAYLOAD_HEADER_LEN + 4..][..6]
             .copy_from_slice(&[0x20, 5, 0xb6, 0xff, 1, 0x43]);
         payload[TxRequest::PAYLOAD_HEADER_LEN + 26..][..8]
@@ -1066,7 +1101,11 @@ mod tests {
 
         let request = TxRequest::parse(&payload).unwrap();
         assert!(!request.is_unicast_management());
-        assert!(request.is_unicast_eapol());
+        assert!(request.is_unicast_data());
+
+        payload[TxRequest::PAYLOAD_HEADER_LEN..][..2].copy_from_slice(&0x01c8_u16.to_le_bytes());
+        let qos_null = TxRequest::parse(&payload).unwrap();
+        assert!(!qos_null.is_unicast_data());
     }
 
     #[test]

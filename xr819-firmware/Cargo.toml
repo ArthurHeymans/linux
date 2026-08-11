@@ -17,6 +17,81 @@ probe-tx-experiment = []
 # JOIN and host management TX can be exercised with passive scanning while the
 # independent active-probe preparation path is under hardware diagnosis.
 join-sta-experiment = []
+# Bounded ordinary class-0 candidate: one outstanding non-aggregate frame with
+# retained HIF ownership, software CCMP, vendor pending/PAS scheduling, MAC
+# publication/retry/completion, confirmation, and host-pool return.
+vendor-host-tx-foundation = ["join-sta-experiment"]
+# Destructive diagnostic: preserve encrypted payload/MIC but clear the 802.11
+# Protected bit on non-EAPOL data immediately before MAC publication.
+clear-protected-data-diagnostic = []
+# Destructive diagnostic: remove reserved CCMP header/MIC space and publish a
+# compact plaintext non-EAPOL data frame.
+plaintext-data-diagnostic = []
+# Diagnostic: route every host WSM frame through AC/pipe 0. EAPOL and internal
+# management already use this working path; ordinary BE traffic normally uses
+# pipe 2, where activation currently stalls.
+host-pipe0-diagnostic = []
+# Destructive diagnostic: remove the QoS-control field from host QoS-data
+# frames and publish them as ordinary data. This distinguishes the post-WPA
+# QoS frame shape from the non-QoS control-port/EAPOL path.
+non-qos-data-diagnostic = []
+# Destructive diagnostic: strip the CCMP reservation from ordinary data, then
+# publish it through the exact management/EAPOL context-preparation path. This
+# isolates all data-specific context metadata from the resulting frame bytes.
+legacy-data-publication-diagnostic = []
+# Diagnostic: move ordinary plaintext data onto a real context from the
+# vendor 30-entry WSM pool and use completion class 0, while retaining the
+# proven direct single-frame hardware publisher.
+host-class0-direct-diagnostic = []
+# Refines host-class0-direct by using vendor host WSM link slot 0 rather than
+# retaining the internal management path's compatibility link slot 1.
+host-class0-link0-direct-diagnostic = ["host-class0-direct-diagnostic"]
+# Diagnostic: apply the two data-frame mutations made after vendor queueing and
+# immediately before descriptor construction: crypto-complete ownership bit 5
+# and scheduler-selected frame-node bit 26.
+scheduler-data-flags-diagnostic = []
+# Reproduce tx_frame_done_release -> pas_retime_and_kick ownership bit 0x40
+# before direct publication, without yet enqueueing the PAS global ring.
+vendor-ready-frame-flag-diagnostic = []
+# Reproduce the complete pending-list -> task removal -> PAS global-ring
+# handoff before retaining the existing direct descriptor publisher.
+vendor-queue-handoff-diagnostic = []
+# Diagnostic: ordinary joined data bypasses the probe-only PHY operation/timer
+# setup before pipe publication. The vendor host scheduler does not run that
+# active-probe transition for every data frame.
+joined-data-no-phy-start-diagnostic = []
+# Destructive diagnostic: retain the last visible working EAPOL TX request and
+# replay its frame bytes when the host later submits ordinary data. Success or
+# failure then isolates frame bytes from post-WPA MAC/scheduler state.
+replay-eapol-on-data-diagnostic = []
+# Replay exact retained EAPOL bytes/metadata for an ordinary data request, but
+# force them through ordinary-data preparation instead of the legacy path.
+replay-eapol-through-data-path-diagnostic = []
+# Destructive diagnostic: keep plaintext ARP/data frame bytes, but publish them
+# through the control-frame path with the exact metadata retained from the last
+# successful EAPOL request. This separates request metadata from frame shape.
+legacy-data-eapol-metadata-diagnostic = []
+# Destructive diagnostic: keep plaintext ARP bytes and original ARP metadata,
+# but force the retained successful EAPOL maximum TX rate only.
+legacy-data-eapol-rate-diagnostic = []
+# Destructive diagnostic: plaintext ARP bytes with exact retained EAPOL WSM
+# metadata and total frame length, zero-padding the ARP tail as needed.
+legacy-data-eapol-length-diagnostic = []
+# Diagnostic/workaround: pad protected data MSDUs before CCMP so the complete
+# encrypted 802.11 frame is at least 147 bytes, the measured completion floor.
+pad-protected-data-min-length-diagnostic = []
+# Destructive diagnostic: strip CCMP, then zero-pad plaintext ordinary data to
+# the measured 147-byte completion floor while retaining the ordinary path.
+pad-plaintext-data-min-length-diagnostic = ["plaintext-data-diagnostic"]
+# Destructive diagnostic: after CCMP and optional Protected-bit clearing, zero
+# all bytes after the 802.11 header to test whether payload contents affect MAC.
+zero-data-body-diagnostic = []
+# Destructive diagnostic: execute CCMP, then strip its reservation again and
+# canonicalize the resulting frame to the known-good padded plaintext shape.
+strip-encrypted-data-diagnostic = []
+# Destructive diagnostic: publish a padded plaintext ordinary-data body under
+# the exact MAC header retained from the last successful EAPOL request.
+data-eapol-header-diagnostic = ["pad-plaintext-data-min-length-diagnostic"]
 tcm-size-diagnostic = []
 
 [[bin]]
@@ -68,6 +143,8 @@ test = false
 bench = false
 
 [dependencies]
+aes = { version = "0.8.4", default-features = false }
+ccm = { version = "0.5.0", default-features = false }
 tock-registers = "0.10.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 

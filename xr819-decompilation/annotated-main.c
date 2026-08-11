@@ -1314,6 +1314,20 @@ void tx_flush_all_queues(void)
  * 00000ee4  tx_assign_seq_num
  * ====================================================================== */
 
+/* `param_1` is the PAS view at outer ctx+0x54. For firmware-assigned unicast
+   QoS sequence numbers:
+
+     interface = outer ctx+0xbd  (param_1+0x69)
+     host_link = outer ctx+0xbf  (param_1+0x6b)
+     default internal link = vif+0x12a
+     optional host-link map = 0x040087b8, 12-byte records
+     sequence table = 0x04008890 + internal_link*0x20 + tid*2
+
+   The helper writes the sequence control at MPDU+0x16, stores sequence>>4 at
+   outer ctx+0xa8, then increments the table entry by 0x10 modulo 0x1000.
+   Literal values: DAT_00000fa0=0x04003e98,
+   DAT_00000fa4=0x040087b8, DAT_00000fa8=0x00004920. */
+
 void tx_assign_seq_num(int *param_1)
 
 {
@@ -11098,6 +11112,19 @@ LAB_00009394:
  * 0000939e  txp_program_pipe_hw
  * ====================================================================== */
 
+/* Boolean plus power-save side effects used by task_b88e before pending-list
+   removal. Return 0 means blocked; nonzero means releasable. Resolved literals:
+
+     DAT_00009460 = 0x04003678  per-VIF PAS state (stride 0x98)
+     DAT_00009480 = 0x04003e98  VIF array (stride 0x3b0)
+     DAT_0000949c = 0x04001fcc  global scheduler/radio mask
+     DAT_000098b8 = 0x040087b8  link-state root
+     DAT_000098bc = 0x00004920  link-state offset from VIF base
+
+   The open implementation now translates its TBTT exclusion, VIF flag gate,
+   sleeping/awake/buffered link masks, and link-state side effects before PAS
+   release. */
+
 undefined4 txp_program_pipe_hw(undefined4 *param_1,undefined4 *param_2)
 
 {
@@ -12479,7 +12506,12 @@ int desc_freelist_pop(void)
 
 /* txp_build_pipe_descriptor(pipe_idx_p, frame, pipe_tbl, kind) -- tx_ptcs.c
    Builds the hardware TX descriptor for one transmission and advances the
-   4-deep TX pipe ring:  *pipe_idx_p = (*pipe_idx_p + 1) & 3.
+   4-deep TX pipe ring:  pipe_tbl[1] = old index, then
+   *pipe_idx_p = (old index + 1) & 3. The open implementation separates a
+   reversible pre-publication `SchedulerReserved` phase from this producer
+   advancement so RESET can restore PAS and pipe-slot ownership safely, then
+   crosses the exact consumed-slot/next-producer boundary immediately before
+   duration/quantum programming and the MAC trigger.
    
    kind selects the frame class:
      0  single frame
@@ -16150,6 +16182,68 @@ LAB_0000dc9e:
     piVar1[1] = *param_2;
   }
   *(undefined4 *)(param_1 + 4) = 0;
+  return;
+}
+
+
+
+/* ======================================================================
+ * 0000dcb4  tx_post_crypto_enqueue
+ * ====================================================================== */
+
+/* Post-cipher/MIC callback. `param_1` is ctx+0x110, so every negative offset
+   below has been translated in the lifecycle documentation back to the outer
+   0x170-byte host context.
+
+   This is the authoritative transition from crypto ownership into the pending
+   host-TX task:
+
+     - complete immediately when ctx+0x70 already contains an error;
+     - build the reusable per-frame descriptor at ctx+0xA0;
+     - set ownership bit 0x20;
+     - append with txq_list_insert(..., mode 0), NOT mode 2;
+     - raise task event 0x00200000 only for the final request in a WSM `more`
+       burst.
+
+   Earlier open-firmware diagnostics skipped the ctx+0xA0 descriptor build and
+   synthetically inserted/removed the context, which is not vendor-equivalent. */
+
+void tx_post_crypto_enqueue(int param_1)
+
+{
+  int iVar1;
+  
+  if ((*(char *)(param_1 + -0x46) == '\x02') || (*(char *)(param_1 + -0x46) == '\x03')) {
+    iVar1 = *(int *)(param_1 + -0xf4) + *(int *)(param_1 + -0xcc);
+    *(undefined2 *)(iVar1 + 4) = *(undefined2 *)(param_1 + 0x5c);
+    *(undefined2 *)(iVar1 + 6) = *(undefined2 *)(param_1 + 0x5e);
+  }
+  if (*(ushort *)(param_1 + -0xa0) < 0xfe) {
+    tx_frame_complete(param_1 + -0x110);
+    return;
+  }
+  *(undefined4 *)(param_1 + -0xc4) = 0;
+  if (*(int *)(param_1 + -0xb8) << 0x17 < 0) {
+    iVar1 = pipe_find_or_alloc_lower(*(int *)(param_1 + -0xbc) + 4);
+  }
+  else {
+    if (*(short *)(DAT_0000dd50 + 0x12) == 0) goto LAB_0000dd1a;
+    iVar1 = pipe_find_or_alloc_upper(*(int *)(param_1 + -0xbc) + 4);
+  }
+  *(int *)(param_1 + -0xc4) = iVar1;
+  if (iVar1 != 0) {
+    *(char *)(iVar1 + 7) = *(char *)(iVar1 + 7) + '\x01';
+  }
+LAB_0000dd1a:
+  if (*(int *)(param_1 + -0x70) != 0) {
+    tx_submit_wrapper(param_1 + -0xbc);
+  }
+  *(uint *)(param_1 + -0x90) = *(uint *)(param_1 + -0x90) | 0x20;
+  txq_list_insert(param_1 + -0x110,*(undefined1 *)(param_1 + -0x103),0);
+  if (*(char *)(param_1 + -0x102) != '\0') {
+    return;
+  }
+  evt_flags_set(DAT_0000dd54,0x200000);
   return;
 }
 

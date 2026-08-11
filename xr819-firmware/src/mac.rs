@@ -520,7 +520,10 @@ pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
             0x09c0_003c,
             u32::from_le_bytes([bssid[0], bssid[1], bssid[2], bssid[3]]),
         );
-        write_u32(0x09c0_0040, u32::from(u16::from_le_bytes([bssid[4], bssid[5]])));
+        write_u32(
+            0x09c0_0040,
+            u32::from(u16::from_le_bytes([bssid[4], bssid[5]])),
+        );
         write_u32(0x09c0_0044, 0x101);
         write_u16(0x0400_8ae0, 3);
     }
@@ -603,7 +606,9 @@ unsafe fn rebuild_pipe_state() {
 /// # Safety
 /// Packet DMA and the four hardware pipe blocks must already be initialized.
 pub unsafe fn initialize_tx_pipe_state() {
-    unsafe { rebuild_pipe_state() };
+    unsafe {
+        rebuild_pipe_state();
+    }
     // `txp_submit_to_pipe` emits a 0x20800000 descriptor command sourcing
     // one byte from this per-interface packet-SRAM metadata vector. Hardware
     // ORs that byte into the high frame-control octet. Vendor startup clears
@@ -626,6 +631,16 @@ pub unsafe fn initialize_tx_pipe_state() {
             unsafe { write_u8(base + offset, value) };
         }
     }
+}
+
+/// Rebuilds the vendor 30-entry host WSM TX context free list.
+///
+/// This pool is distinct from the three internal management/template contexts
+/// at `0x04009084`. The current cooperative publisher does not allocate from it
+/// yet, but startup must not leave its retained ownership state stale while the
+/// class-0 host scheduler is translated.
+pub unsafe fn initialize_wsm_tx_context_pool() {
+    unsafe { crate::vendor_host_tx::initialize_host_pool() };
 }
 
 /// Hardware-owning prefix of vendor `mac_radio_stop` for the current

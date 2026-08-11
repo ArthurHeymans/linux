@@ -8,12 +8,18 @@ pub struct TcmRegionInfo {
 }
 
 pub const fn size_kib(region_register: u32) -> Option<u32> {
-    const SIZES: [i16; 16] = [0, -1, -1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, -1, -1, -1, -1];
+    const SIZES: [i16; 16] = [
+        0, -1, -1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, -1, -1, -1, -1,
+    ];
     let value = SIZES[((region_register >> 2) & 0x0f) as usize];
     if value < 0 { None } else { Some(value as u32) }
 }
 
-#[cfg(all(target_arch = "arm", target_feature = "thumb-mode", feature = "tcm-size-diagnostic"))]
+#[cfg(all(
+    target_arch = "arm",
+    target_feature = "thumb-mode",
+    feature = "tcm-size-diagnostic"
+))]
 core::arch::global_asm!(
     ".syntax unified",
     ".pushsection .text.xr819_read_tcm_regions, \"ax\", %progbits",
@@ -34,22 +40,30 @@ core::arch::global_asm!(
     ".popsection",
 );
 
-#[cfg(all(target_arch = "arm", not(target_feature = "thumb-mode"), feature = "tcm-size-diagnostic"))]
+#[cfg(all(
+    target_arch = "arm",
+    not(target_feature = "thumb-mode"),
+    feature = "tcm-size-diagnostic"
+))]
 unsafe fn read_registers(tcm_type: &mut u32, dtcm: &mut u32, itcm: &mut u32) {
     unsafe {
         core::arch::asm!(
             "mrc p15, 0, {tcm_type}, c0, c0, 2",
             "mrc p15, 0, {dtcm}, c9, c1, 0",
             "mrc p15, 0, {itcm}, c9, c1, 1",
-            tcm_type = out(reg) *tcm_type,
-            dtcm = out(reg) *dtcm,
-            itcm = out(reg) *itcm,
+            tcm_type = out(reg) * tcm_type,
+            dtcm = out(reg) * dtcm,
+            itcm = out(reg) * itcm,
             options(nostack),
         );
     }
 }
 
-#[cfg(all(target_arch = "arm", target_feature = "thumb-mode", feature = "tcm-size-diagnostic"))]
+#[cfg(all(
+    target_arch = "arm",
+    target_feature = "thumb-mode",
+    feature = "tcm-size-diagnostic"
+))]
 unsafe fn read_registers(tcm_type: &mut u32, dtcm: &mut u32, itcm: &mut u32) {
     unsafe extern "C" {
         fn xr819_read_tcm_regions(tcm_type: *mut u32, dtcm: *mut u32, itcm: *mut u32);

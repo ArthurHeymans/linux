@@ -5,6 +5,7 @@ use core::arch::naked_asm;
 use core::mem::size_of;
 use core::panic::PanicInfo;
 use xr819_firmware::configuration;
+use xr819_firmware::crypto;
 use xr819_firmware::hif::Transport;
 #[cfg(feature = "join-sta-experiment")]
 use xr819_firmware::join;
@@ -19,22 +20,25 @@ use xr819_firmware::platform::{
 };
 use xr819_firmware::radio;
 use xr819_firmware::scan;
-use xr819_firmware::tx;
-use xr819_firmware::vif;
 #[cfg(feature = "tcm-size-diagnostic")]
 use xr819_firmware::tcm;
-use xr819_firmware::wsm::{
-    CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID, EdcaParameters, JOIN_REQ_ID,
-    READ_MIB_REQ_ID, RESET_REQ_ID, ResetRequest, START_SCAN_REQ_ID, STATUS_FAILURE,
-    StartScanRequest, StartupIndication, TX_QUEUE_PARAMS_REQ_ID, TX_REQ_ID, TxPowerRange,
-    TxQueueParameters, TxRequest, WRITE_MIB_REQ_ID, WriteMibRequest,
-    encode_configuration_response, encode_join_complete_indication, encode_join_response,
-    encode_read_mib_data_response, encode_read_mib_response, encode_scan_complete_indication,
-    encode_status_response, encode_tx_confirm, encode_tx_confirm_details,
-    encode_xr819_tx_confirm, encode_xr819_tx_confirm_details,
-};
+use xr819_firmware::tx;
+#[cfg(feature = "vendor-host-tx-foundation")]
+use xr819_firmware::vendor_host_tx;
+use xr819_firmware::vif;
 #[cfg(feature = "join-sta-experiment")]
 use xr819_firmware::wsm::JoinRequest;
+use xr819_firmware::wsm::{
+    ADD_KEY_REQ_ID, AddKeyRequest, CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID,
+    EdcaParameters, JOIN_REQ_ID, READ_MIB_REQ_ID, REMOVE_KEY_REQ_ID, RESET_REQ_ID,
+    RemoveKeyRequest, ResetRequest, START_SCAN_REQ_ID, STATUS_FAILURE, StartScanRequest,
+    StartupIndication, TX_QUEUE_PARAMS_REQ_ID, TX_REQ_ID, TxPowerRange, TxQueueParameters,
+    TxRequest, WRITE_MIB_REQ_ID, WriteMibRequest, encode_configuration_response,
+    encode_join_complete_indication, encode_join_response, encode_read_mib_data_response,
+    encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
+    encode_tx_confirm, encode_tx_confirm_details, encode_xr819_tx_confirm,
+    encode_xr819_tx_confirm_details,
+};
 
 // Explicit rollback boundary for scan-owned active probe TX. This feature is
 // enabled by default after repeated cross-scan hardware validation; building
@@ -196,8 +200,73 @@ extern "C" fn rust_main() -> ! {
     let mut pending_join_complete: Option<u32> = None;
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     let mut pending_tx_debug_event: Option<(u32, u32)> = None;
+    #[cfg(feature = "vendor-host-tx-foundation")]
+    let mut pending_vendor_host_tx: Option<vendor_host_tx::RetainedHostTx> = None;
+    #[cfg(feature = "vendor-host-tx-foundation")]
+    let mut pending_vendor_confirmation: Option<(vendor_host_tx::RetainedHostTx, u32, u8)> = None;
+    #[cfg(feature = "vendor-host-tx-foundation")]
+    let mut pending_vendor_reservation: Option<vendor_host_tx::HostSchedulerReservation> = None;
     loop {
         let _ = transport.service_interrupt();
+
+        #[cfg(feature = "vendor-host-tx-foundation")]
+        if pending_vendor_confirmation.is_none() && pending_vendor_reservation.is_none() {
+            let completed = pending_vendor_host_tx.as_mut().and_then(|retained| {
+                match unsafe { vendor_host_tx::service_pending(retained) } {
+                    Ok(vendor_host_tx::PendingServiceReport::Complete(status)) => Some(status),
+                    Ok(vendor_host_tx::PendingServiceReport::PasQueued) => None,
+                    Ok(vendor_host_tx::PendingServiceReport::LeaveQueued) | Err(_) => None,
+                }
+            });
+            if let (Some(status), Some(mut retained)) = (completed, pending_vendor_host_tx.take()) {
+                let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
+                pending_vendor_confirmation =
+                    Some((retained, tx::wsm_status_from_internal(status), 0));
+            }
+        }
+
+        #[cfg(feature = "vendor-host-tx-foundation")]
+        if pending_vendor_reservation.is_none() {
+            let mut expired = false;
+            if let Some(retained) = pending_vendor_host_tx.as_mut()
+                && retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
+            {
+                match unsafe { vendor_host_tx::reserve_non_aggregate_scheduler(retained) } {
+                    Ok(reservation) => pending_vendor_reservation = Some(reservation),
+                    Err(vendor_host_tx::SchedulerReserveError::Expired) => expired = true,
+                    Err(_) => {}
+                }
+            }
+            if expired
+                && let Some(mut retained) = pending_vendor_host_tx.take()
+                && unsafe { vendor_host_tx::reject_unscheduled_pas(&mut retained) }.is_ok()
+            {
+                let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
+                pending_vendor_confirmation = Some((retained, tx::wsm_status_from_internal(10), 0));
+            }
+        }
+
+        #[cfg(feature = "vendor-host-tx-foundation")]
+        if let Some(reservation) = pending_vendor_reservation.take()
+            && let Some(retained) = pending_vendor_host_tx.as_mut()
+            && let Err((reservation, _)) = unsafe { reservation.publish(retained) }
+        {
+            pending_vendor_reservation = Some(reservation);
+        }
+
+        #[cfg(feature = "vendor-host-tx-foundation")]
+        if pending_vendor_confirmation.is_none()
+            && let Some(retained) = pending_vendor_host_tx.as_mut()
+            && retained.phase() == vendor_host_tx::HostTxPhase::Scheduled
+            && let Some((context, status, ack_failures)) =
+                unsafe { tx::service_host_class0_runtime(32) }
+            && context == retained.context().raw()
+            && let Some(mut retained) = pending_vendor_host_tx.take()
+        {
+            let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
+            pending_vendor_confirmation =
+                Some((retained, tx::wsm_status_from_internal(status), ack_failures));
+        }
 
         #[cfg(feature = "join-sta-experiment")]
         if pending_tx_confirmation.is_none()
@@ -243,17 +312,33 @@ extern "C" fn rust_main() -> ! {
             let encoded = if join::uses_cw1200_wsm() {
                 encode_tx_confirm_details(packet_id, status, tx_rate, ack_failures, output)
             } else {
-                encode_xr819_tx_confirm_details(
-                    packet_id,
-                    status,
-                    tx_rate,
-                    ack_failures,
-                    output,
-                )
+                encode_xr819_tx_confirm_details(packet_id, status, tx_rate, ack_failures, output)
             };
             if let Ok(length) = encoded {
                 pending_tx_confirmation = None;
                 unsafe { transport.publish(length as u16) };
+            }
+        }
+
+        #[cfg(feature = "vendor-host-tx-foundation")]
+        if let Some((retained, status, ack_failures)) = pending_vendor_confirmation.as_ref()
+            && transport.output_available()
+        {
+            let packet_id = retained.packet_id();
+            let context = retained.context().raw();
+            let tx_rate = unsafe { (context.wrapping_add(0x63) as *const u8).read_volatile() };
+            let output = unsafe { transport.output_buffer() };
+            let encoded = if join::uses_cw1200_wsm() {
+                encode_tx_confirm_details(packet_id, *status, tx_rate, *ack_failures, output)
+            } else {
+                encode_xr819_tx_confirm_details(packet_id, *status, tx_rate, *ack_failures, output)
+            };
+            if let Ok(length) = encoded
+                && let Some((retained, _, _)) = pending_vendor_confirmation.take()
+            {
+                unsafe { transport.publish(length as u16) };
+                let release = unsafe { retained.finish() };
+                transport.release_request(release);
             }
         }
 
@@ -377,6 +462,8 @@ extern "C" fn rust_main() -> ! {
             if let Some(request) = transport.poll_request() {
                 let output = unsafe { transport.output_buffer() };
                 let mut publish_response = true;
+                #[allow(unused_mut)]
+                let mut release_current_request = true;
                 let response_length = if request.if_id > 2 {
                     encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
                 } else if request.id == CONFIGURATION_REQ_ID {
@@ -551,9 +638,46 @@ extern "C" fn rust_main() -> ! {
                     } else {
                         encode_read_mib_response(STATUS_FAILURE, mib_id, output)
                     }
+                } else if request.id == ADD_KEY_REQ_ID {
+                    let status = AddKeyRequest::parse(request.payload)
+                        .ok()
+                        .and_then(|key| crypto::add_key(request.if_id, &key).ok())
+                        .map(|()| 0)
+                        .unwrap_or(STATUS_FAILURE);
+                    encode_status_response(request.id | 0x0400, status, output)
+                } else if request.id == REMOVE_KEY_REQ_ID {
+                    let status = RemoveKeyRequest::parse(request.payload)
+                        .ok()
+                        .and_then(|key| crypto::remove_key(key.index).ok())
+                        .map(|()| 0)
+                        .unwrap_or(STATUS_FAILURE);
+                    encode_status_response(request.id | 0x0400, status, output)
                 } else if request.id == RESET_REQ_ID {
                     let status = match ResetRequest::parse(request.payload) {
                         Ok(_) => {
+                            #[cfg(feature = "vendor-host-tx-foundation")]
+                            {
+                                if let Some(reservation) = pending_vendor_reservation.take()
+                                    && let Some(retained) = pending_vendor_host_tx.as_mut()
+                                {
+                                    let _ = unsafe { reservation.cancel(retained) };
+                                }
+                                if pending_vendor_host_tx.as_ref().is_some_and(|retained| {
+                                    retained.phase() != vendor_host_tx::HostTxPhase::Scheduled
+                                }) && let Some(retained) = pending_vendor_host_tx.take()
+                                {
+                                    // Pending, PAS-ring, and unpublished slot
+                                    // reservations are reversible. Scheduled
+                                    // hardware ownership must complete normally.
+                                    if let Ok(release) = unsafe { retained.cancel_before_pas() } {
+                                        transport.release_request(release);
+                                    }
+                                }
+                                if let Some((retained, _, _)) = pending_vendor_confirmation.take() {
+                                    let release = unsafe { retained.finish() };
+                                    transport.release_request(release);
+                                }
+                            }
                             #[cfg(feature = "join-sta-experiment")]
                             {
                                 if unsafe { join::reset(request.if_id) } {
@@ -580,7 +704,11 @@ extern "C" fn rust_main() -> ! {
                     };
                     #[cfg(not(feature = "join-sta-experiment"))]
                     let status = STATUS_FAILURE;
-                    if status == 0 && request.payload.get(0x0f).is_some_and(|flags| flags & 0x20 != 0)
+                    if status == 0
+                        && request
+                            .payload
+                            .get(0x0f)
+                            .is_some_and(|flags| flags & 0x20 != 0)
                     {
                         pending_join_complete = Some(0);
                     }
@@ -589,72 +717,187 @@ extern "C" fn rust_main() -> ! {
                     #[cfg(feature = "join-sta-experiment")]
                     {
                         match TxRequest::parse(request.payload) {
-                            Ok(tx_request) => match unsafe {
-                                tx::service_host_management_tx(
-                                    Some((&tx_request, request.if_id)),
-                                    0,
-                                )
-                            } {
-                                tx::HostManagementTxReport::Published {
-                                    packet_id,
-                                    bisect_stage,
-                                } => {
-                                    publish_response = true;
-                                    if bisect_stage != 0 {
+                            Ok(tx_request) => {
+                                #[cfg(feature = "vendor-host-tx-foundation")]
+                                let vendor_response = if tx_request.is_unicast_data()
+                                    && !tx_request.is_unicast_eapol()
+                                {
+                                    Some(if pending_vendor_host_tx.is_some() {
                                         if join::uses_cw1200_wsm() {
-                                            encode_tx_confirm_details(
-                                                packet_id,
+                                            encode_tx_confirm(
+                                                tx_request.packet_id,
                                                 STATUS_FAILURE,
-                                                0,
-                                                bisect_stage,
                                                 output,
                                             )
                                         } else {
-                                            encode_xr819_tx_confirm_details(
-                                                packet_id,
+                                            encode_xr819_tx_confirm(
+                                                tx_request.packet_id,
                                                 STATUS_FAILURE,
-                                                0,
-                                                bisect_stage,
                                                 output,
                                             )
                                         }
                                     } else {
-                                        let edca = unsafe {
-                                            (0x09c0_0e64 as *const u32).read_volatile()
-                                        };
-                                        let quantum0 = unsafe {
-                                            (0x09c0_0e70 as *const u32).read_volatile()
-                                        };
-                                        let quantum1 = unsafe {
-                                            (0x09c0_0e74 as *const u32).read_volatile()
-                                        };
-                                        let metadata = unsafe {
-                                            (0x0900_8008 as *const u8).read_volatile()
-                                        };
-                                        let secondary = unsafe {
-                                            (0x0900_7bc0 as *const u8).read_volatile()
-                                        };
-                                        let event_id = 0x5852_0000 | (edca & 0xffff);
-                                        let data = (quantum0 & 0xff)
-                                            | ((quantum1 & 0xff) << 8)
-                                            | (u32::from(metadata) << 16)
-                                            | (u32::from(secondary) << 24);
-                                        encode_debug_event(event_id, data, output)
-                                            .ok_or(xr819_firmware::wsm::Error::Truncated)
+                                        match unsafe {
+                                            vendor_host_tx::admit_host_tx(
+                                                &tx_request,
+                                                request.if_id,
+                                                request.release,
+                                            )
+                                        } {
+                                            Ok(mut retained) => match unsafe {
+                                                vendor_host_tx::classify_and_encrypt(&mut retained)
+                                            } {
+                                                Ok(()) => match unsafe {
+                                                    vendor_host_tx::enqueue_post_crypto(
+                                                        &mut retained,
+                                                    )
+                                                } {
+                                                    Ok(()) => {
+                                                        pending_vendor_host_tx = Some(retained);
+                                                        release_current_request = false;
+                                                        publish_response = false;
+                                                        Ok(0)
+                                                    }
+                                                    Err(_) => {
+                                                        let release = unsafe { retained.abort() };
+                                                        transport.release_request(release);
+                                                        release_current_request = false;
+                                                        if join::uses_cw1200_wsm() {
+                                                            encode_tx_confirm(
+                                                                tx_request.packet_id,
+                                                                STATUS_FAILURE,
+                                                                output,
+                                                            )
+                                                        } else {
+                                                            encode_xr819_tx_confirm(
+                                                                tx_request.packet_id,
+                                                                STATUS_FAILURE,
+                                                                output,
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                                Err(_) => {
+                                                    let release = unsafe { retained.abort() };
+                                                    transport.release_request(release);
+                                                    release_current_request = false;
+                                                    if join::uses_cw1200_wsm() {
+                                                        encode_tx_confirm(
+                                                            tx_request.packet_id,
+                                                            STATUS_FAILURE,
+                                                            output,
+                                                        )
+                                                    } else {
+                                                        encode_xr819_tx_confirm(
+                                                            tx_request.packet_id,
+                                                            STATUS_FAILURE,
+                                                            output,
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            Err(_) => {
+                                                if join::uses_cw1200_wsm() {
+                                                    encode_tx_confirm(
+                                                        tx_request.packet_id,
+                                                        STATUS_FAILURE,
+                                                        output,
+                                                    )
+                                                } else {
+                                                    encode_xr819_tx_confirm(
+                                                        tx_request.packet_id,
+                                                        STATUS_FAILURE,
+                                                        output,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    })
+                                } else {
+                                    None
+                                };
+                                #[cfg(not(feature = "vendor-host-tx-foundation"))]
+                                let vendor_response: Option<
+                                    Result<usize, xr819_firmware::wsm::Error>,
+                                > = None;
+
+                                if let Some(response) = vendor_response {
+                                    response
+                                } else {
+                                    match unsafe {
+                                        tx::service_host_management_tx(
+                                            Some((&tx_request, request.if_id)),
+                                            0,
+                                        )
+                                    } {
+                                        tx::HostManagementTxReport::Published {
+                                            packet_id,
+                                            bisect_stage,
+                                        } => {
+                                            publish_response = true;
+                                            if bisect_stage != 0 {
+                                                if join::uses_cw1200_wsm() {
+                                                    encode_tx_confirm_details(
+                                                        packet_id,
+                                                        STATUS_FAILURE,
+                                                        0,
+                                                        bisect_stage,
+                                                        output,
+                                                    )
+                                                } else {
+                                                    encode_xr819_tx_confirm_details(
+                                                        packet_id,
+                                                        STATUS_FAILURE,
+                                                        0,
+                                                        bisect_stage,
+                                                        output,
+                                                    )
+                                                }
+                                            } else {
+                                                let edca = unsafe {
+                                                    (0x09c0_0e64 as *const u32).read_volatile()
+                                                };
+                                                let quantum0 = unsafe {
+                                                    (0x09c0_0e70 as *const u32).read_volatile()
+                                                };
+                                                let quantum1 = unsafe {
+                                                    (0x09c0_0e74 as *const u32).read_volatile()
+                                                };
+                                                let metadata = unsafe {
+                                                    (0x0900_8008 as *const u8).read_volatile()
+                                                };
+                                                let secondary = unsafe {
+                                                    (0x0900_7bc0 as *const u8).read_volatile()
+                                                };
+                                                let event_id = 0x5852_0000 | (edca & 0xffff);
+                                                let data = (quantum0 & 0xff)
+                                                    | ((quantum1 & 0xff) << 8)
+                                                    | (u32::from(metadata) << 16)
+                                                    | (u32::from(secondary) << 24);
+                                                encode_debug_event(event_id, data, output)
+                                                    .ok_or(xr819_firmware::wsm::Error::Truncated)
+                                            }
+                                        }
+                                        tx::HostManagementTxReport::Failed {
+                                            packet_id, ..
+                                        } => {
+                                            if join::uses_cw1200_wsm() {
+                                                encode_tx_confirm(packet_id, STATUS_FAILURE, output)
+                                            } else {
+                                                encode_xr819_tx_confirm(
+                                                    packet_id,
+                                                    STATUS_FAILURE,
+                                                    output,
+                                                )
+                                            }
+                                        }
+                                        _ => {
+                                            publish_response = false;
+                                            encode_tx_confirm(0, STATUS_FAILURE, output)
+                                        }
                                     }
                                 }
-                                tx::HostManagementTxReport::Failed { packet_id, .. } => {
-                                    if join::uses_cw1200_wsm() {
-                                        encode_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                    } else {
-                                        encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                    }
-                                }
-                                _ => {
-                                    publish_response = false;
-                                    encode_tx_confirm(0, STATUS_FAILURE, output)
-                                }
-                            },
+                            }
                             Err(_) => {
                                 let packet_id = request
                                     .payload
@@ -690,6 +933,13 @@ extern "C" fn rust_main() -> ! {
                 };
                 if publish_response && let Ok(length) = response_length {
                     unsafe { transport.publish(length as u16) };
+                }
+                // Most commands finish synchronously and release their borrowed
+                // packet-RAM request here. The future vendor host-TX path will
+                // transfer this token into class-0 state and release it only
+                // after confirmation.
+                if release_current_request {
+                    transport.release_request(request.release);
                 }
             }
         }

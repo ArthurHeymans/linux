@@ -11,6 +11,9 @@ use crate::configuration::MAX_TEMPLATE_FRAME_LEN;
 const TX_CONTEXT_BASE: usize = 0x0400_9084;
 const TX_CONTEXT_SIZE: usize = 0x170;
 const TX_CONTEXT_COUNT: usize = 3;
+const WSM_TX_CONTEXT_BASE: usize = 0x0400_5a24;
+const WSM_TX_CONTEXT_COUNT: usize = 30;
+const WSM_TX_CONTEXT_FREE_HEAD: usize = 0x0400_87b0;
 const TX_BUFFER_BASE: usize = 0x0901_4fa8;
 const TX_BUFFER_SIZE: usize = 0x400;
 const FRAME_NODE_OFFSET: u32 = 0x54;
@@ -62,15 +65,21 @@ const TX_TRACE_PHY2: u32 = 1 << 7;
 const TX_TRACE_SUCCESS: u32 = 1 << 8;
 const TX_PUBLICATION_BISECT_STAGE: u8 = env!("XR819_TX_BISECT_STAGE").as_bytes()[0] - b'0';
 const TX_PUBLICATION_BISECT_SUBTYPE: u8 = parse_decimal_u8(env!("XR819_TX_BISECT_SUBTYPE"));
+const DATA_DIAGNOSTIC_LENGTH: usize =
+    parse_decimal_u16(env!("XR819_DATA_DIAGNOSTIC_LENGTH")) as usize;
 #[cfg(target_arch = "arm")]
 const MAC_FATAL_MAGIC: u32 = 0x5852_4651;
 
 const fn parse_decimal_u8(value: &str) -> u8 {
+    parse_decimal_u16(value) as u8
+}
+
+const fn parse_decimal_u16(value: &str) -> u16 {
     let bytes = value.as_bytes();
-    let mut result = 0_u8;
+    let mut result = 0_u16;
     let mut index = 0;
     while index < bytes.len() {
-        result = result * 10 + (bytes[index] - b'0');
+        result = result * 10 + (bytes[index] - b'0') as u16;
         index += 1;
     }
     result
@@ -88,12 +97,15 @@ static ACTIVE_PUBLICATION_BISECT_STAGE: SharedPublicationBisectStage =
     SharedPublicationBisectStage(UnsafeCell::new(0));
 
 fn select_publication_bisect(frame: &[u8]) {
-    let subtype = frame
+    let frame_control = frame
         .get(..2)
-        .map(|value| (u16::from_le_bytes([value[0], value[1]]) >> 4) as u8 & 0x0f)
-        .unwrap_or(0xff);
+        .map(|value| u16::from_le_bytes([value[0], value[1]]))
+        .unwrap_or(0);
+    let subtype = (frame_control >> 4) as u8 & 0x0f;
+    let protected_data = frame_control & 0x400c == 0x4008;
     let stage = if TX_PUBLICATION_BISECT_SUBTYPE == 0xff
         || (TX_PUBLICATION_BISECT_SUBTYPE == 0xfe && subtype != 11)
+        || (TX_PUBLICATION_BISECT_SUBTYPE == 0xfd && protected_data)
         || TX_PUBLICATION_BISECT_SUBTYPE == subtype
     {
         TX_PUBLICATION_BISECT_STAGE
@@ -188,13 +200,12 @@ struct SharedTxDebugSnapshot(UnsafeCell<TxDebugSnapshot>);
 
 unsafe impl Sync for SharedTxDebugSnapshot {}
 
-static TX_DEBUG_SNAPSHOT: SharedTxDebugSnapshot = SharedTxDebugSnapshot(UnsafeCell::new(
-    TxDebugSnapshot {
+static TX_DEBUG_SNAPSHOT: SharedTxDebugSnapshot =
+    SharedTxDebugSnapshot(UnsafeCell::new(TxDebugSnapshot {
         values: [0; 8],
         next: 0,
         valid: false,
-    },
-));
+    }));
 
 struct SharedTxExecTrace(UnsafeCell<[u32; 12]>);
 
@@ -264,6 +275,13 @@ unsafe fn packet_ram_matches(destination: u32, source: &[u8]) -> bool {
     true
 }
 
+fn is_wsm_tx_context(context: u32) -> bool {
+    let address = context as usize;
+    (WSM_TX_CONTEXT_BASE..WSM_TX_CONTEXT_BASE + WSM_TX_CONTEXT_COUNT * TX_CONTEXT_SIZE)
+        .contains(&address)
+        && (address - WSM_TX_CONTEXT_BASE).is_multiple_of(TX_CONTEXT_SIZE)
+}
+
 unsafe fn release_context_address(context: u32) {
     unsafe {
         let address = context as usize;
@@ -276,6 +294,28 @@ unsafe fn release_context_address(context: u32) {
         free_head.write_volatile(context);
         let allocated = 0x0400_8f70 as *mut u8;
         allocated.write_volatile(allocated.read_volatile().wrapping_sub(1));
+    }
+}
+
+unsafe fn release_wsm_context_address(context: u32) {
+    unsafe {
+        let address = context as usize;
+        let header = ((address + 0x1c) as *const u32).read_volatile();
+        let backing = (0..TX_CONTEXT_COUNT)
+            .map(|index| (TX_CONTEXT_BASE + index * TX_CONTEXT_SIZE) as u32)
+            .find(|candidate| expected_header_address(*candidate) == Some(header));
+        ((address + 0x20) as *mut u32).write_volatile(0xff);
+        ((address + 0x70) as *mut u16).write_volatile(0x00ff);
+        let flags = (address + 0x80) as *mut u32;
+        flags.write_volatile(flags.read_volatile() | 0x0004_0000);
+        let free_head = WSM_TX_CONTEXT_FREE_HEAD as *mut u32;
+        ((address + 4) as *mut u32).write_volatile(free_head.read_volatile());
+        free_head.write_volatile(context);
+        let allocated = 0x0400_3e9e as *mut u8;
+        allocated.write_volatile(allocated.read_volatile().wrapping_sub(1));
+        if let Some(backing) = backing {
+            release_context_address(backing);
+        }
     }
 }
 
@@ -306,6 +346,7 @@ pub enum ProbeBuildError {
     PipeSlotOwnershipMismatch,
     DescriptorReadbackMismatch,
     UnsupportedPublicationShape,
+    CryptoFailure,
 }
 
 pub struct PreparedProbe {
@@ -324,6 +365,49 @@ static PREPARED_PROBE_SCRATCH: PreparedProbeScratch =
         length: 0,
         rate: 0,
     }));
+
+static TRANSFORMED_HOST_SCRATCH: PreparedProbeScratch =
+    PreparedProbeScratch(UnsafeCell::new(PreparedProbe {
+        bytes: [0; MAX_TEMPLATE_FRAME_LEN],
+        length: 0,
+        rate: 0,
+    }));
+
+static LAST_EAPOL_SCRATCH: PreparedProbeScratch =
+    PreparedProbeScratch(UnsafeCell::new(PreparedProbe {
+        bytes: [0; MAX_TEMPLATE_FRAME_LEN],
+        length: 0,
+        rate: 0,
+    }));
+
+#[derive(Clone, Copy)]
+struct RetainedEapolMetadata {
+    queue_id: u8,
+    more: bool,
+    flags: u8,
+    expire_time: u32,
+    ht_tx_parameters: u32,
+}
+
+struct SharedRetainedEapolMetadata(UnsafeCell<RetainedEapolMetadata>);
+
+unsafe impl Sync for SharedRetainedEapolMetadata {}
+
+static LAST_EAPOL_METADATA: SharedRetainedEapolMetadata =
+    SharedRetainedEapolMetadata(UnsafeCell::new(RetainedEapolMetadata {
+        queue_id: 0,
+        more: false,
+        flags: 0,
+        expire_time: 0,
+        ht_tx_parameters: 0,
+    }));
+
+struct SharedReplayDataPathGuard(UnsafeCell<bool>);
+
+unsafe impl Sync for SharedReplayDataPathGuard {}
+
+static REPLAY_DATA_PATH_GUARD: SharedReplayDataPathGuard =
+    SharedReplayDataPathGuard(UnsafeCell::new(false));
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PhyRateWords {
@@ -356,9 +440,7 @@ pub fn build_phy_rate_words(
     };
     PhyRateWords {
         control,
-        rate: class
-            | u32::from(rate_attribute & 0x0f)
-            | (u32::from(hardware_rate_code & 7) << 16),
+        rate: class | u32::from(rate_attribute & 0x0f) | (u32::from(hardware_rate_code & 7) << 16),
     }
 }
 
@@ -388,8 +470,7 @@ pub fn compute_single_frame_pas_timing(
     let stream = flags & 8 != 0;
     let payload_length = frame_length.wrapping_add(4);
     let payload_base = crate::mac::base_airtime(phy_config, rate, payload_length, stream);
-    let payload_extended =
-        crate::mac::extended_airtime(phy_config, rate, payload_length, stream);
+    let payload_extended = crate::mac::extended_airtime(phy_config, rate, payload_length, stream);
     let (ack, frame_kind) = if flags & 0x0200 != 0 {
         (0, 0xff)
     } else if flags & 0x4000 != 0 {
@@ -1133,15 +1214,41 @@ pub unsafe fn enter_mac_fatal_quiescence(
     unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
     unsafe {
         let mirror = 0x0900_ffb0_usize;
+        let current_pipe = read_u32(CURRENT_PIPE as usize);
+        let current_slot = read_u32(CURRENT_SLOT as usize);
+        let pending = read_u32(PIPE_IRQ_PENDING as usize);
+        let trigger = read_u32(PIPE_IRQ_TRIGGER as usize);
+        let nonfatal_count = read_u32(0x0900_ffd8);
+        let nonfatal_last = read_u32(0x0900_ffdc);
         write_u32(mirror, 0);
         write_u32(mirror + 4, event.raw);
         write_u32(mirror + 8, saved_scheduler_word.raw());
-        write_u32(mirror + 0x0c, read_u32(CURRENT_PIPE as usize));
-        write_u32(mirror + 0x10, read_u32(CURRENT_SLOT as usize));
-        write_u32(mirror + 0x14, read_u32(PIPE_IRQ_PENDING as usize));
-        write_u32(mirror + 0x18, read_u32(PIPE_IRQ_TRIGGER as usize));
+        write_u32(mirror + 0x0c, current_pipe);
+        write_u32(mirror + 0x10, current_slot);
+        write_u32(mirror + 0x14, pending);
+        write_u32(mirror + 0x18, trigger);
         core::arch::asm!("", options(nostack, preserves_flags));
         write_u32(mirror, MAC_FATAL_MAGIC);
+        crate::hif::publish_mac_fatal_exception([
+            event.raw,
+            u32::from(event.event_type),
+            saved_scheduler_word.raw(),
+            current_pipe,
+            current_slot,
+            pending,
+            trigger,
+            nonfatal_count,
+            nonfatal_last,
+            cpsr,
+            read_u32(0x09c0_0a24),
+            read_u32(0x0400_1e6c),
+            u32::from(read_u8(0x0400_8f70)),
+            u32::from(read_u16(0x0400_8f76)),
+            read_u32(COMPLETION_RING_STATE + 0x0c),
+            read_u32(COMPLETION_RING_STATE + 0x10),
+            read_u32(0x0ac0_0004),
+            MAC_FATAL_MAGIC,
+        ]);
     }
     loop {
         unsafe { core::arch::asm!("nop", options(nomem, nostack)) };
@@ -2222,9 +2329,21 @@ impl PipeSuccessEffects for SingleProbeMacBackend {
 }
 
 #[cfg(target_arch = "arm")]
+fn record_nonfatal_backend_diagnostic(code: u32, pipe: u8) {
+    unsafe {
+        let count = read_u32(0x0900_ffd8).wrapping_add(1);
+        write_u32(0x0900_ffd8, count);
+        write_u32(0x0900_ffdc, code | u32::from(pipe & 3));
+        trace_tx_value(0x28, code | u32::from(pipe & 3));
+    }
+}
+
+#[cfg(target_arch = "arm")]
 impl PipeStartEffects for SingleProbeMacBackend {
     fn start_without_pending_diagnostic(&mut self, pipe: u8) {
-        terminal_probe_backend_fault(pipe)
+        // Vendor `txp_pipe_tx_start()` reports this through its trace helper
+        // and returns. It is not an assertion or a terminal MAC fault.
+        record_nonfatal_backend_diagnostic(0x5354_0000, pipe);
     }
 }
 
@@ -2239,7 +2358,10 @@ impl MessageCompletionEffects for SingleProbeMacBackend {
     }
 
     fn message_allocation_failed(&mut self) {
-        terminal_probe_backend_fault(0)
+        // `lmc_msg_alloc()` records ring exhaustion and returns null. The
+        // single-frame backend disables these messages, but retain the vendor
+        // non-fatal behavior if that policy changes.
+        record_nonfatal_backend_diagnostic(0x4c4d_0000, 0);
     }
 }
 
@@ -2288,15 +2410,30 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
                 context,
                 status,
                 |completion_class, context| {
-                    if completion_class != 6 {
+                    if completion_class == 0
+                        && (cfg!(feature = "host-class0-direct-diagnostic")
+                            || cfg!(feature = "vendor-queue-handoff-diagnostic"))
+                    {
+                        release_wsm_context_address(context.raw());
+                    } else if completion_class == 0 && cfg!(feature = "vendor-host-tx-foundation") {
+                        // The vendor-host runtime retains class-0 context and
+                        // HIF ownership until its WSM confirmation is actually
+                        // published by the main dispatcher.
+                    } else if completion_class == 6 {
+                        service_class6_probe_completion(context.raw());
+                    } else {
                         terminal_probe_backend_fault(0);
                     }
-                    service_class6_probe_completion(context.raw());
                 },
                 || {},
             )
         };
-        if dispatch == CompletedContextDispatch::Returned {
+        if dispatch == CompletedContextDispatch::Returned
+            || ((cfg!(feature = "host-class0-direct-diagnostic")
+                || cfg!(feature = "vendor-queue-handoff-diagnostic")
+                || cfg!(feature = "vendor-host-tx-foundation"))
+                && dispatch == CompletedContextDispatch::ClassZeroCallbackOwnsReturn)
+        {
             self.completed = Some((context, status));
         } else {
             terminal_probe_backend_fault(0);
@@ -2509,8 +2646,7 @@ unsafe fn trace_tx_stage(stage: u32) {
         write_u32(TX_TRACE_RETAINED + 8, trace[2]);
         let debug = &mut *TX_DEBUG_SNAPSHOT.0.get();
         debug.values = [
-            trace[2], trace[3], trace[5], trace[6],
-            trace[7], trace[8], trace[9], trace[10],
+            trace[2], trace[3], trace[5], trace[6], trace[7], trace[8], trace[9], trace[10],
         ];
         debug.next = 0;
         debug.valid = true;
@@ -2565,6 +2701,80 @@ pub unsafe fn service_single_probe_runtime_inactive(
         completion_drained,
         completion: backend.take_completion(),
     }
+}
+
+/// Irreversibly advance one reserved class-0 slot and trigger its MAC pipe.
+/// All fallible descriptor/ring work must have completed before this boundary.
+///
+/// # Safety
+/// The slot, command storage, pipe producer, and class-0 context must be
+/// exclusively owned by the vendor-host runtime.
+pub const fn advance_host_pipe_producer(slot: u8) -> (u8, u8) {
+    let consumed = slot & 3;
+    (consumed, consumed.wrapping_add(1) & 3)
+}
+
+#[cfg(target_arch = "arm")]
+pub unsafe fn publish_host_class0_slot(
+    context: u32,
+    pipe: u8,
+    slot: u8,
+    slot_record: u32,
+    command: u32,
+) -> Result<(), ProbeBuildError> {
+    if !is_wsm_tx_context(context) || pipe >= 4 || slot >= 4 {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
+    let frame_node = FrameNodeAddress::new(context + FRAME_NODE_OFFSET);
+    if !single_frame_slot_matches(
+        unsafe { read_u32(slot_record as usize + 0x0c) },
+        frame_node.raw(),
+        unsafe { read_u8(slot_record as usize) },
+        unsafe { read_u8(slot_record as usize + 1) },
+        unsafe { read_u8(frame_node.raw() as usize + 0x56) },
+    ) {
+        return Err(ProbeBuildError::PipeSlotOwnershipMismatch);
+    }
+    let pipe_state = pipe_state_address(pipe);
+    let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
+    if hardware_ring == 0 {
+        return Err(ProbeBuildError::PipeStateUnavailable);
+    }
+
+    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    runtime.backend.reset_for_publication();
+    unsafe {
+        // Exact tail of `txp_build_pipe_descriptor`: remember the consumed
+        // index, then advance the producer modulo four.
+        let (consumed, next) = advance_host_pipe_producer(slot);
+        write_u8(pipe_state as usize + 1, consumed);
+        write_u8(pipe_state as usize, next);
+        write_u16(0x0400_8f76, read_u16(0x0400_8f76).wrapping_add(1));
+        execute_single_probe_publication(
+            &mut VolatileMacPipeMmio,
+            SingleProbePublicationInput {
+                pipe,
+                slot,
+                pipe_state,
+                slot_record,
+                command_storage: command,
+                hardware_ring,
+                frame_node,
+                expects_ack: read_u8(frame_node.raw() as usize + 0x56) != 0xff,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Cooperatively service MAC events and class-0 completion for the ordinary
+/// vendor-host runtime.
+#[cfg(target_arch = "arm")]
+pub unsafe fn service_host_class0_runtime(max_events: u32) -> Option<(u32, u16, u8)> {
+    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) }
+        .completion
+        .map(|(context, status)| (context.raw(), status, runtime.backend.retry.attempts()))
 }
 
 /// Exact bounded loop shape from vendor FIQ handler `0x9e90..0xa038`.
@@ -4539,9 +4749,7 @@ fn single_frame_slot_matches(
     slot_frame_kind: u8,
     frame_kind: u8,
 ) -> bool {
-    slot_frame_node == expected_frame_node
-        && slot_kind == 0
-        && slot_frame_kind == frame_kind
+    slot_frame_node == expected_frame_node && slot_kind == 0 && slot_frame_kind == frame_kind
 }
 
 pub fn execute_single_probe_publication<M: MacPipeMmio>(
@@ -4659,6 +4867,7 @@ pub struct PreparedProbePublication {
     original_slot_frame: u32,
     original_command: [u32; 16],
     checksum: u32,
+    start_phy: bool,
 }
 
 impl PreparedProbePublication {
@@ -4718,9 +4927,11 @@ impl PreparedProbePublication {
             if publication_bisect_reached(3) {
                 return Ok(publication(3));
             }
-            let phy_bisect_stage = start_phy_operation_1();
-            if phy_bisect_stage != 0 {
-                return Ok(publication(phy_bisect_stage));
+            if self.start_phy {
+                let phy_bisect_stage = start_phy_operation_1();
+                if phy_bisect_stage != 0 {
+                    return Ok(publication(phy_bisect_stage));
+                }
             }
             let pipe_state = pipe_state_address(self.pipe);
             let hardware_ring = read_u32(pipe_state as usize + 8);
@@ -4740,10 +4951,7 @@ impl PreparedProbePublication {
             // Vendor queue accounting increments the global active-completion
             // count before hardware ownership. `service_completion_drain`
             // performs the matching decrement before callback return.
-            write_u16(
-                0x0400_8f76,
-                read_u16(0x0400_8f76).wrapping_add(1),
-            );
+            write_u16(0x0400_8f76, read_u16(0x0400_8f76).wrapping_add(1));
             if publication_bisect_reached(7) {
                 return Ok(publication(7));
             }
@@ -4789,7 +4997,11 @@ impl PreparedProbePublication {
             for (index, word) in self.original_command.into_iter().enumerate() {
                 ((self.command as usize + index * 4) as *mut u32).write_volatile(word);
             }
-            release_context_address(self.context.context);
+            if is_wsm_tx_context(self.context.context) {
+                release_wsm_context_address(self.context.context);
+            } else {
+                release_context_address(self.context.context);
+            }
         }
         Ok(self.checksum)
     }
@@ -4806,10 +5018,7 @@ unsafe fn prepare_single_frame_pas_timing(
         }
         let flags = read_u32(frame + 4);
         let rate = read_u8(frame + 0x0f);
-        let rate_map = PAS_VIF_STATE
-            + interface * 0x98
-            + PAS_RATE_MAP_OFFSET
-            + usize::from(rate);
+        let rate_map = PAS_VIF_STATE + interface * 0x98 + PAS_RATE_MAP_OFFSET + usize::from(rate);
         let timing_index = usize::from(read_u8(rate_map));
         // `pas_compute_tx_timing` replaces the temporary allocation-flag bits
         // in PAS `+0x0d` with this hardware-rate code before descriptor build.
@@ -4978,12 +5187,75 @@ pub unsafe fn prepare_probe_context(
     }
 }
 
+#[cfg(target_arch = "arm")]
+unsafe fn move_to_wsm_class0_context(
+    source: PreparedProbeContext,
+) -> Result<PreparedProbeContext, ProbeBuildError> {
+    unsafe {
+        let free_head = WSM_TX_CONTEXT_FREE_HEAD as *mut u32;
+        let mut destination = free_head.read_volatile();
+        if destination == 0 || !is_wsm_tx_context(destination) {
+            // Keep management/EAPOL startup byte-for-byte free of host-pool
+            // retained-memory reconstruction. Initialize the pool only when
+            // the first ordinary host frame actually needs class-0 ownership.
+            crate::mac::initialize_wsm_tx_context_pool();
+            destination = free_head.read_volatile();
+        }
+        if destination == 0 || !is_wsm_tx_context(destination) {
+            release_context_address(source.context);
+            return Err(ProbeBuildError::ContextPoolEmpty);
+        }
+        let destination_address = destination as usize;
+        free_head.write_volatile(((destination_address + 4) as *const u32).read_volatile());
+        let allocated = 0x0400_3e9e as *mut u8;
+        allocated.write_volatile(allocated.read_volatile().wrapping_add(1));
+
+        let destination_request = (destination_address as *const u32).read_volatile();
+        let destination_frame_state = ((destination_address + 0xa0) as *const u32).read_volatile();
+        if !(0x0900_3678..0x0900_4048).contains(&destination_frame_state) {
+            release_context_address(source.context);
+            release_wsm_context_address(destination);
+            return Err(ProbeBuildError::InvalidContextPointer);
+        }
+        for offset in (0..TX_CONTEXT_SIZE).step_by(4) {
+            ((destination_address + offset) as *mut u32)
+                .write_volatile(((source.context as usize + offset) as *const u32).read_volatile());
+        }
+
+        // The vendor host path borrows the HIF frame until class-0 completion.
+        // Our transformed frame lives in the internal context's packet-RAM
+        // buffer, so retain that context as the host descriptor's backing
+        // owner instead of guessing a nonexistent host-pool buffer mapping.
+        (destination_address as *mut u32).write_volatile(destination_request);
+        ((destination_address + 0x0f) as *mut u8).write_volatile(0);
+        ((destination_address + 0x1c) as *mut u32).write_volatile(source.header);
+        ((destination_address + 0x20) as *mut u32).write_volatile(0xfe);
+        ((destination_address + 0x54) as *mut u32).write_volatile(source.header);
+        ((destination_address + 0x70) as *mut u16).write_volatile(0xfe);
+        ((destination_address + 0xa0) as *mut u32).write_volatile(destination_frame_state);
+        ((destination_address + 0x53) as *mut u8).write_volatile(0);
+        ((destination_address + 0xbf) as *mut u8).write_volatile(0);
+        ((destination_address + 0x80) as *mut u32).write_volatile(3);
+
+        Ok(PreparedProbeContext {
+            context: destination,
+            ..source
+        })
+    }
+}
+
 /// Returns a context that has never been queued or published.
 ///
 /// # Safety
 /// `context` must still be software-owned and must not have entered a queue.
 pub unsafe fn release_unpublished_probe_context(context: PreparedProbeContext) {
-    unsafe { release_context_address(context.context) };
+    unsafe {
+        if is_wsm_tx_context(context.context) {
+            release_wsm_context_address(context.context);
+        } else {
+            release_context_address(context.context);
+        }
+    }
 }
 
 /// Builds the single-frame command list from a prepared context using the live
@@ -5014,8 +5286,11 @@ pub unsafe fn build_prepared_probe_descriptor(
             rate_attribute,
         );
         let if_id = ((address + 0xbd) as *const u8).read_volatile();
-        let vif_slot = ((address + 0xbe) as *const u8).read_volatile();
         let metadata_address = 0x0900_8008_u32.wrapping_add(u32::from(if_id));
+        let vif_slot = ((address + 0xbe) as *const u8).read_volatile();
+        // `txp_submit_to_pipe` uses PAS `bVifSlot` (`ctx+0xbe`) here when
+        // flags bit 0 is clear. Both internal and host contexts use this
+        // selector; the TX rate indexes different PHY tables.
         let secondary_address = 0x0900_7bc0_u32.wrapping_add(u32::from(vif_slot) * 2);
         build_single_frame_pipe_descriptor(SingleFramePipeInput {
             phy_rate_word: phy.rate,
@@ -5097,6 +5372,54 @@ unsafe fn emit_prepared_probe_descriptor(
     }
 }
 
+/// Build the reusable descriptor image produced by vendor
+/// `txp_submit_to_pipe(ctx+0xa0, ctx+0x54, ctx+0x8a)` for one real host
+/// context. This does not publish a pipe slot or transfer scheduler ownership.
+///
+/// # Safety
+/// `context` must be an exclusively owned class-0 host context whose header,
+/// length, rate, classification, and duration fields are initialized.
+fn host_prepared_context(context: u32) -> Result<PreparedProbeContext, ProbeBuildError> {
+    if !is_wsm_tx_context(context) {
+        return Err(ProbeBuildError::InvalidContextPointer);
+    }
+    let address = context as usize;
+    Ok(PreparedProbeContext {
+        context,
+        header: unsafe { ((address + 0x54) as *const u32).read_volatile() },
+        length: unsafe { ((address + 0x5c) as *const u16).read_volatile() },
+        rate: unsafe { ((address + 0x63) as *const u8).read_volatile() },
+        expects_ack: unsafe { ((address + 0x58) as *const u32).read_volatile() & 0x300 == 0 },
+    })
+}
+
+/// Compute the PAS timing image after classification and software crypto.
+///
+/// # Safety
+/// `context` must be exclusively owned and not yet linked into the pending
+/// list or global PAS ring.
+pub unsafe fn prepare_host_frame_timing(context: u32) -> Result<(), ProbeBuildError> {
+    let mut prepared = host_prepared_context(context)?;
+    unsafe { prepare_single_frame_pas_timing(&mut prepared) }
+}
+
+pub unsafe fn emit_host_frame_descriptor_at(
+    context: u32,
+    destination: u32,
+) -> Result<u32, ProbeBuildError> {
+    let prepared = host_prepared_context(context)?;
+    unsafe { emit_prepared_probe_descriptor(&prepared, destination) }
+}
+
+pub unsafe fn build_host_frame_descriptor(context: u32) -> Result<u32, ProbeBuildError> {
+    let address = context as usize;
+    let destination = unsafe { ((address + 0xa0) as *const u32).read_volatile() };
+    if !(0x0900_3678..0x0900_4048).contains(&destination) {
+        return Err(ProbeBuildError::InvalidContextPointer);
+    }
+    unsafe { emit_host_frame_descriptor_at(context, destination) }
+}
+
 /// Builds a software-owned pipe reservation without publishing hardware state.
 ///
 /// # Safety
@@ -5120,6 +5443,77 @@ pub unsafe fn prepare_probe_publication(
     unsafe { prepare_context_publication(context) }
 }
 
+/// Reproduce the vendor host-frame ownership handoff up to scheduler selection:
+/// post-crypto ready bit, pending-list insertion/removal by `task_b88e`, then
+/// `tx_frame_done_release -> pas_retime_and_kick` through the 64-entry PAS ring.
+/// The caller still owns the context after this diagnostic round trip.
+#[cfg(target_arch = "arm")]
+unsafe fn vendor_queue_handoff_before_direct_publication(
+    context: u32,
+) -> Result<(), ProbeBuildError> {
+    unsafe {
+        let previous = mask_irq_fiq_terminal();
+        let pending = 0x0400_8ad8_usize;
+        let old_head = read_u32(pending);
+        let old_tail = read_u32(pending + 4);
+
+        // `txq_list_insert(context, queue, 2)` prepends to the pending list.
+        write_u32(context as usize + 4, old_head);
+        if old_tail == 0 {
+            write_u32(pending + 4, context);
+        }
+        write_u32(pending, context);
+        write_u32(
+            context as usize + 0x80,
+            read_u32(context as usize + 0x80) | 0x20,
+        );
+
+        // The joined/active task accepts this frame, removes the same head,
+        // and passes it through `tx_frame_done_release`.
+        let next = read_u32(context as usize + 4);
+        write_u32(pending, next);
+        if read_u32(pending + 4) == context {
+            write_u32(pending + 4, if next == 0 { 0 } else { old_tail });
+        }
+        write_u32(context as usize + 4, 0);
+        write_u32(
+            context as usize + 0x80,
+            read_u32(context as usize + 0x80) | 0x40,
+        );
+
+        // `pas_txq_push_global(context + 0x54)` appends class-0 host frames.
+        let ring = 0x0400_1578_usize;
+        let head = read_u32(ring) as u8 & 0x3f;
+        let tail = read_u32(ring + 4) as u8 & 0x3f;
+        let following = tail.wrapping_add(1) & 0x3f;
+        if head != tail || following == head {
+            restore_irq_fiq(previous);
+            return Err(ProbeBuildError::PipeSlotBusy);
+        }
+        let frame_node = context + FRAME_NODE_OFFSET;
+        write_u32(ring + 8 + usize::from(tail) * 4, frame_node);
+        write_u32(ring + 4, u32::from(following));
+
+        // The minimum scheduler diagnostic consumes exactly the frame it just
+        // enqueued, preserving an otherwise-empty ring for the direct backend.
+        let selected = read_u32(ring + 8 + usize::from(head) * 4);
+        if selected != frame_node {
+            restore_irq_fiq(previous);
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        write_u32(ring + 8 + usize::from(head) * 4, 0);
+        write_u32(ring, u32::from(head.wrapping_add(1) & 0x3f));
+        // The non-aggregate scheduler branch marks the selected frame before
+        // `txp_build_pipe_descriptor(..., 0)`.
+        write_u32(
+            context as usize + 0x58,
+            read_u32(context as usize + 0x58) | 0x0400_0000,
+        );
+        restore_irq_fiq(previous);
+    }
+    Ok(())
+}
+
 unsafe fn prepare_context_publication(
     context: PreparedProbeContext,
 ) -> Result<PreparedProbePublication, ProbeBuildError> {
@@ -5129,7 +5523,7 @@ unsafe fn prepare_context_publication(
         let pipe =
             (0x0400_02e0_usize.wrapping_add(usize::from(queue)) as *const u8).read_volatile();
         if pipe >= 4 {
-            release_context_address(context.context);
+            release_unpublished_probe_context(context);
             return Err(ProbeBuildError::PipeStateUnavailable);
         }
         let pipe_record = 0x0400_1720_usize + usize::from(pipe) * 0x6c;
@@ -5138,7 +5532,7 @@ unsafe fn prepare_context_publication(
         let slot_record = pipe_record + 0x0c + usize::from(slot) * 0x18;
         let command = ((slot_record + 0x14) as *const u32).read_volatile();
         if hardware == 0 || command == 0 {
-            release_context_address(context.context);
+            release_unpublished_probe_context(context);
             return Err(ProbeBuildError::PipeStateUnavailable);
         }
         // Startup imports persistent slot tails from vendor state. They are not
@@ -5173,7 +5567,7 @@ unsafe fn prepare_context_publication(
                 for (index, word) in original_command.into_iter().enumerate() {
                     ((command as usize + index * 4) as *mut u32).write_volatile(word);
                 }
-                release_context_address(context.context);
+                release_unpublished_probe_context(context);
                 return Err(error);
             }
         };
@@ -5187,29 +5581,50 @@ unsafe fn prepare_context_publication(
             original_slot_frame,
             original_command,
             checksum,
+            start_phy: true,
         })
     }
 }
 
-/// Prepare one host-supplied unicast management or EAPOL frame for the proven
+/// Prepare one host-supplied unicast management or data frame for the proven
 /// single-context MAC publication path.
 ///
 /// # Safety
 /// JOIN must own the selected VIF/channel and no scan probe or host frame may
 /// currently own the shared context/pipe backend.
 #[cfg(target_arch = "arm")]
-unsafe fn prepare_host_management_publication(
+unsafe fn prepare_legacy_control_publication(
     request: &crate::wsm::TxRequest<'_>,
     if_id: u8,
 ) -> Result<PreparedProbePublication, ProbeBuildError> {
-    if if_id > 1 || !crate::vif::is_active(if_id) {
+    if if_id > 1
+        || !crate::vif::is_active(if_id)
+        || (!request.is_unicast_management()
+            && !request.is_unicast_eapol()
+            && !((cfg!(feature = "legacy-data-publication-diagnostic")
+                || cfg!(feature = "legacy-data-eapol-metadata-diagnostic")
+                || cfg!(feature = "legacy-data-eapol-rate-diagnostic")
+                || cfg!(feature = "legacy-data-eapol-length-diagnostic"))
+                && request.is_unicast_data()))
+    {
         return Err(ProbeBuildError::InvalidInterface);
-    }
-    if !request.is_unicast_management() && !request.is_unicast_eapol() {
-        return Err(ProbeBuildError::WrongTemplateType);
     }
     if request.frame.len() > MAX_TEMPLATE_FRAME_LEN {
         return Err(ProbeBuildError::FrameTooLarge);
+    }
+
+    if request.is_unicast_eapol() {
+        let retained = unsafe { &mut *LAST_EAPOL_SCRATCH.0.get() };
+        retained.bytes[..request.frame.len()].copy_from_slice(request.frame);
+        retained.length = request.frame.len();
+        retained.rate = request.max_tx_rate;
+        *unsafe { &mut *LAST_EAPOL_METADATA.0.get() } = RetainedEapolMetadata {
+            queue_id: request.queue_id,
+            more: request.more,
+            flags: request.flags,
+            expire_time: request.expire_time,
+            ht_tx_parameters: request.ht_tx_parameters,
+        };
     }
 
     let scratch = unsafe { &mut *PREPARED_PROBE_SCRATCH.0.get() };
@@ -5219,9 +5634,6 @@ unsafe fn prepare_host_management_publication(
 
     let mut context = unsafe { prepare_probe_context(scratch, if_id) }?;
     let address = context.context as usize;
-    // Probe templates deliberately patch address fields at +0x0a/+0x0c/+0x0e.
-    // Host WSM frames already contain their final DA/SA/BSSID and must be
-    // restored byte-for-byte after reusing the probe context initializer.
     unsafe { copy_to_packet_ram(context.header, request.frame) };
     if !unsafe { packet_ram_matches(context.header, request.frame) } {
         unsafe { release_context_address(context.context) };
@@ -5229,17 +5641,10 @@ unsafe fn prepare_host_management_publication(
     }
     let queue = request.queue_id.min(3);
     unsafe {
-        // `ctx+0x60` is the vendor AC selected through the four-entry WSM
-        // queue map, not the raw WSM queue ID. The adjacent bytes retain the
-        // PTA priority and retry-policy selector packed in WSM TX flags.
-        let ac = (0x0400_02dc_usize.wrapping_add(usize::from(queue)) as *const u8)
-            .read_volatile();
+        let ac = (0x0400_02dc_usize.wrapping_add(usize::from(queue)) as *const u8).read_volatile();
         ((address + 0x60) as *mut u8).write_volatile(ac);
         ((address + 0x61) as *mut u8).write_volatile((request.flags & 0x0f) >> 1);
         ((address + 0x62) as *mut u8).write_volatile((request.flags & 0x7f) >> 4);
-        // Standard CW1200 queue IDs carry only the AC. XR819's internal TX
-        // policy requires a separately mapped link slot, and operating STA
-        // state reserves slot zero as a sentinel while exposing slots 1..7.
         ((address + 0xbf) as *mut u8).write_volatile(1);
     }
     if request.max_tx_rate < 22 {
@@ -5249,8 +5654,6 @@ unsafe fn prepare_host_management_publication(
             ((address + 0x63) as *mut u8).write_volatile(context.rate);
         }
     }
-    // `tx_lmac_req_submit` seeds bit 23, then `tx_classify_hdr_len` adds the
-    // direct-frame marker and multicast/no-ACK classification.
     let mut tx_flags = 0x0080_1000_u32;
     if request.frame.get(4).is_some_and(|octet| octet & 1 != 0) {
         tx_flags |= 0x300;
@@ -5266,13 +5669,340 @@ unsafe fn prepare_host_management_publication(
         ((address + 0x58) as *mut u32).write_volatile(tx_flags);
         ((address + 0x64) as *mut u32).write_volatile(request.expire_time);
     }
+    if let Err(error) = unsafe { prepare_single_frame_pas_timing(&mut context) } {
+        unsafe { release_context_address(context.context) };
+        return Err(error);
+    }
+    unsafe { prepare_context_publication(context) }
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn prepare_host_management_publication(
+    request: &crate::wsm::TxRequest<'_>,
+    if_id: u8,
+) -> Result<PreparedProbePublication, ProbeBuildError> {
+    let force_ordinary_replay = unsafe { *REPLAY_DATA_PATH_GUARD.0.get() };
+    if !force_ordinary_replay && (request.is_unicast_management() || request.is_unicast_eapol()) {
+        return unsafe { prepare_legacy_control_publication(request, if_id) };
+    }
+    if cfg!(feature = "replay-eapol-through-data-path-diagnostic")
+        && !force_ordinary_replay
+        && request.is_unicast_data()
+    {
+        let retained = unsafe { &*LAST_EAPOL_SCRATCH.0.get() };
+        if retained.length == 0 {
+            return Err(ProbeBuildError::MissingTemplate);
+        }
+        let metadata = unsafe { *LAST_EAPOL_METADATA.0.get() };
+        let replay_request = crate::wsm::TxRequest {
+            packet_id: request.packet_id,
+            max_tx_rate: retained.rate,
+            queue_id: metadata.queue_id,
+            more: metadata.more,
+            flags: metadata.flags,
+            expire_time: metadata.expire_time,
+            ht_tx_parameters: metadata.ht_tx_parameters,
+            frame: &retained.bytes[..retained.length],
+        };
+        unsafe { *REPLAY_DATA_PATH_GUARD.0.get() = true };
+        let result = unsafe { prepare_host_management_publication(&replay_request, if_id) };
+        unsafe { *REPLAY_DATA_PATH_GUARD.0.get() = false };
+        return result;
+    }
+    if cfg!(feature = "replay-eapol-on-data-diagnostic") && request.is_unicast_data() {
+        let retained = unsafe { &*LAST_EAPOL_SCRATCH.0.get() };
+        if retained.length == 0 {
+            return Err(ProbeBuildError::MissingTemplate);
+        }
+        let metadata = unsafe { *LAST_EAPOL_METADATA.0.get() };
+        let replay_request = crate::wsm::TxRequest {
+            packet_id: request.packet_id,
+            max_tx_rate: retained.rate,
+            queue_id: metadata.queue_id,
+            more: metadata.more,
+            flags: metadata.flags,
+            expire_time: metadata.expire_time,
+            ht_tx_parameters: metadata.ht_tx_parameters,
+            frame: &retained.bytes[..retained.length],
+        };
+        return unsafe { prepare_legacy_control_publication(&replay_request, if_id) };
+    }
+    if (cfg!(feature = "legacy-data-publication-diagnostic")
+        || cfg!(feature = "legacy-data-eapol-metadata-diagnostic")
+        || cfg!(feature = "legacy-data-eapol-rate-diagnostic")
+        || cfg!(feature = "legacy-data-eapol-length-diagnostic"))
+        && request.is_unicast_data()
+    {
+        let transformed = unsafe { &mut *TRANSFORMED_HOST_SCRATCH.0.get() };
+        transformed.bytes[..request.frame.len()].copy_from_slice(request.frame);
+        transformed.length =
+            crate::crypto::strip_ccmp_reservation(&mut transformed.bytes[..request.frame.len()])
+                .map_err(|_| ProbeBuildError::CryptoFailure)?;
+        transformed.rate = request.max_tx_rate;
+        if cfg!(feature = "data-eapol-header-diagnostic") {
+            let retained = unsafe { &*LAST_EAPOL_SCRATCH.0.get() };
+            if retained.length < 24 {
+                return Err(ProbeBuildError::MissingTemplate);
+            }
+            let retained_control = u16::from_le_bytes([retained.bytes[0], retained.bytes[1]]);
+            let retained_header = if retained_control & 0x008f == 0x0088 {
+                26
+            } else {
+                24
+            };
+            if retained.length < retained_header || transformed.length < retained_header {
+                return Err(ProbeBuildError::MissingTemplate);
+            }
+            transformed.bytes[..retained_header]
+                .copy_from_slice(&retained.bytes[..retained_header]);
+        }
+        if cfg!(feature = "legacy-data-eapol-length-diagnostic") {
+            let retained_length = if DATA_DIAGNOSTIC_LENGTH == 0 {
+                unsafe { (&*LAST_EAPOL_SCRATCH.0.get()).length }
+            } else {
+                DATA_DIAGNOSTIC_LENGTH
+            };
+            if retained_length < transformed.length || retained_length > transformed.bytes.len() {
+                return Err(ProbeBuildError::MissingTemplate);
+            }
+            transformed.bytes[transformed.length..retained_length].fill(0);
+            transformed.length = retained_length;
+        }
+        let transformed_request = if cfg!(feature = "legacy-data-eapol-metadata-diagnostic")
+            || cfg!(feature = "legacy-data-eapol-length-diagnostic")
+        {
+            let metadata = unsafe { *LAST_EAPOL_METADATA.0.get() };
+            crate::wsm::TxRequest {
+                packet_id: request.packet_id,
+                max_tx_rate: unsafe { (&*LAST_EAPOL_SCRATCH.0.get()).rate },
+                queue_id: metadata.queue_id,
+                more: metadata.more,
+                flags: metadata.flags,
+                expire_time: metadata.expire_time,
+                ht_tx_parameters: metadata.ht_tx_parameters,
+                frame: &transformed.bytes[..transformed.length],
+            }
+        } else if cfg!(feature = "legacy-data-eapol-rate-diagnostic") {
+            crate::wsm::TxRequest {
+                frame: &transformed.bytes[..transformed.length],
+                max_tx_rate: unsafe { (&*LAST_EAPOL_SCRATCH.0.get()).rate },
+                ..*request
+            }
+        } else {
+            crate::wsm::TxRequest {
+                frame: &transformed.bytes[..transformed.length],
+                ..*request
+            }
+        };
+        return unsafe { prepare_legacy_control_publication(&transformed_request, if_id) };
+    }
+    if if_id > 1 || !crate::vif::is_active(if_id) {
+        return Err(ProbeBuildError::InvalidInterface);
+    }
+    if !request.is_unicast_management() && !request.is_unicast_data() {
+        return Err(ProbeBuildError::WrongTemplateType);
+    }
+    if request.frame.len() > MAX_TEMPLATE_FRAME_LEN {
+        return Err(ProbeBuildError::FrameTooLarge);
+    }
+
+    let scratch = unsafe { &mut *PREPARED_PROBE_SCRATCH.0.get() };
+    scratch.bytes[..request.frame.len()].copy_from_slice(request.frame);
+    scratch.length = request.frame.len();
+    scratch.rate = request.max_tx_rate;
+    let legacy_eapol = request.is_unicast_eapol() && !force_ordinary_replay;
+    if !legacy_eapol {
+        if cfg!(feature = "non-qos-data-diagnostic") {
+            scratch.length = crate::crypto::strip_qos_control(&mut scratch.bytes[..scratch.length])
+                .map_err(|_| ProbeBuildError::CryptoFailure)?;
+        }
+        if cfg!(feature = "plaintext-data-diagnostic") {
+            scratch.length =
+                crate::crypto::strip_ccmp_reservation(&mut scratch.bytes[..scratch.length])
+                    .map_err(|_| ProbeBuildError::CryptoFailure)?;
+            if cfg!(feature = "pad-plaintext-data-min-length-diagnostic") && scratch.length < 147 {
+                scratch.bytes[scratch.length..147].fill(0);
+                scratch.length = 147;
+            }
+            if cfg!(feature = "data-eapol-header-diagnostic") {
+                let retained = unsafe { &*LAST_EAPOL_SCRATCH.0.get() };
+                if retained.length < 24 {
+                    return Err(ProbeBuildError::MissingTemplate);
+                }
+                let retained_control = u16::from_le_bytes([retained.bytes[0], retained.bytes[1]]);
+                let retained_header = if retained_control & 0x008f == 0x0088 {
+                    26
+                } else {
+                    24
+                };
+                if retained.length < retained_header || scratch.length < retained_header {
+                    return Err(ProbeBuildError::MissingTemplate);
+                }
+                scratch.bytes[..retained_header]
+                    .copy_from_slice(&retained.bytes[..retained_header]);
+            }
+        } else {
+            if cfg!(feature = "pad-protected-data-min-length-diagnostic") && scratch.length < 147 {
+                // WSM reserves the final eight bytes for the CCMP MIC. Grow
+                // the plaintext immediately before that reservation so the
+                // MIC remains at the final frame boundary consumed by
+                // `encrypt_tx_frame`.
+                let plaintext_end = scratch
+                    .length
+                    .checked_sub(crate::crypto::CCMP_MIC_LEN)
+                    .ok_or(ProbeBuildError::CryptoFailure)?;
+                scratch.bytes[plaintext_end..147].fill(0);
+                scratch.length = 147;
+            }
+            crate::crypto::encrypt_tx_frame(&mut scratch.bytes[..scratch.length], if_id)
+                .map_err(|_| ProbeBuildError::CryptoFailure)?;
+            if cfg!(feature = "strip-encrypted-data-diagnostic") {
+                scratch.length =
+                    crate::crypto::strip_ccmp_reservation(&mut scratch.bytes[..scratch.length])
+                        .map_err(|_| ProbeBuildError::CryptoFailure)?;
+                if scratch.length < 147 {
+                    scratch.bytes[scratch.length..147].fill(0);
+                    scratch.length = 147;
+                }
+            }
+            #[cfg(feature = "clear-protected-data-diagnostic")]
+            if scratch.bytes[..scratch.length]
+                .get(1)
+                .is_some_and(|value| value & 0x40 != 0)
+            {
+                scratch.bytes[1] &= !0x40;
+            }
+            if cfg!(feature = "zero-data-body-diagnostic") {
+                let control = u16::from_le_bytes([scratch.bytes[0], scratch.bytes[1]]);
+                let address_mode = control & 0x0300;
+                let mut header_length = if address_mode == 0x0300 { 30 } else { 24 };
+                if control & 0x008f == 0x0088 {
+                    header_length += if control & 0x8000 != 0 { 6 } else { 2 };
+                }
+                scratch.bytes[header_length..scratch.length].fill(0);
+            }
+        }
+    }
+    let host_queue = if cfg!(feature = "host-pipe0-diagnostic") {
+        0
+    } else {
+        request.queue_id & 3
+    };
+
+    let mut context = unsafe { prepare_probe_context(scratch, if_id) }?;
+    let address = context.context as usize;
+    // Probe templates deliberately patch address fields at +0x0a/+0x0c/+0x0e.
+    // Host WSM frames already contain their final DA/SA/BSSID and must be
+    // restored byte-for-byte after reusing the probe context initializer.
+    let prepared_frame = &scratch.bytes[..scratch.length];
+    unsafe { copy_to_packet_ram(context.header, prepared_frame) };
+    if !unsafe { packet_ram_matches(context.header, prepared_frame) } {
+        unsafe { release_context_address(context.context) };
+        return Err(ProbeBuildError::PacketRamMismatch);
+    }
+    let frame_control = u16::from_le_bytes([prepared_frame[0], prepared_frame[1]]);
+    let address_mode = frame_control & 0x0300;
+    let mut header_length = if address_mode == 0x0300 { 30 } else { 24 };
+    let qos_data = !legacy_eapol && frame_control & 0x008f == 0x0088;
+    if qos_data {
+        header_length += if frame_control & 0x8000 != 0 { 6 } else { 2 };
+    }
+    let queue = host_queue;
+    unsafe {
+        if !legacy_eapol {
+            ((address + 0x44) as *mut u32).write_volatile(header_length);
+            ((address + 0x48) as *mut u32)
+                .write_volatile((scratch.length as u32).saturating_sub(header_length));
+            // RustCrypto has already filled the host-reserved CCMP header and
+            // MIC space. Mark ordinary data as having no pending hardware
+            // crypto work. The validated EAPOL compatibility path preserves
+            // the original class-6 context status unchanged.
+            if frame_control & 0x400c == 0x4008 {
+                ((address + 0x70) as *mut u16).write_volatile(0x0010);
+            }
+        }
+        // `ctx+0x60` is the vendor AC selected through the four-entry WSM
+        // queue map, not the raw WSM queue ID. The adjacent bytes retain the
+        // PTA priority and retry-policy selector packed in WSM TX flags.
+        let ac = (0x0400_02dc_usize.wrapping_add(usize::from(queue)) as *const u8).read_volatile();
+        ((address + 0x60) as *mut u8).write_volatile(ac);
+        ((address + 0x61) as *mut u8).write_volatile((request.flags & 0x0f) >> 1);
+        ((address + 0x62) as *mut u8).write_volatile((request.flags & 0x7f) >> 4);
+        // This direct cooperative publisher still uses an internal class-6
+        // context rather than the vendor WSM class-0 pool. Link slot 1 is the
+        // validated internal slot for that temporary path.
+        ((address + 0xbf) as *mut u8).write_volatile(1);
+    }
+    if request.max_tx_rate < 22 {
+        context.rate = request.max_tx_rate;
+        unsafe {
+            ((address + 0x0c) as *mut u8).write_volatile(context.rate);
+            ((address + 0x63) as *mut u8).write_volatile(context.rate);
+        }
+    }
+    // `tx_lmac_req_submit` seeds bit 23, then `tx_classify_hdr_len` adds the
+    // direct-frame marker and multicast/no-ACK classification.
+    let mut tx_flags = 0x0080_1000_u32;
+    if qos_data {
+        tx_flags |= 0x0040_0000;
+    }
+    if cfg!(feature = "scheduler-data-flags-diagnostic") {
+        // `txp_scheduler_run()` marks the selected frame node before building
+        // its pipe descriptor.
+        tx_flags |= 0x0400_0000;
+    }
+    if request.frame.get(4).is_some_and(|octet| octet & 1 != 0) {
+        tx_flags |= 0x300;
+    }
+    if request.ht_tx_parameters & 3 == 1 {
+        tx_flags |= 8;
+    }
+    if request.flags & 1 != 0 {
+        tx_flags |= 0x0001_0000;
+    }
+    tx_flags |= (request.ht_tx_parameters >> 11) & 0xe0;
+    unsafe {
+        ((address + 0x58) as *mut u32).write_volatile(tx_flags);
+        ((address + 0x64) as *mut u32).write_volatile(request.expire_time);
+        if cfg!(feature = "scheduler-data-flags-diagnostic") {
+            // The post-crypto callback sets ownership bit 5 immediately before
+            // `txq_list_insert()`.
+            let ownership = (address + 0x80) as *mut u32;
+            ownership.write_volatile(ownership.read_volatile() | 0x20);
+        }
+    }
+    if cfg!(feature = "vendor-ready-frame-flag-diagnostic") {
+        // `task_b88e -> tx_frame_done_release -> pas_retime_and_kick` marks
+        // the PAS frame node ready with bit 6 before placing it in the global
+        // 64-entry scheduler ring. The direct publisher historically skipped
+        // both transitions.
+        unsafe {
+            let ownership = (address + 0x80) as *mut u32;
+            ownership.write_volatile(ownership.read_volatile() | 0x40);
+        }
+    }
     // Recompute the complete PAS timing image after replacing the probe
     // template's rate, flags, and header with the host-supplied frame.
     if let Err(error) = unsafe { prepare_single_frame_pas_timing(&mut context) } {
         unsafe { release_context_address(context.context) };
         return Err(error);
     }
-    unsafe { prepare_context_publication(context) }
+    if cfg!(feature = "host-class0-direct-diagnostic")
+        || cfg!(feature = "vendor-queue-handoff-diagnostic")
+    {
+        context = unsafe { move_to_wsm_class0_context(context) }?;
+    }
+    if cfg!(feature = "vendor-queue-handoff-diagnostic") {
+        // Queue ownership must be transferred only after allocation from the
+        // real host pool. Enqueueing the temporary class-6 context and copying
+        // it afterwards does not reproduce the vendor lifecycle.
+        unsafe { vendor_queue_handoff_before_direct_publication(context.context) }?;
+    }
+    let mut publication = unsafe { prepare_context_publication(context) }?;
+    if cfg!(feature = "joined-data-no-phy-start-diagnostic") {
+        publication.start_phy = false;
+    }
+    Ok(publication)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5373,7 +6103,6 @@ unsafe fn reset_single_probe_pipe_cursors() {
     }
 }
 
-
 /// Guarded scan-owned probe experiment. Publications are serialized through
 /// complete hardware return before another scan opportunity can publish.
 ///
@@ -5453,7 +6182,10 @@ pub unsafe fn service_guarded_probe_experiment(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostManagementTxReport {
     Idle,
-    Published { packet_id: u32, bisect_stage: u8 },
+    Published {
+        packet_id: u32,
+        bisect_stage: u8,
+    },
     Servicing,
     Completed {
         packet_id: u32,
@@ -5506,7 +6238,8 @@ pub unsafe fn service_host_management_tx(
                 error: ProbeBuildError::PipeSlotBusy,
             };
         }
-        let report = unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
+        let report =
+            unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
         let Some((context, completion_status)) = report.completion else {
             return HostManagementTxReport::Servicing;
         };
@@ -5528,11 +6261,21 @@ pub unsafe fn service_host_management_tx(
     }
 
     let Some((request, if_id)) = request else {
-        return if runtime.published.is_some() {
-            HostManagementTxReport::Servicing
-        } else {
-            HostManagementTxReport::Idle
-        };
+        if runtime.published.is_some() {
+            return HostManagementTxReport::Servicing;
+        }
+        // Vendor source 0x16 services `mac_irq_handler()` continuously from
+        // FIQ, including between host transmissions. Cooperatively drain the
+        // FIFO and completion task here as well, otherwise beacon/radio/pipe
+        // events remain stale until the next class-6 publication.
+        let report = unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
+        if let Some((context, status)) = report.completion {
+            unsafe {
+                trace_tx_value(0x28, 0x4944_0000 | u32::from(status));
+                trace_tx_value(0x2c, context.raw());
+            }
+        }
+        return HostManagementTxReport::Idle;
     };
     if runtime.published.is_some() {
         return HostManagementTxReport::Failed {
@@ -5627,12 +6370,12 @@ pub unsafe fn clear_scheduler_bits(mask: u32) {
     let _ = unsafe { claim_scheduler_mask_atomic(mask) };
 }
 
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn disable_irq_fiq_save() -> u32 {
     unsafe { mask_irq_fiq_terminal() }
 }
 
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn restore_irq_fiq_saved(previous: u32) {
     unsafe { restore_irq_fiq(previous) };
 }
@@ -7134,6 +7877,13 @@ mod tests {
             0xff,
             0x11,
         ));
+    }
+
+    #[test]
+    fn host_pipe_producer_records_consumed_slot_before_advancing() {
+        assert_eq!(advance_host_pipe_producer(0), (0, 1));
+        assert_eq!(advance_host_pipe_producer(3), (3, 0));
+        assert_eq!(advance_host_pipe_producer(7), (3, 0));
     }
 
     #[test]
