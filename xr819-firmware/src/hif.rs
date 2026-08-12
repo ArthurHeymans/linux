@@ -145,6 +145,12 @@ pub struct DebugSnapshot {
     pub descriptor_control: u32,
     pub hif_control: u32,
     pub hif_length_mask: u32,
+    pub rx_producer: u32,
+    pub rx_consumer: u32,
+    pub rx_descriptor_address: u32,
+    pub rx_descriptor_control: u32,
+    pub request_polls: u32,
+    pub malformed_requests: u32,
 }
 
 pub struct Transport {
@@ -152,6 +158,8 @@ pub struct Transport {
     software_state: &'static HifSoftwareState,
     shared: &'static HifShared,
     external_releases: [Option<ReleaseToken>; 4],
+    request_polls: u32,
+    malformed_requests: u32,
 }
 
 #[cfg(all(target_arch = "arm", not(target_feature = "thumb-mode")))]
@@ -319,6 +327,8 @@ impl Transport {
             software_state,
             shared,
             external_releases: [None; 4],
+            request_polls: 0,
+            malformed_requests: 0,
         }
     }
 
@@ -341,6 +351,10 @@ impl Transport {
     }
 
     pub fn debug_snapshot(&self) -> DebugSnapshot {
+        let rx_consumer = self.state.rx_consumer.get();
+        let rx_descriptor = unsafe {
+            &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[(rx_consumer & 31) as usize]
+        };
         DebugSnapshot {
             tx_queued: self.state.tx_queued.get(),
             tx_producer: self.state.tx_producer.get(),
@@ -350,6 +364,12 @@ impl Transport {
             descriptor_control: self.shared.tx[0].control.get(),
             hif_control: self.shared.control.get(),
             hif_length_mask: self.shared.interrupt_ack.get(),
+            rx_producer: self.state.rx_producer.get(),
+            rx_consumer,
+            rx_descriptor_address: rx_descriptor.address.get(),
+            rx_descriptor_control: rx_descriptor.control.get(),
+            request_polls: self.request_polls,
+            malformed_requests: self.malformed_requests,
         }
     }
 
@@ -434,7 +454,21 @@ impl Transport {
 
     /// Returns one completed host-to-firmware WSM request and immediately
     /// recycles its 1632-byte buffer at the RX producer tail.
+    /// Reports whether the host-to-firmware ring has a descriptor ready for
+    /// dispatch without consuming or detaching its packet-RAM buffer.
+    pub fn request_available(&self) -> bool {
+        let consumer = self.state.rx_consumer.get();
+        if consumer == self.state.rx_producer.get() {
+            return false;
+        }
+        let descriptor = unsafe {
+            &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[(consumer & 31) as usize]
+        };
+        descriptor.control.get() & 1 == 0
+    }
+
     pub fn poll_request(&mut self) -> Option<ReceivedRequest> {
+        self.request_polls = self.request_polls.wrapping_add(1);
         let consumer = self.state.rx_consumer.get();
         if consumer == self.state.rx_producer.get() {
             return None;
@@ -452,6 +486,7 @@ impl Transport {
         let buffer_address = self.software_state.rx_buffers[slot].get() as usize;
         let descriptor_len = (control & 0x1ffe) as usize;
         if buffer_address == 0 || descriptor_len < 4 {
+            self.malformed_requests = self.malformed_requests.wrapping_add(1);
             self.recycle_rx_buffer(consumer, buffer_address);
             return None;
         }
@@ -459,6 +494,7 @@ impl Transport {
         let wire_len = unsafe { (buffer_address as *const u16).read_volatile() as usize };
         let raw_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
         if wire_len < 4 {
+            self.malformed_requests = self.malformed_requests.wrapping_add(1);
             self.recycle_rx_buffer(consumer, buffer_address);
             return None;
         }

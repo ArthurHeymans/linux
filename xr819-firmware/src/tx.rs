@@ -1218,8 +1218,6 @@ pub unsafe fn enter_mac_fatal_quiescence(
         let current_slot = read_u32(CURRENT_SLOT as usize);
         let pending = read_u32(PIPE_IRQ_PENDING as usize);
         let trigger = read_u32(PIPE_IRQ_TRIGGER as usize);
-        let nonfatal_count = read_u32(0x0900_ffd8);
-        let nonfatal_last = read_u32(0x0900_ffdc);
         write_u32(mirror, 0);
         write_u32(mirror + 4, event.raw);
         write_u32(mirror + 8, saved_scheduler_word.raw());
@@ -1229,25 +1227,45 @@ pub unsafe fn enter_mac_fatal_quiescence(
         write_u32(mirror + 0x18, trigger);
         core::arch::asm!("", options(nostack, preserves_flags));
         write_u32(mirror, MAC_FATAL_MAGIC);
+        let slot_record = current_slot;
+        let command = if (0x0400_172c..0x0400_18dc).contains(&slot_record) {
+            read_u32(slot_record as usize + 0x14)
+        } else {
+            0
+        };
+        let slot_word = |offset: usize| {
+            if slot_record != 0 {
+                read_u32(slot_record as usize + offset)
+            } else {
+                0
+            }
+        };
+        let command_word = |offset: usize| {
+            if command != 0 {
+                read_u32(command as usize + offset)
+            } else {
+                0
+            }
+        };
         crate::hif::publish_mac_fatal_exception([
             event.raw,
-            u32::from(event.event_type),
-            saved_scheduler_word.raw(),
-            current_pipe,
             current_slot,
             pending,
-            trigger,
-            nonfatal_count,
-            nonfatal_last,
-            cpsr,
-            read_u32(0x09c0_0a24),
-            read_u32(0x0400_1e6c),
-            u32::from(read_u8(0x0400_8f70)),
-            u32::from(read_u16(0x0400_8f76)),
-            read_u32(COMPLETION_RING_STATE + 0x0c),
-            read_u32(COMPLETION_RING_STATE + 0x10),
-            read_u32(0x0ac0_0004),
-            MAC_FATAL_MAGIC,
+            slot_word(0),
+            slot_word(0x0c),
+            slot_word(0x10),
+            command,
+            command_word(0),
+            command_word(4),
+            command_word(8),
+            command_word(0x0c),
+            command_word(0x10),
+            command_word(0x14),
+            command_word(0x18),
+            command_word(0x1c),
+            command_word(0x20),
+            command_word(0x24),
+            command_word(0x28),
         ]);
     }
     loop {
@@ -2585,7 +2603,16 @@ pub unsafe fn service_single_probe_completion_drain_inactive(backend: &mut Singl
 /// Scheduler flags and completion state must be exclusively owned.
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_single_probe_scheduler_inactive(backend: &mut SingleProbeMacBackend) -> bool {
-    if unsafe { claim_scheduler_mask_atomic(1 << 20) } == 0 {
+    let claimed = unsafe { claim_scheduler_mask_atomic(1 << 20) } != 0;
+    let queued = unsafe {
+        read_u32(COMPLETION_RING_STATE + 0x0c) != read_u32(COMPLETION_RING_STATE + 0x10)
+    };
+    // The vendor scheduler dispatches bit 20 to drain this ring. In the
+    // cooperative runtime, also treat a visibly non-empty ring as sufficient:
+    // a concurrently raised scheduler bit can otherwise be consumed by an
+    // unrelated translated task, stranding an already hardware-completed
+    // class-0 context and its HIF token.
+    if !claimed && !queued {
         return false;
     }
     unsafe { service_single_probe_completion_drain_inactive(backend) };
@@ -2709,11 +2736,6 @@ pub unsafe fn service_single_probe_runtime_inactive(
 /// # Safety
 /// The slot, command storage, pipe producer, and class-0 context must be
 /// exclusively owned by the vendor-host runtime.
-pub const fn advance_host_pipe_producer(slot: u8) -> (u8, u8) {
-    let consumed = slot & 3;
-    (consumed, consumed.wrapping_add(1) & 3)
-}
-
 #[cfg(target_arch = "arm")]
 pub unsafe fn publish_host_class0_slot(
     context: u32,
@@ -2744,12 +2766,19 @@ pub unsafe fn publish_host_class0_slot(
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     runtime.backend.reset_for_publication();
     unsafe {
-        // Exact tail of `txp_build_pipe_descriptor`: remember the consumed
-        // index, then advance the producer modulo four.
-        let (consumed, next) = advance_host_pipe_producer(slot);
-        write_u8(pipe_state as usize + 1, consumed);
-        write_u8(pipe_state as usize, next);
+        // Match the proven class-6 publication path: bring the PHY into its
+        // TX state before triggering the MAC pipe. The pipe producer itself
+        // advances only during completion; first publication records the
+        // consumed slot in `execute_single_probe_publication` without moving
+        // the software producer early.
+        let phy_bisect_stage = start_phy_operation_1();
+        if phy_bisect_stage != 0 {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
         write_u16(0x0400_8f76, read_u16(0x0400_8f76).wrapping_add(1));
+        // Retain the descriptor's PHY-length word for post-completion
+        // diagnostics; the slot may be recycled before the host reads MIBs.
+        (0x0900_ff94 as *mut u32).write_volatile(read_u32(command as usize + 0x14));
         execute_single_probe_publication(
             &mut VolatileMacPipeMmio,
             SingleProbePublicationInput {
@@ -2775,6 +2804,21 @@ pub unsafe fn service_host_class0_runtime(max_events: u32) -> Option<(u32, u16, 
     unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) }
         .completion
         .map(|(context, status)| (context.raw(), status, runtime.backend.retry.attempts()))
+}
+
+/// Compact read-only snapshot of the bounded class-0 MAC backend.
+///
+/// Bits 0..7 contain retry attempts, bit 8 reports a queued completion, and
+/// bits 16..31 contain its internal status when present.
+#[cfg(target_arch = "arm")]
+pub unsafe fn host_class0_runtime_diagnostic() -> u32 {
+    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
+    u32::from(runtime.backend.retry.attempts())
+        | runtime
+            .backend
+            .completed
+            .map(|(_, status)| (1 << 8) | (u32::from(status) << 16))
+            .unwrap_or(0)
 }
 
 /// Exact bounded loop shape from vendor FIQ handler `0x9e90..0xa038`.
@@ -7877,13 +7921,6 @@ mod tests {
             0xff,
             0x11,
         ));
-    }
-
-    #[test]
-    fn host_pipe_producer_records_consumed_slot_before_advancing() {
-        assert_eq!(advance_host_pipe_producer(0), (0, 1));
-        assert_eq!(advance_host_pipe_producer(3), (3, 0));
-        assert_eq!(advance_host_pipe_producer(7), (3, 0));
     }
 
     #[test]

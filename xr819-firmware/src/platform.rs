@@ -215,6 +215,13 @@ pub fn initialize_runtime_state() {
         address += 4;
     }
 
+    // Initialized vendor SRAM supplies the scheduler/radio exclusion word
+    // immediately before the event structure. Sectioned custom images do not
+    // carry that data segment, so stale bootloader bits (notably 0x20) would
+    // make `task_b88e` leave every class-0 frame pending.
+    register32(0x0400_1fcc).set(0);
+    register32(0x0400_1fd0).set(0);
+
     let state = boot_state();
     state.platform_ready.set(0);
     state.flags_08.set(7);

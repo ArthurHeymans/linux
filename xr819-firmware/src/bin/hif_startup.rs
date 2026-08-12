@@ -205,20 +205,83 @@ extern "C" fn rust_main() -> ! {
     #[cfg(feature = "vendor-host-tx-foundation")]
     let mut pending_vendor_confirmation: Option<(vendor_host_tx::RetainedHostTx, u32, u8)> = None;
     #[cfg(feature = "vendor-host-tx-foundation")]
+    let mut pending_vendor_mac_completion: Option<(u32, u16, u8)> = None;
+    #[cfg(feature = "vendor-host-tx-foundation")]
     let mut pending_vendor_reservation: Option<vendor_host_tx::HostSchedulerReservation> = None;
+    #[cfg(feature = "vendor-host-tx-foundation")]
+    let mut pending_vendor_wait_diagnostic = 0_u8;
     loop {
         let _ = transport.service_interrupt();
 
         #[cfg(feature = "vendor-host-tx-foundation")]
         if pending_vendor_confirmation.is_none() && pending_vendor_reservation.is_none() {
-            let completed = pending_vendor_host_tx.as_mut().and_then(|retained| {
-                match unsafe { vendor_host_tx::service_pending(retained) } {
-                    Ok(vendor_host_tx::PendingServiceReport::Complete(status)) => Some(status),
-                    Ok(vendor_host_tx::PendingServiceReport::PasQueued) => None,
-                    Ok(vendor_host_tx::PendingServiceReport::LeaveQueued) | Err(_) => None,
+            if let Some(retained) = pending_vendor_host_tx.as_ref() {
+                unsafe {
+                    (0x0900_ff60 as *mut u32).write_volatile(
+                        0x4854_1000 | u32::from(retained.phase() as u8),
+                    );
+                    (0x0900_ff64 as *mut u32).write_volatile(retained.context().raw());
                 }
-            });
-            if let (Some(status), Some(mut retained)) = (completed, pending_vendor_host_tx.take()) {
+            }
+            let mut completed = None;
+            if let Some(retained) = pending_vendor_host_tx.as_mut()
+                && matches!(
+                    retained.phase(),
+                    vendor_host_tx::HostTxPhase::PostCryptoQueued
+                        | vendor_host_tx::HostTxPhase::PendingEligible
+                )
+            {
+                match unsafe { vendor_host_tx::service_pending(retained) } {
+                    Ok(vendor_host_tx::PendingServiceReport::Complete(status)) => {
+                        unsafe {
+                            (0x0900_ff60 as *mut u32)
+                                .write_volatile(0x4854_1100 | u32::from(status));
+                        }
+                        completed = Some(status);
+                    }
+                    Ok(vendor_host_tx::PendingServiceReport::PasQueued) => {
+                        unsafe {
+                            (0x0900_ff60 as *mut u32).write_volatile(0x4854_1200);
+                        }
+                        pending_vendor_wait_diagnostic = 0;
+                    }
+                    Ok(vendor_host_tx::PendingServiceReport::LeaveQueued) => {
+                        unsafe {
+                            (0x0900_ff60 as *mut u32).write_volatile(0x4854_1300);
+                        }
+                        if pending_vendor_wait_diagnostic == 0 && pending_tx_debug_event.is_none() {
+                            let diagnostic =
+                                unsafe { vendor_host_tx::pending_live_diagnostic(retained) };
+                            let event_id = 0x4854_6000
+                                | u32::from(diagnostic.vif_state)
+                                | (u32::from(diagnostic.pipe_allowed) << 8)
+                                | ((diagnostic.global & 0xff) << 16);
+                            pending_tx_debug_event = Some((
+                                event_id,
+                                u32::from(diagnostic.active_mask)
+                                    | (u32::from(diagnostic.effective_mask) << 16),
+                            ));
+                            pending_vendor_wait_diagnostic = 1;
+                        }
+                    }
+                    Err(error) => {
+                        unsafe {
+                            (0x0900_ff60 as *mut u32)
+                                .write_volatile(0x4854_1f00 | u32::from(error.diagnostic_code()));
+                        }
+                        if pending_tx_debug_event.is_none() {
+                            pending_tx_debug_event = Some((
+                                0x4854_5f00 | u32::from(error.diagnostic_code()),
+                                retained.context().raw()
+                                    | (u32::from(retained.phase() as u8) << 24),
+                            ));
+                        }
+                    }
+                }
+            }
+            if let Some(status) = completed
+                && let Some(mut retained) = pending_vendor_host_tx.take()
+            {
                 let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
                 pending_vendor_confirmation =
                     Some((retained, tx::wsm_status_from_internal(status), 0));
@@ -232,9 +295,43 @@ extern "C" fn rust_main() -> ! {
                 && retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
             {
                 match unsafe { vendor_host_tx::reserve_non_aggregate_scheduler(retained) } {
-                    Ok(reservation) => pending_vendor_reservation = Some(reservation),
-                    Err(vendor_host_tx::SchedulerReserveError::Expired) => expired = true,
-                    Err(_) => {}
+                    Ok(reservation) => {
+                        unsafe {
+                            (0x0900_ff60 as *mut u32).write_volatile(0x4854_2000);
+                        }
+                        pending_vendor_wait_diagnostic = 0;
+                        pending_vendor_reservation = Some(reservation);
+                    }
+                    Err(error) => {
+                        unsafe {
+                            (0x0900_ff60 as *mut u32).write_volatile(
+                                0x4854_2f00 | u32::from(error.diagnostic_code()),
+                            );
+                        }
+                        if error == vendor_host_tx::SchedulerReserveError::Expired {
+                            expired = true;
+                        } else if pending_vendor_wait_diagnostic < 2 {
+                            let diagnostic =
+                                unsafe { vendor_host_tx::scheduler_live_diagnostic(retained) };
+                            let gates = u32::from(diagnostic.pipe)
+                                | (u32::from(diagnostic.idle_pipe_mask) << 8)
+                                | (u32::from(diagnostic.retry_gate) << 16)
+                                | (u32::from(diagnostic.receive_gate) << 24);
+                            let flags = u32::from(diagnostic.ring_contains_frame)
+                                | (u32::from(diagnostic.pipe_allowed) << 1)
+                                | (u32::from(diagnostic.ring_head) << 2)
+                                | (u32::from(diagnostic.ring_tail) << 8);
+                            // Override the generic TX trace stream: this event
+                            // is the bounded host frame's ownership diagnosis.
+                            pending_tx_debug_event = Some((
+                                0x4854_5810
+                                    | u32::from(error.diagnostic_code())
+                                    | (flags << 8),
+                                gates,
+                            ));
+                            pending_vendor_wait_diagnostic += 1;
+                        }
+                    }
                 }
             }
             if expired
@@ -249,27 +346,106 @@ extern "C" fn rust_main() -> ! {
         #[cfg(feature = "vendor-host-tx-foundation")]
         if let Some(reservation) = pending_vendor_reservation.take()
             && let Some(retained) = pending_vendor_host_tx.as_mut()
-            && let Err((reservation, _)) = unsafe { reservation.publish(retained) }
         {
-            pending_vendor_reservation = Some(reservation);
+            let pipe = reservation.pipe();
+            let slot = reservation.slot();
+            match unsafe { reservation.publish(retained) } {
+                Ok(()) => {
+                    pending_vendor_wait_diagnostic = 3;
+                    unsafe {
+                        (0x0900_ff60 as *mut u32).write_volatile(0x4854_7000);
+                        (0x0900_ff64 as *mut u32).write_volatile(
+                            retained.context().raw()
+                                | (u32::from(pipe) << 24)
+                                | (u32::from(slot) << 28),
+                        );
+                    }
+                }
+                Err((reservation, error)) => {
+                    unsafe {
+                        (0x0900_ff60 as *mut u32)
+                            .write_volatile(0x4854_7100 | error as u32);
+                        (0x0900_ff64 as *mut u32).write_volatile(
+                            retained.context().raw()
+                                | (u32::from(pipe) << 24)
+                                | (u32::from(slot) << 28),
+                        );
+                    }
+                    pending_vendor_reservation = Some(reservation);
+                }
+            }
         }
 
         #[cfg(feature = "vendor-host-tx-foundation")]
         if pending_vendor_confirmation.is_none()
-            && let Some(retained) = pending_vendor_host_tx.as_mut()
+            && pending_vendor_mac_completion.is_none()
+            && let Some(retained) = pending_vendor_host_tx.as_ref()
             && retained.phase() == vendor_host_tx::HostTxPhase::Scheduled
-            && let Some((context, status, ack_failures)) =
-                unsafe { tx::service_host_class0_runtime(32) }
-            && context == retained.context().raw()
-            && let Some(mut retained) = pending_vendor_host_tx.take()
+            && let Some(completion) = unsafe { tx::service_host_class0_runtime(32) }
         {
-            let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
-            pending_vendor_confirmation =
-                Some((retained, tx::wsm_status_from_internal(status), ack_failures));
+            unsafe {
+                (0x0900_ff60 as *mut u32).write_volatile(0x4854_3000);
+                (0x0900_ff64 as *mut u32).write_volatile(completion.0);
+                (0x0900_ff68 as *mut u32).write_volatile(
+                    u32::from(completion.1) | (u32::from(completion.2) << 16),
+                );
+                let frame = (completion.0.wrapping_add(0x54) as *const u32).read_volatile();
+                (0x0900_ff6c as *mut u32).write_volatile(frame);
+                (0x0900_ff70 as *mut u32).write_volatile(
+                    (completion.0.wrapping_add(0x5c) as *const u32).read_volatile(),
+                );
+                for index in 0..8_u32 {
+                    let offset = index * 4;
+                    let word = u32::from((frame.wrapping_add(offset) as *const u8).read_volatile())
+                        | (u32::from(
+                            (frame.wrapping_add(offset + 1) as *const u8).read_volatile(),
+                        ) << 8)
+                        | (u32::from(
+                            (frame.wrapping_add(offset + 2) as *const u8).read_volatile(),
+                        ) << 16)
+                        | (u32::from(
+                            (frame.wrapping_add(offset + 3) as *const u8).read_volatile(),
+                        ) << 24);
+                    (0x0900_ff74_u32.wrapping_add(offset) as *mut u32)
+                        .write_volatile(word);
+                }
+            }
+            pending_vendor_mac_completion = Some(completion);
         }
 
+        #[cfg(feature = "vendor-host-tx-foundation")]
+        if pending_vendor_confirmation.is_none()
+            && let Some((context, status, ack_failures)) = pending_vendor_mac_completion
+            && let Some(expected_context) = pending_vendor_host_tx
+                .as_ref()
+                .map(|retained| retained.context().raw())
+        {
+            if context == expected_context
+                && let Some(mut retained) = pending_vendor_host_tx.take()
+            {
+                pending_vendor_mac_completion = None;
+                let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
+                pending_vendor_confirmation =
+                    Some((retained, tx::wsm_status_from_internal(status), ack_failures));
+            } else {
+                unsafe {
+                    (0x0900_ff60 as *mut u32).write_volatile(0x4854_3f00);
+                    (0x0900_ff64 as *mut u32).write_volatile(context);
+                    (0x0900_ff68 as *mut u32).write_volatile(expected_context);
+                }
+            }
+        }
+
+        #[cfg(feature = "vendor-host-tx-foundation")]
+        let management_runtime_available = pending_vendor_host_tx.is_none()
+            && pending_vendor_confirmation.is_none()
+            && pending_vendor_mac_completion.is_none();
+        #[cfg(not(feature = "vendor-host-tx-foundation"))]
+        let management_runtime_available = true;
+
         #[cfg(feature = "join-sta-experiment")]
-        if pending_tx_confirmation.is_none()
+        if management_runtime_available
+            && pending_tx_confirmation.is_none()
             && let tx::HostManagementTxReport::Completed {
                 packet_id,
                 status,
@@ -280,6 +456,7 @@ extern "C" fn rust_main() -> ! {
             pending_tx_confirmation = Some((packet_id, status, tx_rate, ack_failures));
         }
 
+        #[cfg(not(feature = "vendor-host-tx-foundation"))]
         if pending_tx_debug_event.is_none() {
             pending_tx_debug_event = tx::take_tx_debug_event();
         }
@@ -339,6 +516,10 @@ extern "C" fn rust_main() -> ! {
                 unsafe { transport.publish(length as u16) };
                 let release = unsafe { retained.finish() };
                 transport.release_request(release);
+            }
+        } else if pending_vendor_confirmation.is_some() {
+            unsafe {
+                (0x0900_ff60 as *mut u32).write_volatile(0x4854_4000);
             }
         }
 
@@ -427,10 +608,13 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
-        // Control indications take priority over scan RX. Otherwise a steady
-        // stream of probe responses can consume the last HIF descriptor every
-        // pass and leave a completed scan pending until the host times out.
-        if pending_scan_completion.is_none() {
+        // Control indications and inbound host requests take priority over RX.
+        // Otherwise a steady joined RX stream can consume the last firmware-to-
+        // host descriptor every pass, preventing `poll_request()` from ever
+        // detaching an ordinary TX request even though the driver accounts its
+        // input buffer as used.
+        let host_request_waiting = transport.request_available();
+        if pending_scan_completion.is_none() && !host_request_waiting {
             if let (Some(if_id), Some(channel)) = (scan::active_interface(), scan::active_channel())
             {
                 if transport.output_available() {
@@ -630,6 +814,33 @@ extern "C" fn rust_main() -> ! {
                             values[20] = tcm::size_kib(info.dtcm_register).unwrap_or(0xffff)
                                 | (tcm::size_kib(info.itcm_register).unwrap_or(0xffff) << 16);
                         }
+                        #[cfg(feature = "vendor-host-tx-foundation")]
+                        {
+                            let hif = transport.debug_snapshot();
+                            values[8] = unsafe { (0x0900_ff60 as *const u32).read_volatile() };
+                            values[9] = unsafe { (0x0900_ff64 as *const u32).read_volatile() };
+                            let pipe_state = 0x0400_1720_usize;
+                            let selected = unsafe { ((pipe_state + 2) as *const u8).read_volatile() } & 3;
+                            let slot_record = 0x0400_172c_usize + usize::from(selected) * 0x18;
+                            let hardware_ring = unsafe {
+                                (pipe_state as *const u32).add(2).read_volatile() as usize
+                            };
+                            let command = unsafe {
+                                ((slot_record + 0x14) as *const u32).read_volatile() as usize
+                            };
+                            values[10] = unsafe { (0x0900_ff68 as *const u32).read_volatile() };
+                            values[11] = unsafe { (0x0900_ff6c as *const u32).read_volatile() };
+                            values[12] = unsafe { (0x0900_ff70 as *const u32).read_volatile() };
+                            for index in 0..8_usize {
+                                values[13 + index] = unsafe {
+                                    (0x0900_ff74_usize.wrapping_add(index * 4) as *const u32)
+                                        .read_volatile()
+                                };
+                            }
+                            values[21] = unsafe { (0x0900_ff94 as *const u32).read_volatile() };
+                            let _ = (slot_record, hardware_ring);
+                            let _ = (hif, command);
+                        }
                         let mut data = [0_u8; 88];
                         for (index, value) in values.into_iter().enumerate() {
                             data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -714,10 +925,37 @@ extern "C" fn rust_main() -> ! {
                     }
                     encode_join_response(status, -160, 200, output)
                 } else if request.id == TX_REQ_ID {
+                    #[cfg(feature = "vendor-host-tx-foundation")]
+                    unsafe {
+                        (0x0900_ff60 as *mut u32).write_volatile(0x4854_0004);
+                        (0x0900_ff64 as *mut u32).write_volatile(
+                            u32::from(request.if_id)
+                                | (u32::try_from(request.payload.len()).unwrap_or(u32::MAX) << 8),
+                        );
+                        (0x0900_ff68 as *mut u32).write_volatile(0);
+                    }
                     #[cfg(feature = "join-sta-experiment")]
                     {
                         match TxRequest::parse(request.payload) {
                             Ok(tx_request) => {
+                                #[cfg(feature = "vendor-host-tx-foundation")]
+                                unsafe {
+                                    let frame_control = u16::from_le_bytes([
+                                        tx_request.frame[0],
+                                        tx_request.frame[1],
+                                    ]);
+                                    (0x0900_ff60 as *mut u32).write_volatile(0x4854_0005);
+                                    (0x0900_ff64 as *mut u32).write_volatile(
+                                        u32::from(frame_control)
+                                            | (u32::try_from(tx_request.frame.len())
+                                                .unwrap_or(u32::MAX)
+                                                << 16),
+                                    );
+                                    (0x0900_ff68 as *mut u32).write_volatile(
+                                        u32::from(tx_request.is_unicast_data())
+                                            | (u32::from(tx_request.is_unicast_eapol()) << 1),
+                                    );
+                                }
                                 #[cfg(feature = "vendor-host-tx-foundation")]
                                 let vendor_response = if tx_request.is_unicast_data()
                                     && !tx_request.is_unicast_eapol()
@@ -753,12 +991,27 @@ extern "C" fn rust_main() -> ! {
                                                     )
                                                 } {
                                                     Ok(()) => {
+                                                        unsafe {
+                                                            (0x0900_ff60 as *mut u32)
+                                                                .write_volatile(0x4854_0008);
+                                                            (0x0900_ff64 as *mut u32).write_volatile(
+                                                                retained.context().raw(),
+                                                            );
+                                                            (0x0900_ff68 as *mut u32).write_volatile(
+                                                                retained.phase() as u32,
+                                                            );
+                                                        }
                                                         pending_vendor_host_tx = Some(retained);
+                                                        pending_vendor_wait_diagnostic = 0;
                                                         release_current_request = false;
                                                         publish_response = false;
                                                         Ok(0)
                                                     }
                                                     Err(_) => {
+                                                        unsafe {
+                                                            (0x0900_ff60 as *mut u32)
+                                                                .write_volatile(0x4854_00e3);
+                                                        }
                                                         let release = unsafe { retained.abort() };
                                                         transport.release_request(release);
                                                         release_current_request = false;
@@ -778,6 +1031,10 @@ extern "C" fn rust_main() -> ! {
                                                     }
                                                 },
                                                 Err(_) => {
+                                                    unsafe {
+                                                        (0x0900_ff60 as *mut u32)
+                                                            .write_volatile(0x4854_00e2);
+                                                    }
                                                     let release = unsafe { retained.abort() };
                                                     transport.release_request(release);
                                                     release_current_request = false;
@@ -797,6 +1054,10 @@ extern "C" fn rust_main() -> ! {
                                                 }
                                             },
                                             Err(_) => {
+                                                unsafe {
+                                                    (0x0900_ff60 as *mut u32)
+                                                        .write_volatile(0x4854_00e1);
+                                                }
                                                 if join::uses_cw1200_wsm() {
                                                     encode_tx_confirm(
                                                         tx_request.packet_id,

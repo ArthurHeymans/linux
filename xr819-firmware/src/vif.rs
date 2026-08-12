@@ -249,11 +249,10 @@ pub unsafe fn activate_sta(
         write_u8(base + 0x25, lowest_rate);
         write_u8(base + 0x27, 3);
         write_u32(base + BASIC_RATES_OFFSET, basic_rates);
-        // The vendor WSM pool uses bitmap 0x8001 with host link zero, but the
-        // current cooperative direct publisher deliberately reuses internal
-        // class-6 contexts. Keep its previously validated internal link slots
-        // active until the ordinary class-0 scheduler path is translated.
-        write_u16(base + 0x2c, 0x00fe);
+        // `vif_enter_operating_state()` publishes host link 0 plus the
+        // firmware-internal slot 15. Class-6 uses its own context metadata;
+        // excluding bit 0 here causes vendor `task_b88e` to reject class-0.
+        write_u16(base + 0x2c, 0x8001);
         write_u16(base + 0x15c, 0);
         write_u16(base + 0x15e, 0);
         copy_bytes(base + OWN_MAC_OFFSET, &own_mac);
@@ -277,14 +276,19 @@ pub unsafe fn activate_sta(
         copy_bytes(base + 0x14c, &request.bssid);
         write_u8(base + 0x50, 0x23);
         write_u8(base + 0x51, interface);
-        write_u8(base + 0x52, request.channel_number as u8);
+        write_u16(base + 0x52, request.channel_number);
         write_u32(base + 0x54, u32::MAX);
+        write_u32(base + 0x5c, 0);
 
         write_u8(pas + PAS_ACTIVE_OFFSET, 2);
         write_u8(pas + 0x471, 4);
         write_u8(pas + 0x472, 1);
         write_u8(pas + 0x473, 0);
         write_u32(pas + 0x478, basic_rates);
+        write_u32(pas + 0x488, 0);
+        write_u32(pas + 0x48c, 0);
+        write_u8(pas + 0x492, 0);
+        write_u8(pas + 0x493, 0);
 
         // `mac_apply_channel_and_vif_config` resets all four contention
         // windows after activating the selected PAS interface.
@@ -294,6 +298,14 @@ pub unsafe fn activate_sta(
         write_u32(0x0400_3680, request.beacon_interval.wrapping_shl(10));
         write_u32(0x0400_3684, 1 << request.band);
         let _ = set_active(interface, true);
+        // Vendor JOIN activates the VIF before channel programming. The
+        // channel-program tail then marks activity state 2 and derives the
+        // effective link mask used by the STA branch of `task_b88e`.
+        write_u8(base + ACTIVE_OFFSET, 2);
+        let effective = (read_u16(base + 0x2c)
+            & (!read_u16(base + 0x15c) | read_u16(base + 0x160)))
+            | read_u16(base + 0x15e);
+        write_u16(base + 0x2e, effective);
     }
     Ok(())
 }
@@ -312,7 +324,7 @@ pub unsafe fn teardown(interface: u8) -> bool {
         let _ = set_active(interface, false);
         write_u8(base + MODE_OFFSET, 0);
         write_u32(base + FLAGS_OFFSET, 0);
-        write_u8(base + 0x2c, 0);
+        write_u16(base + 0x2c, 0);
         write_u16(base + 0x2e, 0);
         write_u8(pas + PAS_ACTIVE_OFFSET, 1);
         write_u8(pas + 0x472, 0);

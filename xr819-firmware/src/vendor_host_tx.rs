@@ -462,6 +462,17 @@ pub enum PendingServiceError {
     PasRingFull,
 }
 
+impl PendingServiceError {
+    pub const fn diagnostic_code(self) -> u8 {
+        match self {
+            Self::WrongPhase => 1,
+            Self::PendingList(_) => 2,
+            Self::Timing(_) => 3,
+            Self::PasRingFull => 4,
+        }
+    }
+}
+
 #[cfg(target_arch = "arm")]
 unsafe fn vendor_timer() -> u32 {
     unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(0x0400_143c)) }
@@ -659,6 +670,41 @@ unsafe fn release_pending_to_pas(retained: &mut RetainedHostTx) -> Result<(), Pe
 /// # Safety
 /// The context and global pending/PAS structures must be runtime-owned.
 #[cfg(target_arch = "arm")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingLiveDiagnostic {
+    pub global: u32,
+    pub active_mask: u16,
+    pub effective_mask: u16,
+    pub vif_flags: u32,
+    pub vif_state: u8,
+    pub interface: u8,
+    pub link: u8,
+    pub pipe_allowed: bool,
+}
+
+/// Snapshot the exact live gates used by vendor pending task `0xb88e`.
+///
+/// # Safety
+/// The retained context and vendor VIF/global state must remain mapped.
+#[cfg(target_arch = "arm")]
+pub unsafe fn pending_live_diagnostic(retained: &RetainedHostTx) -> PendingLiveDiagnostic {
+    let context = retained.context;
+    let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
+    let link = unsafe { read_live_u8(context.raw() + 0xbf) };
+    let vif = 0x0400_3e98 + u32::from(interface) * 0x3b0;
+    PendingLiveDiagnostic {
+        global: unsafe { read_live_u32(0x0400_1fcc) },
+        active_mask: unsafe { read_live_u16(vif + 0x2c) },
+        effective_mask: unsafe { read_live_u16(vif + 0x2e) },
+        vif_flags: unsafe { read_live_u32(vif + 0x1c) },
+        vif_state: unsafe { read_live_u8(vif + 0x18) },
+        interface,
+        link,
+        pipe_allowed: unsafe { program_pipe_eligible(context) },
+    }
+}
+
+#[cfg(target_arch = "arm")]
 pub unsafe fn service_pending(
     retained: &mut RetainedHostTx,
 ) -> Result<PendingServiceReport, PendingServiceError> {
@@ -793,6 +839,68 @@ pub enum SchedulerReserveError {
     Descriptor(crate::tx::ProbeBuildError),
 }
 
+impl SchedulerReserveError {
+    pub const fn diagnostic_code(self) -> u8 {
+        match self {
+            Self::WrongPhase => 1,
+            Self::SchedulerBlocked => 2,
+            Self::LeaveQueued => 3,
+            Self::Expired => 4,
+            Self::PipeStateUnavailable => 5,
+            Self::Descriptor(_) => 6,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulerLiveDiagnostic {
+    pub pipe: u8,
+    pub idle_pipe_mask: u8,
+    pub ring_head: u8,
+    pub ring_tail: u8,
+    pub ring_contains_frame: bool,
+    pub pipe_allowed: bool,
+    pub retry_gate: u8,
+    pub receive_gate: u8,
+}
+
+/// Snapshot the non-aggregate scheduler gates without changing ownership.
+///
+/// # Safety
+/// The retained PAS context and global ring/pipe state must remain mapped.
+#[cfg(target_arch = "arm")]
+pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerLiveDiagnostic {
+    let context = retained.context;
+    let pas = context.raw() + PAS_OFFSET as u32;
+    let mut idle_pipe_mask = 0_u8;
+    for candidate in 0..4_u8 {
+        let pipe_state = 0x0400_1720 + u32::from(candidate) * 0x6c;
+        if unsafe { read_live_u8(pipe_state + 3) } == 0 {
+            idle_pipe_mask |= 1 << candidate;
+        }
+    }
+    let ac = unsafe { read_live_u8(pas + 0x0c) };
+    let pipe = unsafe { read_live_u8(0x0400_02e0 + u32::from(ac)) };
+    let ring_head = unsafe { read_live_u32(0x0400_1578) as u8 & 0x3f };
+    let ring_tail = unsafe { read_live_u32(0x0400_157c) as u8 & 0x3f };
+    let mut slot = ring_head;
+    while slot != ring_tail
+        && unsafe { read_live_u32(0x0400_1580 + u32::from(slot) * 4) } != pas
+    {
+        slot = slot.wrapping_add(1) & 0x3f;
+    }
+    SchedulerLiveDiagnostic {
+        pipe,
+        idle_pipe_mask,
+        ring_head,
+        ring_tail,
+        ring_contains_frame: slot != ring_tail,
+        pipe_allowed: unsafe { program_pipe_eligible(context) },
+        retry_gate: unsafe { read_live_u8(0x0400_1e6c) },
+        receive_gate: unsafe { read_live_u8(0x0400_3a6d) },
+    }
+}
+
 /// Remove an unscheduled PAS frame for class-0 rejection/expiry confirmation.
 ///
 /// # Safety
@@ -822,6 +930,7 @@ pub struct HostSchedulerReservation {
     original_flags: u32,
     original_slot_header: u32,
     original_slot_frame: u32,
+    original_slot_auxiliary: u32,
     original_command: [u32; 16],
 }
 
@@ -873,6 +982,7 @@ impl HostSchedulerReservation {
             write_live_u32(self.context.raw() + 0x58, self.original_flags);
             write_live_u32(self.slot_record, self.original_slot_header);
             write_live_u32(self.slot_record + 0x0c, self.original_slot_frame);
+            write_live_u32(self.slot_record + 0x10, self.original_slot_auxiliary);
             for (index, word) in self.original_command.into_iter().enumerate() {
                 write_live_u32(self.command + index as u32 * 4, word);
             }
@@ -954,6 +1064,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     let original_flags = unsafe { read_live_u32(context.raw() + 0x58) };
     let original_slot_header = unsafe { read_live_u32(slot_record) };
     let original_slot_frame = unsafe { read_live_u32(slot_record + 0x0c) };
+    let original_slot_auxiliary = unsafe { read_live_u32(slot_record + 0x10) };
     let mut original_command = [0_u32; 16];
     for (index, word) in original_command.iter_mut().enumerate() {
         *word = unsafe { read_live_u32(command + index as u32 * 4) };
@@ -978,6 +1089,10 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         write_live_u8(slot_record + 2, 0);
         write_live_u8(slot_record + 3, 0);
         write_live_u32(slot_record + 0x0c, pas);
+        // `txp_build_pipe_descriptor` clears the per-slot auxiliary descriptor
+        // pointer for every kind-0 frame before emitting its command stream.
+        // This storage is retained DTCM and cannot be left at its prior value.
+        write_live_u32(slot_record + 0x10, 0);
         write_live_u32(command, 0);
         write_live_u32(command + 4, 0);
         write_live_u32(command + 8, 0xdc00_0000);
@@ -988,6 +1103,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
             write_live_u32(context.raw() + 0x58, original_flags);
             write_live_u32(slot_record, original_slot_header);
             write_live_u32(slot_record + 0x0c, original_slot_frame);
+            write_live_u32(slot_record + 0x10, original_slot_auxiliary);
             for (index, word) in original_command.into_iter().enumerate() {
                 write_live_u32(command + index as u32 * 4, word);
             }
@@ -1006,6 +1122,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         original_flags,
         original_slot_header,
         original_slot_frame,
+        original_slot_auxiliary,
         original_command,
     })
 }
@@ -1296,7 +1413,10 @@ pub unsafe fn admit_host_tx(
     let metadata = HostTxMetadata {
         message_address: release.buffer_address(),
         packet_id: request.packet_id,
-        max_tx_rate: request.max_tx_rate,
+        // Correctness-first class-0 bring-up: use the same lowest legacy rate
+        // that already carries the validated management/EAPOL path. Once
+        // ordinary ACK/CCMP exchange is proven, restore host rate selection.
+        max_tx_rate: 0,
         queue_id: request.queue_id,
         more: request.more,
         flags: request.flags,
