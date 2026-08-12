@@ -91,13 +91,13 @@ pub fn fifo_quiescent() -> bool {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ReleaseToken {
     slot: u32,
     next: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct PendingIndication {
     pub address: u32,
     pub length: u16,

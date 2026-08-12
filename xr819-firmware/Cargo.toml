@@ -21,6 +21,9 @@ join-sta-experiment = []
 # retained HIF ownership, software CCMP, vendor pending/PAS scheduling, MAC
 # publication/retry/completion, confirmation, and host-pool return.
 vendor-host-tx-foundation = ["join-sta-experiment"]
+# Non-destructive retained stage/frame/HIF snapshots for host TX bring-up.
+# Production station images keep the lifecycle but compile these writers out.
+vendor-host-tx-diagnostics = ["vendor-host-tx-foundation"]
 # Destructive diagnostic: preserve encrypted payload/MIC but clear the 802.11
 # Protected bit on non-EAPOL data immediately before MAC publication.
 clear-protected-data-diagnostic = []

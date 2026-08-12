@@ -1399,6 +1399,17 @@ pub unsafe fn free_host_context(context: HostContextAddress) {
 /// This intentionally stops at the `tx_lmac_req_submit` boundary. Header
 /// classification, software crypto, post-crypto queueing, and scheduling must
 /// advance the returned explicit phase before hardware publication.
+const fn station_data_rate(requested: u8) -> u8 {
+    // XR819 indices 4/5 are unsupported ERP-PBCC gaps and are not emitted by
+    // cw1200. Keep a safe fallback for malformed requests while preserving the
+    // host-selected CCK, OFDM, and HT rate.
+    if requested <= 21 && requested != 4 && requested != 5 {
+        requested
+    } else {
+        0
+    }
+}
+
 #[cfg(target_arch = "arm")]
 pub unsafe fn admit_host_tx(
     request: &crate::wsm::TxRequest<'_>,
@@ -1413,10 +1424,7 @@ pub unsafe fn admit_host_tx(
     let metadata = HostTxMetadata {
         message_address: release.buffer_address(),
         packet_id: request.packet_id,
-        // Correctness-first class-0 bring-up: use the same lowest legacy rate
-        // that already carries the validated management/EAPOL path. Once
-        // ordinary ACK/CCMP exchange is proven, restore host rate selection.
-        max_tx_rate: 0,
+        max_tx_rate: station_data_rate(request.max_tx_rate),
         queue_id: request.queue_id,
         more: request.more,
         flags: request.flags,
@@ -1731,6 +1739,17 @@ mod tests {
         assert_eq!(read_u32(&image, 0xa0), 0x0900_3678);
         assert_eq!(read_u32(&image, 0x68), 0x1020_303f);
         assert_eq!(read_u32(&image, 0x58), 0x0081_0068);
+    }
+
+    #[test]
+    fn station_data_rate_rejects_only_unsupported_indices() {
+        assert_eq!(station_data_rate(0), 0);
+        assert_eq!(station_data_rate(3), 3);
+        assert_eq!(station_data_rate(4), 0);
+        assert_eq!(station_data_rate(5), 0);
+        assert_eq!(station_data_rate(6), 6);
+        assert_eq!(station_data_rate(21), 21);
+        assert_eq!(station_data_rate(u8::MAX), 0);
     }
 
     #[test]

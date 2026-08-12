@@ -117,18 +117,17 @@ const fn tx_ring_has_capacity(producer: u32, consumer: u32) -> bool {
     producer.wrapping_sub(consumer) < 4
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct RequestReleaseToken {
     buffer_address: u32,
 }
 
 impl RequestReleaseToken {
-    pub const fn buffer_address(self) -> u32 {
+    pub const fn buffer_address(&self) -> u32 {
         self.buffer_address
     }
 }
 
-#[derive(Clone, Copy)]
 pub struct ReceivedRequest {
     pub id: u16,
     pub if_id: u8,
@@ -136,6 +135,7 @@ pub struct ReceivedRequest {
     pub release: RequestReleaseToken,
 }
 
+#[cfg(feature = "vendor-host-tx-diagnostics")]
 pub struct DebugSnapshot {
     pub tx_queued: u32,
     pub tx_producer: u32,
@@ -158,7 +158,9 @@ pub struct Transport {
     software_state: &'static HifSoftwareState,
     shared: &'static HifShared,
     external_releases: [Option<ReleaseToken>; 4],
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
     request_polls: u32,
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
     malformed_requests: u32,
 }
 
@@ -326,8 +328,10 @@ impl Transport {
             state,
             software_state,
             shared,
-            external_releases: [None; 4],
+            external_releases: [const { None }; 4],
+            #[cfg(feature = "vendor-host-tx-diagnostics")]
             request_polls: 0,
+            #[cfg(feature = "vendor-host-tx-diagnostics")]
             malformed_requests: 0,
         }
     }
@@ -350,6 +354,7 @@ impl Transport {
         status
     }
 
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
     pub fn debug_snapshot(&self) -> DebugSnapshot {
         let rx_consumer = self.state.rx_consumer.get();
         let rx_descriptor = unsafe {
@@ -468,7 +473,10 @@ impl Transport {
     }
 
     pub fn poll_request(&mut self) -> Option<ReceivedRequest> {
-        self.request_polls = self.request_polls.wrapping_add(1);
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        {
+            self.request_polls = self.request_polls.wrapping_add(1);
+        }
         let consumer = self.state.rx_consumer.get();
         if consumer == self.state.rx_producer.get() {
             return None;
@@ -486,7 +494,10 @@ impl Transport {
         let buffer_address = self.software_state.rx_buffers[slot].get() as usize;
         let descriptor_len = (control & 0x1ffe) as usize;
         if buffer_address == 0 || descriptor_len < 4 {
-            self.malformed_requests = self.malformed_requests.wrapping_add(1);
+            #[cfg(feature = "vendor-host-tx-diagnostics")]
+            {
+                self.malformed_requests = self.malformed_requests.wrapping_add(1);
+            }
             self.recycle_rx_buffer(consumer, buffer_address);
             return None;
         }
@@ -494,7 +505,10 @@ impl Transport {
         let wire_len = unsafe { (buffer_address as *const u16).read_volatile() as usize };
         let raw_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
         if wire_len < 4 {
-            self.malformed_requests = self.malformed_requests.wrapping_add(1);
+            #[cfg(feature = "vendor-host-tx-diagnostics")]
+            {
+                self.malformed_requests = self.malformed_requests.wrapping_add(1);
+            }
             self.recycle_rx_buffer(consumer, buffer_address);
             return None;
         }

@@ -4,6 +4,7 @@ pub mod configuration;
 pub mod crypto;
 pub mod download;
 pub mod hif;
+pub mod host_tx_diagnostics;
 pub mod join;
 pub mod loader;
 pub mod mac;

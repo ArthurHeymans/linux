@@ -444,6 +444,20 @@ pub fn build_phy_rate_words(
     }
 }
 
+/// Applies the HT mixed-mode duration field added by vendor
+/// `txp_submit_to_pipe` (`0xadd0`) after building the base PHY words.
+fn finalize_phy_control(phy: PhyRateWords, rate_index: u8, frame_length: u16) -> u32 {
+    if (phy.rate & 0x1fff) >> 10 == 5 {
+        phy.control
+            | (u32::from(crate::mac::ofdm_duration(
+                rate_index,
+                frame_length.wrapping_add(4),
+            )) << 12)
+    } else {
+        phy.control
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SingleFramePasTiming {
     pub payload_extended: u16,
@@ -456,6 +470,14 @@ pub struct SingleFramePasTiming {
 /// Single legacy-frame subset of vendor `pas_compute_tx_timing` (`0x7fa6`).
 /// Protection/preamble modes are deliberately rejected by the caller; probes
 /// and ordinary host management frames both use the direct payload branch.
+const fn single_frame_hw_rate_code(flags: u32, protected_rate: u8) -> u8 {
+    if flags & 0x0c00 == 0 {
+        0xff
+    } else {
+        protected_rate
+    }
+}
+
 pub fn compute_single_frame_pas_timing(
     phy_config: u16,
     rate: u8,
@@ -2778,7 +2800,7 @@ pub unsafe fn publish_host_class0_slot(
         write_u16(0x0400_8f76, read_u16(0x0400_8f76).wrapping_add(1));
         // Retain the descriptor's PHY-length word for post-completion
         // diagnostics; the slot may be recycled before the host reads MIBs.
-        (0x0900_ff94 as *mut u32).write_volatile(read_u32(command as usize + 0x14));
+        crate::host_tx_diagnostics::capture_descriptor_length(read_u32(command as usize + 0x14));
         execute_single_probe_publication(
             &mut VolatileMacPipeMmio,
             SingleProbePublicationInput {
@@ -5064,11 +5086,14 @@ unsafe fn prepare_single_frame_pas_timing(
         let rate = read_u8(frame + 0x0f);
         let rate_map = PAS_VIF_STATE + interface * 0x98 + PAS_RATE_MAP_OFFSET + usize::from(rate);
         let timing_index = usize::from(read_u8(rate_map));
-        // `pas_compute_tx_timing` replaces the temporary allocation-flag bits
-        // in PAS `+0x0d` with this hardware-rate code before descriptor build.
-        // Probe rate zero masked the omission because both values were zero;
-        // ordinary host TX can carry nonzero allocation flags here.
-        write_u8(frame + 0x0d, timing_index as u8);
+        // Vendor `pas_compute_tx_timing` uses 0xff for ordinary frames without
+        // RTS/CTS protection. This byte feeds PHY rate-word bits 18:16; the
+        // fallback rate-map index is only for ACK timing and is not a hardware
+        // rate code in the no-protection case.
+        write_u8(
+            frame + 0x0d,
+            single_frame_hw_rate_code(flags, timing_index as u8),
+        );
         let ack_table = if flags & 0x4000 != 0 {
             PAS_ACK_TIMING_TABLE + (0x74 - 0x48)
         } else {
@@ -5338,7 +5363,7 @@ pub unsafe fn build_prepared_probe_descriptor(
         let secondary_address = 0x0900_7bc0_u32.wrapping_add(u32::from(vif_slot) * 2);
         build_single_frame_pipe_descriptor(SingleFramePipeInput {
             phy_rate_word: phy.rate,
-            phy_control_word: phy.control,
+            phy_control_word: finalize_phy_control(phy, rate, context.length),
             frame_length: context.length,
             hardware_rate,
             frame_control: ((address + 0x5e) as *const u16).read_volatile(),
@@ -5393,7 +5418,10 @@ unsafe fn emit_prepared_probe_descriptor(
             checksum = checksum.rotate_left(5).wrapping_add(word);
         };
         add(0x5100_0000 | (phy.rate & 0x00ff_ffff));
-        add(0x5000_0000 | (phy.control & 0x00ff_ffff));
+        add(
+            0x5000_0000
+                | (finalize_phy_control(phy, rate, context.length) & 0x00ff_ffff),
+        );
         add(0x5200_0000 | (u32::from(hardware_rate) << 16) | u32::from(context.length + 4));
         add(0x3100_0000 + frame_control);
         add(0x4700_0000 + (frame_control >> 8));
@@ -7871,6 +7899,14 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_frames_use_vendor_no_protection_rate_code() {
+        assert_eq!(single_frame_hw_rate_code(0, 6), 0xff);
+        assert_eq!(single_frame_hw_rate_code(0x4000, 6), 0xff);
+        assert_eq!(single_frame_hw_rate_code(0x0400, 6), 6);
+        assert_eq!(single_frame_hw_rate_code(0x0800, 3), 3);
+    }
+
+    #[test]
     fn single_frame_pas_timing_distinguishes_probe_and_ack_classes() {
         let probe = compute_single_frame_pas_timing(0x117, 0, 50, 0x1300, 0x2c, false)
             .unwrap_or_else(|| panic!("missing probe timing"));
@@ -7961,20 +7997,28 @@ mod tests {
 
     #[test]
     fn phy_rate_words_match_legacy_and_ht_classes() {
+        let legacy = build_phy_rate_words(0, 2, 0, 3, 5);
         assert_eq!(
-            build_phy_rate_words(0, 2, 0, 3, 5),
+            legacy,
             PhyRateWords {
                 control: 2,
                 rate: 0x0003_0405,
             }
         );
+        assert_eq!(finalize_phy_control(legacy, 0, 100), 2);
+
+        let ht_mixed = build_phy_rate_words(14, 0, 0x28, 3, 7);
         assert_eq!(
-            build_phy_rate_words(14, 0, 0x28, 3, 7),
+            ht_mixed,
             PhyRateWords {
                 control: 6,
                 rate: 0x0003_1407,
             }
         );
+        assert_eq!(finalize_phy_control(ht_mixed, 14, 100), 0x0006_c006);
+
+        let ht_greenfield = build_phy_rate_words(14, 0, 0x20, 3, 7);
+        assert_eq!(finalize_phy_control(ht_greenfield, 14, 100), 6);
     }
 
     #[test]

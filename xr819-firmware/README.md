@@ -77,20 +77,14 @@ host-reserved CCMP IV/MIC space on TX and authenticate/decrypt packet-DMA frames
 on RX. Its host round-trip test and an independent Python `cryptography`
 AESCCM known-answer vector both pass, including exact ciphertext/MIC and
 corrupted-ciphertext/MIC rejection. Linux no longer reports failed `0x000c`
-key installation. On hardware, both DHCP and small ARP frames still stall after
-ring activation; no DHCP lease, gateway ping, Internet ping, or HTTP transfer
-has succeeded. Clearing the Protected bit after encryption, and separately
-removing all CCMP header/MIC reservation to publish a compact plaintext ARP
-frame, do not change the stall. The remaining defect is therefore a general
-post-association payload publication/completion semantic, not AES correctness,
-CCMP expansion, frame size, HT rate, or the Protected bit itself. Vendor host
-TX ultimately requires completion class 0 and STA link slot 0, but the current
-cooperative publisher still reuses the internal class-6 pool and its validated
-link slot 1. Applying class-0/link-0 metadata without also translating the WSM
-pool and `txq_list_insert()` scheduler regressed the first EAPOL transmission,
-so that partial change was reverted. `host-pipe0-diagnostic` and
-`non-qos-data-diagnostic` also stalled, ruling out the best-effort pipe and QoS
-header shape.
+key installation. The bounded vendor host-TX path now completes protected
+station traffic end to end: DHCP obtains a lease, gateway and Internet pings
+succeed, and an HTTP request completes with every queue and HIF buffer returned.
+Host-selected rate control is hardware-validated across CCK, OFDM, and HT. The
+vendor no-protection `bHwRateCode = 0xff` rule fixed legacy OFDM publication,
+and the mixed-mode HT PHY control word now carries the vendor airtime field.
+Forced endpoint tests passed at rates 0–3, 6, 13, 14 (MCS0), and 21 (MCS7),
+followed by a successful host-selected connectivity run.
 
 The ordinary vendor path is now specified end-to-end in
 [`../xr819-vendor-host-tx-lifecycle.md`](../xr819-vendor-host-tx-lifecycle.md).
@@ -106,14 +100,23 @@ mode-0 pending-list insertion. RESET now unlinks a queued context before freeing
 it and returning the retained HIF request. Live pending-task service now applies
 VIF/link, expiry, TBTT, and power-save gates; rejected class-0 frames are
 confirmed before their HIF token is returned, while eligible frames enter the
-compacting global PAS ring with ownership bit `0x40`. The feature stops before
-hardware ownership after performing reversible non-aggregate scheduler
-selection, AC-to-pipe mapping, PAS-slot removal, pipe-slot reservation, and
-kind-0 descriptor generation. It now also advances the producer, triggers the
-MAC, services retries/completion, emits the class-0 WSM confirmation, and frees
-the context/HIF request only after confirmation publication. This is a bounded
-single-outstanding non-aggregate candidate, not yet the full production
-scheduler.
+compacting global PAS ring with ownership bit `0x40`. The feature performs reversible non-aggregate scheduler selection, AC-to-pipe
+mapping, PAS-slot removal, pipe-slot reservation, and kind-0 descriptor
+generation before crossing into hardware ownership. It starts the PHY, triggers
+the MAC, services retries/completion, emits the class-0 WSM confirmation, and
+frees the context/HIF request only after confirmation publication. Management
+and class-0 servicing are serialized while either owns the shared MAC runtime,
+preventing one path from consuming the other's completion. This remains a
+bounded single-outstanding non-aggregate implementation, not yet the full
+production scheduler.
+
+The optional `vendor-host-tx-diagnostics` feature retains the bring-up
+observability without burdening the normal station image. It enables retained
+stage/frame/descriptor snapshots, HIF request counters, and bounded WSM debug
+events through the existing counters MIB. Without the feature, trace writers
+compile to no-ops and the normal counters layout is preserved. Fatal MAC
+exceptions remain available independently because they are part of terminal
+recovery diagnostics rather than the verbose host-TX trace stream.
 
 The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary CCMP uses
 transfer classes 6/7, commands `0x1100`, `0x1240`, `0x1402/0x1403`, and
@@ -259,7 +262,7 @@ Not yet implemented:
 - hardware AES transfer submission and separate IRQ 18/20 completion consumers;
 - complete HIF queue/scheduler accounting;
 - reliable management TX across cold boots;
-- protected payload publication/completion and working DHCP/IP traffic;
+- rate fallback policy, aggregation, and throughput validation;
 - CCMP replay protection and hardware-engine known-answer coverage;
 - production exception reporting and recovery behavior.
 
