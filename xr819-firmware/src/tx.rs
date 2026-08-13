@@ -2626,9 +2626,8 @@ pub unsafe fn service_single_probe_completion_drain_inactive(backend: &mut Singl
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_single_probe_scheduler_inactive(backend: &mut SingleProbeMacBackend) -> bool {
     let claimed = unsafe { claim_scheduler_mask_atomic(1 << 20) } != 0;
-    let queued = unsafe {
-        read_u32(COMPLETION_RING_STATE + 0x0c) != read_u32(COMPLETION_RING_STATE + 0x10)
-    };
+    let queued =
+        unsafe { read_u32(COMPLETION_RING_STATE + 0x0c) != read_u32(COMPLETION_RING_STATE + 0x10) };
     // The vendor scheduler dispatches bit 20 to drain this ring. In the
     // cooperative runtime, also treat a visibly non-empty ring as sufficient:
     // a concurrently raised scheduler bit can otherwise be consumed by an
@@ -2818,10 +2817,29 @@ pub unsafe fn publish_host_class0_slot(
     Ok(())
 }
 
+/// Exclusive capability for consuming the shared MAC event FIFO.
+///
+/// The startup runtime creates one token and passes it mutably to whichever
+/// subsystem currently owns MAC servicing.
+pub struct MacEventQueue {
+    _private: (),
+}
+
+impl MacEventQueue {
+    /// # Safety
+    /// Exactly one token may exist for the live MAC event FIFO.
+    pub const unsafe fn claim() -> Self {
+        Self { _private: () }
+    }
+}
+
 /// Cooperatively service MAC events and class-0 completion for the ordinary
 /// vendor-host runtime.
 #[cfg(target_arch = "arm")]
-pub unsafe fn service_host_class0_runtime(max_events: u32) -> Option<(u32, u16, u8)> {
+pub unsafe fn service_host_class0_runtime(
+    _events: &mut MacEventQueue,
+    max_events: u32,
+) -> Option<(u32, u16, u8)> {
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) }
         .completion
@@ -5418,10 +5436,7 @@ unsafe fn emit_prepared_probe_descriptor(
             checksum = checksum.rotate_left(5).wrapping_add(word);
         };
         add(0x5100_0000 | (phy.rate & 0x00ff_ffff));
-        add(
-            0x5000_0000
-                | (finalize_phy_control(phy, rate, context.length) & 0x00ff_ffff),
-        );
+        add(0x5000_0000 | (finalize_phy_control(phy, rate, context.length) & 0x00ff_ffff));
         add(0x5200_0000 | (u32::from(hardware_rate) << 16) | u32::from(context.length + 4));
         add(0x3100_0000 + frame_control);
         add(0x4700_0000 + (frame_control >> 8));
@@ -6182,6 +6197,7 @@ unsafe fn reset_single_probe_pipe_cursors() {
 /// The caller must own probe preparation, event FIFO and completion servicing.
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_guarded_probe_experiment(
+    _events: &mut MacEventQueue,
     template: Option<&[u8]>,
     opportunity: Option<crate::scan::ProbeOpportunity>,
     ssid: &[u8],
@@ -6299,6 +6315,7 @@ pub const fn wsm_status_from_internal(status: u16) -> u32 {
 /// The caller must exclusively service the MAC event FIFO and completion ring.
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_host_management_tx(
+    _events: &mut MacEventQueue,
     request: Option<(&crate::wsm::TxRequest<'_>, u8)>,
     max_events: u32,
 ) -> HostManagementTxReport {
@@ -6340,7 +6357,8 @@ pub unsafe fn service_host_management_tx(
         // FIQ, including between host transmissions. Cooperatively drain the
         // FIFO and completion task here as well, otherwise beacon/radio/pipe
         // events remain stale until the next class-6 publication.
-        let report = unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
+        let report =
+            unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
         if let Some((context, status)) = report.completion {
             unsafe {
                 trace_tx_value(0x28, 0x4944_0000 | u32::from(status));

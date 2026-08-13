@@ -128,11 +128,40 @@ impl RequestReleaseToken {
     }
 }
 
+/// Exclusive ownership of one detached host-to-firmware packet-RAM buffer.
+///
+/// Payload borrows are tied to this value, and consuming it is the only way to
+/// obtain the token that returns the buffer to the HIF RX ring.
+pub struct RequestBuffer {
+    buffer_address: u32,
+    payload_length: u16,
+}
+
+impl RequestBuffer {
+    pub const fn buffer_address(&self) -> u32 {
+        self.buffer_address
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        unsafe {
+            core::slice::from_raw_parts(
+                self.buffer_address.wrapping_add(4) as *const u8,
+                usize::from(self.payload_length),
+            )
+        }
+    }
+
+    pub fn into_release(self) -> RequestReleaseToken {
+        RequestReleaseToken {
+            buffer_address: self.buffer_address,
+        }
+    }
+}
+
 pub struct ReceivedRequest {
     pub id: u16,
     pub if_id: u8,
-    pub payload: &'static [u8],
-    pub release: RequestReleaseToken,
+    pub buffer: RequestBuffer,
 }
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]
@@ -528,11 +557,9 @@ impl Transport {
         Some(ReceivedRequest {
             id,
             if_id,
-            payload: unsafe {
-                core::slice::from_raw_parts((buffer_address + 4) as *const u8, payload_len)
-            },
-            release: RequestReleaseToken {
+            buffer: RequestBuffer {
                 buffer_address: buffer_address as u32,
+                payload_length: payload_len as u16,
             },
         })
     }

@@ -884,9 +884,7 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
     let ring_head = unsafe { read_live_u32(0x0400_1578) as u8 & 0x3f };
     let ring_tail = unsafe { read_live_u32(0x0400_157c) as u8 & 0x3f };
     let mut slot = ring_head;
-    while slot != ring_tail
-        && unsafe { read_live_u32(0x0400_1580 + u32::from(slot) * 4) } != pas
-    {
+    while slot != ring_tail && unsafe { read_live_u32(0x0400_1580 + u32::from(slot) * 4) } != pas {
         slot = slot.wrapping_add(1) & 0x3f;
     }
     SchedulerLiveDiagnostic {
@@ -1410,20 +1408,29 @@ const fn station_data_rate(requested: u8) -> u8 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostAdmissionError {
+    MalformedRequest,
+    Pool(HostPoolError),
+}
+
 #[cfg(target_arch = "arm")]
 pub unsafe fn admit_host_tx(
-    request: &crate::wsm::TxRequest<'_>,
+    buffer: crate::hif::RequestBuffer,
     interface: u8,
-    release: crate::hif::RequestReleaseToken,
-) -> Result<RetainedHostTx, HostPoolError> {
-    let context = unsafe { allocate_host_context()? };
+) -> Result<RetainedHostTx, (crate::hif::RequestBuffer, HostAdmissionError)> {
+    let request = match crate::wsm::TxRequest::parse(buffer.payload()) {
+        Ok(request) => request,
+        Err(_) => return Err((buffer, HostAdmissionError::MalformedRequest)),
+    };
     let queue = request.queue_id & 3;
     let ac = unsafe { read_live_u8(0x0400_02dc + u32::from(queue)) };
     let submit_timer =
         unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(0x0400_143c)) };
+    let packet_id = request.packet_id;
     let metadata = HostTxMetadata {
-        message_address: release.buffer_address(),
-        packet_id: request.packet_id,
+        message_address: buffer.buffer_address(),
+        packet_id,
         max_tx_rate: station_data_rate(request.max_tx_rate),
         queue_id: request.queue_id,
         more: request.more,
@@ -1435,13 +1442,21 @@ pub unsafe fn admit_host_tx(
         interface,
         submit_timer,
         ac,
+        frame_state_address: 0,
+    };
+    let context = match unsafe { allocate_host_context() } {
+        Ok(context) => context,
+        Err(error) => return Err((buffer, HostAdmissionError::Pool(error))),
+    };
+    let metadata = HostTxMetadata {
         frame_state_address: context.frame_state(),
+        ..metadata
     };
     unsafe { initialize_host_context_at(context.raw(), metadata) };
     Ok(RetainedHostTx {
         context,
-        release,
-        packet_id: request.packet_id,
+        release: buffer.into_release(),
+        packet_id,
         phase: HostTxPhase::Submitted,
     })
 }

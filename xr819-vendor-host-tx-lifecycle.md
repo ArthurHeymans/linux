@@ -369,13 +369,15 @@ pending-task decision model with focused tests. It now also owns the exact
 per-index `ctx+0xa0` validation, and an explicit phase sequence that cannot jump
 from submission directly to scheduling.
 
-HIF request handling keeps the packet-RAM input buffer under an explicit
-`RequestReleaseToken`. The opt-in `vendor-host-tx-foundation` feature now
-transfers ordinary non-EAPOL data requests into a real host context and retains
-that token in `RetainedHostTx`; management and EAPOL remain on class 6. RESET
-can unwind an admitted context safely. The feature intentionally stops in the
-`Submitted` phase and emits no confirmation, so it is a compile-time wiring
-boundary rather than a hardware-test candidate. The ordinary-data
+HIF request handling keeps each detached packet-RAM input under an owning
+`RequestBuffer`; payload slices borrow that owner, and consuming it is the only
+way to obtain the non-copyable `RequestReleaseToken`. Ordinary non-EAPOL data
+moves the buffer into `RetainedHostTx`, while management and EAPOL remain on
+class 6. `HostTxDriver` makes idle, retained, scheduler-reserved, scheduled, and
+confirming ownership mutually exclusive and centralizes reversible RESET
+cancellation. A single non-copyable `MacEventQueue` capability is passed to
+class-0, class-6, and probe servicing so the shared event FIFO has one explicit
+consumer. The ordinary-data
 `tx_classify_hdr_len()` path now applies 3/4-address headers, QoS and HT-control
 lengths, TID, QoS ACK policy, multicast/no-ACK flags, payload splitting, exact
 per-link/TID sequence assignment, VIF-slot selection, and software CCMP directly

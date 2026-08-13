@@ -48,15 +48,9 @@ pub unsafe fn capture_completion(context: u32, status: u16, retries: u8) {
         for index in 0..8_u32 {
             let offset = index * 4;
             let word = u32::from((frame.wrapping_add(offset) as *const u8).read_volatile())
-                | (u32::from(
-                    (frame.wrapping_add(offset + 1) as *const u8).read_volatile(),
-                ) << 8)
-                | (u32::from(
-                    (frame.wrapping_add(offset + 2) as *const u8).read_volatile(),
-                ) << 16)
-                | (u32::from(
-                    (frame.wrapping_add(offset + 3) as *const u8).read_volatile(),
-                ) << 24);
+                | (u32::from((frame.wrapping_add(offset + 1) as *const u8).read_volatile()) << 8)
+                | (u32::from((frame.wrapping_add(offset + 2) as *const u8).read_volatile()) << 16)
+                | (u32::from((frame.wrapping_add(offset + 3) as *const u8).read_volatile()) << 24);
             (FRAME_WORDS.wrapping_add(offset as usize) as *mut u32).write_volatile(word);
         }
     }

@@ -105,10 +105,13 @@ mapping, PAS-slot removal, pipe-slot reservation, and kind-0 descriptor
 generation before crossing into hardware ownership. It starts the PHY, triggers
 the MAC, services retries/completion, emits the class-0 WSM confirmation, and
 frees the context/HIF request only after confirmation publication. Management
-and class-0 servicing are serialized while either owns the shared MAC runtime,
-preventing one path from consuming the other's completion. This remains a
-bounded single-outstanding non-aggregate implementation, not yet the full
-production scheduler.
+and class-0 servicing are serialized while either owns the shared MAC runtime.
+`HostTxDriver` now represents idle, retained, scheduler-reserved, and confirming
+ownership as mutually exclusive states, including RESET cancellation. Detached
+HIF requests use an owning `RequestBuffer`, so payload borrows cannot outlive
+the packet-RAM owner, and a single non-copyable `MacEventQueue` capability is
+passed to every MAC-event consumer. This remains a bounded single-outstanding
+non-aggregate implementation, not yet the full production scheduler.
 
 The optional `vendor-host-tx-diagnostics` feature retains the bring-up
 observability without burdening the normal station image. It enables retained

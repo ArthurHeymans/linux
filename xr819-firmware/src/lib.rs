@@ -5,6 +5,8 @@ pub mod crypto;
 pub mod download;
 pub mod hif;
 pub mod host_tx_diagnostics;
+#[cfg(all(feature = "vendor-host-tx-foundation", target_arch = "arm"))]
+pub mod host_tx_driver;
 pub mod join;
 pub mod loader;
 pub mod mac;

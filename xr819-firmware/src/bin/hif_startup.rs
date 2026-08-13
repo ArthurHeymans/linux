@@ -7,8 +7,6 @@ use core::panic::PanicInfo;
 use xr819_firmware::configuration;
 use xr819_firmware::crypto;
 use xr819_firmware::hif::Transport;
-#[cfg(feature = "vendor-host-tx-foundation")]
-use xr819_firmware::host_tx_diagnostics;
 #[cfg(feature = "join-sta-experiment")]
 use xr819_firmware::join;
 use xr819_firmware::mac;
@@ -25,8 +23,6 @@ use xr819_firmware::scan;
 #[cfg(feature = "tcm-size-diagnostic")]
 use xr819_firmware::tcm;
 use xr819_firmware::tx;
-#[cfg(feature = "vendor-host-tx-foundation")]
-use xr819_firmware::vendor_host_tx;
 use xr819_firmware::vif;
 #[cfg(feature = "join-sta-experiment")]
 use xr819_firmware::wsm::JoinRequest;
@@ -41,6 +37,8 @@ use xr819_firmware::wsm::{
     encode_tx_confirm, encode_tx_confirm_details, encode_xr819_tx_confirm,
     encode_xr819_tx_confirm_details,
 };
+#[cfg(feature = "vendor-host-tx-foundation")]
+use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
 
 // Explicit rollback boundary for scan-owned active probe TX. This feature is
 // enabled by default after repeated cross-scan hardware validation; building
@@ -84,6 +82,61 @@ fn encode_debug_event(event_id: u32, data: u32, output: &mut [u8]) -> Option<usi
     output[4..8].copy_from_slice(&event_id.to_le_bytes());
     output[8..12].copy_from_slice(&data.to_le_bytes());
     Some(12)
+}
+
+#[cfg(feature = "join-sta-experiment")]
+unsafe fn service_management_request(
+    events: &mut tx::MacEventQueue,
+    request: &TxRequest<'_>,
+    if_id: u8,
+    output: &mut [u8],
+    publish_response: &mut bool,
+) -> Result<usize, xr819_firmware::wsm::Error> {
+    match unsafe { tx::service_host_management_tx(events, Some((request, if_id)), 0) } {
+        tx::HostManagementTxReport::Published {
+            packet_id,
+            bisect_stage,
+        } => {
+            *publish_response = true;
+            if bisect_stage != 0 {
+                if join::uses_cw1200_wsm() {
+                    encode_tx_confirm_details(packet_id, STATUS_FAILURE, 0, bisect_stage, output)
+                } else {
+                    encode_xr819_tx_confirm_details(
+                        packet_id,
+                        STATUS_FAILURE,
+                        0,
+                        bisect_stage,
+                        output,
+                    )
+                }
+            } else {
+                let edca = unsafe { (0x09c0_0e64 as *const u32).read_volatile() };
+                let quantum0 = unsafe { (0x09c0_0e70 as *const u32).read_volatile() };
+                let quantum1 = unsafe { (0x09c0_0e74 as *const u32).read_volatile() };
+                let metadata = unsafe { (0x0900_8008 as *const u8).read_volatile() };
+                let secondary = unsafe { (0x0900_7bc0 as *const u8).read_volatile() };
+                let event_id = 0x5852_0000 | (edca & 0xffff);
+                let data = (quantum0 & 0xff)
+                    | ((quantum1 & 0xff) << 8)
+                    | (u32::from(metadata) << 16)
+                    | (u32::from(secondary) << 24);
+                encode_debug_event(event_id, data, output)
+                    .ok_or(xr819_firmware::wsm::Error::Truncated)
+            }
+        }
+        tx::HostManagementTxReport::Failed { packet_id, .. } => {
+            if join::uses_cw1200_wsm() {
+                encode_tx_confirm(packet_id, STATUS_FAILURE, output)
+            } else {
+                encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+            }
+        }
+        _ => {
+            *publish_response = false;
+            encode_tx_confirm(0, STATUS_FAILURE, output)
+        }
+    }
 }
 
 #[unsafe(naked)]
@@ -143,6 +196,7 @@ extern "C" fn rust_main() -> ! {
     register_post_activation_interrupts();
     unsafe { (0x0900_ff98 as *mut u32).write_volatile(0x4849_4630) };
     let mut transport = unsafe { Transport::initialize() };
+    let mut mac_events = unsafe { tx::MacEventQueue::claim() };
     debug_stop(6, 0x5354_4706);
 
     // Vendor 0x9ac calls packet-DMA initialization immediately after 0x94c.
@@ -203,252 +257,19 @@ extern "C" fn rust_main() -> ! {
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     let mut pending_tx_debug_event: Option<(u32, u32)> = None;
     #[cfg(feature = "vendor-host-tx-foundation")]
-    let mut pending_vendor_host_tx: Option<vendor_host_tx::RetainedHostTx> = None;
-    #[cfg(feature = "vendor-host-tx-foundation")]
-    let mut pending_vendor_confirmation: Option<(vendor_host_tx::RetainedHostTx, u32, u8)> = None;
-    #[cfg(feature = "vendor-host-tx-foundation")]
-    let mut pending_vendor_mac_completion: Option<(u32, u16, u8)> = None;
-    #[cfg(feature = "vendor-host-tx-foundation")]
-    let mut pending_vendor_reservation: Option<vendor_host_tx::HostSchedulerReservation> = None;
-    #[cfg(feature = "vendor-host-tx-foundation")]
-    let mut pending_vendor_wait_diagnostic = 0_u8;
+    let mut host_tx_driver = HostTxDriver::new();
     loop {
         let _ = transport.service_interrupt();
 
         #[cfg(feature = "vendor-host-tx-foundation")]
-        if pending_vendor_confirmation.is_none() && pending_vendor_reservation.is_none() {
-            if let Some(retained) = pending_vendor_host_tx.as_ref() {
-                unsafe {
-                    host_tx_diagnostics::trace(
-                        0x4854_1000 | u32::from(retained.phase() as u8),
-                        retained.context().raw(),
-                        0,
-                    );
-                }
-            }
-            let mut completed = None;
-            if let Some(retained) = pending_vendor_host_tx.as_mut()
-                && matches!(
-                    retained.phase(),
-                    vendor_host_tx::HostTxPhase::PostCryptoQueued
-                        | vendor_host_tx::HostTxPhase::PendingEligible
-                )
-            {
-                match unsafe { vendor_host_tx::service_pending(retained) } {
-                    Ok(vendor_host_tx::PendingServiceReport::Complete(status)) => {
-                        unsafe {
-                            host_tx_diagnostics::trace(
-                                0x4854_1100 | u32::from(status),
-                                retained.context().raw(),
-                                0,
-                            );
-                        }
-                        completed = Some(status);
-                    }
-                    Ok(vendor_host_tx::PendingServiceReport::PasQueued) => {
-                        unsafe {
-                            host_tx_diagnostics::trace(
-                                0x4854_1200,
-                                retained.context().raw(),
-                                0,
-                            );
-                        }
-                        pending_vendor_wait_diagnostic = 0;
-                    }
-                    Ok(vendor_host_tx::PendingServiceReport::LeaveQueued) => {
-                        unsafe {
-                            host_tx_diagnostics::trace(
-                                0x4854_1300,
-                                retained.context().raw(),
-                                0,
-                            );
-                        }
-                        if cfg!(feature = "vendor-host-tx-diagnostics")
-                            && pending_vendor_wait_diagnostic == 0
-                            && pending_tx_debug_event.is_none()
-                        {
-                            let diagnostic =
-                                unsafe { vendor_host_tx::pending_live_diagnostic(retained) };
-                            let event_id = 0x4854_6000
-                                | u32::from(diagnostic.vif_state)
-                                | (u32::from(diagnostic.pipe_allowed) << 8)
-                                | ((diagnostic.global & 0xff) << 16);
-                            pending_tx_debug_event = Some((
-                                event_id,
-                                u32::from(diagnostic.active_mask)
-                                    | (u32::from(diagnostic.effective_mask) << 16),
-                            ));
-                            pending_vendor_wait_diagnostic = 1;
-                        }
-                    }
-                    Err(error) => {
-                        unsafe {
-                            host_tx_diagnostics::trace(
-                                0x4854_1f00 | u32::from(error.diagnostic_code()),
-                                retained.context().raw(),
-                                u32::from(retained.phase() as u8),
-                            );
-                        }
-                        if cfg!(feature = "vendor-host-tx-diagnostics")
-                            && pending_tx_debug_event.is_none()
-                        {
-                            pending_tx_debug_event = Some((
-                                0x4854_5f00 | u32::from(error.diagnostic_code()),
-                                retained.context().raw()
-                                    | (u32::from(retained.phase() as u8) << 24),
-                            ));
-                        }
-                    }
-                }
-            }
-            if let Some(status) = completed
-                && let Some(mut retained) = pending_vendor_host_tx.take()
-            {
-                let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
-                pending_vendor_confirmation =
-                    Some((retained, tx::wsm_status_from_internal(status), 0));
-            }
-        }
-
-        #[cfg(feature = "vendor-host-tx-foundation")]
-        if pending_vendor_reservation.is_none() {
-            let mut expired = false;
-            if let Some(retained) = pending_vendor_host_tx.as_mut()
-                && retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
-            {
-                match unsafe { vendor_host_tx::reserve_non_aggregate_scheduler(retained) } {
-                    Ok(reservation) => {
-                        unsafe {
-                            host_tx_diagnostics::trace(
-                                0x4854_2000,
-                                retained.context().raw(),
-                                0,
-                            );
-                        }
-                        pending_vendor_wait_diagnostic = 0;
-                        pending_vendor_reservation = Some(reservation);
-                    }
-                    Err(error) => {
-                        unsafe {
-                            host_tx_diagnostics::trace(
-                                0x4854_2f00 | u32::from(error.diagnostic_code()),
-                                retained.context().raw(),
-                                0,
-                            );
-                        }
-                        if error == vendor_host_tx::SchedulerReserveError::Expired {
-                            expired = true;
-                        } else if cfg!(feature = "vendor-host-tx-diagnostics")
-                            && pending_vendor_wait_diagnostic < 2
-                        {
-                            let diagnostic =
-                                unsafe { vendor_host_tx::scheduler_live_diagnostic(retained) };
-                            let gates = u32::from(diagnostic.pipe)
-                                | (u32::from(diagnostic.idle_pipe_mask) << 8)
-                                | (u32::from(diagnostic.retry_gate) << 16)
-                                | (u32::from(diagnostic.receive_gate) << 24);
-                            let flags = u32::from(diagnostic.ring_contains_frame)
-                                | (u32::from(diagnostic.pipe_allowed) << 1)
-                                | (u32::from(diagnostic.ring_head) << 2)
-                                | (u32::from(diagnostic.ring_tail) << 8);
-                            // Override the generic TX trace stream: this event
-                            // is the bounded host frame's ownership diagnosis.
-                            pending_tx_debug_event = Some((
-                                0x4854_5810
-                                    | u32::from(error.diagnostic_code())
-                                    | (flags << 8),
-                                gates,
-                            ));
-                            pending_vendor_wait_diagnostic += 1;
-                        }
-                    }
-                }
-            }
-            if expired
-                && let Some(mut retained) = pending_vendor_host_tx.take()
-                && unsafe { vendor_host_tx::reject_unscheduled_pas(&mut retained) }.is_ok()
-            {
-                let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
-                pending_vendor_confirmation = Some((retained, tx::wsm_status_from_internal(10), 0));
-            }
-        }
-
-        #[cfg(feature = "vendor-host-tx-foundation")]
-        if let Some(reservation) = pending_vendor_reservation.take()
-            && let Some(retained) = pending_vendor_host_tx.as_mut()
+        if let Some(event) =
+            unsafe { host_tx_driver.service(&mut mac_events, pending_tx_debug_event.is_none()) }
         {
-            let pipe = reservation.pipe();
-            let slot = reservation.slot();
-            match unsafe { reservation.publish(retained) } {
-                Ok(()) => {
-                    pending_vendor_wait_diagnostic = 3;
-                    unsafe {
-                        host_tx_diagnostics::trace(
-                            0x4854_7000,
-                            retained.context().raw()
-                                | (u32::from(pipe) << 24)
-                                | (u32::from(slot) << 28),
-                            0,
-                        );
-                    }
-                }
-                Err((reservation, error)) => {
-                    unsafe {
-                        host_tx_diagnostics::trace(
-                            0x4854_7100 | error as u32,
-                            retained.context().raw()
-                                | (u32::from(pipe) << 24)
-                                | (u32::from(slot) << 28),
-                            0,
-                        );
-                    }
-                    pending_vendor_reservation = Some(reservation);
-                }
-            }
+            pending_tx_debug_event = Some(event);
         }
 
         #[cfg(feature = "vendor-host-tx-foundation")]
-        if pending_vendor_confirmation.is_none()
-            && pending_vendor_mac_completion.is_none()
-            && let Some(retained) = pending_vendor_host_tx.as_ref()
-            && retained.phase() == vendor_host_tx::HostTxPhase::Scheduled
-            && let Some(completion) = unsafe { tx::service_host_class0_runtime(32) }
-        {
-            unsafe {
-                host_tx_diagnostics::capture_completion(
-                    completion.0,
-                    completion.1,
-                    completion.2,
-                );
-            }
-            pending_vendor_mac_completion = Some(completion);
-        }
-
-        #[cfg(feature = "vendor-host-tx-foundation")]
-        if pending_vendor_confirmation.is_none()
-            && let Some((context, status, ack_failures)) = pending_vendor_mac_completion
-            && let Some(expected_context) = pending_vendor_host_tx
-                .as_ref()
-                .map(|retained| retained.context().raw())
-        {
-            if context == expected_context
-                && let Some(mut retained) = pending_vendor_host_tx.take()
-            {
-                pending_vendor_mac_completion = None;
-                let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
-                pending_vendor_confirmation =
-                    Some((retained, tx::wsm_status_from_internal(status), ack_failures));
-            } else {
-                unsafe {
-                    host_tx_diagnostics::trace(0x4854_3f00, context, expected_context);
-                }
-            }
-        }
-
-        #[cfg(feature = "vendor-host-tx-foundation")]
-        let management_runtime_available = pending_vendor_host_tx.is_none()
-            && pending_vendor_confirmation.is_none()
-            && pending_vendor_mac_completion.is_none();
+        let management_runtime_available = host_tx_driver.management_runtime_available();
         #[cfg(not(feature = "vendor-host-tx-foundation"))]
         let management_runtime_available = true;
 
@@ -460,7 +281,7 @@ extern "C" fn rust_main() -> ! {
                 status,
                 tx_rate,
                 ack_failures,
-            } = unsafe { tx::service_host_management_tx(None, 32) }
+            } = unsafe { tx::service_host_management_tx(&mut mac_events, None, 32) }
         {
             pending_tx_confirmation = Some((packet_id, status, tx_rate, ack_failures));
         }
@@ -507,26 +328,36 @@ extern "C" fn rust_main() -> ! {
         }
 
         #[cfg(feature = "vendor-host-tx-foundation")]
-        if let Some((retained, status, ack_failures)) = pending_vendor_confirmation.as_ref()
+        if let Some(confirmation) = host_tx_driver.confirmation()
             && transport.output_available()
         {
-            let packet_id = retained.packet_id();
-            let context = retained.context().raw();
-            let tx_rate = unsafe { (context.wrapping_add(0x63) as *const u8).read_volatile() };
+            let tx_rate =
+                unsafe { (confirmation.context.wrapping_add(0x63) as *const u8).read_volatile() };
             let output = unsafe { transport.output_buffer() };
             let encoded = if join::uses_cw1200_wsm() {
-                encode_tx_confirm_details(packet_id, *status, tx_rate, *ack_failures, output)
+                encode_tx_confirm_details(
+                    confirmation.packet_id,
+                    confirmation.status,
+                    tx_rate,
+                    confirmation.ack_failures,
+                    output,
+                )
             } else {
-                encode_xr819_tx_confirm_details(packet_id, *status, tx_rate, *ack_failures, output)
+                encode_xr819_tx_confirm_details(
+                    confirmation.packet_id,
+                    confirmation.status,
+                    tx_rate,
+                    confirmation.ack_failures,
+                    output,
+                )
             };
             if let Ok(length) = encoded
-                && let Some((retained, _, _)) = pending_vendor_confirmation.take()
+                && let Some(release) = unsafe { host_tx_driver.finish_confirmation() }
             {
                 unsafe { transport.publish(length as u16) };
-                let release = unsafe { retained.finish() };
                 transport.release_request(release);
             }
-        } else if pending_vendor_confirmation.is_some() {
+        } else if host_tx_driver.confirmation().is_some() {
             unsafe { host_tx_diagnostics::trace(0x4854_4000, 0, 0) };
         }
 
@@ -548,6 +379,7 @@ extern "C" fn rust_main() -> ! {
             }
             let report = unsafe {
                 tx::service_guarded_probe_experiment(
+                    &mut mac_events,
                     configuration::template_frame(),
                     opportunity,
                     &probe_ssid[..ssid_length.unwrap_or(0)],
@@ -653,11 +485,17 @@ extern "C" fn rust_main() -> ! {
             if let Some(request) = transport.poll_request() {
                 let output = unsafe { transport.output_buffer() };
                 let mut publish_response = true;
-                let mut request_release = Some(request.release);
-                let response_length = if request.if_id > 2 {
-                    encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
-                } else if request.id == CONFIGURATION_REQ_ID {
-                    let configured = ConfigurationRequest::parse(request.payload).ok().and_then(
+                let request_id = request.id;
+                let request_if_id = request.if_id;
+                let mut request_buffer = Some(request.buffer);
+                let request_payload = request_buffer
+                    .as_ref()
+                    .expect("request buffer is present")
+                    .payload();
+                let response_length = if request_if_id > 2 {
+                    encode_status_response(request_id | 0x0400, STATUS_FAILURE, output)
+                } else if request_id == CONFIGURATION_REQ_ID {
+                    let configured = ConfigurationRequest::parse(request_payload).ok().and_then(
                         |configuration_request| {
                             configuration::retain(&configuration_request).ok()?;
                             Some((
@@ -683,8 +521,8 @@ extern "C" fn rust_main() -> ! {
                     ));
                     program_station_address(station_id);
                     encode_configuration_response(station_id, tx_power_ranges, output)
-                } else if request.id == START_SCAN_REQ_ID {
-                    let status = match StartScanRequest::parse(request.payload) {
+                } else if request_id == START_SCAN_REQ_ID {
+                    let status = match StartScanRequest::parse(request_payload) {
                         Ok(scan_request) => {
                             #[cfg(feature = "probe-tx-experiment")]
                             let preparation: Result<(), ()> = Ok(());
@@ -707,7 +545,7 @@ extern "C" fn rust_main() -> ! {
                                             configuration::template_frame(),
                                             ssid,
                                             channel,
-                                            request.if_id,
+                                            request_if_id,
                                         )
                                         .map(|_| ())
                                         .map_err(|_| ())
@@ -716,7 +554,7 @@ extern "C" fn rust_main() -> ! {
                                 }
                             };
                             match preparation {
-                                Ok(()) => match scan::begin(&scan_request, request.if_id) {
+                                Ok(()) => match scan::begin(&scan_request, request_if_id) {
                                     Ok(()) => 0,
                                     Err(scan::ScanError::Busy) => 4,
                                     Err(_) => 2,
@@ -726,31 +564,31 @@ extern "C" fn rust_main() -> ! {
                         }
                         Err(_) => 2,
                     };
-                    encode_status_response(request.id | 0x0400, status, output)
-                } else if request.id == TX_QUEUE_PARAMS_REQ_ID {
-                    let status = match TxQueueParameters::parse(request.payload) {
+                    encode_status_response(request_id | 0x0400, status, output)
+                } else if request_id == TX_QUEUE_PARAMS_REQ_ID {
+                    let status = match TxQueueParameters::parse(request_payload) {
                         Ok(parameters) => {
                             configuration::retain_tx_queue(parameters);
                             0
                         }
                         Err(_) => 2,
                     };
-                    encode_status_response(request.id | 0x0400, status, output)
-                } else if request.id == EDCA_PARAMS_REQ_ID {
-                    let status = match EdcaParameters::parse(request.payload) {
+                    encode_status_response(request_id | 0x0400, status, output)
+                } else if request_id == EDCA_PARAMS_REQ_ID {
+                    let status = match EdcaParameters::parse(request_payload) {
                         Ok(parameters) => {
                             configuration::retain_edca(parameters);
                             unsafe {
-                                vif::apply_edca(request.if_id, parameters)
+                                vif::apply_edca(request_if_id, parameters)
                                     .map(|_| 0)
                                     .unwrap_or(2)
                             }
                         }
                         Err(_) => 2,
                     };
-                    encode_status_response(request.id | 0x0400, status, output)
-                } else if request.id == WRITE_MIB_REQ_ID {
-                    let status = match WriteMibRequest::parse(request.payload) {
+                    encode_status_response(request_id | 0x0400, status, output)
+                } else if request_id == WRITE_MIB_REQ_ID {
+                    let status = match WriteMibRequest::parse(request_payload) {
                         Ok(request)
                             if configuration::retain_interface_mib(
                                 request.mib_id,
@@ -761,10 +599,9 @@ extern "C" fn rust_main() -> ! {
                         }
                         _ => STATUS_FAILURE,
                     };
-                    encode_status_response(request.id | 0x0400, status, output)
-                } else if request.id == READ_MIB_REQ_ID {
-                    let mib_id = request
-                        .payload
+                    encode_status_response(request_id | 0x0400, status, output)
+                } else if request_id == READ_MIB_REQ_ID {
+                    let mib_id = request_payload
                         .get(..2)
                         .map(|value| u16::from_le_bytes([value[0], value[1]]))
                         .unwrap_or(0);
@@ -830,49 +667,30 @@ extern "C" fn rust_main() -> ! {
                     } else {
                         encode_read_mib_response(STATUS_FAILURE, mib_id, output)
                     }
-                } else if request.id == ADD_KEY_REQ_ID {
-                    let status = AddKeyRequest::parse(request.payload)
+                } else if request_id == ADD_KEY_REQ_ID {
+                    let status = AddKeyRequest::parse(request_payload)
                         .ok()
-                        .and_then(|key| crypto::add_key(request.if_id, &key).ok())
+                        .and_then(|key| crypto::add_key(request_if_id, &key).ok())
                         .map(|()| 0)
                         .unwrap_or(STATUS_FAILURE);
-                    encode_status_response(request.id | 0x0400, status, output)
-                } else if request.id == REMOVE_KEY_REQ_ID {
-                    let status = RemoveKeyRequest::parse(request.payload)
+                    encode_status_response(request_id | 0x0400, status, output)
+                } else if request_id == REMOVE_KEY_REQ_ID {
+                    let status = RemoveKeyRequest::parse(request_payload)
                         .ok()
                         .and_then(|key| crypto::remove_key(key.index).ok())
                         .map(|()| 0)
                         .unwrap_or(STATUS_FAILURE);
-                    encode_status_response(request.id | 0x0400, status, output)
-                } else if request.id == RESET_REQ_ID {
-                    let status = match ResetRequest::parse(request.payload) {
+                    encode_status_response(request_id | 0x0400, status, output)
+                } else if request_id == RESET_REQ_ID {
+                    let status = match ResetRequest::parse(request_payload) {
                         Ok(_) => {
                             #[cfg(feature = "vendor-host-tx-foundation")]
-                            {
-                                if let Some(reservation) = pending_vendor_reservation.take()
-                                    && let Some(retained) = pending_vendor_host_tx.as_mut()
-                                {
-                                    let _ = unsafe { reservation.cancel(retained) };
-                                }
-                                if pending_vendor_host_tx.as_ref().is_some_and(|retained| {
-                                    retained.phase() != vendor_host_tx::HostTxPhase::Scheduled
-                                }) && let Some(retained) = pending_vendor_host_tx.take()
-                                {
-                                    // Pending, PAS-ring, and unpublished slot
-                                    // reservations are reversible. Scheduled
-                                    // hardware ownership must complete normally.
-                                    if let Ok(release) = unsafe { retained.cancel_before_pas() } {
-                                        transport.release_request(release);
-                                    }
-                                }
-                                if let Some((retained, _, _)) = pending_vendor_confirmation.take() {
-                                    let release = unsafe { retained.finish() };
-                                    transport.release_request(release);
-                                }
+                            if let Some(release) = unsafe { host_tx_driver.reset() } {
+                                transport.release_request(release);
                             }
                             #[cfg(feature = "join-sta-experiment")]
                             {
-                                if unsafe { join::reset(request.if_id) } {
+                                if unsafe { join::reset(request_if_id) } {
                                     0
                                 } else {
                                     STATUS_FAILURE
@@ -883,12 +701,12 @@ extern "C" fn rust_main() -> ! {
                         }
                         Err(_) => STATUS_FAILURE,
                     };
-                    encode_status_response(request.id | 0x0400, status, output)
-                } else if request.id == JOIN_REQ_ID {
+                    encode_status_response(request_id | 0x0400, status, output)
+                } else if request_id == JOIN_REQ_ID {
                     #[cfg(feature = "join-sta-experiment")]
-                    let status = match JoinRequest::parse(request.payload) {
+                    let status = match JoinRequest::parse(request_payload) {
                         Ok(join_request) => unsafe {
-                            join::activate_sta(request.if_id, &join_request)
+                            join::activate_sta(request_if_id, &join_request)
                                 .map(|_| 0)
                                 .unwrap_or(STATUS_FAILURE)
                         },
@@ -897,27 +715,26 @@ extern "C" fn rust_main() -> ! {
                     #[cfg(not(feature = "join-sta-experiment"))]
                     let status = STATUS_FAILURE;
                     if status == 0
-                        && request
-                            .payload
+                        && request_payload
                             .get(0x0f)
                             .is_some_and(|flags| flags & 0x20 != 0)
                     {
                         pending_join_complete = Some(0);
                     }
                     encode_join_response(status, -160, 200, output)
-                } else if request.id == TX_REQ_ID {
+                } else if request_id == TX_REQ_ID {
                     #[cfg(feature = "vendor-host-tx-foundation")]
                     unsafe {
                         host_tx_diagnostics::trace(
                             0x4854_0004,
-                            u32::from(request.if_id)
-                                | (u32::try_from(request.payload.len()).unwrap_or(u32::MAX) << 8),
+                            u32::from(request_if_id)
+                                | (u32::try_from(request_payload.len()).unwrap_or(u32::MAX) << 8),
                             0,
                         );
                     }
                     #[cfg(feature = "join-sta-experiment")]
                     {
-                        match TxRequest::parse(request.payload) {
+                        match TxRequest::parse(request_payload) {
                             Ok(tx_request) => {
                                 #[cfg(feature = "vendor-host-tx-foundation")]
                                 unsafe {
@@ -936,216 +753,58 @@ extern "C" fn rust_main() -> ! {
                                     );
                                 }
                                 #[cfg(feature = "vendor-host-tx-foundation")]
-                                let vendor_response = if tx_request.is_unicast_data()
-                                    && !tx_request.is_unicast_eapol()
-                                {
-                                    Some(if pending_vendor_host_tx.is_some() {
+                                if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
+                                    let packet_id = tx_request.packet_id;
+                                    let admitted = unsafe {
+                                        host_tx_driver.admit(
+                                            request_buffer
+                                                .take()
+                                                .expect("request buffer is present"),
+                                            request_if_id,
+                                            &mut transport,
+                                        )
+                                    };
+                                    if admitted {
+                                        publish_response = false;
+                                        Ok(0)
+                                    } else {
+                                        unsafe {
+                                            host_tx_diagnostics::trace(0x4854_00e1, packet_id, 0);
+                                        }
                                         if join::uses_cw1200_wsm() {
-                                            encode_tx_confirm(
-                                                tx_request.packet_id,
-                                                STATUS_FAILURE,
-                                                output,
-                                            )
+                                            encode_tx_confirm(packet_id, STATUS_FAILURE, output)
                                         } else {
                                             encode_xr819_tx_confirm(
-                                                tx_request.packet_id,
+                                                packet_id,
                                                 STATUS_FAILURE,
                                                 output,
                                             )
                                         }
-                                    } else {
-                                        match unsafe {
-                                            vendor_host_tx::admit_host_tx(
-                                                &tx_request,
-                                                request.if_id,
-                                                request_release
-                                                    .take()
-                                                    .expect("request release token is present"),
-                                            )
-                                        } {
-                                            Ok(mut retained) => match unsafe {
-                                                vendor_host_tx::classify_and_encrypt(&mut retained)
-                                            } {
-                                                Ok(()) => match unsafe {
-                                                    vendor_host_tx::enqueue_post_crypto(
-                                                        &mut retained,
-                                                    )
-                                                } {
-                                                    Ok(()) => {
-                                                        unsafe {
-                                                            host_tx_diagnostics::trace(
-                                                                0x4854_0008,
-                                                                retained.context().raw(),
-                                                                retained.phase() as u32,
-                                                            );
-                                                        }
-                                                        pending_vendor_host_tx = Some(retained);
-                                                        pending_vendor_wait_diagnostic = 0;
-                                                        publish_response = false;
-                                                        Ok(0)
-                                                    }
-                                                    Err(_) => {
-                                                        unsafe {
-                                                            host_tx_diagnostics::trace(
-                                                                0x4854_00e3,
-                                                                retained.context().raw(),
-                                                                0,
-                                                            );
-                                                        }
-                                                        let release = unsafe { retained.abort() };
-                                                        transport.release_request(release);
-                                                        if join::uses_cw1200_wsm() {
-                                                            encode_tx_confirm(
-                                                                tx_request.packet_id,
-                                                                STATUS_FAILURE,
-                                                                output,
-                                                            )
-                                                        } else {
-                                                            encode_xr819_tx_confirm(
-                                                                tx_request.packet_id,
-                                                                STATUS_FAILURE,
-                                                                output,
-                                                            )
-                                                        }
-                                                    }
-                                                },
-                                                Err(_) => {
-                                                    unsafe {
-                                                        host_tx_diagnostics::trace(
-                                                            0x4854_00e2,
-                                                            retained.context().raw(),
-                                                            0,
-                                                        );
-                                                    }
-                                                    let release = unsafe { retained.abort() };
-                                                    transport.release_request(release);
-                                                    if join::uses_cw1200_wsm() {
-                                                        encode_tx_confirm(
-                                                            tx_request.packet_id,
-                                                            STATUS_FAILURE,
-                                                            output,
-                                                        )
-                                                    } else {
-                                                        encode_xr819_tx_confirm(
-                                                            tx_request.packet_id,
-                                                            STATUS_FAILURE,
-                                                            output,
-                                                        )
-                                                    }
-                                                }
-                                            },
-                                            Err(_) => {
-                                                unsafe {
-                                                    host_tx_diagnostics::trace(
-                                                        0x4854_00e1,
-                                                        tx_request.packet_id,
-                                                        0,
-                                                    );
-                                                }
-                                                if join::uses_cw1200_wsm() {
-                                                    encode_tx_confirm(
-                                                        tx_request.packet_id,
-                                                        STATUS_FAILURE,
-                                                        output,
-                                                    )
-                                                } else {
-                                                    encode_xr819_tx_confirm(
-                                                        tx_request.packet_id,
-                                                        STATUS_FAILURE,
-                                                        output,
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    })
-                                } else {
-                                    None
-                                };
-                                #[cfg(not(feature = "vendor-host-tx-foundation"))]
-                                let vendor_response: Option<
-                                    Result<usize, xr819_firmware::wsm::Error>,
-                                > = None;
-
-                                if let Some(response) = vendor_response {
-                                    response
-                                } else {
-                                    match unsafe {
-                                        tx::service_host_management_tx(
-                                            Some((&tx_request, request.if_id)),
-                                            0,
-                                        )
-                                    } {
-                                        tx::HostManagementTxReport::Published {
-                                            packet_id,
-                                            bisect_stage,
-                                        } => {
-                                            publish_response = true;
-                                            if bisect_stage != 0 {
-                                                if join::uses_cw1200_wsm() {
-                                                    encode_tx_confirm_details(
-                                                        packet_id,
-                                                        STATUS_FAILURE,
-                                                        0,
-                                                        bisect_stage,
-                                                        output,
-                                                    )
-                                                } else {
-                                                    encode_xr819_tx_confirm_details(
-                                                        packet_id,
-                                                        STATUS_FAILURE,
-                                                        0,
-                                                        bisect_stage,
-                                                        output,
-                                                    )
-                                                }
-                                            } else {
-                                                let edca = unsafe {
-                                                    (0x09c0_0e64 as *const u32).read_volatile()
-                                                };
-                                                let quantum0 = unsafe {
-                                                    (0x09c0_0e70 as *const u32).read_volatile()
-                                                };
-                                                let quantum1 = unsafe {
-                                                    (0x09c0_0e74 as *const u32).read_volatile()
-                                                };
-                                                let metadata = unsafe {
-                                                    (0x0900_8008 as *const u8).read_volatile()
-                                                };
-                                                let secondary = unsafe {
-                                                    (0x0900_7bc0 as *const u8).read_volatile()
-                                                };
-                                                let event_id = 0x5852_0000 | (edca & 0xffff);
-                                                let data = (quantum0 & 0xff)
-                                                    | ((quantum1 & 0xff) << 8)
-                                                    | (u32::from(metadata) << 16)
-                                                    | (u32::from(secondary) << 24);
-                                                encode_debug_event(event_id, data, output)
-                                                    .ok_or(xr819_firmware::wsm::Error::Truncated)
-                                            }
-                                        }
-                                        tx::HostManagementTxReport::Failed {
-                                            packet_id, ..
-                                        } => {
-                                            if join::uses_cw1200_wsm() {
-                                                encode_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                            } else {
-                                                encode_xr819_tx_confirm(
-                                                    packet_id,
-                                                    STATUS_FAILURE,
-                                                    output,
-                                                )
-                                            }
-                                        }
-                                        _ => {
-                                            publish_response = false;
-                                            encode_tx_confirm(0, STATUS_FAILURE, output)
-                                        }
                                     }
+                                } else {
+                                    unsafe {
+                                        service_management_request(
+                                            &mut mac_events,
+                                            &tx_request,
+                                            request_if_id,
+                                            output,
+                                            &mut publish_response,
+                                        )
+                                    }
+                                }
+                                #[cfg(not(feature = "vendor-host-tx-foundation"))]
+                                unsafe {
+                                    service_management_request(
+                                        &mut mac_events,
+                                        &tx_request,
+                                        request_if_id,
+                                        output,
+                                        &mut publish_response,
+                                    )
                                 }
                             }
                             Err(_) => {
-                                let packet_id = request
-                                    .payload
+                                let packet_id = request_payload
                                     .get(..4)
                                     .map(|value| {
                                         u32::from_le_bytes([value[0], value[1], value[2], value[3]])
@@ -1161,8 +820,7 @@ extern "C" fn rust_main() -> ! {
                     }
                     #[cfg(not(feature = "join-sta-experiment"))]
                     {
-                        let packet_id = request
-                            .payload
+                        let packet_id = request_payload
                             .get(..4)
                             .map(|value| {
                                 u32::from_le_bytes([value[0], value[1], value[2], value[3]])
@@ -1174,17 +832,15 @@ extern "C" fn rust_main() -> ! {
                     // Do not report success for commands whose state effects are
                     // not implemented. A complete status word lets cw1200 fail the
                     // command cleanly instead of proceeding on false assumptions.
-                    encode_status_response(request.id | 0x0400, STATUS_FAILURE, output)
+                    encode_status_response(request_id | 0x0400, STATUS_FAILURE, output)
                 };
                 if publish_response && let Ok(length) = response_length {
                     unsafe { transport.publish(length as u16) };
                 }
-                // Most commands finish synchronously and release their borrowed
-                // packet-RAM request here. The future vendor host-TX path will
-                // transfer this token into class-0 state and release it only
-                // after confirmation.
-                if let Some(release) = request_release {
-                    transport.release_request(release);
+                // Synchronous commands return their owning request buffer here.
+                // Ordinary class-0 TX moves it into HostTxDriver until confirmation.
+                if let Some(buffer) = request_buffer {
+                    transport.release_request(buffer.into_release());
                 }
             }
         }
