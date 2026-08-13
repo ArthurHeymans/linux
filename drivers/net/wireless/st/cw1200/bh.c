@@ -250,6 +250,60 @@ void cw1200_enable_powersave(struct cw1200_common *priv,
 	priv->powersave_enabled = enable;
 }
 
+static void cw1200_bh_rx_diag_record(struct cw1200_common *priv,
+				     enum cw1200_bh_rx_diag_reason reason,
+				     u16 ctrl_before, u16 ctrl_after,
+				     size_t read_len, size_t alloc_len,
+				     size_t wsm_len, u16 wsm_id,
+				     u8 wsm_seq, u8 expected_seq,
+				     int result, const u8 *data)
+{
+	struct cw1200_bh_rx_diag *diag = &priv->bh_rx_diag;
+	struct cw1200_bh_rx_diag_entry *entry;
+	unsigned long flags;
+	size_t data_len = 0;
+	u32 ordinal;
+
+	if (data)
+		data_len = min_t(size_t, alloc_len,
+				 CW1200_BH_RX_DIAG_DATA_SIZE);
+
+	spin_lock_irqsave(&diag->lock, flags);
+	ordinal = diag->count++;
+	entry = &diag->entries[diag->head];
+	diag->head = (diag->head + 1) % CW1200_BH_RX_DIAG_DEPTH;
+	memset(entry, 0, sizeof(*entry));
+	entry->timestamp_ns = ktime_get_ns();
+	entry->ordinal = ordinal;
+	entry->reason = reason;
+	entry->ctrl_before = ctrl_before;
+	entry->ctrl_after = ctrl_after;
+	entry->read_len = min_t(size_t, read_len, U16_MAX);
+	entry->alloc_len = min_t(size_t, alloc_len, U16_MAX);
+	entry->wsm_len = min_t(size_t, wsm_len, U16_MAX);
+	entry->wsm_id = wsm_id;
+	entry->expected_cmd = READ_ONCE(priv->wsm_cmd.cmd);
+	entry->wsm_seq = wsm_seq;
+	entry->expected_seq = expected_seq;
+	entry->result = result;
+	entry->data_len = data_len;
+	if (data_len)
+		memcpy(entry->data, data, data_len);
+	spin_unlock_irqrestore(&diag->lock, flags);
+
+	if (reason != CW1200_BH_RX_DIAG_MESSAGE) {
+		dev_err(priv->pdev,
+			"BH RX diag reason=%u ctrl=%04x->%04x read=%zu alloc=%zu wsm=%zu id=%04x seq=%u/%u cmd=%04x result=%d\n",
+			reason, ctrl_before, ctrl_after, read_len, alloc_len,
+			wsm_len, wsm_id, wsm_seq, expected_seq,
+			READ_ONCE(priv->wsm_cmd.cmd), result);
+		if (data_len)
+			print_hex_dump(KERN_ERR, "cw1200 BH RX: ",
+				       DUMP_PREFIX_OFFSET, 16, 1, data,
+				       data_len, false);
+	}
+}
+
 static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 			       uint16_t *ctrl_reg,
 			       int *tx)
@@ -259,7 +313,9 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 	struct wsm_hdr *wsm;
 	size_t wsm_len;
 	u16 wsm_id;
-	u8 wsm_seq;
+	u8 wsm_seq = 0;
+	u8 expected_seq;
+	u16 ctrl_before = *ctrl_reg;
 	int rx_resync = 1;
 
 	size_t alloc_len;
@@ -273,6 +329,11 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 		    (read_len > EFFECTIVE_BUF_SIZE))) {
 		pr_debug("Invalid read len: %zu (%04x)",
 			 read_len, *ctrl_reg);
+		cw1200_bh_rx_diag_record(priv,
+					 CW1200_BH_RX_DIAG_INVALID_CTRL_LENGTH,
+					 ctrl_before, *ctrl_reg, read_len, 0,
+					 0, 0, 0, priv->wsm_rx_seq, -EINVAL,
+					 NULL);
 		goto err;
 	}
 
@@ -302,6 +363,11 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 
 	if (WARN_ON(cw1200_data_read(priv, data, alloc_len))) {
 		pr_err("rx blew up, len %zu\n", alloc_len);
+		cw1200_bh_rx_diag_record(priv,
+					 CW1200_BH_RX_DIAG_DATA_READ_FAILED,
+					 ctrl_before, *ctrl_reg, read_len,
+					 alloc_len, 0, 0, 0, priv->wsm_rx_seq,
+					 -EIO, NULL);
 		goto err;
 	}
 
@@ -311,8 +377,16 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 
 	wsm = (struct wsm_hdr *)data;
 	wsm_len = __le16_to_cpu(wsm->len);
-	if (WARN_ON(wsm_len > read_len))
+	if (WARN_ON(wsm_len > read_len)) {
+		cw1200_bh_rx_diag_record(priv,
+					 CW1200_BH_RX_DIAG_INVALID_WSM_LENGTH,
+					 ctrl_before, *ctrl_reg, read_len,
+					 alloc_len, wsm_len,
+					 __le16_to_cpu(wsm->id) & 0x0fff,
+					 (__le16_to_cpu(wsm->id) >> 13) & 7,
+					 priv->wsm_rx_seq, -EMSGSIZE, data);
 		goto err;
+	}
 
 	if (priv->wsm_enable_wsm_dumps)
 		print_hex_dump_bytes("<-- ",
@@ -321,17 +395,33 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 
 	wsm_id  = __le16_to_cpu(wsm->id) & 0xFFF;
 	wsm_seq = (__le16_to_cpu(wsm->id) >> 13) & 7;
+	expected_seq = priv->wsm_rx_seq;
+	cw1200_bh_rx_diag_record(priv, CW1200_BH_RX_DIAG_MESSAGE,
+				 ctrl_before, *ctrl_reg, read_len, alloc_len,
+				 wsm_len, wsm_id, wsm_seq, expected_seq, 0,
+				 data);
 
 	skb_trim(skb_rx, wsm_len);
 
 	if (wsm_id == 0x0800) {
+		cw1200_bh_rx_diag_record(priv, CW1200_BH_RX_DIAG_EXCEPTION,
+					 ctrl_before, *ctrl_reg, read_len,
+					 alloc_len, wsm_len, wsm_id, wsm_seq,
+					 expected_seq, -EIO, data);
 		wsm_handle_exception(priv,
 				     &data[sizeof(*wsm)],
 				     wsm_len - sizeof(*wsm));
 		goto err;
 	} else if (!rx_resync) {
-		if (WARN_ON(wsm_seq != priv->wsm_rx_seq))
+		if (WARN_ON(wsm_seq != priv->wsm_rx_seq)) {
+			cw1200_bh_rx_diag_record(priv,
+						 CW1200_BH_RX_DIAG_SEQUENCE_MISMATCH,
+						 ctrl_before, *ctrl_reg, read_len,
+						 alloc_len, wsm_len, wsm_id,
+						 wsm_seq, expected_seq, -EILSEQ,
+						 data);
 			goto err;
+		}
 	}
 	priv->wsm_rx_seq = (wsm_seq + 1) & 7;
 	rx_resync = 0;
@@ -339,6 +429,11 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 	if (wsm_id & 0x0400) {
 		int rc = wsm_release_tx_buffer(priv, 1);
 		if (WARN_ON(rc < 0)) {
+			cw1200_bh_rx_diag_record(priv,
+						 CW1200_BH_RX_DIAG_CREDIT_FAILED,
+						 ctrl_before, *ctrl_reg, read_len,
+						 alloc_len, wsm_len, wsm_id,
+						 wsm_seq, expected_seq, rc, data);
 			dev_kfree_skb(skb_rx);
 			return rc;
 		} else if (rc > 0) {
@@ -347,8 +442,18 @@ static int cw1200_bh_rx_helper(struct cw1200_common *priv,
 	}
 
 	/* cw1200_wsm_rx takes care on SKB livetime */
-	if (WARN_ON(wsm_handle_rx(priv, wsm_id, wsm, &skb_rx)))
-		goto err;
+	{
+		int ret = wsm_handle_rx(priv, wsm_id, wsm, &skb_rx);
+
+		if (WARN_ON(ret)) {
+			cw1200_bh_rx_diag_record(priv,
+						 CW1200_BH_RX_DIAG_HANDLER_FAILED,
+						 ctrl_before, *ctrl_reg, read_len,
+						 alloc_len, wsm_len, wsm_id,
+						 wsm_seq, expected_seq, ret, data);
+			goto err;
+		}
+	}
 
 	dev_kfree_skb(skb_rx);
 

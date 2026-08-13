@@ -452,7 +452,7 @@ pub fn service() -> Option<ScanCompletion> {
     if storage.hardware_status == 0 && !storage.transition.is_idle() {
         let now = vendor_timer();
         match unsafe { storage.transition.service(now) } {
-            Ok(Some(result)) => {
+            Ok(Some(_result)) => {
                 let channel = storage.channels[usize::from(storage.current_channel_index)];
                 // Vendor arms the dwell after the transition has enabled RX.
                 let armed = vendor_timer();
@@ -472,10 +472,7 @@ pub fn service() -> Option<ScanCompletion> {
                 }
                 storage.dwell_arm_now = armed;
                 storage.dwell_armed_deadline = storage.dwell_deadline;
-                unsafe {
-                    (0x0900_ff98 as *mut u32).write_volatile(0x5455_4e4f);
-                    (0x0900_ff9c as *mut u32).write_volatile(result.divider.register);
-                }
+
             }
             Ok(None) => return None,
             Err(error) => {
@@ -485,10 +482,7 @@ pub fn service() -> Option<ScanCompletion> {
                 {
                     storage.probe_phase = ActiveProbePhase::Failed;
                 }
-                unsafe {
-                    (0x0900_ff98 as *mut u32).write_volatile(0x5741_4b45);
-                    (0x0900_ff9c as *mut u32).write_volatile(storage.current_channel_index.into());
-                }
+
             }
         }
     }
@@ -502,10 +496,7 @@ pub fn service() -> Option<ScanCompletion> {
             if let Err(error) = unsafe { storage.transition.start(_channel.number, 100_000) } {
                 storage.hardware_error_code = transition_error_code(error);
                 storage.hardware_status = 1;
-                unsafe {
-                    (0x0900_ff98 as *mut u32).write_volatile(0x5455_4e45);
-                    (0x0900_ff9c as *mut u32).write_volatile(_channel.number.into());
-                }
+
             } else {
                 storage.transition.arm_settle(vendor_timer());
             }
@@ -726,6 +717,12 @@ fn complete_probe_at(
 pub fn complete_probe(opportunity: ProbeOpportunity, status: u16) -> bool {
     let storage = unsafe { &mut *SCAN.0.get() };
     complete_probe_at(storage, opportunity, status, vendor_timer())
+}
+
+#[cfg(all(not(target_arch = "arm"), feature = "probe-tx-experiment"))]
+pub fn complete_probe(opportunity: ProbeOpportunity, status: u16) -> bool {
+    let storage = unsafe { &mut *SCAN.0.get() };
+    complete_probe_at(storage, opportunity, status, storage.probe_deadline)
 }
 
 #[cfg(feature = "probe-tx-experiment")]

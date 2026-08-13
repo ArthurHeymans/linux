@@ -3,7 +3,9 @@
 pub mod configuration;
 pub mod crypto;
 pub mod download;
+pub mod exception;
 pub mod hif;
+pub mod host_tx_arena;
 pub mod host_tx_diagnostics;
 #[cfg(all(feature = "vendor-host-tx-foundation", target_arch = "arm"))]
 pub mod host_tx_driver;

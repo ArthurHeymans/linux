@@ -50,6 +50,46 @@ struct firmware;
 #define CW1200_JOIN_TIMEOUT		(1 * HZ)
 #define CW1200_AUTH_TIMEOUT		(5 * HZ)
 
+#define CW1200_BH_RX_DIAG_DEPTH 32
+#define CW1200_BH_RX_DIAG_DATA_SIZE 32
+
+enum cw1200_bh_rx_diag_reason {
+	CW1200_BH_RX_DIAG_MESSAGE,
+	CW1200_BH_RX_DIAG_INVALID_CTRL_LENGTH,
+	CW1200_BH_RX_DIAG_DATA_READ_FAILED,
+	CW1200_BH_RX_DIAG_INVALID_WSM_LENGTH,
+	CW1200_BH_RX_DIAG_SEQUENCE_MISMATCH,
+	CW1200_BH_RX_DIAG_EXCEPTION,
+	CW1200_BH_RX_DIAG_CREDIT_FAILED,
+	CW1200_BH_RX_DIAG_HANDLER_FAILED,
+};
+
+struct cw1200_bh_rx_diag_entry {
+	u64 timestamp_ns;
+	u32 ordinal;
+	u16 reason;
+	u16 ctrl_before;
+	u16 ctrl_after;
+	u16 read_len;
+	u16 alloc_len;
+	u16 wsm_len;
+	u16 wsm_id;
+	u16 expected_cmd;
+	u8 wsm_seq;
+	u8 expected_seq;
+	s16 result;
+	u8 data_len;
+	u8 data[CW1200_BH_RX_DIAG_DATA_SIZE];
+};
+
+struct cw1200_bh_rx_diag {
+	/* Protects the trace cursor and entries against debugfs readers. */
+	spinlock_t lock;
+	u32 count;
+	u32 head;
+	struct cw1200_bh_rx_diag_entry entries[CW1200_BH_RX_DIAG_DEPTH];
+};
+
 struct cw1200_ht_info {
 	struct ieee80211_sta_ht_cap     ht_cap;
 	enum nl80211_channel_type       channel_type;
@@ -224,6 +264,7 @@ struct cw1200_common {
 
 	/* WSM debug */
 	int				wsm_enable_wsm_dumps;
+	struct cw1200_bh_rx_diag	bh_rx_diag;
 
 	/* WSM Join */
 	enum cw1200_join_status	join_status;

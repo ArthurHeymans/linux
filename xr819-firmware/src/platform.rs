@@ -169,9 +169,7 @@ fn register32(address: usize) -> &'static ReadWrite<u32> {
     unsafe { &*(address as *const ReadWrite<u32>) }
 }
 
-fn post_code(value: u32) {
-    register32(0x0900_ff98).set(value);
-}
+fn post_code(_value: u32) {}
 
 extern "C" fn diagnostic_irq_stub() {}
 
@@ -299,9 +297,7 @@ pub fn capture_remap_debug() {
     clock
         .window_selector
         .set(selector | ((selected as u32) << 2));
-    let output = register32(0x0900_ff98);
-    output.set(clock.window_value.get());
-    let _ = output.get();
+    let _ = clock.window_value.get();
 }
 
 /// Applies the control update at `firmware_main_initialize + 0x0c` before
@@ -373,10 +369,7 @@ pub fn prepare_memory_and_interrupts() {
     clock.mask_44.set(clock.mask_44.get() & 0x7fff_f777);
     clock.mask_48.set(clock.mask_48.get() & 0x777f_ffff);
 
-    register32(0x0900_ff9c).set(state.remap_present.get() as u32);
-    for (index, window) in state.remap_windows.iter().take(8).enumerate() {
-        register32(0x0900_ffa0 + index * 4).set(window.get());
-    }
+
 }
 
 /// Reproduces the hardware-visible part of `0x00000a74 -> 0xfff019aa`.

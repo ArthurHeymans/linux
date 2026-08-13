@@ -51,9 +51,6 @@ const INTERRUPT_PENDING: usize = 0x0a88_0020;
 // vector, whose body is exactly `mac_irq_handler`.
 const MAC_FIQ_SOURCE: u32 = 0x16;
 const TX_TRACE_MAGIC: u32 = 0x5458_4558; // "TXEX"
-// The loader's checkpoint occupies 0x0900fd00..0x0900fd0f. Keep the retained
-// mirror just above it; the tiny extractor does not stage over this window.
-const TX_TRACE_RETAINED: usize = 0x0900_fd20;
 const TX_TRACE_PUBLISHED: u32 = 1 << 0;
 const TX_TRACE_GO: u32 = 1 << 1;
 const TX_TRACE_FIQ: u32 = 1 << 2;
@@ -1235,20 +1232,8 @@ pub unsafe fn enter_mac_fatal_quiescence(
     unsafe { core::ptr::addr_of_mut!((*record).valid).write_volatile(MAC_FATAL_MAGIC) };
     unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
     unsafe {
-        let mirror = 0x0900_ffb0_usize;
-        let current_pipe = read_u32(CURRENT_PIPE as usize);
         let current_slot = read_u32(CURRENT_SLOT as usize);
         let pending = read_u32(PIPE_IRQ_PENDING as usize);
-        let trigger = read_u32(PIPE_IRQ_TRIGGER as usize);
-        write_u32(mirror, 0);
-        write_u32(mirror + 4, event.raw);
-        write_u32(mirror + 8, saved_scheduler_word.raw());
-        write_u32(mirror + 0x0c, current_pipe);
-        write_u32(mirror + 0x10, current_slot);
-        write_u32(mirror + 0x14, pending);
-        write_u32(mirror + 0x18, trigger);
-        core::arch::asm!("", options(nostack, preserves_flags));
-        write_u32(mirror, MAC_FATAL_MAGIC);
         let slot_record = current_slot;
         let command = if (0x0400_172c..0x0400_18dc).contains(&slot_record) {
             read_u32(slot_record as usize + 0x14)
@@ -1269,25 +1254,41 @@ pub unsafe fn enter_mac_fatal_quiescence(
                 0
             }
         };
+        let event_count = read_u32(0xfff0_3794);
+        let prior_event = |age: u32| {
+            let index = event_count.wrapping_sub(age) & 0x1f;
+            read_u32(0xfff0_3714 + index as usize * 4)
+        };
+        let pipe = read_u8(CURRENT_PIPE as usize) & 3;
+        let pipe_state = pipe_state_address(pipe) as usize;
+        let hardware_ring = read_u32(pipe_state + 8);
         crate::hif::publish_mac_fatal_exception([
             event.raw,
             current_slot,
-            pending,
+            saved_scheduler_word.raw(),
             slot_word(0),
             slot_word(0x0c),
-            slot_word(0x10),
             command,
-            command_word(0),
+            event_count,
+            prior_event(1),
+            prior_event(2),
+            prior_event(3),
+            prior_event(4),
+            read_u32(pipe_state),
+            hardware_ring,
+            if hardware_ring != 0 {
+                read_u32(hardware_ring as usize)
+            } else {
+                0
+            },
+            if hardware_ring != 0 {
+                read_u32(hardware_ring as usize + 0x14)
+            } else {
+                0
+            },
+            pending,
+            read_u32(MAC_EVENT_READINESS as usize),
             command_word(4),
-            command_word(8),
-            command_word(0x0c),
-            command_word(0x10),
-            command_word(0x14),
-            command_word(0x18),
-            command_word(0x1c),
-            command_word(0x20),
-            command_word(0x24),
-            command_word(0x28),
         ]);
     }
     loop {
@@ -2379,12 +2380,7 @@ impl PipeSuccessEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 fn record_nonfatal_backend_diagnostic(code: u32, pipe: u8) {
-    unsafe {
-        let count = read_u32(0x0900_ffd8).wrapping_add(1);
-        write_u32(0x0900_ffd8, count);
-        write_u32(0x0900_ffdc, code | u32::from(pipe & 3));
-        trace_tx_value(0x28, code | u32::from(pipe & 3));
-    }
+    unsafe { trace_tx_value(0x28, code | u32::from(pipe & 3)) };
 }
 
 #[cfg(target_arch = "arm")]
@@ -2759,9 +2755,6 @@ unsafe fn reset_tx_trace(pipe: u8, slot: u8) {
             0,
             0,
         ];
-        for (index, value) in (*TX_EXEC_TRACE.0.get()).iter().copied().enumerate() {
-            write_u32(TX_TRACE_RETAINED + index * 4, value);
-        }
     }
 }
 
@@ -2770,7 +2763,6 @@ unsafe fn trace_tx_stage(stage: u32) {
     unsafe {
         let trace = &mut *TX_EXEC_TRACE.0.get();
         trace[2] |= stage;
-        write_u32(TX_TRACE_RETAINED + 8, trace[2]);
         let debug = &mut *TX_DEBUG_SNAPSHOT.0.get();
         debug.values = [
             trace[2], trace[3], trace[5], trace[6], trace[7], trace[8], trace[9], trace[10],
@@ -2786,7 +2778,6 @@ unsafe fn trace_tx_value(offset: u32, value: u32) {
         let index = usize::try_from(offset / 4).unwrap_or(0);
         if index < 12 {
             (*TX_EXEC_TRACE.0.get())[index] = value;
-            write_u32(TX_TRACE_RETAINED + index * 4, value);
         }
     }
 }
@@ -5107,7 +5098,6 @@ impl PreparedProbePublication {
             if publication_bisect_reached(5) {
                 return Ok(publication(5));
             }
-            write_u32(0x0900_ffa0, 0x5055_4230);
             if publication_bisect_reached(6) {
                 return Ok(publication(6));
             }
@@ -5138,7 +5128,6 @@ impl PreparedProbePublication {
             // Mirror the execution record through ordinary WSM event
             // indications so the host can dump it without resetting the core.
             trace_tx_stage(TX_TRACE_GO);
-            write_u32(0x0900_ffa0, 0x5055_4231);
             Ok(publication(0))
         }
     }
@@ -6392,6 +6381,12 @@ pub const fn wsm_status_from_internal(status: u16) -> u32 {
 ///
 /// # Safety
 /// The caller must exclusively service the MAC event FIFO and completion ring.
+#[cfg(target_arch = "arm")]
+pub unsafe fn host_management_runtime_active() -> bool {
+    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
+    runtime.host_published.is_some() || runtime.published.is_some()
+}
+
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_host_management_tx(
     _events: &mut MacEventQueue,

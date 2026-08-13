@@ -341,6 +341,76 @@ static int cw1200_counters_show(struct seq_file *seq, void *v)
 
 DEFINE_SHOW_ATTRIBUTE(cw1200_counters);
 
+static const char *cw1200_bh_rx_diag_reason(u16 reason)
+{
+	switch (reason) {
+	case CW1200_BH_RX_DIAG_MESSAGE:
+		return "message";
+	case CW1200_BH_RX_DIAG_INVALID_CTRL_LENGTH:
+		return "invalid-ctrl-length";
+	case CW1200_BH_RX_DIAG_DATA_READ_FAILED:
+		return "data-read-failed";
+	case CW1200_BH_RX_DIAG_INVALID_WSM_LENGTH:
+		return "invalid-wsm-length";
+	case CW1200_BH_RX_DIAG_SEQUENCE_MISMATCH:
+		return "sequence-mismatch";
+	case CW1200_BH_RX_DIAG_EXCEPTION:
+		return "exception";
+	case CW1200_BH_RX_DIAG_CREDIT_FAILED:
+		return "credit-failed";
+	case CW1200_BH_RX_DIAG_HANDLER_FAILED:
+		return "handler-failed";
+	default:
+		return "unknown";
+	}
+}
+
+static int cw1200_bh_rx_trace_show(struct seq_file *seq, void *v)
+{
+	struct cw1200_common *priv = seq->private;
+	struct cw1200_bh_rx_diag *diag = &priv->bh_rx_diag;
+	struct cw1200_bh_rx_diag_entry entry;
+	unsigned long flags;
+	u32 count, head, available, first, i, j;
+
+	spin_lock_irqsave(&diag->lock, flags);
+	count = diag->count;
+	head = diag->head;
+	spin_unlock_irqrestore(&diag->lock, flags);
+
+	available = min_t(u32, count, CW1200_BH_RX_DIAG_DEPTH);
+	first = (head + CW1200_BH_RX_DIAG_DEPTH - available) %
+		CW1200_BH_RX_DIAG_DEPTH;
+	seq_printf(seq, "count=%u available=%u head=%u\n", count, available,
+		   head);
+	seq_puts(seq,
+		 "ordinal timestamp_ns reason ctrl read alloc wsm id seq expected cmd result data\n");
+
+	for (i = 0; i < available; i++) {
+		u32 slot = (first + i) % CW1200_BH_RX_DIAG_DEPTH;
+
+		spin_lock_irqsave(&diag->lock, flags);
+		entry = diag->entries[slot];
+		spin_unlock_irqrestore(&diag->lock, flags);
+
+		seq_printf(seq,
+			   "%u %llu %s %04x->%04x %u %u %u %04x %u %u %04x %d ",
+			   entry.ordinal, entry.timestamp_ns,
+			   cw1200_bh_rx_diag_reason(entry.reason),
+			   entry.ctrl_before, entry.ctrl_after,
+			   entry.read_len, entry.alloc_len, entry.wsm_len,
+			   entry.wsm_id, entry.wsm_seq, entry.expected_seq,
+			   entry.expected_cmd, entry.result);
+		for (j = 0; j < entry.data_len; j++)
+			seq_printf(seq, "%02x", entry.data[j]);
+		seq_putc(seq, '\n');
+	}
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(cw1200_bh_rx_trace);
+
 static ssize_t cw1200_wsm_dumps(struct file *file,
 	const char __user *user_buf, size_t count, loff_t *ppos)
 {
@@ -709,6 +779,8 @@ int cw1200_debug_init(struct cw1200_common *priv)
 			    &cw1200_status_fops);
 	debugfs_create_file("counters", 0400, d->debugfs_phy, priv,
 			    &cw1200_counters_fops);
+	debugfs_create_file("bh_rx_trace", 0400, d->debugfs_phy, priv,
+			    &cw1200_bh_rx_trace_fops);
 	debugfs_create_file("wsm_dumps", 0200, d->debugfs_phy, priv,
 			    &fops_wsm_dumps);
 	if (priv->is_xr819) {

@@ -20,8 +20,12 @@ const VENDOR_FIFO_STATE: usize = 0x0400_1680;
 const MAX_FRAME_LEN: usize = 1600;
 const WSM_RX_HEADROOM: usize = 16;
 
-static mut CONSUMER_OFFSET: u32 = 0;
-static mut HOST_TRANSFER_OUTSTANDING: bool = false;
+// Vendor RX FIFO state keeps independent release (+0x10) and claim (+0x14)
+// cursors. A claimed slot may remain host-owned while later slots are queued.
+static mut RELEASE_OFFSET: u32 = 0;
+static mut CLAIM_OFFSET: u32 = 0;
+static mut HOST_TRANSFER_COUNT: u32 = 0;
+const MAX_HOST_TRANSFERS: u32 = 24;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReceiveDiagnostics {
@@ -81,13 +85,15 @@ pub fn diagnostic_word() -> u16 {
 
 #[cfg(feature = "probe-tx-experiment")]
 pub fn host_transfer_outstanding() -> bool {
-    unsafe { HOST_TRANSFER_OUTSTANDING }
+    unsafe { HOST_TRANSFER_COUNT != 0 }
 }
 
 #[cfg(feature = "probe-tx-experiment")]
 pub fn fifo_quiescent() -> bool {
     unsafe {
-        !HOST_TRANSFER_OUTSTANDING && CONSUMER_OFFSET == DMA_PRODUCER.read_volatile() & FIFO_MASK
+        HOST_TRANSFER_COUNT == 0
+            && RELEASE_OFFSET == CLAIM_OFFSET
+            && CLAIM_OFFSET == DMA_PRODUCER.read_volatile() & FIFO_MASK
     }
 }
 
@@ -124,8 +130,9 @@ pub unsafe fn initialize() {
 pub unsafe fn synchronize_after_wake(producer: u32) {
     let producer = producer & FIFO_MASK;
     unsafe {
-        CONSUMER_OFFSET = producer;
-        HOST_TRANSFER_OUTSTANDING = false;
+        RELEASE_OFFSET = producer;
+        CLAIM_OFFSET = producer;
+        HOST_TRANSFER_COUNT = 0;
         ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(producer);
         ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(producer);
         DMA_CONSUMER.write_volatile(producer);
@@ -195,11 +202,25 @@ fn slot_data_fits_fifo(offset: u32, slot_length: u16) -> bool {
     trailer + 8 <= FIFO_SIZE as usize
 }
 
-unsafe fn set_consumer_offset(next: u32) {
+const fn claimed_slot_state(value: u32) -> u32 {
+    value & 0xff
+}
+
+const fn pending_release_state(value: u32) -> u32 {
+    claimed_slot_state(value).wrapping_sub(0x100)
+}
+
+unsafe fn set_release_offset(next: u32) {
     unsafe {
-        DMA_CONSUMER.write_volatile(next);
-        CONSUMER_OFFSET = next;
+        RELEASE_OFFSET = next;
         ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(next);
+        DMA_CONSUMER.write_volatile(next);
+    }
+}
+
+unsafe fn set_claim_offset(next: u32) {
+    unsafe {
+        CLAIM_OFFSET = next;
         ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(next);
     }
 }
@@ -218,23 +239,75 @@ unsafe fn resynchronize_consumer(consumer: u32, producer: u32) {
         }
         let address = FIFO_BASE + candidate as usize;
         if unsafe { (address as *const u32).read_volatile() } == FIFO_MAGIC {
-            unsafe { set_consumer_offset(candidate) };
+            unsafe {
+                set_claim_offset(candidate);
+                set_release_offset(candidate);
+            }
             return;
         }
     }
-    unsafe { set_consumer_offset(producer) };
+    unsafe {
+        set_claim_offset(producer);
+        set_release_offset(producer);
+    }
+}
+
+unsafe fn release_head_slot(slot: usize, next: u32, low_state: u32) {
+    unsafe {
+        // Preserve vendor `rxfifo_release_slot()` ordering: advance the
+        // software release cursor, mark and clear the slot, then expose the
+        // new consumer pointer to packet DMA.
+        RELEASE_OFFSET = next;
+        ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(next);
+        ((slot + 8) as *mut u32).write_volatile(FIFO_RELEASED | low_state);
+        (slot as *mut u32).write_volatile(0);
+        DMA_CONSUMER.write_volatile(next);
+        crate::host_tx_diagnostics::record(
+            crate::host_tx_diagnostics::EVENT_RX_RELEASE,
+            0,
+            slot as u32,
+            next,
+            low_state,
+        );
+        let diagnostics = &mut *DIAGNOSTICS.0.get();
+        diagnostics.released_slots = diagnostics.released_slots.wrapping_add(1);
+    }
 }
 
 unsafe fn release(token: ReleaseToken) {
     unsafe {
         let slot = token.slot as usize;
         let state = (slot + 8) as *mut u32;
-        let low = state.read_volatile() & 0xff;
-        state.write_volatile(FIFO_RELEASED | low);
-        (slot as *mut u32).write_volatile(0);
-        set_consumer_offset(token.next);
-        let diagnostics = &mut *DIAGNOSTICS.0.get();
-        diagnostics.released_slots = diagnostics.released_slots.wrapping_add(1);
+        let value = state.read_volatile();
+        let low = value & 0xff;
+        let ownership = value & 0xffff_ff00;
+
+        if ownership == FIFO_RELEASED {
+            return;
+        }
+        assert!(ownership == 0 || ownership == 0xffff_ff00);
+        if ownership == 0 {
+            // Vendor marks an out-of-order release as 0xffffff00 and lets the
+            // release-head walk reclaim it when all preceding owners return.
+            state.write_volatile(pending_release_state(value));
+        }
+
+        assert!((FIFO_BASE..FIFO_BASE + FIFO_SIZE as usize).contains(&slot));
+        let slot_offset = normalize_offset((slot - FIFO_BASE) as u32);
+        if RELEASE_OFFSET != slot_offset {
+            return;
+        }
+
+        release_head_slot(slot, token.next, low);
+        while RELEASE_OFFSET != CLAIM_OFFSET {
+            let next_slot = FIFO_BASE + RELEASE_OFFSET as usize;
+            let next_state = ((next_slot + 8) as *const u32).read_volatile();
+            if next_state & 0xffff_ff00 != 0xffff_ff00 {
+                break;
+            }
+            let next = ((next_slot + 4) as *const u32).read_volatile();
+            release_head_slot(next_slot, normalize_offset(next), next_state & 0xff);
+        }
     }
 }
 
@@ -245,8 +318,8 @@ unsafe fn release(token: ReleaseToken) {
 /// `token` must be the currently outstanding radio transfer token.
 pub unsafe fn complete_host_transfer(token: ReleaseToken) {
     unsafe {
-        if HOST_TRANSFER_OUTSTANDING {
-            HOST_TRANSFER_OUTSTANDING = false;
+        if HOST_TRANSFER_COUNT != 0 {
+            HOST_TRANSFER_COUNT -= 1;
             release(token);
         }
     }
@@ -290,11 +363,7 @@ unsafe fn poll_indication(
     active_channel: u16,
     scan_only: bool,
 ) -> Option<PendingIndication> {
-    if unsafe { HOST_TRANSFER_OUTSTANDING } {
-        return None;
-    }
-
-    let consumer = unsafe { CONSUMER_OFFSET };
+    let consumer = unsafe { CLAIM_OFFSET };
     let producer = normalize_offset(unsafe { DMA_PRODUCER.read_volatile() });
     if consumer == producer {
         return None;
@@ -340,7 +409,20 @@ unsafe fn poll_indication(
 
     let frame_len = usize::from(slot_length) - 4;
     let next = next_offset(consumer, slot_length);
-    unsafe { ((slot + 4) as *mut u32).write_volatile(next) };
+    unsafe {
+        ((slot + 4) as *mut u32).write_volatile(next);
+        let state = (slot + 8) as *mut u32;
+        let slot_state = claimed_slot_state(state.read_volatile());
+        state.write_volatile(slot_state);
+        set_claim_offset(next);
+        crate::host_tx_diagnostics::record(
+            crate::host_tx_diagnostics::EVENT_RX_CLAIM,
+            0,
+            slot as u32,
+            (u32::from(slot_length) << 16) | next,
+            slot_state,
+        );
+    }
     let token = ReleaseToken {
         slot: slot as u32,
         next,
@@ -413,6 +495,18 @@ unsafe fn poll_indication(
         }
     }
 
+    // Vendor keeps draining and filtering RX FIFO slots while 24 receive
+    // indications are host-owned; only an otherwise publishable frame is
+    // dropped at this admission boundary.
+    if unsafe { HOST_TRANSFER_COUNT } >= MAX_HOST_TRANSFERS {
+        unsafe {
+            let diagnostics = &mut *DIAGNOSTICS.0.get();
+            diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
+            release(token);
+        }
+        return None;
+    }
+
     let message_address = frame_address - WSM_RX_HEADROOM;
     let message_length = frame_len + WSM_RX_HEADROOM;
     unsafe {
@@ -426,7 +520,7 @@ unsafe fn poll_indication(
         ((message_address + 10) as *mut u8).write_volatile(0);
         ((message_address + 11) as *mut u8).write_volatile(rcpi);
         write_u32(message_address + 12, indication_flags);
-        HOST_TRANSFER_OUTSTANDING = true;
+        HOST_TRANSFER_COUNT += 1;
         let diagnostics = &mut *DIAGNOSTICS.0.get();
         diagnostics.indications = diagnostics.indications.wrapping_add(1);
     }
@@ -471,5 +565,12 @@ mod tests {
     fn zero_copy_indication_fits_advertised_hif_buffer() {
         assert_eq!(MAX_FRAME_LEN + WSM_RX_HEADROOM, 1616);
         assert!(MAX_FRAME_LEN + WSM_RX_HEADROOM <= 1632);
+    }
+
+    #[test]
+    fn vendor_slot_ownership_preserves_low_metadata_byte() {
+        assert_eq!(claimed_slot_state(0x1234_56a5), 0x0000_00a5);
+        assert_eq!(pending_release_state(0x1234_56a5), 0xffff_ffa5);
+        assert_eq!(FIFO_RELEASED | claimed_slot_state(0x1234_56a5), 0xcccc_cca5);
     }
 }

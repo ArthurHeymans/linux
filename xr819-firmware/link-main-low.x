@@ -1,4 +1,4 @@
-ENTRY(_start)
+ENTRY(xr819_reset_entry)
 
 /*
  * The low Thumb image executes from the ITCM mapping enabled by
@@ -25,6 +25,7 @@ SECTIONS
     .text ORIGIN(ITCM_OBSERVED) : ALIGN(4)
     {
         __itcm_image_start = .;
+        KEEP(*(.vectors))
         KEEP(*(.text.entry))
         *(.text .text.*)
         *(.rodata .rodata.*)
@@ -41,6 +42,11 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
         __bss_end = .;
+    } > ITCM_OBSERVED
+
+    .noinit.exception (NOLOAD) : ALIGN(8)
+    {
+        KEEP(*(.noinit.exception))
     } > ITCM_OBSERVED
 
     __itcm_image_end = .;

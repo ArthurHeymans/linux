@@ -1,12 +1,12 @@
 #![no_std]
 #![no_main]
 
-use core::arch::naked_asm;
+use core::arch::{global_asm, naked_asm};
 use core::mem::size_of;
 use core::panic::PanicInfo;
 use xr819_firmware::configuration;
 use xr819_firmware::crypto;
-use xr819_firmware::hif::Transport;
+use xr819_firmware::hif::{SHARED_BUFFER_SIZE, Transport};
 #[cfg(feature = "join-sta-experiment")]
 use xr819_firmware::join;
 use xr819_firmware::mac;
@@ -42,6 +42,127 @@ use xr819_firmware::wsm_profile;
 #[cfg(feature = "vendor-host-tx-foundation")]
 use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
 
+// The ARM9 exception vectors execute in ARM state even though the firmware
+// body is Thumb. Each terminal veneer saves the unmodified shared registers on
+// its preinitialized mode stack before committing the fixed noinit record.
+#[cfg(target_arch = "arm")]
+global_asm!(
+    r#"
+    .syntax unified
+    .arm
+    .section .vectors,"ax",%progbits
+    .align 2
+    .global __xr819_vectors
+__xr819_vectors:
+    ldr pc, [pc, #24]
+    ldr pc, [pc, #24]
+    ldr pc, [pc, #24]
+    ldr pc, [pc, #24]
+    ldr pc, [pc, #24]
+    ldr pc, [pc, #24]
+    ldr pc, [pc, #24]
+    ldr pc, [pc, #24]
+    .word xr819_reset_entry
+    .word xr819_exception_undef
+    .word xr819_exception_svc
+    .word xr819_exception_prefetch_abort
+    .word xr819_exception_data_abort
+    .word xr819_exception_reserved
+    .word xr819_exception_irq
+    .word xr819_exception_fiq
+
+    .global xr819_reset_entry
+xr819_reset_entry:
+    mrs r0, cpsr
+    bic r0, r0, #31
+    orr r0, r0, #192
+
+    orr r1, r0, #27
+    msr cpsr_c, r1
+    ldr sp, =0x0400b100
+    orr r1, r0, #23
+    msr cpsr_c, r1
+    ldr sp, =0x0400b200
+    orr r1, r0, #19
+    msr cpsr_c, r1
+    ldr sp, =0x0400b300
+    orr r1, r0, #18
+    msr cpsr_c, r1
+    ldr sp, =0x0400b400
+    orr r1, r0, #17
+    msr cpsr_c, r1
+    ldr sp, =0x0400b500
+    orr r1, r0, #31
+    msr cpsr_c, r1
+    ldr sp, =0x0400c000
+    ldr r0, =_start
+    bx r0
+
+    .macro XR819_EXCEPTION name, kind
+    .global \name
+\name:
+    stmdb sp!, {{r0-r12, lr}}
+    mov r0, #\kind
+    b xr819_exception_common
+    .endm
+
+    XR819_EXCEPTION xr819_exception_undef, 1
+    XR819_EXCEPTION xr819_exception_svc, 2
+    XR819_EXCEPTION xr819_exception_prefetch_abort, 3
+    XR819_EXCEPTION xr819_exception_data_abort, 4
+    XR819_EXCEPTION xr819_exception_reserved, 5
+    XR819_EXCEPTION xr819_exception_irq, 6
+    XR819_EXCEPTION xr819_exception_fiq, 7
+
+xr819_exception_common:
+    mrs r10, cpsr
+    orr r11, r10, #192
+    msr cpsr_c, r11
+
+    ldr r1, =XR819_EXCEPTION_RECORD
+    mov r2, #0
+    str r2, [r1, #0]
+    str r0, [r1, #4]
+
+    add r2, r1, #8
+    mov r3, sp
+    mov r4, #13
+1:
+    ldr r5, [r3], #4
+    str r5, [r2], #4
+    subs r4, r4, #1
+    bne 1b
+
+    add r5, sp, #56
+    str r5, [r1, #60]
+    ldr r6, [sp, #52]
+    str r6, [r1, #64]
+    mrs r7, spsr
+    str r7, [r1, #68]
+    str r10, [r1, #72]
+
+    cmp r0, #4
+    subeq r8, r6, #8
+    beq 2f
+    tst r7, #32
+    subne r8, r6, #2
+    subeq r8, r6, #4
+2:
+    str r8, [r1, #76]
+    mrc p15, 0, r8, c5, c0, 0
+    str r8, [r1, #80]
+    mrc p15, 0, r8, c6, c0, 0
+    str r8, [r1, #84]
+
+    ldr r8, =0x58434651
+    str r8, [r1, #0]
+    ldr r3, =xr819_exception_terminal
+    blx r3
+3:
+    b 3b
+    "#
+);
+
 // Explicit rollback boundary for scan-owned active probe TX. This feature is
 // enabled by default after repeated cross-scan hardware validation; building
 // with `--no-default-features` retains the passive fallback.
@@ -68,7 +189,7 @@ unsafe fn clear_rust_bss() {
 fn debug_stop(stage: u32, marker: u32) {
     let selected = unsafe { (&raw const STARTUP_DEBUG_STAGE).read_volatile() };
     if selected == stage {
-        unsafe { (0x0900_ff98 as *mut u32).write_volatile(marker) };
+        let _ = marker;
         loop {
             core::hint::spin_loop();
         }
@@ -161,34 +282,22 @@ extern "C" fn rust_main() -> ! {
     unsafe { clear_rust_bss() };
     initialize_runtime_state();
     if !wait_for_host_download_completion(10_000_000) {
-        unsafe {
-            (0x0900_ff98 as *mut u32).write_volatile(0x444c_3f3f);
-            (0x0900_ff9c as *mut u32).write_volatile((0x0400_1428 as *const u32).read_volatile());
-        }
         loop {
             core::hint::spin_loop();
         }
     }
 
     debug_stop(0, 0x5354_4700);
-    unsafe { (0x0900_ff98 as *mut u32).write_volatile(0x504c_5431) };
     prepare_main_control();
     debug_stop(1, 0x5354_4701);
     prepare_memory_and_interrupts();
     debug_stop(2, 0x5354_4702);
-    unsafe { (0x0900_ff98 as *mut u32).write_volatile(0x504c_5432) };
     prepare_high_platform_support();
     debug_stop(3, 0x5354_4703);
-    unsafe { (0x0900_ff98 as *mut u32).write_volatile(0x4849_4731) };
     prepare_dma_and_clocks();
     debug_stop(4, 0x5354_4704);
-    unsafe { (0x0900_ff98 as *mut u32).write_volatile(0x504c_5433) };
 
     if !try_activate_hif(1_000_000) {
-        unsafe {
-            (0x0900_ff98 as *mut u32).write_volatile(0x4849_463f);
-            (0x0900_ff9c as *mut u32).write_volatile((0x0ab0_0134 as *const u32).read_volatile());
-        }
         loop {
             core::hint::spin_loop();
         }
@@ -196,7 +305,6 @@ extern "C" fn rust_main() -> ! {
 
     debug_stop(5, 0x5354_4705);
     register_post_activation_interrupts();
-    unsafe { (0x0900_ff98 as *mut u32).write_volatile(0x4849_4630) };
     let mut transport = unsafe { Transport::initialize() };
     let mut mac_events = unsafe { tx::MacEventQueue::claim() };
     debug_stop(6, 0x5354_4706);
@@ -214,9 +322,7 @@ extern "C" fn rust_main() -> ! {
     unsafe {
         initialize_mac_software_state();
         initialize_mac_core_mode0();
-        if let Err(error) = mac::initialize_vendor_startup_state(1_000_000) {
-            (0x0900_ff98 as *mut u32).write_volatile(0x4d41_433f);
-            (0x0900_ff9c as *mut u32).write_volatile(error as u32 + 1);
+        if let Err(_error) = mac::initialize_vendor_startup_state(1_000_000) {
             loop {
                 core::hint::spin_loop();
             }
@@ -251,22 +357,34 @@ extern "C" fn rust_main() -> ! {
     .unwrap_or(0);
 
     if length != 0 {
-        unsafe { transport.publish(length as u16) };
+        transport.publish(length as u16);
     }
 
     let mut pending_scan_completion: Option<scan::ScanCompletion> = None;
     let mut pending_join_complete: Option<u32> = None;
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     let mut pending_tx_debug_event: Option<(u32, u32)> = None;
+    // Command responses and retained class-0 confirmations are copied into
+    // their original 1632-byte request buffers before publication. This buffer
+    // is scratch only and is never exposed through a HIF descriptor.
+    let mut response_scratch = [0_u8; SHARED_BUFFER_SIZE];
     #[cfg(feature = "vendor-host-tx-foundation")]
     let mut host_tx_driver = HostTxDriver::new();
     loop {
         let _ = transport.service_interrupt();
+        // A ready host request may be a synchronous command. Preserve one
+        // output descriptor for it instead of allowing asynchronous events or
+        // TX confirmations to starve the command lane.
+        let host_request_waiting = transport.request_available();
 
         #[cfg(feature = "vendor-host-tx-foundation")]
-        if let Some(event) =
-            unsafe { host_tx_driver.service(&mut mac_events, pending_tx_debug_event.is_none()) }
-        {
+        if let Some(event) = unsafe {
+            host_tx_driver.service(
+                &mut mac_events,
+                !tx::host_management_runtime_active(),
+                pending_tx_debug_event.is_none(),
+            )
+        } {
             pending_tx_debug_event = Some(event);
         }
 
@@ -294,27 +412,30 @@ extern "C" fn rust_main() -> ! {
         }
 
         if let Some((event_id, data)) = pending_tx_debug_event
+            && !host_request_waiting
             && transport.output_available()
         {
             let output = unsafe { transport.output_buffer() };
             if let Some(length) = encode_debug_event(event_id, data, output) {
                 pending_tx_debug_event = None;
-                unsafe { transport.publish(length as u16) };
+                transport.publish(length as u16);
             }
         }
 
         if let Some(status) = pending_join_complete
+            && !host_request_waiting
             && transport.output_available()
         {
             let output = unsafe { transport.output_buffer() };
             if let Ok(length) = encode_join_complete_indication(status, output) {
                 pending_join_complete = None;
-                unsafe { transport.publish(length as u16) };
+                transport.publish(length as u16);
             }
         }
 
         #[cfg(feature = "join-sta-experiment")]
         if let Some((packet_id, status, tx_rate, ack_failures)) = pending_tx_confirmation
+            && !host_request_waiting
             && transport.output_available()
         {
             let output = unsafe { transport.output_buffer() };
@@ -325,22 +446,22 @@ extern "C" fn rust_main() -> ! {
             };
             if let Ok(length) = encoded {
                 pending_tx_confirmation = None;
-                unsafe { transport.publish(length as u16) };
+                transport.publish(length as u16);
             }
         }
 
         #[cfg(feature = "vendor-host-tx-foundation")]
         if let Some(confirmation) = host_tx_driver.confirmation()
-            && transport.output_available()
+            && !host_request_waiting
+            && transport.response_available()
         {
-            let output = unsafe { transport.output_buffer() };
             let encoded = if join::uses_cw1200_wsm() {
                 encode_tx_confirm_details(
                     confirmation.packet_id,
                     confirmation.status,
                     confirmation.tx_rate,
                     confirmation.ack_failures,
-                    output,
+                    &mut response_scratch,
                 )
             } else {
                 encode_xr819_tx_confirm_retry_details(
@@ -349,14 +470,19 @@ extern "C" fn rust_main() -> ! {
                     confirmation.tx_rate,
                     confirmation.ack_failures,
                     confirmation.rate_try,
-                    output,
+                    &mut response_scratch,
                 )
             };
             if let Ok(length) = encoded
                 && let Some(release) = unsafe { host_tx_driver.finish_confirmation() }
             {
-                unsafe { transport.publish(length as u16) };
-                transport.release_request(release);
+                unsafe {
+                    transport.publish_request_in_place(
+                        release,
+                        &response_scratch[..length],
+                        length as u16,
+                    );
+                }
             }
         } else if host_tx_driver.confirmation().is_some() {
             unsafe { host_tx_diagnostics::trace(0x4854_4000, 0, 0) };
@@ -387,19 +513,12 @@ extern "C" fn rust_main() -> ! {
                     32,
                 )
             };
-            unsafe {
-                match report {
+            match report {
                     tx::ProbeExperimentReport::Published {
                         opportunity,
                         publication,
                     } => {
-                        (0x0900_ffa0 as *mut u32).write_volatile(0x5055_4231);
-                        (0x0900_ffa4 as *mut u32).write_volatile(publication.context.raw());
-                        (0x0900_ffa8 as *mut u32).write_volatile(
-                            u32::from(publication.pipe)
-                                | (u32::from(publication.slot) << 8)
-                                | (u32::from(opportunity.ssid_index) << 16),
-                        );
+                        let _ = (opportunity, publication);
                     }
                     tx::ProbeExperimentReport::Completed {
                         opportunity,
@@ -407,26 +526,22 @@ extern "C" fn rust_main() -> ! {
                         status,
                     } => {
                         if !scan::complete_probe(opportunity, status) {
-                            (0x0900_ffa0 as *mut u32).write_volatile(0x5458_3f3f);
                             loop {
                                 core::hint::spin_loop();
                             }
                         }
-                        (0x0900_ffa0 as *mut u32).write_volatile(0x5458_444e);
-                        (0x0900_ffa4 as *mut u32).write_volatile(context.raw());
-                        (0x0900_ffa8 as *mut u32).write_volatile(u32::from(status));
+                        let _ = context;
                     }
                     tx::ProbeExperimentReport::Failed { opportunity, error } => {
                         let _ = scan::fail_probe(opportunity);
-                        (0x0900_ffa0 as *mut u32).write_volatile(0x5458_463f);
-                        (0x0900_ffa4 as *mut u32).write_volatile(error as u32);
+                        let _ = error;
                     }
-                    tx::ProbeExperimentReport::Idle | tx::ProbeExperimentReport::Servicing => {}
-                }
+                tx::ProbeExperimentReport::Idle | tx::ProbeExperimentReport::Servicing => {}
             }
         }
 
         if let Some(completion) = pending_scan_completion
+            && !host_request_waiting
             && transport.output_available()
         {
             let output = unsafe { transport.output_buffer() };
@@ -444,7 +559,7 @@ extern "C" fn rust_main() -> ! {
                 output,
             ) {
                 pending_scan_completion = None;
-                unsafe { transport.publish(length as u16) };
+                transport.publish(length as u16);
             }
         }
 
@@ -453,25 +568,24 @@ extern "C" fn rust_main() -> ! {
         // host descriptor every pass, preventing `poll_request()` from ever
         // detaching an ordinary TX request even though the driver accounts its
         // input buffer as used.
-        let host_request_waiting = transport.request_available();
         if pending_scan_completion.is_none() && !host_request_waiting {
             if let (Some(if_id), Some(channel)) = (scan::active_interface(), scan::active_channel())
             {
-                if transport.output_available() {
+                if transport.publication_available() {
                     if let Some(indication) = unsafe { radio::poll_scan_indication(if_id, channel) }
                     {
-                        unsafe { transport.publish_radio(indication) };
+                        transport.publish_radio(indication);
                     }
                 }
             } else if let Some(if_id) = vif::active_interface() {
                 let channel = unsafe { vif::snapshot(if_id) }
                     .map(|state| state.channel)
                     .unwrap_or(0);
-                if transport.output_available()
+                if transport.publication_available()
                     && let Some(indication) =
                         unsafe { radio::poll_joined_indication(if_id, channel) }
                 {
-                    unsafe { transport.publish_radio(indication) };
+                    transport.publish_radio(indication);
                 }
             } else {
                 // Vendor RX processing never stops between scans. Recycle one
@@ -482,332 +596,318 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
-        if transport.output_available() {
-            if let Some(request) = transport.poll_request() {
-                let output = unsafe { transport.output_buffer() };
-                let mut publish_response = true;
-                let request_id = request.id;
-                let request_if_id = request.if_id;
-                let mut request_buffer = Some(request.buffer);
-                let request_payload = request_buffer
-                    .as_ref()
-                    .expect("request buffer is present")
-                    .payload();
-                let response_length = if request_if_id > 2 {
-                    encode_status_response(request_id | 0x0400, STATUS_FAILURE, output)
-                } else if request_id == CONFIGURATION_REQ_ID {
-                    let configured = ConfigurationRequest::parse(request_payload).ok().and_then(
-                        |configuration_request| {
-                            configuration::retain(&configuration_request).ok()?;
-                            Some((
-                                configuration::snapshot()?.station_id,
-                                configuration::tx_power_ranges()?,
-                            ))
+        // Vendor `hif_rx_process()` dispatches exactly one completed request
+        // per invocation, then reschedules itself if another descriptor is
+        // already ready. Keep that cooperative boundary instead of batching
+        // request execution in one main-loop pass.
+        if transport.publication_available()
+            && let Some(request) = transport.poll_request()
+        {
+            let output = &mut response_scratch;
+            let mut publish_response = true;
+            let request_id = request.id;
+            let request_if_id = request.if_id;
+            unsafe {
+                xr819_firmware::host_tx_diagnostics::record_hif_event(1, request_id, request_if_id);
+            }
+            let mut request_buffer = Some(request.buffer);
+            let request_payload = request_buffer
+                .as_ref()
+                .expect("request buffer is present")
+                .payload();
+            let response_length = if request_if_id > 2 {
+                encode_status_response(request_id | 0x0400, STATUS_FAILURE, output)
+            } else if request_id == CONFIGURATION_REQ_ID {
+                let configured = ConfigurationRequest::parse(request_payload).ok().and_then(
+                    |configuration_request| {
+                        configuration::retain(&configuration_request).ok()?;
+                        Some((
+                            configuration::snapshot()?.station_id,
+                            configuration::tx_power_ranges()?,
+                        ))
+                    },
+                );
+                let (station_id, tx_power_ranges) = configured.unwrap_or((
+                    [0; 6],
+                    [
+                        TxPowerRange {
+                            min_power_level: -160,
+                            max_power_level: 200,
+                            stepping: 0,
                         },
-                    );
-                    let (station_id, tx_power_ranges) = configured.unwrap_or((
-                        [0; 6],
-                        [
-                            TxPowerRange {
-                                min_power_level: -160,
-                                max_power_level: 200,
-                                stepping: 0,
-                            },
-                            TxPowerRange {
-                                min_power_level: -160,
-                                max_power_level: 200,
-                                stepping: 0,
-                            },
-                        ],
-                    ));
-                    program_station_address(station_id);
-                    encode_configuration_response(station_id, tx_power_ranges, output)
-                } else if request_id == START_SCAN_REQ_ID {
-                    let status = match StartScanRequest::parse(request_payload) {
-                        Ok(scan_request) => {
-                            #[cfg(feature = "probe-tx-experiment")]
-                            let preparation: Result<(), ()> = Ok(());
-                            #[cfg(not(feature = "probe-tx-experiment"))]
-                            let preparation = if scan_request.num_probes == 0 {
-                                Ok(())
+                        TxPowerRange {
+                            min_power_level: -160,
+                            max_power_level: 200,
+                            stepping: 0,
+                        },
+                    ],
+                ));
+                program_station_address(station_id);
+                encode_configuration_response(station_id, tx_power_ranges, output)
+            } else if request_id == START_SCAN_REQ_ID {
+                let status = match StartScanRequest::parse(request_payload) {
+                    Ok(scan_request) => {
+                        #[cfg(feature = "probe-tx-experiment")]
+                        let preparation: Result<(), ()> = Ok(());
+                        #[cfg(not(feature = "probe-tx-experiment"))]
+                        let preparation = if scan_request.num_probes == 0 {
+                            Ok(())
+                        } else {
+                            let channel = scan_request
+                                .channel(0)
+                                .ok()
+                                .and_then(|value| u8::try_from(value.number).ok());
+                            let ssid = if scan_request.num_ssids == 0 {
+                                Some(&[][..])
                             } else {
-                                let channel = scan_request
-                                    .channel(0)
-                                    .ok()
-                                    .and_then(|value| u8::try_from(value.number).ok());
-                                let ssid = if scan_request.num_ssids == 0 {
-                                    Some(&[][..])
-                                } else {
-                                    scan_request.ssid(0).ok()
-                                };
-                                match (channel, ssid) {
-                                    (Some(channel), Some(ssid)) => unsafe {
-                                        tx::validate_probe_preparation(
-                                            configuration::template_frame(),
-                                            ssid,
-                                            channel,
-                                            request_if_id,
-                                        )
-                                        .map(|_| ())
-                                        .map_err(|_| ())
-                                    },
-                                    _ => Err(()),
-                                }
+                                scan_request.ssid(0).ok()
                             };
-                            match preparation {
-                                Ok(()) => match scan::begin(&scan_request, request_if_id) {
-                                    Ok(()) => 0,
-                                    Err(scan::ScanError::Busy) => 4,
-                                    Err(_) => 2,
+                            match (channel, ssid) {
+                                (Some(channel), Some(ssid)) => unsafe {
+                                    tx::validate_probe_preparation(
+                                        configuration::template_frame(),
+                                        ssid,
+                                        channel,
+                                        request_if_id,
+                                    )
+                                    .map(|_| ())
+                                    .map_err(|_| ())
                                 },
-                                Err(()) => 2,
+                                _ => Err(()),
                             }
-                        }
-                        Err(_) => 2,
-                    };
-                    encode_status_response(request_id | 0x0400, status, output)
-                } else if request_id == TX_QUEUE_PARAMS_REQ_ID {
-                    let status = match TxQueueParameters::parse(request_payload) {
-                        Ok(parameters) => {
-                            configuration::retain_tx_queue(parameters);
-                            0
-                        }
-                        Err(_) => 2,
-                    };
-                    encode_status_response(request_id | 0x0400, status, output)
-                } else if request_id == EDCA_PARAMS_REQ_ID {
-                    let status = match EdcaParameters::parse(request_payload) {
-                        Ok(parameters) => {
-                            configuration::retain_edca(parameters);
-                            unsafe {
-                                vif::apply_edca(request_if_id, parameters)
-                                    .map(|_| 0)
-                                    .unwrap_or(2)
-                            }
-                        }
-                        Err(_) => 2,
-                    };
-                    encode_status_response(request_id | 0x0400, status, output)
-                } else if request_id == WRITE_MIB_REQ_ID {
-                    let status = match WriteMibRequest::parse(request_payload) {
-                        Ok(request)
-                            if request.mib_id == 0x1006
-                                && request.data.len()
-                                    == if wsm_profile::CW1200_COMPATIBLE { 1 } else { 4 } =>
-                        {
-                            0
-                        }
-                        Ok(request)
-                            if request.mib_id == rate_policy::MIB_ID_SET_TX_RATE_RETRY_POLICY =>
-                        {
-                            rate_policy::install(request.data)
-                                .map(|()| 0)
-                                .unwrap_or(STATUS_FAILURE)
-                        }
-                        Ok(request)
-                            if configuration::retain_interface_mib(
-                                request.mib_id,
-                                request.data,
-                            ) =>
-                        {
-                            0
-                        }
-                        _ => STATUS_FAILURE,
-                    };
-                    encode_status_response(request_id | 0x0400, status, output)
-                } else if request_id == READ_MIB_REQ_ID {
-                    let mib_id = request_payload
-                        .get(..2)
-                        .map(|value| u16::from_le_bytes([value[0], value[1]]))
-                        .unwrap_or(0);
-                    if mib_id == 0x100c {
-                        let diagnostics = radio::diagnostics();
-                        let (_scan_channels, scan_max_time) = scan::diagnostic_plan();
-                        let (dwell_arm, dwell_deadline, dwell_now, _dwell_waits) =
-                            scan::diagnostic_dwell();
-                        let (_scan_status, scan_error) = scan::diagnostic_error();
-                        let _iq = xr819_firmware::phy::iq_hardware_diagnostics();
-                        #[allow(unused_mut)]
-                        let mut values = [
-                            diagnostics.producer_changes,
-                            diagnostics.bad_magic,
-                            diagnostics.valid_slots,
-                            diagnostics.indications,
-                            diagnostics.malformed_slots,
-                            diagnostics.filtered_frames,
-                            diagnostics.oversized_frames,
-                            diagnostics.released_slots,
-                            u32::from(diagnostics.last_slot_length)
-                                | (u32::from(diagnostics.last_frame_control) << 16),
-                            u32::from(diagnostics.last_channel)
-                                | (u32::from(diagnostics.last_active_channel) << 16),
-                            diagnostics.last_trailer_word,
-                            scan_max_time,
-                            dwell_arm,
-                            dwell_deadline,
-                            dwell_now,
-                            unsafe { (0x0400_1ae4 as *const u32).read_volatile() },
-                            unsafe {
-                                u32::from((0x0400_9959 as *const u8).read_volatile())
-                                    | (u32::from((0x0400_995c as *const u8).read_volatile()) << 8)
-                                    | (u32::from((0x0400_99c4 as *const u8).read_volatile()) << 16)
-                                    | (u32::from((0x0400_998c as *const u8).read_volatile()) << 24)
+                        };
+                        match preparation {
+                            Ok(()) => match scan::begin(&scan_request, request_if_id) {
+                                Ok(()) => 0,
+                                Err(scan::ScanError::Busy) => 4,
+                                Err(_) => 2,
                             },
-                            scan_error,
-                            unsafe { (0x09c0_0600 as *const u32).read_volatile() },
-                            unsafe { (0x09c0_0604 as *const u32).read_volatile() },
-                            unsafe { (0x09c0_0608 as *const u32).read_volatile() },
-                            if ENABLE_SINGLE_PROBE_EXPERIMENT {
-                                tx::probe_experiment_diagnostic_value()
-                            } else {
-                                unsafe { (0x0940_0000 as *const u32).read_volatile() }
-                            },
-                        ];
-                        #[cfg(feature = "tcm-size-diagnostic")]
-                        {
-                            let info = tcm::read_region_info();
-                            values[17] = info.tcm_type_register;
-                            values[18] = info.dtcm_register;
-                            values[19] = info.itcm_register;
-                            values[20] = tcm::size_kib(info.dtcm_register).unwrap_or(0xffff)
-                                | (tcm::size_kib(info.itcm_register).unwrap_or(0xffff) << 16);
+                            Err(()) => 2,
                         }
-                        #[cfg(feature = "vendor-host-tx-foundation")]
-                        host_tx_diagnostics::populate_counters(&mut values, &transport);
-                        let mut data = [0_u8; 88];
-                        for (index, value) in values.into_iter().enumerate() {
-                            data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-                        }
-                        encode_read_mib_data_response(0, mib_id, &data, output)
-                    } else {
-                        encode_read_mib_response(STATUS_FAILURE, mib_id, output)
                     }
-                } else if request_id == ADD_KEY_REQ_ID {
-                    let status = AddKeyRequest::parse(request_payload)
-                        .ok()
-                        .and_then(|key| crypto::add_key(request_if_id, &key).ok())
-                        .map(|()| 0)
-                        .unwrap_or(STATUS_FAILURE);
-                    encode_status_response(request_id | 0x0400, status, output)
-                } else if request_id == REMOVE_KEY_REQ_ID {
-                    let status = RemoveKeyRequest::parse(request_payload)
-                        .ok()
-                        .and_then(|key| crypto::remove_key(key.index).ok())
-                        .map(|()| 0)
-                        .unwrap_or(STATUS_FAILURE);
-                    encode_status_response(request_id | 0x0400, status, output)
-                } else if request_id == RESET_REQ_ID {
-                    let status = match ResetRequest::parse(request_payload) {
-                        Ok(_) => {
-                            #[cfg(feature = "vendor-host-tx-foundation")]
-                            if let Some(release) = unsafe { host_tx_driver.reset() } {
-                                transport.release_request(release);
-                            }
-                            #[cfg(feature = "join-sta-experiment")]
-                            {
-                                if unsafe { join::reset(request_if_id) } {
-                                    0
-                                } else {
-                                    STATUS_FAILURE
-                                }
-                            }
-                            #[cfg(not(feature = "join-sta-experiment"))]
-                            0
-                        }
-                        Err(_) => STATUS_FAILURE,
-                    };
-                    encode_status_response(request_id | 0x0400, status, output)
-                } else if request_id == JOIN_REQ_ID {
-                    #[cfg(feature = "join-sta-experiment")]
-                    let status = match JoinRequest::parse(request_payload) {
-                        Ok(join_request) => unsafe {
-                            join::activate_sta(request_if_id, &join_request)
+                    Err(_) => 2,
+                };
+                encode_status_response(request_id | 0x0400, status, output)
+            } else if request_id == TX_QUEUE_PARAMS_REQ_ID {
+                let status = match TxQueueParameters::parse(request_payload) {
+                    Ok(parameters) => {
+                        configuration::retain_tx_queue(parameters);
+                        0
+                    }
+                    Err(_) => 2,
+                };
+                encode_status_response(request_id | 0x0400, status, output)
+            } else if request_id == EDCA_PARAMS_REQ_ID {
+                let status = match EdcaParameters::parse(request_payload) {
+                    Ok(parameters) => {
+                        configuration::retain_edca(parameters);
+                        unsafe {
+                            vif::apply_edca(request_if_id, parameters)
                                 .map(|_| 0)
-                                .unwrap_or(STATUS_FAILURE)
+                                .unwrap_or(2)
+                        }
+                    }
+                    Err(_) => 2,
+                };
+                encode_status_response(request_id | 0x0400, status, output)
+            } else if request_id == WRITE_MIB_REQ_ID {
+                let status = match WriteMibRequest::parse(request_payload) {
+                    Ok(request)
+                        if request.mib_id == 0x1006
+                            && request.data.len()
+                                == if wsm_profile::CW1200_COMPATIBLE { 1 } else { 4 } =>
+                    {
+                        0
+                    }
+                    Ok(request)
+                        if request.mib_id == rate_policy::MIB_ID_SET_TX_RATE_RETRY_POLICY =>
+                    {
+                        rate_policy::install(request.data)
+                            .map(|()| 0)
+                            .unwrap_or(STATUS_FAILURE)
+                    }
+                    Ok(request)
+                        if configuration::retain_interface_mib(request.mib_id, request.data) =>
+                    {
+                        0
+                    }
+                    _ => STATUS_FAILURE,
+                };
+                encode_status_response(request_id | 0x0400, status, output)
+            } else if request_id == READ_MIB_REQ_ID {
+                let mib_id = request_payload
+                    .get(..2)
+                    .map(|value| u16::from_le_bytes([value[0], value[1]]))
+                    .unwrap_or(0);
+                if mib_id == 0x100c {
+                    let diagnostics = radio::diagnostics();
+                    let (_scan_channels, scan_max_time) = scan::diagnostic_plan();
+                    let (dwell_arm, dwell_deadline, dwell_now, _dwell_waits) =
+                        scan::diagnostic_dwell();
+                    let (_scan_status, scan_error) = scan::diagnostic_error();
+                    let _iq = xr819_firmware::phy::iq_hardware_diagnostics();
+                    #[allow(unused_mut)]
+                    let mut values = [
+                        diagnostics.producer_changes,
+                        diagnostics.bad_magic,
+                        diagnostics.valid_slots,
+                        diagnostics.indications,
+                        diagnostics.malformed_slots,
+                        diagnostics.filtered_frames,
+                        diagnostics.oversized_frames,
+                        diagnostics.released_slots,
+                        u32::from(diagnostics.last_slot_length)
+                            | (u32::from(diagnostics.last_frame_control) << 16),
+                        u32::from(diagnostics.last_channel)
+                            | (u32::from(diagnostics.last_active_channel) << 16),
+                        diagnostics.last_trailer_word,
+                        scan_max_time,
+                        dwell_arm,
+                        dwell_deadline,
+                        dwell_now,
+                        unsafe { (0x0400_1ae4 as *const u32).read_volatile() },
+                        unsafe {
+                            u32::from((0x0400_9959 as *const u8).read_volatile())
+                                | (u32::from((0x0400_995c as *const u8).read_volatile()) << 8)
+                                | (u32::from((0x0400_99c4 as *const u8).read_volatile()) << 16)
+                                | (u32::from((0x0400_998c as *const u8).read_volatile()) << 24)
                         },
-                        Err(_) => STATUS_FAILURE,
-                    };
-                    #[cfg(not(feature = "join-sta-experiment"))]
-                    let status = STATUS_FAILURE;
-                    if status == 0
-                        && request_payload
-                            .get(0x0f)
-                            .is_some_and(|flags| flags & 0x20 != 0)
+                        scan_error,
+                        unsafe { (0x09c0_0600 as *const u32).read_volatile() },
+                        unsafe { (0x09c0_0604 as *const u32).read_volatile() },
+                        unsafe { (0x09c0_0608 as *const u32).read_volatile() },
+                        if ENABLE_SINGLE_PROBE_EXPERIMENT {
+                            tx::probe_experiment_diagnostic_value()
+                        } else {
+                            unsafe { (0x0940_0000 as *const u32).read_volatile() }
+                        },
+                    ];
+                    #[cfg(feature = "tcm-size-diagnostic")]
                     {
-                        pending_join_complete = Some(0);
+                        let info = tcm::read_region_info();
+                        values[17] = info.tcm_type_register;
+                        values[18] = info.dtcm_register;
+                        values[19] = info.itcm_register;
+                        values[20] = tcm::size_kib(info.dtcm_register).unwrap_or(0xffff)
+                            | (tcm::size_kib(info.itcm_register).unwrap_or(0xffff) << 16);
                     }
-                    encode_join_response(status, -160, 200, output)
-                } else if request_id == TX_REQ_ID {
                     #[cfg(feature = "vendor-host-tx-foundation")]
-                    unsafe {
-                        host_tx_diagnostics::trace(
-                            0x4854_0004,
-                            u32::from(request_if_id)
-                                | (u32::try_from(request_payload.len()).unwrap_or(u32::MAX) << 8),
-                            0,
-                        );
+                    host_tx_diagnostics::populate_counters(&mut values, &transport);
+                    let mut data = [0_u8; 88];
+                    for (index, value) in values.into_iter().enumerate() {
+                        data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
                     }
-                    #[cfg(feature = "join-sta-experiment")]
-                    {
-                        match TxRequest::parse(request_payload) {
-                            Ok(tx_request) => {
-                                #[cfg(feature = "vendor-host-tx-foundation")]
-                                unsafe {
-                                    let frame_control = u16::from_le_bytes([
-                                        tx_request.frame[0],
-                                        tx_request.frame[1],
-                                    ]);
-                                    host_tx_diagnostics::trace(
-                                        0x4854_0005,
-                                        u32::from(frame_control)
-                                            | (u32::try_from(tx_request.frame.len())
-                                                .unwrap_or(u32::MAX)
-                                                << 16),
-                                        u32::from(tx_request.is_unicast_data())
-                                            | (u32::from(tx_request.is_unicast_eapol()) << 1),
-                                    );
-                                }
-                                #[cfg(feature = "vendor-host-tx-foundation")]
-                                if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
-                                    let packet_id = tx_request.packet_id;
-                                    let admitted = unsafe {
-                                        host_tx_driver.admit(
-                                            request_buffer
-                                                .take()
-                                                .expect("request buffer is present"),
-                                            request_if_id,
-                                            &mut transport,
-                                        )
-                                    };
-                                    if admitted {
-                                        publish_response = false;
-                                        Ok(0)
-                                    } else {
-                                        unsafe {
-                                            host_tx_diagnostics::trace(0x4854_00e1, packet_id, 0);
-                                        }
-                                        if join::uses_cw1200_wsm() {
-                                            encode_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                        } else {
-                                            encode_xr819_tx_confirm(
-                                                packet_id,
-                                                STATUS_FAILURE,
-                                                output,
-                                            )
-                                        }
-                                    }
+                    encode_read_mib_data_response(0, mib_id, &data, output)
+                } else {
+                    encode_read_mib_response(STATUS_FAILURE, mib_id, output)
+                }
+            } else if request_id == ADD_KEY_REQ_ID {
+                let status = AddKeyRequest::parse(request_payload)
+                    .ok()
+                    .and_then(|key| crypto::add_key(request_if_id, &key).ok())
+                    .map(|()| 0)
+                    .unwrap_or(STATUS_FAILURE);
+                encode_status_response(request_id | 0x0400, status, output)
+            } else if request_id == REMOVE_KEY_REQ_ID {
+                let status = RemoveKeyRequest::parse(request_payload)
+                    .ok()
+                    .and_then(|key| crypto::remove_key(key.index).ok())
+                    .map(|()| 0)
+                    .unwrap_or(STATUS_FAILURE);
+                encode_status_response(request_id | 0x0400, status, output)
+            } else if request_id == RESET_REQ_ID {
+                let status = match ResetRequest::parse(request_payload) {
+                    Ok(_) => {
+                        #[cfg(feature = "vendor-host-tx-foundation")]
+                        unsafe {
+                            host_tx_driver.reset();
+                        }
+                        #[cfg(feature = "join-sta-experiment")]
+                        {
+                            if unsafe { join::reset(request_if_id) } {
+                                0
+                            } else {
+                                STATUS_FAILURE
+                            }
+                        }
+                        #[cfg(not(feature = "join-sta-experiment"))]
+                        0
+                    }
+                    Err(_) => STATUS_FAILURE,
+                };
+                encode_status_response(request_id | 0x0400, status, output)
+            } else if request_id == JOIN_REQ_ID {
+                #[cfg(feature = "join-sta-experiment")]
+                let status = match JoinRequest::parse(request_payload) {
+                    Ok(join_request) => unsafe {
+                        join::activate_sta(request_if_id, &join_request)
+                            .map(|_| 0)
+                            .unwrap_or(STATUS_FAILURE)
+                    },
+                    Err(_) => STATUS_FAILURE,
+                };
+                #[cfg(not(feature = "join-sta-experiment"))]
+                let status = STATUS_FAILURE;
+                if status == 0
+                    && request_payload
+                        .get(0x0f)
+                        .is_some_and(|flags| flags & 0x20 != 0)
+                {
+                    pending_join_complete = Some(0);
+                }
+                encode_join_response(status, -160, 200, output)
+            } else if request_id == TX_REQ_ID {
+                #[cfg(feature = "vendor-host-tx-foundation")]
+                unsafe {
+                    host_tx_diagnostics::trace(
+                        0x4854_0004,
+                        u32::from(request_if_id)
+                            | (u32::try_from(request_payload.len()).unwrap_or(u32::MAX) << 8),
+                        0,
+                    );
+                }
+                #[cfg(feature = "join-sta-experiment")]
+                {
+                    match TxRequest::parse(request_payload) {
+                        Ok(tx_request) => {
+                            #[cfg(feature = "vendor-host-tx-foundation")]
+                            unsafe {
+                                let frame_control =
+                                    u16::from_le_bytes([tx_request.frame[0], tx_request.frame[1]]);
+                                host_tx_diagnostics::trace(
+                                    0x4854_0005,
+                                    u32::from(frame_control)
+                                        | (u32::try_from(tx_request.frame.len())
+                                            .unwrap_or(u32::MAX)
+                                            << 16),
+                                    u32::from(tx_request.is_unicast_data())
+                                        | (u32::from(tx_request.is_unicast_eapol()) << 1),
+                                );
+                            }
+                            #[cfg(feature = "vendor-host-tx-foundation")]
+                            if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
+                                let packet_id = tx_request.packet_id;
+                                let admitted = unsafe {
+                                    host_tx_driver.admit(
+                                        request_buffer.take().expect("request buffer is present"),
+                                        request_if_id,
+                                        &mut transport,
+                                    )
+                                };
+                                if admitted {
+                                    publish_response = false;
+                                    Ok(0)
                                 } else {
                                     unsafe {
-                                        service_management_request(
-                                            &mut mac_events,
-                                            &tx_request,
-                                            request_if_id,
-                                            output,
-                                            &mut publish_response,
-                                        )
+                                        host_tx_diagnostics::trace(0x4854_00e1, packet_id, 0);
+                                    }
+                                    if join::uses_cw1200_wsm() {
+                                        encode_tx_confirm(packet_id, STATUS_FAILURE, output)
+                                    } else {
+                                        encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
                                     }
                                 }
-                                #[cfg(not(feature = "vendor-host-tx-foundation"))]
+                            } else {
                                 unsafe {
                                     service_management_request(
                                         &mut mac_events,
@@ -818,45 +918,75 @@ extern "C" fn rust_main() -> ! {
                                     )
                                 }
                             }
-                            Err(_) => {
-                                let packet_id = request_payload
-                                    .get(..4)
-                                    .map(|value| {
-                                        u32::from_le_bytes([value[0], value[1], value[2], value[3]])
-                                    })
-                                    .unwrap_or(0);
-                                if join::uses_cw1200_wsm() {
-                                    encode_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                } else {
-                                    encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                }
+                            #[cfg(not(feature = "vendor-host-tx-foundation"))]
+                            unsafe {
+                                service_management_request(
+                                    &mut mac_events,
+                                    &tx_request,
+                                    request_if_id,
+                                    output,
+                                    &mut publish_response,
+                                )
+                            }
+                        }
+                        Err(_) => {
+                            let packet_id = request_payload
+                                .get(..4)
+                                .map(|value| {
+                                    u32::from_le_bytes([value[0], value[1], value[2], value[3]])
+                                })
+                                .unwrap_or(0);
+                            if join::uses_cw1200_wsm() {
+                                encode_tx_confirm(packet_id, STATUS_FAILURE, output)
+                            } else {
+                                encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
                             }
                         }
                     }
-                    #[cfg(not(feature = "join-sta-experiment"))]
-                    {
-                        let packet_id = request_payload
-                            .get(..4)
-                            .map(|value| {
-                                u32::from_le_bytes([value[0], value[1], value[2], value[3]])
-                            })
-                            .unwrap_or(0);
-                        encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+                }
+                #[cfg(not(feature = "join-sta-experiment"))]
+                {
+                    let packet_id = request_payload
+                        .get(..4)
+                        .map(|value| u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+                        .unwrap_or(0);
+                    encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+                }
+            } else {
+                // Do not report success for commands whose state effects are
+                // not implemented. A complete status word lets cw1200 fail the
+                // command cleanly instead of proceeding on false assumptions.
+                encode_status_response(request_id | 0x0400, STATUS_FAILURE, output)
+            };
+            if publish_response && let Ok(length) = response_length {
+                let response_id = u16::from_le_bytes([output[2], output[3]]) & 0x1fff;
+                unsafe {
+                    xr819_firmware::host_tx_diagnostics::record_hif_event(
+                        2,
+                        response_id,
+                        length as u8,
+                    );
+                }
+                if response_id & 0x0400 != 0
+                    && let Some(buffer) = request_buffer.take()
+                {
+                    unsafe {
+                        transport.publish_request_in_place(
+                            buffer.into_release(),
+                            &output[..length],
+                            length as u16,
+                        );
                     }
-                } else {
-                    // Do not report success for commands whose state effects are
-                    // not implemented. A complete status word lets cw1200 fail the
-                    // command cleanly instead of proceeding on false assumptions.
-                    encode_status_response(request_id | 0x0400, STATUS_FAILURE, output)
-                };
-                if publish_response && let Ok(length) = response_length {
-                    unsafe { transport.publish(length as u16) };
+                } else if transport.output_available() {
+                    let indication = unsafe { transport.output_buffer() };
+                    indication[..length].copy_from_slice(&output[..length]);
+                    transport.publish(length as u16);
                 }
-                // Synchronous commands return their owning request buffer here.
-                // Ordinary class-0 TX moves it into HostTxDriver until confirmation.
-                if let Some(buffer) = request_buffer {
-                    transport.release_request(buffer.into_release());
-                }
+            }
+            // Synchronous commands return their owning request buffer here.
+            // Ordinary class-0 TX moves it into HostTxDriver until confirmation.
+            if let Some(buffer) = request_buffer {
+                transport.release_request(buffer.into_release());
             }
         }
         core::hint::spin_loop();
@@ -865,6 +995,11 @@ extern "C" fn rust_main() -> ! {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
+    #[cfg(target_arch = "arm")]
+    {
+        xr819_firmware::exception::panic_terminal()
+    }
+    #[cfg(not(target_arch = "arm"))]
     loop {
         core::hint::spin_loop();
     }
