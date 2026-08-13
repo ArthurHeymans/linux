@@ -498,13 +498,34 @@ pub unsafe fn program_scan_station_mode() {
 /// # Safety
 /// MAC mode registers must be exclusively owned during JOIN activation.
 #[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+unsafe fn active_station_mode_word() -> u32 {
+    unsafe {
+        let reference_path = read_u8(PAS_BASE - 0x17);
+        (0..3).fold(0x07e3_b85c_u32, |mode, index| {
+            let record = PAS_BASE + index * 0x98;
+            if read_u8(record) != 2 {
+                return mode;
+            }
+            let path_mask = if read_u8(record + 0x11) == reference_path {
+                0x0008_0281
+            } else {
+                0x0010_0502
+            };
+            mode | path_mask | if read_u8(record + 2) == 2 { 0x4000 } else { 0 }
+        })
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
 pub unsafe fn program_joined_station_mode() {
     unsafe {
+        let mode = active_station_mode_word();
+        write_u32(0x0400_1ae4, mode);
         write_u32(0x0400_1ab4, 0x0018_0180);
         write_u32(0x09c0_0a04, 0x0018_0180);
         write_u32(0x09c0_0a1c, 0x827b_ffdf);
         write_u32(0x09c0_0204, 0x0019_8000);
-        write_u32(0x09c0_0200, read_u32(0x0400_1ae4));
+        write_u32(0x09c0_0200, mode);
         write_u32(0x09c0_0310, 0x7800_0000);
     }
 }
@@ -608,6 +629,14 @@ unsafe fn rebuild_pipe_state() {
 pub unsafe fn initialize_tx_pipe_state() {
     unsafe {
         rebuild_pipe_state();
+        // Vendor packet-controller startup publishes both global retry timing
+        // terms. The second survives retained startup on this target, while
+        // the first otherwise remains zero and shortens every retry by 18 us.
+        write_u32(SHARED + 0x1c, 9);
+        write_u32(SHARED + 0x20, 10);
+        // Hardware ring cursor -> software slot translation used by the
+        // vendor's nontrivial retry-retirement branch.
+        write_u32(0x0400_02d8, 0x0201_0003);
     }
     // `txp_submit_to_pipe` emits a 0x20800000 descriptor command sourcing
     // one byte from this per-interface packet-SRAM metadata vector. Hardware
@@ -1024,8 +1053,11 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
         }
         write_u8(WAKE + 0x1e, 0);
     }
+    // Vendor `mac_reinit_after_wake` restores the RX subsystem and pipe state,
+    // but does not repeat the global packet-DMA/controller reset performed at
+    // cold startup. Reprogramming that block while the controller is enabled
+    // can expose its reset/default routing state.
     platform::prepare_mac_receive_hardware();
-    platform::prepare_packet_dma();
     unsafe {
         program_mac_address(0x0400_3acc, 0x09c0_0030, 0x101);
         program_mac_address(0x0400_3ad2, 0x09c0_0048, 0x101);

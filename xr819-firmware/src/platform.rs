@@ -368,8 +368,6 @@ pub fn prepare_memory_and_interrupts() {
 
     clock.mask_44.set(clock.mask_44.get() & 0x7fff_f777);
     clock.mask_48.set(clock.mask_48.get() & 0x777f_ffff);
-
-
 }
 
 /// Reproduces the hardware-visible part of `0x00000a74 -> 0xfff019aa`.

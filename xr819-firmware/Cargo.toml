@@ -29,6 +29,65 @@ vendor-host-tx-foundation = ["join-sta-experiment"]
 # Non-destructive retained stage/frame/HIF snapshots for host TX bring-up.
 # Production station images keep the lifecycle but compile these writers out.
 vendor-host-tx-diagnostics = ["vendor-host-tx-foundation"]
+# Retire the hardware TX ring cursor (`ring + 0x20` bits 26:24 and 29:27) to the
+# software producer when a burst completes, as vendor `txp_pipe_advance_slot`
+# (`0xa9f2`) does. Without it the two cursors diverge after the first completion
+# and the packet controller re-executes a stale slot's command list.
+pipe-cursor-resync = []
+# Diagnostic: halt and publish the full pipe/ring context the first time the
+# vendor `txp_fn_4425` cursor invariant breaks. The counters MIB stops answering
+# once the pipe wedges, so the report must be made at the transition itself.
+pipe-cursor-assert = ["vendor-host-tx-diagnostics"]
+# Retire a started slot whose delivered MAC status never equals its expected
+# completion, once the hardware ring cursor has moved past it. Without this a
+# single unmatched status (the MAC reports 0x0f where 0x11 is expected) pins the
+# pipe armed forever and the controller re-executes a stale command list.
+unmatched-tx-status-recovery = []
+# Drop the invented `0x040099a9` 5 -> 3 normalisation in
+# `advance_awake_station_tx`. Vendor `phy_state_advance` (`0x820a`) never writes
+# that byte, and a hardware capture shows the accepted class-6 publication runs
+# with retained state 5 while the refused class-0 one had been forced to 3.
+phy-advance-vendor-exact = []
+# Diagnostic: halt and publish the assembled class-0 command list immediately
+# after GO, so the descriptor the MAC refuses can be compared word-for-word
+# against vendor `txp_submit_to_pipe` (`0xadd0`).
+class0-descriptor-dump = ["vendor-host-tx-diagnostics"]
+# Report class-0 lifecycle counters through the counters MIB instead of the TX
+# identity snapshot. Counts of state transitions are stable run to run, unlike
+# throughput, which spans 36-95 TXed for byte-identical firmware.
+class0-lifecycle-counters = ["vendor-host-tx-diagnostics"]
+# Diagnostic: halt and report the HIF output accounting once the output path has
+# been blocked for three seconds. Indications and host requests both need a free
+# shared slot, so they stop together under load; the emergency descriptor does
+# not need one and still delivers the report.
+hif-stall-dump = ["vendor-host-tx-diagnostics"]
+# Diagnostic: halt and report the class-0 lifecycle counters half a second after
+# the first class-0 publication. The counters MIB cannot answer what happens to
+# a data frame, because it is readable only before any data frame exists: the
+# first published frame the MAC refuses disables the host command lane.
+class0-first-frame-dump = ["class0-lifecycle-counters"]
+# Move the class0-first-frame-dump window to 20s, landing inside the flood where
+# the path has wedged. The first frames succeed, so the short window only ever
+# shows a healthy funnel.
+class0-late-frame-dump = ["class0-first-frame-dump"]
+# Port of vendor FUN_00003bac, the 200ms timer that decrements each programmed
+# pipe watchdog byte (pipe_state +0xa5) and recovers a pipe left armed without
+# completing. Ghidra never made a function of it; it was recovered by
+# disassembly. Its absence makes a wedged pipe unrecoverable, because retirement
+# only runs from a delivered status and a wedged pipe stops receiving them.
+# Report-only mode for the RX/TX boundary detectors. They halt the firmware on
+# the first sign of corruption, so no run has ever observed whether the system
+# keeps working through it. Counts RX resynchronisations instead of halting.
+corruption-non-fatal = ["vendor-host-tx-diagnostics"]
+pipe-watchdog = ["vendor-host-tx-diagnostics", "unmatched-tx-status-recovery"]
+# Retire only slots whose frame actually started transmitting. A TX status is
+# matched against the pipe's current slot rather than the slot it was generated
+# for, so under load a status for a finished frame lands on the freshly
+# published frame behind it and retires a frame that never transmitted. All 297
+# retirements in an iperf run were such state-1 slots, ~10% of published frames.
+# Requires pipe-watchdog: genuinely stuck state-1 slots are then recovered by
+# vendor's own 200 ms watchdog instead.
+retire-started-only = ["pipe-watchdog"]
 # Destructive diagnostic: preserve encrypted payload/MIC but clear the 802.11
 # Protected bit on non-EAPOL data immediately before MAC publication.
 clear-protected-data-diagnostic = []

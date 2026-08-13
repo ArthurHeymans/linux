@@ -364,6 +364,15 @@ extern "C" fn rust_main() -> ! {
     let mut pending_join_complete: Option<u32> = None;
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     let mut pending_tx_debug_event: Option<(u32, u32)> = None;
+    // Vendor timestamp at which the output path was first seen blocked.
+    #[cfg(all(feature = "hif-stall-dump", target_arch = "arm"))]
+    let mut output_blocked_since: Option<u32> = None;
+    // Vendor timestamp of the first class-0 publication.
+    #[cfg(all(feature = "class0-first-frame-dump", target_arch = "arm"))]
+    let mut first_publication_at: Option<u32> = None;
+    // Vendor timestamp of the last 200ms TX pipe watchdog tick.
+    #[cfg(all(feature = "pipe-watchdog", target_arch = "arm"))]
+    let mut last_watchdog_tick: u32 = 0;
     // Command responses and retained class-0 confirmations are copied into
     // their original 1632-byte request buffers before publication. This buffer
     // is scratch only and is never exposed through a HIF descriptor.
@@ -371,11 +380,134 @@ extern "C" fn rust_main() -> ! {
     #[cfg(feature = "vendor-host-tx-foundation")]
     let mut host_tx_driver = HostTxDriver::new();
     loop {
+        #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+        unsafe {
+            xr819_firmware::hif::validate_tx_boundary(0x20, 0xff, 0xff, 0, 0);
+        }
         let _ = transport.service_interrupt();
+        #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+        unsafe {
+            xr819_firmware::hif::validate_tx_boundary(0x21, 0xff, 0xff, 0, 0);
+        }
+        // Vendor runs a 200 ms timer (`FUN_00003bac`) that decrements each
+        // programmed pipe's watchdog byte and recovers a pipe that has stayed
+        // armed without completing. Without it an armed pipe is unrecoverable:
+        // retirement only ever runs from a delivered status, and the MAC stops
+        // delivering statuses for a wedged pipe.
+        #[cfg(all(feature = "pipe-watchdog", target_arch = "arm"))]
+        {
+            let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
+            if now.wrapping_sub(last_watchdog_tick) >= 200_000 {
+                last_watchdog_tick = now;
+                unsafe {
+                    tx::service_pipe_watchdog_tick_runtime();
+                }
+            }
+        }
+
         // A ready host request may be a synchronous command. Preserve one
         // output descriptor for it instead of allowing asynchronous events or
         // TX confirmations to starve the command lane.
         let host_request_waiting = transport.request_available();
+
+        // Every host-visible channel dies at the same moment under load: the
+        // counters MIB returns zeros and indications stop, while the driver
+        // still reports the BH alive. Both need a free shared slot, so catch
+        // the moment the output path has been blocked continuously and report
+        // the accounting through the emergency descriptor, which does not need
+        // a shared slot and is therefore still deliverable.
+        #[cfg(all(feature = "hif-stall-dump", target_arch = "arm"))]
+        {
+            let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
+            if transport.output_available() {
+                output_blocked_since = None;
+            } else {
+                let since = *output_blocked_since.get_or_insert(now);
+                if now.wrapping_sub(since) > 3_000_000 {
+                    let snapshot = transport.stall_snapshot();
+                    unsafe {
+                        xr819_firmware::hif::publish_terminal_exception(
+                            [
+                                0x4849_5354, // "HIST"
+                                now.wrapping_sub(since),
+                                snapshot[0],
+                                snapshot[1],
+                                snapshot[2],
+                                snapshot[3],
+                                snapshot[4],
+                                snapshot[5],
+                                snapshot[6],
+                                snapshot[7],
+                                snapshot[8],
+                                snapshot[9],
+                                snapshot[10],
+                                snapshot[11],
+                                snapshot[12],
+                                snapshot[13],
+                                0,
+                                0,
+                            ],
+                            b"xr819-hif-output-stalled",
+                        );
+                    }
+                    loop {
+                        core::hint::spin_loop();
+                    }
+                }
+            }
+        }
+
+        // Report the fate of the first class-0 frame over the emergency
+        // descriptor. The counters MIB cannot answer this: it is readable only
+        // before any data frame exists, and the first published frame that the
+        // MAC refuses disables the host command lane entirely.
+        #[cfg(all(feature = "class0-first-frame-dump", target_arch = "arm"))]
+        {
+            let counters = unsafe { xr819_firmware::host_tx_diagnostics::counters_snapshot() };
+            let published = counters[xr819_firmware::host_tx_diagnostics::counter::PUBLISHED];
+            let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
+            if published > 0 {
+                let since = *first_publication_at.get_or_insert(now);
+                // The first frames succeed, so a short window only shows a
+                // healthy funnel. The late window instead lands inside the
+                // flood, where the path has wedged.
+                let window = if cfg!(feature = "class0-late-frame-dump") {
+                    20_000_000
+                } else {
+                    500_000
+                };
+                if now.wrapping_sub(since) > window {
+                    unsafe {
+                        xr819_firmware::hif::publish_terminal_exception(
+                            [
+                                0x4330_4646, // "C0FF"
+                                now.wrapping_sub(since),
+                                counters[0],
+                                counters[1],
+                                counters[2],
+                                counters[3],
+                                counters[4],
+                                counters[5],
+                                counters[6],
+                                counters[7],
+                                counters[8],
+                                counters[9],
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                            ],
+                            b"xr819-class0-first-frame",
+                        );
+                    }
+                    loop {
+                        core::hint::spin_loop();
+                    }
+                }
+            }
+        }
 
         #[cfg(feature = "vendor-host-tx-foundation")]
         if let Some(event) = unsafe {
@@ -386,6 +518,10 @@ extern "C" fn rust_main() -> ! {
             )
         } {
             pending_tx_debug_event = Some(event);
+        }
+        #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+        unsafe {
+            xr819_firmware::hif::validate_tx_boundary(0x22, 0xff, 0xff, 0, 0);
         }
 
         #[cfg(feature = "vendor-host-tx-foundation")]
@@ -409,6 +545,18 @@ extern "C" fn rust_main() -> ! {
         #[cfg(not(feature = "vendor-host-tx-foundation"))]
         if pending_tx_debug_event.is_none() {
             pending_tx_debug_event = tx::take_tx_debug_event();
+        }
+
+        // Push the class-0 lifecycle counters into the host-side trace. The
+        // counters MIB stops answering under load, which is exactly when these
+        // matter; indications keep flowing past that point.
+        #[cfg(all(feature = "class0-lifecycle-counters", target_arch = "arm"))]
+        if pending_tx_debug_event.is_none() {
+            pending_tx_debug_event = unsafe {
+                xr819_firmware::host_tx_diagnostics::take_counter_event(
+                    xr819_firmware::vendor_host_tx::vendor_timer_now(),
+                )
+            };
         }
 
         if let Some((event_id, data)) = pending_tx_debug_event
@@ -473,6 +621,16 @@ extern "C" fn rust_main() -> ! {
                     &mut response_scratch,
                 )
             };
+            if encoded.is_ok() {
+                unsafe {
+                    host_tx_diagnostics::capture_confirmation_identity(
+                        confirmation.packet_id,
+                        confirmation.context,
+                        confirmation.status,
+                        confirmation.ack_failures,
+                    );
+                }
+            }
             if let Ok(length) = encoded
                 && let Some(release) = unsafe { host_tx_driver.finish_confirmation() }
             {
@@ -514,28 +672,28 @@ extern "C" fn rust_main() -> ! {
                 )
             };
             match report {
-                    tx::ProbeExperimentReport::Published {
-                        opportunity,
-                        publication,
-                    } => {
-                        let _ = (opportunity, publication);
-                    }
-                    tx::ProbeExperimentReport::Completed {
-                        opportunity,
-                        context,
-                        status,
-                    } => {
-                        if !scan::complete_probe(opportunity, status) {
-                            loop {
-                                core::hint::spin_loop();
-                            }
+                tx::ProbeExperimentReport::Published {
+                    opportunity,
+                    publication,
+                } => {
+                    let _ = (opportunity, publication);
+                }
+                tx::ProbeExperimentReport::Completed {
+                    opportunity,
+                    context,
+                    status,
+                } => {
+                    if !scan::complete_probe(opportunity, status) {
+                        loop {
+                            core::hint::spin_loop();
                         }
-                        let _ = context;
                     }
-                    tx::ProbeExperimentReport::Failed { opportunity, error } => {
-                        let _ = scan::fail_probe(opportunity);
-                        let _ = error;
-                    }
+                    let _ = context;
+                }
+                tx::ProbeExperimentReport::Failed { opportunity, error } => {
+                    let _ = scan::fail_probe(opportunity);
+                    let _ = error;
+                }
                 tx::ProbeExperimentReport::Idle | tx::ProbeExperimentReport::Servicing => {}
             }
         }
@@ -599,8 +757,12 @@ extern "C" fn rust_main() -> ! {
         // Vendor `hif_rx_process()` dispatches exactly one completed request
         // per invocation, then reschedules itself if another descriptor is
         // already ready. Keep that cooperative boundary instead of batching
-        // request execution in one main-loop pass.
+        // request execution in one main-loop pass. Class 0 and class 6 also
+        // converge on one vendor scheduler, so leave the host descriptor owned
+        // by the transport while class-0 hardware publication is active rather
+        // than entering the independent management publisher.
         if transport.publication_available()
+            && management_runtime_available
             && let Some(request) = transport.poll_request()
         {
             let output = &mut response_scratch;
@@ -993,14 +1155,34 @@ extern "C" fn rust_main() -> ! {
     }
 }
 
+#[cfg(target_arch = "arm")]
+fn panic_file_hash(file: &str) -> u32 {
+    file.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
+}
+
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
+fn panic(info: &PanicInfo<'_>) -> ! {
     #[cfg(target_arch = "arm")]
     {
-        xr819_firmware::exception::panic_terminal()
+        let (line, column, file_hash) = info
+            .location()
+            .map(|location| {
+                (
+                    location.line(),
+                    location.column(),
+                    panic_file_hash(location.file()),
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        xr819_firmware::exception::panic_terminal(line, column, file_hash)
     }
     #[cfg(not(target_arch = "arm"))]
-    loop {
-        core::hint::spin_loop();
+    {
+        let _ = info;
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }

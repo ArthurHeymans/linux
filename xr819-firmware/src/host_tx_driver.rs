@@ -4,7 +4,7 @@
 //! confirmation is published. Pending contexts advance independently, while at
 //! most one context may reserve or own the shared class-0 hardware runtime.
 
-use crate::{hif, host_tx_diagnostics, tx, vendor_host_tx};
+use crate::{hif, host_tx_diagnostics, host_tx_policy, tx, vendor_host_tx};
 
 const HOST_CONTEXT_COUNT: usize = crate::host_tx_arena::HOST_CONTEXT_COUNT;
 const SERVICE_BUDGET: usize = 4;
@@ -233,6 +233,12 @@ impl HostTxDriver {
                                     | (u32::from(slot) << 28),
                                 0,
                             );
+                            host_tx_diagnostics::capture_publication_identity(
+                                retained.packet_id(),
+                                retained.context().raw(),
+                                pipe,
+                                slot,
+                            );
                         }
                         HostTxState::Owned {
                             retained,
@@ -323,11 +329,47 @@ impl HostTxDriver {
                     match unsafe { vendor_host_tx::reserve_non_aggregate_scheduler(&mut retained) }
                     {
                         Ok(reservation) => {
-                            self.states[index] = Some(HostTxState::Reserved {
-                                retained,
-                                reservation,
-                                wait_diagnostic: 0,
-                            });
+                            let pipe = reservation.pipe();
+                            let slot = reservation.slot();
+                            match unsafe { reservation.publish(&mut retained) } {
+                                Ok(()) => {
+                                    unsafe {
+                                        host_tx_diagnostics::trace(
+                                            0x4854_7000,
+                                            retained.context().raw()
+                                                | (u32::from(pipe) << 24)
+                                                | (u32::from(slot) << 28),
+                                            0,
+                                        );
+                                        host_tx_diagnostics::capture_publication_identity(
+                                            retained.packet_id(),
+                                            retained.context().raw(),
+                                            pipe,
+                                            slot,
+                                        );
+                                    }
+                                    self.states[index] = Some(HostTxState::Owned {
+                                        retained,
+                                        wait_diagnostic: 3,
+                                    });
+                                }
+                                Err((reservation, error)) => {
+                                    unsafe {
+                                        host_tx_diagnostics::trace(
+                                            0x4854_7100 | error as u32,
+                                            retained.context().raw()
+                                                | (u32::from(pipe) << 24)
+                                                | (u32::from(slot) << 28),
+                                            0,
+                                        );
+                                    }
+                                    self.states[index] = Some(HostTxState::Reserved {
+                                        retained,
+                                        reservation,
+                                        wait_diagnostic: 0,
+                                    });
+                                }
+                            }
                             return event;
                         }
                         Err(vendor_host_tx::SchedulerReserveError::Expired) => {
@@ -362,8 +404,16 @@ impl HostTxDriver {
                 {
                     unsafe {
                         host_tx_diagnostics::capture_completion(context, status, ack_failures);
+                        host_tx_diagnostics::capture_completion_identity(
+                            retained.packet_id(),
+                            context,
+                            status,
+                            ack_failures,
+                        );
                     }
-                    if context == retained.context().raw() {
+                    if host_tx_policy::route_completion(retained.context().raw(), context)
+                        == host_tx_policy::CompletionRouting::ConfirmServicedSlot
+                    {
                         let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
                         let completion_order = self.allocate_confirmation_order();
                         self.states[index] = Some(Self::confirmation_state(
@@ -374,6 +424,10 @@ impl HostTxDriver {
                         ));
                         return event;
                     }
+                    // `CompletionRouting::Ignore`: do not hand this completion
+                    // to the slot whose context it names. See `host_tx_policy`
+                    // for the over-the-air measurement showing that regresses
+                    // transmission without fixing buffer accounting.
                     unsafe {
                         host_tx_diagnostics::trace(0x4854_3f00, context, retained.context().raw());
                     }
@@ -395,6 +449,8 @@ impl HostTxDriver {
         order
     }
 
+    // Encoding lives in `host_tx_policy::rate_try_for_single_rate`, which is
+    // host-testable; see there for why zeros are not harmless.
     fn confirmation_state(
         retained: vendor_host_tx::RetainedHostTx,
         status: u32,
@@ -406,6 +462,25 @@ impl HostTxDriver {
         unsafe {
             host_tx_diagnostics::capture_retry_feedback(context, status, tx_rate, ack_failures);
         }
+        // Admission-to-confirmation latency. `context + 0x40` is the vendor
+        // submission timestamp the scheduler already compares against.
+        #[cfg(all(feature = "class0-lifecycle-counters", target_arch = "arm"))]
+        unsafe {
+            let submitted = (context.wrapping_add(0x40) as *const u32).read_volatile();
+            let elapsed = vendor_host_tx::vendor_timer_now().wrapping_sub(submitted);
+            // A wrapped or unset timestamp would swamp the maximum.
+            if elapsed < 10_000_000 {
+                host_tx_diagnostics::observe(host_tx_diagnostics::counter::LATENCY_LAST, elapsed);
+                let worst = host_tx_diagnostics::counters_snapshot()
+                    [host_tx_diagnostics::counter::LATENCY_MAX];
+                if elapsed > worst {
+                    host_tx_diagnostics::observe(
+                        host_tx_diagnostics::counter::LATENCY_MAX,
+                        elapsed,
+                    );
+                }
+            }
+        }
         HostTxState::Confirming {
             confirmation: HostTxConfirmation {
                 packet_id: retained.packet_id(),
@@ -413,12 +488,19 @@ impl HostTxDriver {
                 status,
                 tx_rate,
                 ack_failures,
-                rate_try: unsafe {
-                    [
-                        (context.wrapping_add(0x28) as *const u32).read_volatile(),
-                        (context.wrapping_add(0x2c) as *const u32).read_volatile(),
-                        (context.wrapping_add(0x30) as *const u32).read_volatile(),
-                    ]
+                rate_try: {
+                    let reported = unsafe {
+                        [
+                            (context.wrapping_add(0x28) as *const u32).read_volatile(),
+                            (context.wrapping_add(0x2c) as *const u32).read_volatile(),
+                            (context.wrapping_add(0x30) as *const u32).read_volatile(),
+                        ]
+                    };
+                    if reported == [0; 3] {
+                        host_tx_policy::rate_try_for_single_rate(tx_rate, ack_failures)
+                    } else {
+                        reported
+                    }
                 },
             },
             owner: ConfirmationOwner::Retained(retained),
@@ -461,6 +543,7 @@ impl HostTxDriver {
         let HostTxState::Confirming { owner, .. } = self.states[index].take()? else {
             return None;
         };
+        unsafe { host_tx_diagnostics::bump(host_tx_diagnostics::counter::CONFIRMED) };
         Some(match owner {
             ConfirmationOwner::Retained(retained) => unsafe { retained.finish() },
             ConfirmationOwner::Release(release) => release,

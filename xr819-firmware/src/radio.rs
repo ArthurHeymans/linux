@@ -17,8 +17,17 @@ const FIFO_RELEASED: u32 = 0xcccc_cc00;
 const DMA_PRODUCER: *const u32 = 0x09c0_0604 as *const u32;
 const DMA_CONSUMER: *mut u32 = 0x09c0_0608 as *mut u32;
 const VENDOR_FIFO_STATE: usize = 0x0400_1680;
-const MAX_FRAME_LEN: usize = 1600;
+const TX_COMMAND_BASE: usize = 0x0900_7080;
+const TX_COMMAND_PIPE_STRIDE: usize = 0x150;
+const TX_COMMAND_SLOT_STRIDE: usize = 0x54;
+const TX_HARDWARE_RING_BASE: usize = 0x09c6_0000;
+const TX_HARDWARE_RING_STRIDE: usize = 0x80;
 const WSM_RX_HEADROOM: usize = 16;
+// The vendor accepts any complete FIFO slot whose length fits the HIF
+// descriptor. A 1600-byte cap incorrectly rejected valid 1840-byte slots and
+// resynchronized the release cursor across host-owned zero-copy indications.
+const MAX_WSM_RX_MESSAGE_LEN: usize = 0x1ffe;
+const MAX_FRAME_LEN: usize = MAX_WSM_RX_MESSAGE_LEN - WSM_RX_HEADROOM;
 
 // Vendor RX FIFO state keeps independent release (+0x10) and claim (+0x14)
 // cursors. A claimed slot may remain host-owned while later slots are queued.
@@ -65,6 +74,46 @@ static DIAGNOSTICS: SharedDiagnostics = SharedDiagnostics(UnsafeCell::new(Receiv
     last_active_channel: 0,
     last_trailer_word: 0,
 }));
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+struct SharedRxTxBoundaryWatch(UnsafeCell<[u32; 7]>);
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe impl Sync for SharedRxTxBoundaryWatch {}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static RX_TX_BOUNDARY_WATCH: SharedRxTxBoundaryWatch =
+    SharedRxTxBoundaryWatch(UnsafeCell::new([0; 7]));
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+struct SharedRxTxProducerWatch(UnsafeCell<[u32; 2]>);
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe impl Sync for SharedRxTxProducerWatch {}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static RX_TX_PRODUCER_WATCH: SharedRxTxProducerWatch =
+    SharedRxTxProducerWatch(UnsafeCell::new([0; 2]));
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+struct SharedTxCommandSignatures(UnsafeCell<[u32; 51]>);
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe impl Sync for SharedTxCommandSignatures {}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static TX_COMMAND_SIGNATURES: SharedTxCommandSignatures =
+    SharedTxCommandSignatures(UnsafeCell::new([0; 51]));
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+struct SharedClass0CommandHistory(UnsafeCell<[u32; 186]>);
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe impl Sync for SharedClass0CommandHistory {}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static CLASS0_COMMAND_HISTORY: SharedClass0CommandHistory =
+    SharedClass0CommandHistory(UnsafeCell::new([0; 186]));
 
 pub fn diagnostics() -> ReceiveDiagnostics {
     unsafe { *DIAGNOSTICS.0.get() }
@@ -228,7 +277,7 @@ unsafe fn set_claim_offset(next: u32) {
 /// Vendor-style recovery for a corrupt current header: walk four-byte-aligned
 /// candidates up to the producer and adopt the next magic slot, or discard the
 /// unread region if no valid slot remains.
-unsafe fn resynchronize_consumer(consumer: u32, producer: u32) {
+unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32) {
     let mut candidate = consumer;
     let mut remaining = available_bytes(consumer, producer);
     while remaining >= 4 {
@@ -240,6 +289,14 @@ unsafe fn resynchronize_consumer(consumer: u32, producer: u32) {
         let address = FIFO_BASE + candidate as usize;
         if unsafe { (address as *const u32).read_volatile() } == FIFO_MAGIC {
             unsafe {
+                if HOST_TRANSFER_COUNT != 0 {
+                    #[cfg(not(feature = "corruption-non-fatal"))]
+                    publish_owned_resynchronization(consumer, producer, raw_producer);
+                    #[cfg(feature = "corruption-non-fatal")]
+                    crate::host_tx_diagnostics::bump(
+                        crate::host_tx_diagnostics::counter::RX_RESYNC,
+                    );
+                }
                 set_claim_offset(candidate);
                 set_release_offset(candidate);
             }
@@ -247,8 +304,518 @@ unsafe fn resynchronize_consumer(consumer: u32, producer: u32) {
         }
     }
     unsafe {
+        if HOST_TRANSFER_COUNT != 0 {
+            #[cfg(not(feature = "corruption-non-fatal"))]
+            publish_owned_resynchronization(consumer, producer, raw_producer);
+            #[cfg(feature = "corruption-non-fatal")]
+            crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RX_RESYNC);
+        }
         set_claim_offset(producer);
         set_release_offset(producer);
+    }
+}
+
+unsafe fn matching_tx_command(slot: usize) -> (usize, usize, u32) {
+    let slot_words = unsafe {
+        [
+            (slot as *const u32).read_volatile(),
+            ((slot + 4) as *const u32).read_volatile(),
+            ((slot + 8) as *const u32).read_volatile(),
+            ((slot + 0x18) as *const u32).read_volatile(),
+        ]
+    };
+    let mut best = (0, 0, 0);
+    let mut best_score = 0_u8;
+    for pipe in 0..4 {
+        for tx_slot in 0..4 {
+            let command =
+                TX_COMMAND_BASE + pipe * TX_COMMAND_PIPE_STRIDE + tx_slot * TX_COMMAND_SLOT_STRIDE;
+            let mut score = 0_u8;
+            let mut first_match = 0_usize;
+            for offset in (0x0c..=0x40).step_by(4) {
+                let word = unsafe { ((command + offset) as *const u32).read_volatile() };
+                if slot_words
+                    .iter()
+                    .copied()
+                    .any(|slot_word| slot_word != 0 && slot_word != FIFO_MAGIC && slot_word == word)
+                {
+                    score = score.saturating_add(1);
+                    if first_match == 0 {
+                        first_match = offset;
+                    }
+                }
+            }
+            if score > best_score {
+                best_score = score;
+                best = (
+                    command,
+                    command + first_match,
+                    u32::try_from(pipe).unwrap_or(0)
+                        | (u32::try_from(tx_slot).unwrap_or(0) << 8)
+                        | (u32::try_from(first_match).unwrap_or(0) << 16)
+                        | (u32::from(score) << 24),
+                );
+            }
+        }
+    }
+    best
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+fn encode_snapshot_name(words: [u32; 6]) -> [u8; 48] {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = [0_u8; 48];
+    for (word_index, word) in words.into_iter().enumerate() {
+        for nibble in 0..8 {
+            let shift = 28 - nibble * 4;
+            output[word_index * 8 + nibble] = HEX[((word >> shift) & 0x0f) as usize];
+        }
+    }
+    output
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+pub unsafe fn record_tx_command_signature(class: u8, command: u32) {
+    let (valid_bit, pointer_index) = match class {
+        0 => (2_u32, 2_usize),
+        6 => (1_u32, 1_usize),
+        _ => return,
+    };
+    let signatures = unsafe { &mut *TX_COMMAND_SIGNATURES.0.get() };
+    signatures[0] = (signatures[0] & 3) | valid_bit | (u32::from(class) << 8);
+    signatures[pointer_index] = command;
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn capture_final_tx_command_signature(command: u32) {
+    let signatures = unsafe { &mut *TX_COMMAND_SIGNATURES.0.get() };
+    let class = (signatures[0] >> 8) as u8;
+    let words_start = match class {
+        0 if signatures[2] == command => 30,
+        6 if signatures[1] == command => 9,
+        _ => return,
+    };
+    for word in 0..21 {
+        signatures[words_start + word] =
+            unsafe { ((command as usize + word * 4) as *const u32).read_volatile() };
+    }
+    if class == 0 {
+        let history = unsafe { &mut *CLASS0_COMMAND_HISTORY.0.get() };
+        let index = history[0] as usize & 7;
+        let generation = history[1].wrapping_add(1);
+        let entry = 2 + index * 23;
+        history[0] = ((index + 1) & 7) as u32;
+        history[1] = generation;
+        history[entry] = generation;
+        history[entry + 1] = command;
+        history[entry + 2..entry + 23].copy_from_slice(&signatures[30..51]);
+    }
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn fifo_word(offset: u32) -> u32 {
+    unsafe { ((FIFO_BASE + normalize_offset(offset) as usize) as *const u32).read_volatile() }
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn longest_signature_match_in_producer_delta(
+    start: u32,
+    end: u32,
+    signature: &[u32; 21],
+) -> Option<(usize, usize, usize)> {
+    let mut best = None;
+    let mut candidate = normalize_offset(start);
+    let mut remaining = available_bytes(candidate, normalize_offset(end));
+    while remaining >= 12 {
+        for command_word in 0..21 {
+            let mut matched = 0;
+            while command_word + matched < signature.len()
+                && (matched + 1) * 4 <= remaining as usize
+                && unsafe { fifo_word(candidate.wrapping_add((matched * 4) as u32)) }
+                    == signature[command_word + matched]
+            {
+                matched += 1;
+            }
+            if matched >= 3 && best.is_none_or(|(_, _, best_words)| matched > best_words) {
+                best = Some((FIFO_BASE + candidate as usize, command_word * 4, matched));
+            }
+        }
+        candidate = normalize_offset(candidate.wrapping_add(4));
+        remaining -= 4;
+    }
+    best
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn best_class0_history_match(
+    start: u32,
+    end: u32,
+) -> Option<(usize, usize, usize, u32, u32)> {
+    let history = unsafe { &*CLASS0_COMMAND_HISTORY.0.get() };
+    let latest_generation = history[1];
+    let mut best = None;
+    for index in 0..8 {
+        let entry = 2 + index * 23;
+        let generation = history[entry];
+        if generation == 0 {
+            continue;
+        }
+        let mut signature = [0_u32; 21];
+        signature.copy_from_slice(&history[entry + 2..entry + 23]);
+        if let Some((address, command_offset, matched_words)) =
+            unsafe { longest_signature_match_in_producer_delta(start, end, &signature) }
+        {
+            let replace = best.is_none_or(|(_, _, best_words, _, best_generation)| {
+                matched_words > best_words
+                    || (matched_words == best_words
+                        && latest_generation.wrapping_sub(generation)
+                            < latest_generation.wrapping_sub(best_generation))
+            });
+            if replace {
+                best = Some((
+                    address,
+                    command_offset,
+                    matched_words,
+                    history[entry + 1],
+                    generation,
+                ));
+            }
+        }
+    }
+    best
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn locate_live_command_word(value: u32) -> (u32, u32, u32) {
+    let mut first = 0_u32;
+    let mut first_pointer = 0_u32;
+    let mut count = 0_u32;
+    for pipe in 0..4_u32 {
+        for slot in 0..4_u32 {
+            let command = TX_COMMAND_BASE as u32
+                + pipe * TX_COMMAND_PIPE_STRIDE as u32
+                + slot * TX_COMMAND_SLOT_STRIDE as u32;
+            for word in 0..21_u32 {
+                if unsafe { ((command + word * 4) as *const u32).read_volatile() } == value {
+                    if count == 0 {
+                        first = (pipe << 28) | (slot << 24) | (word * 4);
+                        first_pointer = command;
+                    }
+                    count = count.wrapping_add(1);
+                }
+            }
+        }
+    }
+    (first, first_pointer, count)
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn locate_history_command_word(value: u32) -> (u32, u32, u32) {
+    let history = unsafe { &*CLASS0_COMMAND_HISTORY.0.get() };
+    let latest = history[1];
+    let mut best = None;
+    let mut count = 0_u32;
+    for index in 0..8 {
+        let entry = 2 + index * 23;
+        let generation = history[entry];
+        if generation == 0 {
+            continue;
+        }
+        for word in 0..21 {
+            if history[entry + 2 + word] == value {
+                count = count.wrapping_add(1);
+                if best.is_none_or(|(best_generation, _, _)| {
+                    latest.wrapping_sub(generation) < latest.wrapping_sub(best_generation)
+                }) {
+                    best = Some((generation, (word * 4) as u32, history[entry + 1]));
+                }
+            }
+        }
+    }
+    best.map_or((0, 0, count), |(generation, offset, pointer)| {
+        (generation, (offset << 16) | (count & 0xffff), pointer)
+    })
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn locate_class6_command_word(value: u32) -> u32 {
+    let signatures = unsafe { &*TX_COMMAND_SIGNATURES.0.get() };
+    (0..21)
+        .find(|word| signatures[9 + word] == value)
+        .map_or(u32::MAX, |word| (word * 4) as u32)
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn describe_matching_slot(start: u32, end: u32, address: usize) -> [u32; 6] {
+    let target = normalize_offset((address - FIFO_BASE) as u32);
+    let end = normalize_offset(end);
+    let mut cursor = normalize_offset(start);
+    for _ in 0..16 {
+        if cursor == end {
+            break;
+        }
+        let slot = FIFO_BASE + cursor as usize;
+        if unsafe { (slot as *const u32).read_volatile() } != FIFO_MAGIC {
+            break;
+        }
+        let slot_length = unsafe { ((slot + 0x18) as *const u16).read_volatile() };
+        let next = next_offset(cursor, slot_length);
+        let stride = available_bytes(cursor, next);
+        if slot_length < 4 || stride == 0 || stride > available_bytes(cursor, end) {
+            break;
+        }
+        let relative = available_bytes(cursor, target);
+        if relative < stride {
+            let frame = slot + 0x20;
+            return unsafe {
+                [
+                    slot as u32,
+                    (u32::from(slot_length) << 16) | relative,
+                    (frame as *const u32).read_volatile(),
+                    ((frame + 4) as *const u32).read_volatile(),
+                    ((frame + 8) as *const u32).read_volatile(),
+                    ((frame + 12) as *const u32).read_volatile(),
+                ]
+            };
+        }
+        cursor = next;
+    }
+    [0; 6]
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+pub unsafe fn fatal_command_snapshot() -> [u32; 11] {
+    unsafe {
+        let watch = &*RX_TX_PRODUCER_WATCH.0.get();
+        let start = watch[1];
+        let end = DMA_PRODUCER.read_volatile();
+        let mut result = [0_u32; 11];
+        result[0] = start;
+        result[1] = end;
+        result[8] = DMA_CONSUMER.read_volatile();
+        result[9] = CLAIM_OFFSET;
+        result[10] = RELEASE_OFFSET;
+        if watch[0] != 0
+            && normalize_offset(start) != normalize_offset(end)
+            && let Some((address, command_offset, matched_words, pointer, generation)) =
+                best_class0_history_match(start, end)
+        {
+            result[2] = address as u32;
+            result[3] = pointer;
+            result[4] = command_offset as u32;
+            result[5] = (matched_words * 4) as u32;
+            result[6] = generation;
+            result[7] = fifo_word(start);
+        }
+        result
+    }
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+pub unsafe fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command: u32, ring: u32) {
+    // Report-only mode. This validator halts the firmware the instant it sees a
+    // TX command signature inside the RX producer delta, so every run so far has
+    // stopped itself at the first corruption and we have never observed whether
+    // the system continues to work through it. Skip the check entirely here; the
+    // RX consumer resynchronisation counter still records that corruption
+    // happened.
+    #[cfg(feature = "corruption-non-fatal")]
+    {
+        let _ = (phase, command, ring);
+        return;
+    }
+    #[cfg(not(feature = "corruption-non-fatal"))]
+    unsafe {
+        let claim = CLAIM_OFFSET;
+        let raw_producer = DMA_PRODUCER.read_volatile();
+        let producer_watch = &mut *RX_TX_PRODUCER_WATCH.0.get();
+        if producer_watch[0] != 0 && producer_watch[1] != raw_producer {
+            let signatures = &mut *TX_COMMAND_SIGNATURES.0.get();
+            let mut class6_signature = [0_u32; 21];
+            class6_signature.copy_from_slice(&signatures[9..30]);
+            let class6_match = (signatures[0] & 1 != 0)
+                .then(|| {
+                    longest_signature_match_in_producer_delta(
+                        producer_watch[1],
+                        raw_producer,
+                        &class6_signature,
+                    )
+                })
+                .flatten();
+            let class0_match = (signatures[0] & 2 != 0)
+                .then(|| best_class0_history_match(producer_watch[1], raw_producer))
+                .flatten();
+            if let Some((address, command_offset, _)) = class6_match {
+                signatures[3] = signatures[3].wrapping_add(1);
+                signatures[5] = address as u32;
+                signatures[7] = command_offset as u32;
+            }
+            if let Some((address, command_offset, matched_words, pointer, generation)) =
+                class0_match
+            {
+                signatures[4] = signatures[4].wrapping_add(1);
+                signatures[6] = address as u32;
+                signatures[8] = command_offset as u32;
+                let target = normalize_offset((address - FIFO_BASE) as u32);
+                let after_rx = fifo_word(target.wrapping_add((matched_words * 4) as u32));
+                let slot = describe_matching_slot(producer_watch[1], raw_producer, address);
+                let (live_owner, live_pointer, live_count) = locate_live_command_word(after_rx);
+                let (history_generation, history_match, history_pointer) =
+                    locate_history_command_word(after_rx);
+                let class6_offset = locate_class6_command_word(after_rx);
+                let name = encode_snapshot_name([
+                    signatures[1],
+                    signatures[2],
+                    signatures[3],
+                    signatures[4],
+                    pointer,
+                    generation,
+                ]);
+                crate::hif::publish_terminal_exception(
+                    [
+                        0x5258_5450,
+                        phase,
+                        producer_watch[1],
+                        raw_producer,
+                        address as u32,
+                        pointer,
+                        command_offset as u32,
+                        (matched_words * 4) as u32,
+                        live_owner,
+                        live_pointer,
+                        live_count,
+                        history_generation,
+                        history_match,
+                        history_pointer,
+                        class6_offset,
+                        slot[0],
+                        slot[1],
+                        after_rx,
+                    ],
+                    &name,
+                );
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+            producer_watch[1] = raw_producer;
+        }
+        if phase == 0x13 && command != 0 && ring != 0 {
+            capture_final_tx_command_signature(command);
+            producer_watch[0] = 1;
+            producer_watch[1] = raw_producer;
+        }
+        let raw_producer = DMA_PRODUCER.read_volatile();
+        let producer = normalize_offset(raw_producer);
+        let watch = &mut *RX_TX_BOUNDARY_WATCH.0.get();
+        if watch[0] != 0 {
+            if watch[1] == claim {
+                let address = FIFO_BASE + claim as usize;
+                let actual = [
+                    (address as *const u32).read_volatile(),
+                    ((address + 4) as *const u32).read_volatile(),
+                    ((address + 8) as *const u32).read_volatile(),
+                    ((address + 0x18) as *const u32).read_volatile(),
+                ];
+                let expected = [watch[3], watch[4], watch[5], watch[6]];
+                if actual != expected {
+                    let (matched_command, _, match_state) = matching_tx_command(address);
+                    crate::hif::publish_terminal_exception(
+                        [
+                            0x5258_5442,
+                            phase,
+                            watch[1],
+                            watch[2],
+                            raw_producer,
+                            claim,
+                            address as u32,
+                            expected[0],
+                            actual[0],
+                            expected[1],
+                            actual[1],
+                            expected[2],
+                            actual[2],
+                            expected[3],
+                            actual[3],
+                            command,
+                            matched_command as u32,
+                            match_state,
+                        ],
+                        b"xr819-rx-tx-boundary",
+                    );
+                    loop {
+                        core::hint::spin_loop();
+                    }
+                }
+            }
+            watch[0] = 0;
+        }
+        if claim != producer {
+            let address = FIFO_BASE + claim as usize;
+            let words = [
+                (address as *const u32).read_volatile(),
+                ((address + 4) as *const u32).read_volatile(),
+                ((address + 8) as *const u32).read_volatile(),
+                ((address + 0x18) as *const u32).read_volatile(),
+            ];
+            if words[0] == FIFO_MAGIC {
+                watch[0] = 1;
+                watch[1] = claim;
+                watch[2] = raw_producer;
+                watch[3] = words[0];
+                watch[4] = words[1];
+                watch[5] = words[2];
+                watch[6] = words[3];
+            }
+        }
+    }
+}
+
+unsafe fn publish_owned_resynchronization(consumer: u32, producer: u32, raw_producer: u32) -> ! {
+    unsafe {
+        let current = FIFO_BASE + consumer as usize;
+        let (command, match_address, match_state) = matching_tx_command(current);
+        let (match_words, ring_state) = if command == 0 {
+            ([0; 4], 0)
+        } else {
+            let pipe = usize::try_from(match_state & 3).unwrap_or(0);
+            let hardware_ring = TX_HARDWARE_RING_BASE + pipe * TX_HARDWARE_RING_STRIDE;
+            (
+                [
+                    (match_address as *const u32).read_volatile(),
+                    ((match_address + 4) as *const u32).read_volatile(),
+                    ((match_address + 8) as *const u32).read_volatile(),
+                    ((match_address + 0x0c) as *const u32).read_volatile(),
+                ],
+                ((hardware_ring + 0x20) as *const u32).read_volatile(),
+            )
+        };
+        crate::hif::publish_terminal_exception(
+            [
+                0x5258_5253,
+                raw_producer,
+                producer,
+                CLAIM_OFFSET,
+                RELEASE_OFFSET,
+                DMA_CONSUMER.read_volatile(),
+                current as u32,
+                (current as *const u32).read_volatile(),
+                ((current + 4) as *const u32).read_volatile(),
+                ((current + 8) as *const u32).read_volatile(),
+                ((current + 0x18) as *const u32).read_volatile(),
+                command as u32,
+                match_words[0],
+                match_words[1],
+                match_words[2],
+                match_words[3],
+                ring_state,
+                match_state,
+            ],
+            b"xr819-rx-resync-owned",
+        );
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -277,6 +844,34 @@ unsafe fn release_head_slot(slot: usize, next: u32, low_state: u32) {
 unsafe fn release(token: ReleaseToken) {
     unsafe {
         let slot = token.slot as usize;
+        if !(FIFO_BASE..FIFO_BASE + FIFO_SIZE as usize).contains(&slot) {
+            crate::hif::publish_terminal_exception(
+                [
+                    0x5258_524c,
+                    token.slot,
+                    token.next,
+                    RELEASE_OFFSET,
+                    CLAIM_OFFSET,
+                    DMA_PRODUCER.read_volatile(),
+                    HOST_TRANSFER_COUNT,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    FIFO_BASE as u32,
+                    FIFO_SIZE,
+                ],
+                b"xr819-rx-release-address",
+            );
+            loop {
+                core::hint::spin_loop();
+            }
+        }
         let state = (slot + 8) as *mut u32;
         let value = state.read_volatile();
         let low = value & 0xff;
@@ -285,14 +880,68 @@ unsafe fn release(token: ReleaseToken) {
         if ownership == FIFO_RELEASED {
             return;
         }
-        assert!(ownership == 0 || ownership == 0xffff_ff00);
+        if ownership != 0 && ownership != 0xffff_ff00 {
+            // Report-only mode: a slot whose ownership word is TX command data
+            // is corrupt, but the release-head walk can still reclaim it. Treat
+            // it as an out-of-order release and keep going instead of halting,
+            // so a run can be measured through the corruption.
+            #[cfg(feature = "corruption-non-fatal")]
+            {
+                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RX_RESYNC);
+                state.write_volatile(pending_release_state(value));
+                return;
+            }
+            #[cfg(not(feature = "corruption-non-fatal"))]
+            {
+                let (command, match_address, match_state) = matching_tx_command(slot);
+                let (match_words, ring_state) = if command == 0 {
+                    ([0; 3], 0)
+                } else {
+                    let pipe = usize::try_from(match_state & 3).unwrap_or(0);
+                    let hardware_ring = TX_HARDWARE_RING_BASE + pipe * TX_HARDWARE_RING_STRIDE;
+                    (
+                        [
+                            (match_address as *const u32).read_volatile(),
+                            ((match_address + 4) as *const u32).read_volatile(),
+                            ((match_address + 8) as *const u32).read_volatile(),
+                        ],
+                        ((hardware_ring + 0x20) as *const u32).read_volatile(),
+                    )
+                };
+                crate::hif::publish_terminal_exception(
+                    [
+                        0x5258_524c,
+                        token.slot,
+                        token.next,
+                        value,
+                        RELEASE_OFFSET,
+                        CLAIM_OFFSET,
+                        DMA_PRODUCER.read_volatile(),
+                        HOST_TRANSFER_COUNT,
+                        (slot as *const u32).read_volatile(),
+                        ((slot + 4) as *const u32).read_volatile(),
+                        ((slot + 8) as *const u32).read_volatile(),
+                        ((slot + 0x18) as *const u32).read_volatile(),
+                        command as u32,
+                        match_words[0],
+                        match_words[1],
+                        match_words[2],
+                        ring_state,
+                        match_state,
+                    ],
+                    b"xr819-rx-release-state",
+                );
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+        }
         if ownership == 0 {
             // Vendor marks an out-of-order release as 0xffffff00 and lets the
             // release-head walk reclaim it when all preceding owners return.
             state.write_volatile(pending_release_state(value));
         }
 
-        assert!((FIFO_BASE..FIFO_BASE + FIFO_SIZE as usize).contains(&slot));
         let slot_offset = normalize_offset((slot - FIFO_BASE) as u32);
         if RELEASE_OFFSET != slot_offset {
             return;
@@ -364,7 +1013,8 @@ unsafe fn poll_indication(
     scan_only: bool,
 ) -> Option<PendingIndication> {
     let consumer = unsafe { CLAIM_OFFSET };
-    let producer = normalize_offset(unsafe { DMA_PRODUCER.read_volatile() });
+    let raw_producer = unsafe { DMA_PRODUCER.read_volatile() };
+    let producer = normalize_offset(raw_producer);
     if consumer == producer {
         return None;
     }
@@ -381,7 +1031,7 @@ unsafe fn poll_indication(
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.bad_magic = diagnostics.bad_magic.wrapping_add(1);
-            resynchronize_consumer(consumer, producer);
+            resynchronize_consumer(consumer, producer, raw_producer);
         }
         return None;
     }
@@ -402,7 +1052,7 @@ unsafe fn poll_indication(
             if usize::from(slot_length) > MAX_FRAME_LEN + 4 {
                 diagnostics.oversized_frames = diagnostics.oversized_frames.wrapping_add(1);
             }
-            resynchronize_consumer(consumer, producer);
+            resynchronize_consumer(consumer, producer, raw_producer);
         }
         return None;
     }
@@ -562,9 +1212,9 @@ mod tests {
     }
 
     #[test]
-    fn zero_copy_indication_fits_advertised_hif_buffer() {
-        assert_eq!(MAX_FRAME_LEN + WSM_RX_HEADROOM, 1616);
-        assert!(MAX_FRAME_LEN + WSM_RX_HEADROOM <= 1632);
+    fn zero_copy_indication_fits_hif_descriptor_length() {
+        assert_eq!(MAX_FRAME_LEN + WSM_RX_HEADROOM, 0x1ffe);
+        assert!(MAX_FRAME_LEN > 1840);
     }
 
     #[test]

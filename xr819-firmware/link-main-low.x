@@ -29,6 +29,13 @@ SECTIONS
         KEEP(*(.text.entry))
         *(.text .text.*)
         *(.rodata .rodata.*)
+        /*
+         * The image packer requires every PT_LOAD file size to be word
+         * aligned. Without this the read-only segment ends wherever the last
+         * rodata item happens to land and packing succeeds only by luck.
+         * This is a no-op when the size is already aligned.
+         */
+        . = ALIGN(4);
     } > ITCM_OBSERVED
 
     .data : ALIGN(4)

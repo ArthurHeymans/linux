@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Build and pack the canonical over-the-air test image.
+#
+# Feature sets are easy to get wrong by hand, and a wrong one fails silently:
+# `unmatched-tx-status-recovery` pulls in nothing on its own, so building with
+# it alone produces an image with no host TX driver and, because
+# `vendor-host-tx-foundation` also gates `join-sta-experiment`, no STA JOIN
+# path either. Such an image boots and flashes happily but never associates,
+# which is indistinguishable from a firmware regression at the harness level.
+#
+# `cargo test` does not catch this: the host TX service path is
+# `#[cfg(target_arch = "arm")]`, so the host test build never compiles it. Only
+# an ARM build does. Always go through this script before flashing.
+#
+#   $1 = output image path
+#   $2... = extra features to append to the canonical set
+set -euo pipefail
+
+OUT=${1:?usage: build-ota-image.sh OUT [extra,features]}
+shift
+EXTRA=${1:-}
+
+BASE=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-diagnostics,unmatched-tx-status-recovery
+FEATURES=$BASE${EXTRA:+,$EXTRA}
+
+cd "$(dirname "$0")/.."
+
+cargo test --features vendor-host-tx-diagnostics >/dev/null
+cargo build --release --bin hif-startup --target thumbv5te-none-eabi \
+  -Z build-std=core --no-default-features --features "$FEATURES"
+python3 tools/pack-sectioned-elf.py \
+  target/thumbv5te-none-eabi/release/hif-startup "$OUT"
+
+echo "features=$FEATURES"

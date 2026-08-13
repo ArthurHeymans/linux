@@ -138,7 +138,10 @@ impl RetainedHostTx {
         match self.phase {
             HostTxPhase::Submitted | HostTxPhase::Classified | HostTxPhase::PendingEligible => {}
             HostTxPhase::PostCryptoQueued => unsafe { remove_pending_context(self.context)? },
-            HostTxPhase::PasQueued => unsafe { remove_live_pas(self.context)? },
+            HostTxPhase::PasQueued => unsafe {
+                remove_live_pas(self.context)?;
+                release_pas_accounting(self.context);
+            },
             HostTxPhase::SchedulerReserved | HostTxPhase::Scheduled | HostTxPhase::Completing => {
                 return Err(CancelError::HardwareOwned);
             }
@@ -356,8 +359,17 @@ pub unsafe fn classify_and_encrypt(retained: &mut RetainedHostTx) -> Result<(), 
         write_live_u8(context.raw() + 0xaa, 0xff);
         let vif_slot = read_live_u8(0x0400_3ae9 + u32::from(interface) * 0x98) & 1;
         write_live_u8(context.raw() + 0xbe, vif_slot);
+        crate::host_tx_diagnostics::capture_submission_identity(
+            retained.packet_id,
+            context.raw(),
+            read_live_u8(context.raw() + 0x0f),
+            read_live_u8(context.raw() + 0x61),
+            read_live_u8(context.raw() + 0x60),
+            classification.flags,
+        );
     }
     retained.phase = HostTxPhase::Classified;
+    unsafe { crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::ADMITTED) };
     crate::crypto::encrypt_tx_frame(frame, interface).map_err(HostPrepareError::Crypto)?;
     unsafe { crate::tx::prepare_host_frame_timing(context.raw()) }.map_err(HostPrepareError::Timing)
 }
@@ -459,6 +471,7 @@ pub enum PendingServiceError {
     WrongPhase,
     PendingList(CancelError),
     Timing(crate::tx::ProbeBuildError),
+    PhyState,
     PasRingFull,
 }
 
@@ -468,9 +481,20 @@ impl PendingServiceError {
             Self::WrongPhase => 1,
             Self::PendingList(_) => 2,
             Self::Timing(_) => 3,
-            Self::PasRingFull => 4,
+            Self::PhyState => 4,
+            Self::PasRingFull => 5,
         }
     }
+}
+
+/// Vendor microsecond timer. Exposed so diagnostics can rate-limit without
+/// duplicating the address pair.
+///
+/// # Safety
+/// Reads live vendor timer registers.
+#[cfg(target_arch = "arm")]
+pub unsafe fn vendor_timer_now() -> u32 {
+    unsafe { vendor_timer() }
 }
 
 #[cfg(target_arch = "arm")]
@@ -649,6 +673,79 @@ unsafe fn remove_live_pas(context: HostContextAddress) -> Result<(), CancelError
     Ok(())
 }
 
+/// Publishes why the PAS admission gate refused a class-0 frame, then halts.
+///
+/// A refusal here means no class-0 frame ever reaches the MAC, so no
+/// publication-time capture can fire and the counters MIB cannot be trusted.
+///
+/// # Safety
+/// PHY and VIF state must be readable; the firmware stops here.
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+unsafe fn report_pas_admission_refusal(context: HostContextAddress) -> ! {
+    unsafe {
+        let interface = read_live_u8(context.raw() + 0xbd);
+        let vif = 0x0400_3e98 + u32::from(interface) * 0x3b0;
+        crate::hif::publish_terminal_exception(
+            [
+                0x4330_5041, // "C0PA"
+                u32::from(interface),
+                context.raw(),
+                // The two bail conditions inside `advance_awake_station_tx`.
+                u32::from(read_live_u8(0x0400_3a6e)), // PHY state: 1 = needs wake
+                u32::from(read_live_u8(0x0400_99a9)), // retained reprogram latch
+                u32::from(read_live_u8(0x0400_994f)), // wake latch
+                u32::from(read_live_u8(0x0400_9945)), // request argument
+                u32::from(read_live_u16(0x0400_8f76)), // global active count
+                read_live_u32(0x0400_8b20),           // radio owner
+                u32::from(read_live_u8(vif + 0x66)),  // owner state
+                u32::from(read_live_u16(vif + 0x2c)), // active mask
+                u32::from(read_live_u16(vif + 0x2e)), // effective mask
+                u32::from(read_live_u16(vif + 0x30)), // per-VIF active count
+                read_live_u32(0x0400_1fd4),           // scheduler word
+                read_live_u32(0x0400_1d2c),           // PHY command state
+                u32::from(read_live_u8(0x0400_1adc)),
+                u32::from(read_live_u8(0x0400_995f)),
+                read_live_u32(0x0ac8_0064), // PHY controller
+            ],
+            b"xr819-class0-pas-refused",
+        );
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
+    unsafe {
+        let active = read_live_u16(0x0400_8f76);
+        if active == 0 && !crate::phy::advance_awake_station_tx() {
+            #[cfg(feature = "class0-descriptor-dump")]
+            report_pas_admission_refusal(context);
+            return false;
+        }
+        write_live_u16(0x0400_8f76, active.wrapping_add(1));
+        let interface = read_live_u8(context.raw() + 0xbd);
+        if interface < 3 {
+            let vif_active = 0x0400_3e98 + u32::from(interface) * 0x3b0 + 0x30;
+            write_live_u16(vif_active, read_live_u16(vif_active).wrapping_add(1));
+        }
+        true
+    }
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn release_pas_accounting(context: HostContextAddress) {
+    unsafe {
+        write_live_u16(0x0400_8f76, read_live_u16(0x0400_8f76).wrapping_sub(1));
+        let interface = read_live_u8(context.raw() + 0xbd);
+        if interface < 3 {
+            let vif_active = 0x0400_3e98 + u32::from(interface) * 0x3b0 + 0x30;
+            write_live_u16(vif_active, read_live_u16(vif_active).wrapping_sub(1));
+        }
+    }
+}
+
 #[cfg(target_arch = "arm")]
 unsafe fn release_pending_to_pas(retained: &mut RetainedHostTx) -> Result<(), PendingServiceError> {
     let context = retained.context;
@@ -658,7 +755,13 @@ unsafe fn release_pending_to_pas(retained: &mut RetainedHostTx) -> Result<(), Pe
             read_live_u32(context.raw() + 0x80) | 0x40,
         );
         crate::tx::prepare_host_frame_timing(context.raw()).map_err(PendingServiceError::Timing)?;
-        push_live_pas(context)?;
+        if !claim_pas_accounting(context) {
+            return Err(PendingServiceError::PhyState);
+        }
+        if let Err(error) = push_live_pas(context) {
+            release_pas_accounting(context);
+            return Err(error);
+        }
     }
     retained.phase = HostTxPhase::PasQueued;
     Ok(())
@@ -908,7 +1011,10 @@ pub unsafe fn reject_unscheduled_pas(retained: &mut RetainedHostTx) -> Result<()
     if retained.phase != HostTxPhase::PasQueued {
         return Err(CancelError::HardwareOwned);
     }
-    unsafe { remove_live_pas(retained.context)? };
+    unsafe {
+        remove_live_pas(retained.context)?;
+        release_pas_accounting(retained.context);
+    }
     retained.phase = HostTxPhase::PendingEligible;
     Ok(())
 }
@@ -963,6 +1069,13 @@ impl HostSchedulerReservation {
             )
         } {
             return Err((self, error));
+        }
+        unsafe {
+            crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
+            // Retirement ages state-1 slots against this to tell a frame that
+            // has not started yet from one that is genuinely stuck.
+            #[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+            crate::tx::note_pipe_publication(self.pipe);
         }
         retained.phase = HostTxPhase::Scheduled;
         Ok(())
@@ -1059,6 +1172,10 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     if command == 0 || hardware_ring == 0 {
         return Err(SchedulerReserveError::PipeStateUnavailable);
     }
+    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+    unsafe {
+        crate::hif::validate_tx_boundary(0x10, pipe, slot, command, hardware_ring);
+    }
     let original_flags = unsafe { read_live_u32(context.raw() + 0x58) };
     let original_slot_header = unsafe { read_live_u32(slot_record) };
     let original_slot_frame = unsafe { read_live_u32(slot_record + 0x0c) };
@@ -1107,6 +1224,8 @@ pub unsafe fn reserve_non_aggregate_scheduler(
             }
             return Err(SchedulerReserveError::Descriptor(error));
         }
+        #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+        crate::hif::validate_tx_boundary(0x11, pipe, slot, command, hardware_ring);
     }
     retained.phase = HostTxPhase::SchedulerReserved;
     Ok(HostSchedulerReservation {

@@ -472,7 +472,6 @@ pub fn service() -> Option<ScanCompletion> {
                 }
                 storage.dwell_arm_now = armed;
                 storage.dwell_armed_deadline = storage.dwell_deadline;
-
             }
             Ok(None) => return None,
             Err(error) => {
@@ -482,7 +481,6 @@ pub fn service() -> Option<ScanCompletion> {
                 {
                     storage.probe_phase = ActiveProbePhase::Failed;
                 }
-
             }
         }
     }
@@ -496,7 +494,6 @@ pub fn service() -> Option<ScanCompletion> {
             if let Err(error) = unsafe { storage.transition.start(_channel.number, 100_000) } {
                 storage.hardware_error_code = transition_error_code(error);
                 storage.hardware_status = 1;
-
             } else {
                 storage.transition.arm_settle(vendor_timer());
             }

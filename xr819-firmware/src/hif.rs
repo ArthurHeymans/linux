@@ -7,6 +7,8 @@
 use core::arch::asm;
 #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
 use core::arch::global_asm;
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+use core::cell::UnsafeCell;
 
 use crate::radio::{self, PendingIndication, ReleaseToken};
 use tock_registers::interfaces::{Readable, Writeable};
@@ -102,6 +104,34 @@ const HIF_SOFTWARE_STATE_BASE: usize = 0x0400_9754;
 const RX_BUFFER_BASE: usize = 0x0900_8a68;
 const RX_BUFFER_SIZE: usize = 1632;
 const RX_BUFFER_COUNT: usize = 30;
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+const TX_COMMAND_BASE: usize = 0x0900_7080;
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+const TX_COMMAND_PIPE_STRIDE: usize = 0x150;
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+const TX_COMMAND_SLOT_STRIDE: usize = 0x54;
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+const TX_HARDWARE_RING_BASE: usize = 0x09c6_0000;
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+const TX_HARDWARE_RING_STRIDE: usize = 0x80;
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+struct SharedOutputHeaders(UnsafeCell<[u32; 64]>);
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe impl Sync for SharedOutputHeaders {}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static OUTPUT_HEADERS: SharedOutputHeaders = SharedOutputHeaders(UnsafeCell::new([0; 64]));
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+struct SharedOutputHashes(UnsafeCell<[u32; 64]>);
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe impl Sync for SharedOutputHashes {}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static OUTPUT_HASHES: SharedOutputHashes = SharedOutputHashes(UnsafeCell::new([0; 64]));
 
 /// First of the four vendor TX buffers allocated by `0x0000094c`. The exact
 /// pre-HIF clock transition makes this packet-memory bank CPU-accessible.
@@ -123,6 +153,156 @@ const fn output_queue_has_capacity(producer: u32, consumer: u32) -> bool {
 
 const fn descriptor_sequence(header_id: u16) -> u32 {
     ((header_id >> 13) & 3) as u32
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn output_prefix_hash(buffer: u32, length: u16) -> u32 {
+    let count = usize::from(length).min(64);
+    let mut hash = 0x811c_9dc5_u32;
+    for offset in 0..count {
+        let byte = unsafe { ((buffer as usize + offset) as *const u8).read_volatile() };
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe fn matching_tx_command(words: [u32; 4]) -> (u32, u32, u32) {
+    let mut best_command = 0_u32;
+    let mut best_state = 0_u32;
+    let mut best_score = 0_u8;
+    for pipe in 0..4 {
+        for slot in 0..4 {
+            let command =
+                TX_COMMAND_BASE + pipe * TX_COMMAND_PIPE_STRIDE + slot * TX_COMMAND_SLOT_STRIDE;
+            let mut score = 0_u8;
+            let mut first_match = 0_usize;
+            for offset in (0x0c..=0x40).step_by(4) {
+                let command_word = unsafe { ((command + offset) as *const u32).read_volatile() };
+                if words
+                    .iter()
+                    .copied()
+                    .any(|word| word != 0 && word == command_word)
+                {
+                    score = score.saturating_add(1);
+                    if first_match == 0 {
+                        first_match = offset;
+                    }
+                }
+            }
+            if score > best_score {
+                best_score = score;
+                best_command = command as u32;
+                best_state = pipe as u32
+                    | ((slot as u32) << 8)
+                    | ((first_match as u32) << 16)
+                    | (u32::from(score) << 24);
+            }
+        }
+    }
+    let ring_state = if best_command == 0 {
+        0
+    } else {
+        let pipe = usize::try_from(best_state & 3).unwrap_or(0);
+        unsafe {
+            ((TX_HARDWARE_RING_BASE + pipe * TX_HARDWARE_RING_STRIDE + 0x20) as *const u32)
+                .read_volatile()
+        }
+    };
+    (best_command, best_state, ring_state)
+}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+pub unsafe fn validate_tx_boundary(phase: u32, pipe: u8, slot: u8, command: u32, ring: u32) {
+    unsafe { radio::validate_tx_boundary(phase, pipe, slot, command, ring) };
+    // Report-only mode. This is the fourth halting detector for the same
+    // corruption: it fires when an RX slot already staged for the host is
+    // overwritten. Like the others it stops the firmware on first sight, which
+    // makes any throughput measurement impossible.
+    // Do NOT count corruption here. This runs several times per main-loop pass,
+    // so a counter bump at this point measures call frequency rather than
+    // corruption events (it read 2,162,040 on the first attempt). Corruption is
+    // counted where it is actually detected, in `radio.rs`.
+    #[cfg(feature = "corruption-non-fatal")]
+    return;
+    #[cfg(not(feature = "corruption-non-fatal"))]
+    {
+        let state = unsafe { &*(STATE_BASE as *const HifState) };
+        let software_state = unsafe { &*(HIF_SOFTWARE_STATE_BASE as *const HifSoftwareState) };
+        let producer = state.tx_producer.get();
+        let mut consumer = state.tx_consumer.get();
+        while consumer != producer {
+            let queue_slot = (consumer & 63) as usize;
+            let buffer = software_state.tx_buffers[queue_slot].get();
+            let expected = unsafe { (*OUTPUT_HEADERS.0.get())[queue_slot] };
+            let expected_hash = unsafe { (*OUTPUT_HASHES.0.get())[queue_slot] };
+            let (actual, actual_hash) = if buffer == 0 {
+                (0, 0)
+            } else {
+                unsafe {
+                    (
+                        (buffer as *const u32).read_volatile(),
+                        output_prefix_hash(buffer, expected as u16),
+                    )
+                }
+            };
+            if buffer == 0 || actual != expected || actual_hash != expected_hash {
+                let words = if buffer == 0 {
+                    [0; 4]
+                } else {
+                    unsafe {
+                        [
+                            ((buffer + 8) as *const u32).read_volatile(),
+                            ((buffer + 0x0c) as *const u32).read_volatile(),
+                            ((buffer + 0x10) as *const u32).read_volatile(),
+                            ((buffer + 0x14) as *const u32).read_volatile(),
+                        ]
+                    }
+                };
+                let (matched_command, match_state, _) = unsafe { matching_tx_command(words) };
+                let boundary = phase | (u32::from(pipe) << 8) | (u32::from(slot) << 16);
+                let ring_words = if ring == 0 {
+                    [0; 2]
+                } else {
+                    unsafe {
+                        [
+                            ((ring + 0x14) as *const u32).read_volatile(),
+                            ((ring + 0x20) as *const u32).read_volatile(),
+                        ]
+                    }
+                };
+                unsafe {
+                    publish_terminal_exception(
+                        [
+                            0x4849_4650,
+                            boundary,
+                            consumer,
+                            producer,
+                            buffer,
+                            expected,
+                            actual,
+                            expected_hash,
+                            actual_hash,
+                            words[0],
+                            words[1],
+                            words[2],
+                            words[3],
+                            command,
+                            matched_command,
+                            match_state,
+                            ring_words[0],
+                            ring_words[1],
+                        ],
+                        b"xr819-hif-tx-boundary",
+                    );
+                }
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+            consumer = consumer.wrapping_add(1);
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -395,9 +575,70 @@ impl Transport {
         publish_emergency_descriptor(self.shared, length);
     }
 
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    fn validate_staged_tx_buffers(&self) {
+        let producer = self.state.tx_producer.get();
+        let mut consumer = self.state.tx_consumer.get();
+        while consumer != producer {
+            let queue_slot = (consumer & 63) as usize;
+            let descriptor_slot = (consumer & 3) as usize;
+            let buffer_address = self.software_state.tx_buffers[queue_slot].get();
+            let expected = unsafe { (*OUTPUT_HEADERS.0.get())[queue_slot] };
+            let actual = if buffer_address == 0 {
+                0
+            } else {
+                unsafe { (buffer_address as *const u32).read_volatile() }
+            };
+            if buffer_address == 0 || actual != expected {
+                unsafe {
+                    let following = if buffer_address == 0 {
+                        [0; 3]
+                    } else {
+                        [
+                            ((buffer_address + 4) as *const u32).read_volatile(),
+                            ((buffer_address + 8) as *const u32).read_volatile(),
+                            ((buffer_address + 0x0c) as *const u32).read_volatile(),
+                        ]
+                    };
+                    let (command, match_state, ring_state) =
+                        matching_tx_command([actual, following[0], following[1], following[2]]);
+                    publish_terminal_exception(
+                        [
+                            0x4849_4642,
+                            consumer,
+                            producer,
+                            self.state.tx_queued.get(),
+                            self.state.tx_reclaimed.get(),
+                            queue_slot as u32,
+                            descriptor_slot as u32,
+                            buffer_address,
+                            expected,
+                            actual,
+                            self.shared.tx[descriptor_slot].address.get(),
+                            self.shared.tx[descriptor_slot].control.get(),
+                            following[0],
+                            following[1],
+                            following[2],
+                            command,
+                            match_state,
+                            ring_state,
+                        ],
+                        b"xr819-hif-buffer-mutated",
+                    );
+                }
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+            consumer = consumer.wrapping_add(1);
+        }
+    }
+
     /// Polls and acknowledges HIF status like the reference IRQ 13 handler
     /// before it dispatches the corresponding software events.
     pub fn service_interrupt(&mut self) -> u32 {
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        self.validate_staged_tx_buffers();
         let status = self.shared.status.get();
         if status != 0 {
             self.shared.interrupt_ack.set(status);
@@ -457,6 +698,15 @@ impl Transport {
         let sequence = ((staged as u16) & 7) << 13;
         let sequenced_id = (header_id & 0x1fff) | sequence;
         unsafe { ((buffer_address + 2) as *mut u16).write_volatile(sequenced_id) };
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        {
+            unsafe {
+                (*OUTPUT_HEADERS.0.get())[queue_slot] =
+                    u32::from(length) | (u32::from(sequenced_id) << 16);
+                (*OUTPUT_HASHES.0.get())[queue_slot] =
+                    output_prefix_hash(buffer_address as u32, length);
+            }
+        }
 
         let descriptor_slot = (staged & 3) as usize;
         let descriptor = &self.shared.tx[descriptor_slot];
@@ -533,9 +783,58 @@ impl Transport {
             if let Some(shared_slot) = self.output_shared_slots[queue_slot].take() {
                 self.shared_slots_in_use[usize::from(shared_slot)] = false;
             }
+            #[cfg(feature = "vendor-host-tx-diagnostics")]
+            {
+                unsafe {
+                    (*OUTPUT_HEADERS.0.get())[queue_slot] = 0;
+                    (*OUTPUT_HASHES.0.get())[queue_slot] = 0;
+                }
+            }
             self.software_state.tx_buffers[queue_slot].set(0);
         }
         drain_write_buffer();
+    }
+
+    /// Snapshot of the output-path accounting that gates every host-visible
+    /// channel.
+    ///
+    /// `output_available` and `response_available` both need a free shared
+    /// slot, and `request_available` needs `response_available`, so exhausting
+    /// the four shared slots stops indications and host requests (including
+    /// MIB reads) at the same instant. Shared slots are freed only by
+    /// `reclaim_tx`, which runs only when HIF status bit 1 has set
+    /// `tx_completion_pending`.
+    #[cfg(feature = "hif-stall-dump")]
+    pub fn stall_snapshot(&self) -> [u32; 14] {
+        let slots =
+            self.shared_slots_in_use
+                .iter()
+                .enumerate()
+                .fold(
+                    0_u32,
+                    |mask, (index, in_use)| {
+                        if *in_use { mask | (1 << index) } else { mask }
+                    },
+                );
+        let owned = (0..4_usize).fold(0_u32, |mask, slot| {
+            mask | ((self.shared.tx[slot].control.get() & 1) << slot)
+        });
+        [
+            slots,
+            u32::from(self.tx_completion_pending),
+            u32::from(self.rx_request_pending),
+            self.state.tx_producer.get(),
+            self.state.tx_consumer.get(),
+            self.state.tx_queued.get(),
+            self.state.tx_reclaimed.get(),
+            owned,
+            self.shared.status.get(),
+            self.shared.tx[0].control.get(),
+            self.shared.tx[1].control.get(),
+            self.shared.tx[2].control.get(),
+            self.shared.tx[3].control.get(),
+            u32::from(self.prepared_shared_slot.is_some()),
+        ]
     }
 
     pub fn publication_available(&mut self) -> bool {
@@ -640,9 +939,7 @@ impl Transport {
     /// Reports whether an IRQ-notified host-to-firmware request is ready for
     /// one cooperative dispatch invocation.
     pub fn request_available(&self) -> bool {
-        self.rx_request_pending
-            && self.next_request_descriptor_ready()
-            && self.response_available()
+        self.rx_request_pending && self.next_request_descriptor_ready() && self.response_available()
     }
 
     /// Whether one command response can be copied into independent output
@@ -710,9 +1007,8 @@ impl Transport {
         // manufacturing an unsupported-command 0x0400 response.
         if raw_id & 0x1fff == 0 {
             unsafe {
-                let word = |offset: usize| {
-                    ((buffer_address + offset) as *const u32).read_volatile()
-                };
+                let word =
+                    |offset: usize| ((buffer_address + offset) as *const u32).read_volatile();
                 publish_mac_fatal_exception([
                     buffer_address as u32,
                     consumer,
@@ -811,6 +1107,14 @@ impl Transport {
         self.output_shared_slots[queue_slot] = shared_slot;
         self.state.tx_queued.set(queued.wrapping_add(1));
         let header = unsafe { (buffer_address as *const u32).read_volatile() };
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        {
+            unsafe {
+                (*OUTPUT_HEADERS.0.get())[queue_slot] = header;
+                (*OUTPUT_HASHES.0.get())[queue_slot] =
+                    output_prefix_hash(buffer_address as u32, length);
+            }
+        }
         unsafe {
             crate::host_tx_diagnostics::record(
                 crate::host_tx_diagnostics::EVENT_OUTPUT_ENQUEUE,
@@ -854,14 +1158,16 @@ impl Transport {
     ) {
         self.reclaim_tx();
         assert!(self.response_available());
-        let shared_slot = self
-            .shared_slots_in_use
-            .iter()
-            .position(|used| !*used)
-            .expect("response availability guarantees a shared slot") as u8;
+        let shared_slot =
+            self.shared_slots_in_use
+                .iter()
+                .position(|used| !*used)
+                .expect("response availability guarantees a shared slot") as u8;
         self.shared_slots_in_use[usize::from(shared_slot)] = true;
         let buffer_address = SHARED_BUFFER_BASE + usize::from(shared_slot) * SHARED_BUFFER_SIZE;
-        let count = usize::from(length).min(source.len()).min(SHARED_BUFFER_SIZE);
+        let count = usize::from(length)
+            .min(source.len())
+            .min(SHARED_BUFFER_SIZE);
         unsafe {
             core::ptr::copy_nonoverlapping(source.as_ptr(), buffer_address as *mut u8, count);
         }

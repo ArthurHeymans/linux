@@ -9,6 +9,9 @@ pub mod host_tx_arena;
 pub mod host_tx_diagnostics;
 #[cfg(all(feature = "vendor-host-tx-foundation", target_arch = "arm"))]
 pub mod host_tx_driver;
+// Deliberately not ARM-gated: `host_tx_driver` is invisible to host test runs,
+// so its hardware-free decisions live here where they are always compiled.
+pub mod host_tx_policy;
 pub mod join;
 pub mod loader;
 pub mod mac;

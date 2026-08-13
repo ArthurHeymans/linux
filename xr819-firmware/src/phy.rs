@@ -1826,6 +1826,42 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
     }
 }
 
+/// Awake-station subset of vendor `phy_state_advance(0)` (`0x820a`).
+///
+/// JOIN has already completed channel wake and cannot reach the state-1 wake
+/// branch here. The retained reprogram latch and state-3 resume tail must still
+/// run before the first ordinary class-0 active-TX claim.
+///
+/// # Safety
+/// PHY state and MAC channel registers must be exclusively owned.
+pub unsafe fn advance_awake_station_tx() -> bool {
+    unsafe {
+        write_u8(0x0400_994f, 0);
+        let state = (0x0400_3a6e as *const u8).read_volatile();
+        if state == 1 {
+            return false;
+        }
+        let retained_state = (0x0400_99a9 as *const u8).read_volatile();
+        // Vendor `phy_state_advance` never writes `0x040099a9`; it only reads
+        // it to decide whether to run the reprogram tail. A hardware capture of
+        // the accepted class-6 publication versus the refused class-0 one shows
+        // the working path publishes with retained state 5, so forcing it to 3
+        // here put the PHY into a configuration the MAC does not accept.
+        #[cfg(not(feature = "phy-advance-vendor-exact"))]
+        if retained_state == 5 {
+            write_u8(0x0400_99a9, 3);
+        }
+        if retained_state != 0 {
+            crate::mac::reprogram_after_channel();
+        }
+        write_u8(0x0400_9945, 0);
+        if state == 3 && !set_packet_receive_enabled(true, 100_000) {
+            return false;
+        }
+        true
+    }
+}
+
 /// Exact `phy_cal_step_start` used by `mac_radio_stop` after command 7 has
 /// been stopped.
 #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]

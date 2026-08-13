@@ -16,6 +16,9 @@ behind compile-time/inactive guards, keep the normal (non-experimental) image
 byte-identical to the known-good build, and replace vendor policy machinery
 with simpler Rust design only after the hardware contract is proven.
 
+**SUPERSEDED by [`xr819-session-handoff-2026-08-15.md`](xr819-session-handoff-2026-08-15.md):
+the link now carries real traffic (2.2% ping loss, ~1.2 Mbit/s TCP).**
+
 Current milestone: **scan-owned probe TX**. Passive multi-channel scan RX is
 hardware-proven and committed. The `probe-tx-experiment` feature publishes
 wildcard probes during channel-1 dwell through a scan-state-owned controller

@@ -33,6 +33,9 @@ const QUEUE_BACKOFF_TABLE: u32 = 0x0400_02dc;
 const PIPE_STATUS_COUNTER: u32 = 0xfff0_1aa4;
 const PIPE_STATUS_ACCOUNTING: u32 = 0x0400_1f7c;
 const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
+// `txp_pipe_advance_slot` acknowledges with `-((0x1110 << pipe) + 0x10)`, which
+// is a different lane from the `0x100 << pipe` publication ownership mask.
+const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
 const PIPE_RETRY_HARDWARE_STATE: u32 = 0x0400_1e6c;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
 const PIPE_RETRY_RANDOM_STATE: u32 = 0x0400_142c;
@@ -455,6 +458,14 @@ fn finalize_phy_control(phy: PhyRateWords, rate_index: u8, frame_length: u16) ->
     }
 }
 
+const fn single_frame_secondary_command(tx_flags: u32, header_duration: u16, vif_slot: u8) -> u32 {
+    if tx_flags & 1 == 0 {
+        0x2100_0000 | (0x0900_7bc0_u32.wrapping_add((vif_slot as u32) * 2) & 0x007f_ffff)
+    } else {
+        0x3200_0000 | header_duration as u32
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SingleFramePasTiming {
     pub payload_extended: u16,
@@ -467,14 +478,6 @@ pub struct SingleFramePasTiming {
 /// Single legacy-frame subset of vendor `pas_compute_tx_timing` (`0x7fa6`).
 /// Protection/preamble modes are deliberately rejected by the caller; probes
 /// and ordinary host management frames both use the direct payload branch.
-const fn single_frame_hw_rate_code(flags: u32, protected_rate: u8) -> u8 {
-    if flags & 0x0c00 == 0 {
-        0xff
-    } else {
-        protected_rate
-    }
-}
-
 pub fn compute_single_frame_pas_timing(
     phy_config: u16,
     rate: u8,
@@ -1003,6 +1006,229 @@ fn pipe_state_address(pipe: u8) -> u32 {
     PIPE_RECORDS + u32::from(pipe & 3) * 0x6c + 0xa0
 }
 
+/// Exact translation of vendor `txp_pipe_advance_slot` (`0xa9f2`).
+///
+/// Retires one pipe's hardware ring state: the inactive command sentinel at
+/// `ring + 0x18`, the pipe acknowledgement, and — the part the packet
+/// controller actually consumes — both cursor fields of `ring + 0x20`
+/// (bits 26:24 and 29:27), which are set to the retired slot.
+///
+/// The caller must hold IRQ/FIQ off across the pipe-state read/modify, matching
+/// the vendor `irq_fiq_disable_save()`/`irq_fiq_restore()` pair; the ring and
+/// acknowledgement writes are outside that section in the vendor as well.
+///
+/// Returns true when the pipe was still armed, which selects the vendor
+/// slot-record cleanup sweep in `txp_fn_4425` (`0x38c`).
+pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
+    let pipe_state = pipe_state_address(pipe);
+    let armed = mmio.read_u8(pipe_state + 3) != 0;
+    let cursor = if armed {
+        mmio.write_u8(pipe_state + 3, 0);
+        // Vendor saturates this abort counter at 0xff rather than wrapping.
+        let aborts = mmio.read_u8(pipe_state + 6);
+        if aborts != 0xff {
+            mmio.write_u8(pipe_state + 6, aborts.wrapping_add(1));
+        }
+        mmio.read_u8(pipe_state + 1).wrapping_add(1) & 3
+    } else {
+        mmio.read_u8(pipe_state) & 3
+    };
+    let ring = mmio.read_u32(pipe_state + 8);
+    mmio.write_u32(ring + 0x18, PIPE_RETRY_INACTIVE_SENTINEL);
+    mmio.write_u32(
+        PIPE_IRQ_PENDING,
+        0_u32.wrapping_sub((PIPE_ADVANCE_ACK_BASE << (pipe & 3)).wrapping_add(0x10)),
+    );
+    resync_pipe_ring_cursor(mmio, ring, cursor);
+    armed
+}
+
+/// Writes both `ring + 0x20` cursor fields, preserving the pending-slot mask in
+/// bits 23:0 and the two hardware-owned high bits. This is the only part of
+/// `txp_pipe_advance_slot` that the packet controller reads back, and it is the
+/// half the open firmware has never performed.
+fn resync_pipe_ring_cursor<M: MacPipeMmio>(mmio: &mut M, ring: u32, cursor: u8) {
+    let cursor = u32::from(cursor & 3);
+    let word = mmio.read_u32(ring + 0x20);
+    mmio.write_u32(
+        ring + 0x20,
+        (word & 0xc0ff_ffff) | (cursor << 24) | (cursor << 27),
+    );
+}
+
+/// Restores the vendor invariant asserted at the end of `txp_fn_4425`
+/// (`0x38c`): the software producer `pipe_state + 0` equals the hardware ring
+/// cursor `(ring[0x20] & 0x3fffffff) >> 27`. Unlike `advance_pipe_slot` this
+/// touches neither the pipe acknowledgement nor the command sentinel, so it is
+/// safe to call from the completion handler that already retired the burst.
+pub fn resync_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) {
+    let pipe_state = pipe_state_address(pipe);
+    let ring = mmio.read_u32(pipe_state + 8);
+    if ring == 0 {
+        return;
+    }
+    let producer = mmio.read_u8(pipe_state);
+    resync_pipe_ring_cursor(mmio, ring, producer);
+}
+
+/// The invariant asserted at the end of vendor `txp_fn_4425` (`0x38c`): the
+/// software producer equals the hardware ring cursor field in bits 29:27.
+pub fn pipe_cursor_invariant_holds(packed: u32) -> bool {
+    (packed >> 4) & 0x0f == (packed >> 24) & 0x0f
+}
+
+/// Publishes the full pipe/ring context the moment the vendor cursor invariant
+/// breaks, then halts.
+///
+/// The counters MIB stops answering once the pipe wedges, so a post-hoc poll
+/// cannot observe the state that caused the wedge. This reports at the exact
+/// transition instead, over the same terminal-exception path that already
+/// delivered the command-address capture.
+///
+/// # Safety
+/// Pipe state and its hardware ring must be readable; the firmware stops here.
+#[cfg(all(target_arch = "arm", feature = "pipe-cursor-assert"))]
+unsafe fn report_pipe_cursor_divergence(stage: u32, pipe: u8, packed: u32, ring_word: u32) -> ! {
+    let pipe_state = pipe_state_address(pipe);
+    let ring = unsafe { read_u32(pipe_state as usize + 8) };
+    let slot_word = |slot: u32, offset: usize| unsafe {
+        read_u32(pipe_state as usize + 0x0c + (slot as usize) * 0x18 + offset)
+    };
+    let producer = (packed >> 4) & 0x0f;
+    let producer_slot = pipe_state as usize + 0x0c + (producer as usize) * 0x18;
+    let (refused, last_refused, seen_statuses) = ineligible_tx_status_snapshot();
+    unsafe {
+        let frame_node = read_u32(producer_slot + 0x0c);
+        crate::hif::publish_terminal_exception(
+            [
+                0x4358_5552, // "CXUR"
+                stage,
+                u32::from(pipe),
+                packed,
+                ring_word,
+                read_u32(ring as usize + 0x18),
+                read_u32(pipe_state as usize),
+                // Why `plan_ordinary_tx_pipe_status` refused to retire: the
+                // count of rejected statuses, the last rejection, and the set
+                // of status values the MAC actually delivered.
+                refused,
+                last_refused,
+                seen_statuses,
+                // Slot bytes: kind | expected_status | +2 | state.
+                u32::from(read_u8(producer_slot))
+                    | (u32::from(read_u8(producer_slot + 1)) << 8)
+                    | (u32::from(read_u8(producer_slot + 2)) << 16)
+                    | (u32::from(read_u8(producer_slot + 3)) << 24),
+                // The frame's own expected-status byte feeding `slot + 1`.
+                if frame_node == 0 {
+                    0xffff_ffff
+                } else {
+                    u32::from(read_u8(frame_node as usize + 0x56))
+                },
+                slot_word(producer, 0x14),
+                frame_node,
+                slot_word((ring_word >> 27) & 3, 0x14),
+                slot_word((ring_word >> 27) & 3, 0x0c),
+                read_u32(0x09c0_0e84),
+                read_u32(0x09c0_0604),
+            ],
+            b"xr819-pipe-cursor-divergence",
+        );
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// Packs the vendor cursor invariant inputs for one pipe into one nibble-coded
+/// word plus the raw ring word:
+///
+/// ```text
+/// [3:0] pipe  [7:4] producer  [11:8] last  [15:12] current
+/// [19:16] armed  [23:20] ring cursor 26:24  [27:24] ring cursor 29:27
+/// ```
+///
+/// The invariant holds when nibble 1 equals nibble 6.
+pub fn pipe_cursor_diagnostic<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u32) {
+    let pipe_state = pipe_state_address(pipe);
+    let ring = mmio.read_u32(pipe_state + 8);
+    let ring_word = if ring == 0 {
+        0
+    } else {
+        mmio.read_u32(ring + 0x20)
+    };
+    let packed = u32::from(pipe & 3)
+        | (u32::from(mmio.read_u8(pipe_state) & 0x0f) << 4)
+        | (u32::from(mmio.read_u8(pipe_state + 1) & 0x0f) << 8)
+        | (u32::from(mmio.read_u8(pipe_state + 2) & 0x0f) << 12)
+        | (u32::from(mmio.read_u8(pipe_state + 3) & 0x0f) << 16)
+        | (((ring_word >> 24) & 7) << 20)
+        | (((ring_word >> 27) & 7) << 24);
+    (packed, ring_word)
+}
+
+#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
+unsafe fn capture_status2_ownership(
+    event: MacEvent,
+    saved_scheduler_word: SchedulerWord,
+    mismatch_count: u8,
+    phase: u32,
+) {
+    let pipe = unsafe { read_u8(CURRENT_PIPE as usize) } & 3;
+    let pipe_state = pipe_state_address(pipe) as usize;
+    let slot_index = unsafe { read_u8(pipe_state + 2) };
+    let slot = (slot_index < 4)
+        .then_some(pipe_state + 0x0c + usize::from(slot_index) * 0x18)
+        .unwrap_or(0);
+    let slot_word = |offset: usize| {
+        if slot != 0 {
+            unsafe { read_u32(slot + offset) }
+        } else {
+            0
+        }
+    };
+    let command = slot_word(0x14) as usize;
+    let hardware_ring = unsafe { read_u32(pipe_state + 8) } as usize;
+    let diagnostic_pointer_word = |address: usize, offset: usize| {
+        if (0x0900_0000..0x0b00_0000).contains(&address) {
+            unsafe { read_u32(address + offset) }
+        } else {
+            0
+        }
+    };
+    let words = [
+        event.raw,
+        saved_scheduler_word.raw(),
+        phase << 24 | u32::from(mismatch_count) << 8 | u32::from(pipe),
+        unsafe { read_u32(CURRENT_SLOT as usize) },
+        pipe_state as u32,
+        unsafe { read_u32(pipe_state) },
+        unsafe { read_u32(pipe_state + 4) },
+        slot as u32,
+        slot_word(0),
+        slot_word(8),
+        slot_word(0x0c),
+        command as u32,
+        hardware_ring as u32,
+        diagnostic_pointer_word(hardware_ring, 0),
+        diagnostic_pointer_word(hardware_ring, 0x14),
+        diagnostic_pointer_word(command, 0),
+        diagnostic_pointer_word(command, 4),
+        diagnostic_pointer_word(command, 8),
+        diagnostic_pointer_word(command, 0x14),
+        diagnostic_pointer_word(command, 0x18),
+        diagnostic_pointer_word(command, 0x1c),
+        u32::from(unsafe { read_u8(PIPE_BUSY as usize) }),
+        u32::from(unsafe { read_u8(0x0400_3a6c) }),
+        u32::from(unsafe { read_u16(0x0400_8f76) }),
+        unsafe { read_u32(COMPLETION_RING_STATE + 0x0c) },
+        unsafe { read_u32(COMPLETION_RING_STATE + 0x10) },
+        unsafe { read_u32(PIPE_IRQ_PENDING as usize) },
+        unsafe { read_u32(MAC_EVENT_READINESS as usize) },
+    ];
+    unsafe { crate::host_tx_diagnostics::record_status2_snapshot(phase, &words) };
+}
+
 fn current_slot_address<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> u32 {
     let pipe_state = pipe_state_address(pipe);
     pipe_state
@@ -1232,63 +1458,48 @@ pub unsafe fn enter_mac_fatal_quiescence(
     unsafe { core::ptr::addr_of_mut!((*record).valid).write_volatile(MAC_FATAL_MAGIC) };
     unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
     unsafe {
-        let current_slot = read_u32(CURRENT_SLOT as usize);
-        let pending = read_u32(PIPE_IRQ_PENDING as usize);
-        let slot_record = current_slot;
-        let command = if (0x0400_172c..0x0400_18dc).contains(&slot_record) {
-            read_u32(slot_record as usize + 0x14)
-        } else {
-            0
-        };
-        let slot_word = |offset: usize| {
-            if slot_record != 0 {
-                read_u32(slot_record as usize + offset)
-            } else {
-                0
-            }
-        };
-        let command_word = |offset: usize| {
-            if command != 0 {
-                read_u32(command as usize + offset)
-            } else {
-                0
-            }
-        };
-        let event_count = read_u32(0xfff0_3794);
-        let prior_event = |age: u32| {
-            let index = event_count.wrapping_sub(age) & 0x1f;
+        crate::host_tx_diagnostics::freeze_status2_snapshots();
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        let rx = crate::radio::fatal_command_snapshot();
+        #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
+        let rx = [0_u32; 11];
+        // The vendor traces the raw event before treating bit 30 as terminal.
+        // Capture the still-live RX producer delta at that same boundary so a
+        // MAC fatal cannot preempt the later cooperative command matcher.
+        // The complete pre-GO and postmortem records remain committed in BSS.
+        let postmortem = &*record;
+        let pipe_state = postmortem.current_pipe_record as usize;
+        let slot = postmortem.current_slot as usize;
+        let command = read_u32(slot.wrapping_add(0x14)) as usize;
+        let hardware_ring = read_u32(pipe_state.wrapping_add(8)) as usize;
+        let trace_count = read_u32(0xfff0_3794);
+        let prior_event = |back: u32| {
+            let index = trace_count.wrapping_sub(back) & 0x1f;
             read_u32(0xfff0_3714 + index as usize * 4)
         };
-        let pipe = read_u8(CURRENT_PIPE as usize) & 3;
-        let pipe_state = pipe_state_address(pipe) as usize;
-        let hardware_ring = read_u32(pipe_state + 8);
         crate::hif::publish_mac_fatal_exception([
+            // `trace_mac_event()` commits the raw event before dispatch. Keep
+            // the preceding event sequence inside the driver's bounded trace
+            // prefix: the fatal often arrives after the owning slot has
+            // already been released, making postmortem frame pointers stale.
             event.raw,
-            current_slot,
-            saved_scheduler_word.raw(),
-            slot_word(0),
-            slot_word(0x0c),
-            command,
-            event_count,
-            prior_event(1),
+            trace_count,
             prior_event(2),
             prior_event(3),
             prior_event(4),
-            read_u32(pipe_state),
-            hardware_ring,
-            if hardware_ring != 0 {
-                read_u32(hardware_ring as usize)
-            } else {
-                0
-            },
-            if hardware_ring != 0 {
-                read_u32(hardware_ring as usize + 0x14)
-            } else {
-                0
-            },
-            pending,
-            read_u32(MAC_EVENT_READINESS as usize),
-            command_word(4),
+            prior_event(5),
+            command as u32,
+            read_u32(command.wrapping_add(0x0c)),
+            read_u32(command.wrapping_add(0x10)),
+            read_u32(command.wrapping_add(0x14)),
+            read_u32(command.wrapping_add(0x18)),
+            rx[0],
+            rx[1],
+            postmortem.current_pipe,
+            pipe_state as u32,
+            hardware_ring as u32,
+            read_u32(hardware_ring.wrapping_add(0x20)),
+            postmortem.event_readiness,
         ]);
     }
     loop {
@@ -1363,6 +1574,517 @@ pub fn plan_ordinary_tx_pipe_status(
     }
 }
 
+/// Sticky record of the last refused TX status on an armed pipe, plus how many
+/// were refused. Read back through the cursor-divergence report, because the
+/// counters MIB stops answering once the pipe wedges.
+#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
+struct IneligibleTxStatus {
+    count: core::cell::UnsafeCell<u32>,
+    last: core::cell::UnsafeCell<u32>,
+    seen: core::cell::UnsafeCell<u32>,
+}
+
+#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
+unsafe impl Sync for IneligibleTxStatus {}
+
+#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
+static INELIGIBLE_TX_STATUS: IneligibleTxStatus = IneligibleTxStatus {
+    count: core::cell::UnsafeCell::new(0),
+    last: core::cell::UnsafeCell::new(0),
+    seen: core::cell::UnsafeCell::new(0),
+};
+
+#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
+fn record_ineligible_tx_status(input: OrdinaryTxPipeStatusInput, status: u8) {
+    unsafe {
+        let count = INELIGIBLE_TX_STATUS.count.get();
+        count.write_volatile(count.read_volatile().wrapping_add(1));
+        INELIGIBLE_TX_STATUS.last.get().write_volatile(
+            u32::from(status)
+                | (u32::from(input.expected_status) << 8)
+                | (u32::from(input.slot_state) << 16)
+                | (u32::from(input.slot_kind) << 24),
+        );
+        // Bitmap of every distinct status value the MAC has delivered, so a
+        // single report shows whether `expected_status` was ever offered.
+        let seen = INELIGIBLE_TX_STATUS.seen.get();
+        seen.write_volatile(seen.read_volatile() | (1_u32 << (status & 0x1f)));
+    }
+}
+
+/// `(refused count, last refused word, delivered-status bitmap)`.
+#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
+fn ineligible_tx_status_snapshot() -> (u32, u32, u32) {
+    unsafe {
+        (
+            INELIGIBLE_TX_STATUS.count.get().read_volatile(),
+            INELIGIBLE_TX_STATUS.last.get().read_volatile(),
+            INELIGIBLE_TX_STATUS.seen.get().read_volatile(),
+        )
+    }
+}
+
+/// Publishes the exact command list and frame inputs of one class-0 data
+/// publication, then halts.
+///
+/// The MAC refuses these descriptors at `slot_state == 1`, before
+/// `txp_pipe_tx_start` fires, while management frames built by the same code
+/// are accepted. Dumping the assembled list is the direct comparison: every
+/// word here is generated by `build_single_frame_pipe_descriptor`, so a
+/// mismatch against vendor `txp_submit_to_pipe` (`0xadd0`) is visible by
+/// inspection.
+///
+/// # Safety
+/// The command storage and frame node must be fully built; the firmware stops.
+/// Snapshot of the radio/PHY runtime state at a publication, captured for both
+/// the class-6 path (accepted by the MAC) and the class-0 path (refused), so
+/// the two can be differenced in one report.
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+struct PublicationState {
+    words: core::cell::UnsafeCell<[u32; 6]>,
+}
+
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+unsafe impl Sync for PublicationState {}
+
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+static CLASS6_PUBLICATION_STATE: PublicationState = PublicationState {
+    words: core::cell::UnsafeCell::new([0; 6]),
+};
+
+/// Packs the radio/PHY state the MAC consults when starting a descriptor.
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+unsafe fn publication_state(interface: u8) -> [u32; 6] {
+    unsafe {
+        let vif = 0x0400_3e98_usize + usize::from(interface) * 0x3b0;
+        [
+            // PHY state machine: mode/state, reprogram latch, wake latch,
+            // pending request argument.
+            u32::from(read_u8(0x0400_3a6e))
+                | (u32::from(read_u8(0x0400_99a9)) << 8)
+                | (u32::from(read_u8(0x0400_994f)) << 16)
+                | (u32::from(read_u8(0x0400_9945)) << 24),
+            // Radio ownership and the global active/awake bytes.
+            read_u32(0x0400_8b20),
+            // Top byte is the vendor `uVar7` idle-pipe mask from the
+            // `txp_scheduler_run` prologue: bit N set when pipe N is not armed.
+            // The `pac_phy_start_op(6)` branch requires all four (0xf).
+            u32::from(read_u8(0x0400_3a6d))
+                | (u32::from(read_u8(0x0400_3a6c)) << 8)
+                | (u32::from(read_u8(0x0400_124f)) << 16)
+                | ((0..4_u8).fold(0_u32, |mask, pipe| {
+                    if read_u8(pipe_state_address(pipe) as usize + 3) == 0 {
+                        mask | (1 << pipe)
+                    } else {
+                        mask
+                    }
+                }) << 24),
+            // VIF: owner state +0x66, active +0x2c, effective +0x2e.
+            u32::from(read_u8(vif + 0x66))
+                | (u32::from(read_u16(vif + 0x2c)) << 8)
+                | (u32::from(read_u16(vif + 0x2e)) << 16),
+            // Scheduler pending word, and the PHY command state with the
+            // `txp_scheduler_run` prologue gate `0x04001d39` in the top byte.
+            // Bit 0 of that gate selects `pac_phy_start_op(6)`, which is the
+            // one ordinary-TX PHY operation the open firmware never runs.
+            read_u32(0x0400_1fd4),
+            (read_u32(0x0400_1d2c) & 0x00ff_ffff) | (u32::from(read_u8(0x0400_1d39)) << 24),
+        ]
+    }
+}
+
+/// Records the class-6 publication state, which the MAC accepts.
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+pub unsafe fn record_class6_publication_state(interface: u8) {
+    unsafe {
+        let state = publication_state(interface);
+        let destination = CLASS6_PUBLICATION_STATE.words.get().cast::<u32>();
+        for (index, value) in state.into_iter().enumerate() {
+            destination.add(index).write_volatile(value);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+static CLASS6_FRAME_NODE: PublicationState = PublicationState {
+    words: core::cell::UnsafeCell::new([0; 6]),
+};
+
+/// Packs the frame-node fields the descriptor builder and the MAC consume.
+///
+/// The completion class sits one byte below the frame node, since
+/// `FRAME_NODE_OFFSET` is `0x54` and the class lives at context `+0x53`.
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+unsafe fn frame_node_fields(frame: u32) -> [u32; 6] {
+    unsafe {
+        let f = frame as usize;
+        [
+            read_u32(f),                                                        // header address
+            read_u32(f + 4),                                                    // flags
+            u32::from(read_u16(f + 8)) | (u32::from(read_u16(f + 0x0a)) << 16), // length | fc
+            u32::from(read_u8(f + 0x0c))
+                | (u32::from(read_u8(f + 0x0d)) << 8)
+                | (u32::from(read_u8(f + 0x0f)) << 16)
+                | (u32::from(read_u8(f + 0x56)) << 24), // selector | kind | rate | frame kind
+            read_u32(f + 0x2c),                                                 // ownership flags
+            u32::from(read_u16(f + 0x50))
+                | (u32::from(read_u8(f + 0x6c)) << 16)
+                | (u32::from(read_u8(f - 1)) << 24), // policy | link | completion class
+        ]
+    }
+}
+
+/// Records the class-6 frame node, which the MAC accepts.
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+pub unsafe fn record_class6_frame_node(context: u32) {
+    unsafe {
+        let fields = frame_node_fields(context.wrapping_add(FRAME_NODE_OFFSET));
+        let destination = CLASS6_FRAME_NODE.words.get().cast::<u32>();
+        for (index, value) in fields.into_iter().enumerate() {
+            destination.add(index).write_volatile(value);
+        }
+    }
+}
+
+/// Publishes the class-6 frame node the MAC accepts beside the class-0 frame
+/// node it refuses, then halts.
+///
+/// Every other publication input has been measured identical across the two
+/// paths, so any remaining asymmetry must be in these fields or the payload.
+///
+/// # Safety
+/// Both frame nodes must be fully built; the firmware stops here.
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+unsafe fn report_class0_frame_node(pipe: u8, slot: u8, frame: u32) -> ! {
+    unsafe {
+        let class0 = frame_node_fields(frame);
+        let class6 = CLASS6_FRAME_NODE.words.get().cast::<u32>();
+        crate::hif::publish_terminal_exception(
+            [
+                0x4330_464e, // "C0FN"
+                u32::from(pipe) | (u32::from(slot) << 8),
+                class6.add(0).read_volatile(),
+                class6.add(1).read_volatile(),
+                class6.add(2).read_volatile(),
+                class6.add(3).read_volatile(),
+                class6.add(4).read_volatile(),
+                class6.add(5).read_volatile(),
+                class0[0],
+                class0[1],
+                class0[2],
+                class0[3],
+                class0[4],
+                class0[5],
+                // Timing inputs feeding the slot duration word.
+                u32::from(read_u16(frame as usize + 0x36))
+                    | (u32::from(read_u16(frame as usize + 0x38)) << 16),
+                u32::from(read_u16(frame as usize + 0x3a)),
+                read_u32(frame as usize + 0x48),
+                read_u32(frame as usize + 0x60),
+            ],
+            b"xr819-class0-vs-class6-frame",
+        );
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
+unsafe fn report_class0_descriptor(pipe: u8, slot: u8, command: u32, frame: u32) -> ! {
+    unsafe {
+        // Exactly one record: two back-to-back publications overwrite the
+        // shared buffer before the host consumes the first, and the halt below
+        // prevents any resend. The command list itself was already captured by
+        // an earlier image, so this record carries the state comparison.
+        let interface = read_u8(frame as usize + 0x69);
+        let class0 = publication_state(interface);
+        let class6 = CLASS6_PUBLICATION_STATE.words.get().cast::<u32>();
+        crate::hif::publish_terminal_exception(
+            [
+                0x4330_5653, // "C0VS"
+                u32::from(interface) | (u32::from(pipe) << 8) | (u32::from(slot) << 16),
+                command,
+                read_u32(frame as usize + 4),
+                class6.add(0).read_volatile(),
+                class6.add(1).read_volatile(),
+                class6.add(2).read_volatile(),
+                class6.add(3).read_volatile(),
+                class6.add(4).read_volatile(),
+                class6.add(5).read_volatile(),
+                class0[0],
+                class0[1],
+                class0[2],
+                class0[3],
+                class0[4],
+                class0[5],
+                read_u32(command as usize + 0x14),
+                read_u32(command as usize + 0x04),
+            ],
+            b"xr819-class0-vs-class6-state",
+        );
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// Completes one slot the hardware has already left behind, using the vendor
+/// give-up status `0x0b` so the host receives a truthful TX failure instead of
+/// silently losing the frame.
+///
+/// # Safety
+/// The pipe must be armed, the slot started, and the caller must exclusively
+/// own the pipe records and completion state.
+#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
+    pipe_state: usize,
+    slot: usize,
+    cursor: OrdinaryTxPipeCursorPlan,
+    backend: &mut B,
+) {
+    unsafe {
+        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RETIRED);
+        let frame_node = read_u32(slot + 0x0c);
+        if frame_node != 0 {
+            complete_tx_pipe_slot(
+                FrameNodeAddress::new(frame_node),
+                slot as u32,
+                0x0b,
+                backend,
+            );
+        } else {
+            write_u32(slot + 0x0c, 0);
+        }
+        match cursor {
+            OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current } => {
+                write_u8(pipe_state + 2, next_current);
+                write_u8(pipe_state, next_current);
+            }
+            OrdinaryTxPipeCursorPlan::Recycle { next_head } => {
+                write_u8(pipe_state, next_head);
+                write_u8(pipe_state + 3, 0);
+                write_u8(pipe_state + 4, 0);
+                write_u8(pipe_state + 5, 5);
+            }
+        }
+    }
+}
+
+/// One pipe's watchdog decision, from vendor `FUN_00003bac` (the 200 ms timer
+/// that Ghidra never turned into a function, recovered by disassembly).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PipeWatchdogAction {
+    /// Not programmed, or not armed: nothing to supervise.
+    Idle,
+    /// Healthy; the counter was decremented.
+    Tick,
+    /// One or two ticks from expiry. Vendor nudges the radio to let a nearly
+    /// stuck pipe drain (`mac_rx_pause_briefly`).
+    Nudge,
+    /// Expired: the pipe has been armed without completing for the whole
+    /// watchdog window and must be recovered.
+    Expired,
+}
+
+/// Pure per-pipe watchdog decision.
+///
+/// Vendor decrements a signed `pipe_state + 0xa5` every 200 ms for any pipe
+/// whose `+0xa4` bit 0 ("programmed by the scheduler") is set, and recovers the
+/// pipe once the counter reaches zero. Arming reloads the counter to 5, so a
+/// pipe that never completes is recovered after roughly a second.
+///
+/// The open firmware already reloads `+0xa5` at every arm point but never
+/// decremented it, so an armed pipe whose completion never arrives stayed armed
+/// forever. Retirement could not rescue it either, because retirement only runs
+/// from a delivered status and the MAC stops delivering statuses for a wedged
+/// pipe.
+pub const fn plan_pipe_watchdog(programmed: bool, armed: bool, counter: i8) -> PipeWatchdogAction {
+    if !programmed || !armed {
+        return PipeWatchdogAction::Idle;
+    }
+    if counter > 2 {
+        PipeWatchdogAction::Tick
+    } else if counter > 0 {
+        PipeWatchdogAction::Nudge
+    } else {
+        PipeWatchdogAction::Expired
+    }
+}
+
+/// Runs one 200 ms watchdog tick across all four pipes.
+///
+/// Recovery reuses the retirement path rather than inventing a second one: an
+/// expired pipe retires its current slot exactly as an unmatched status would,
+/// which also releases the host slot from `Owned { Scheduled }` and so restores
+/// the host command lane.
+///
+/// # Safety
+/// Must run from the single-threaded firmware context that owns pipe state.
+#[cfg(all(target_arch = "arm", feature = "pipe-watchdog"))]
+pub unsafe fn service_pipe_watchdog_tick_runtime() {
+    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    unsafe { service_pipe_watchdog_tick(&mut runtime.backend) };
+}
+
+/// See `service_pipe_watchdog_tick_runtime`.
+///
+/// # Safety
+/// Must run from the single-threaded firmware context that owns pipe state.
+#[cfg(all(target_arch = "arm", feature = "pipe-watchdog"))]
+pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
+    unsafe {
+        for pipe in 0..4_u8 {
+            let pipe_state = pipe_state_address(pipe) as usize;
+            let programmed = read_u8(pipe_state + 4) & 1 != 0;
+            let armed = read_u8(pipe_state + 3) == 1;
+            let counter = read_u8(pipe_state + 5) as i8;
+            match plan_pipe_watchdog(programmed, armed, counter) {
+                PipeWatchdogAction::Idle => (),
+                PipeWatchdogAction::Tick | PipeWatchdogAction::Nudge => {
+                    write_u8(pipe_state + 5, counter.wrapping_sub(1) as u8);
+                }
+                PipeWatchdogAction::Expired => {
+                    let current = read_u8(pipe_state + 2) & 3;
+                    let slot = pipe_state + usize::from(current) * 0x18 + 0x0c;
+                    let cursor = hardware_pipe_cursor(&mut VolatileMacPipeMmio, pipe)
+                        .map(|cursor| OrdinaryTxPipeCursorPlan::Recycle {
+                            next_head: cursor & 3,
+                        })
+                        .unwrap_or(OrdinaryTxPipeCursorPlan::Recycle {
+                            next_head: read_u8(pipe_state + 1).wrapping_add(1) & 3,
+                        });
+                    crate::host_tx_diagnostics::bump(
+                        crate::host_tx_diagnostics::counter::WATCHDOG_RECOVERED,
+                    );
+                    retire_unmatched_tx_slot(pipe_state, slot, cursor, backend);
+                    // Vendor `txp_fn_4155` clears the programmed/abort bits and
+                    // reloads the counter after a recovery pass.
+                    write_u8(pipe_state + 4, read_u8(pipe_state + 4) & 0xf6);
+                    write_u8(pipe_state + 5, 5);
+                }
+            }
+        }
+    }
+}
+
+/// Reads the hardware ring cursor (`ring + 0x20` bits 29:27) for one pipe.
+/// `None` when the pipe has no programmed ring.
+fn hardware_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> Option<u8> {
+    let ring = mmio.read_u32(pipe_state_address(pipe) + 8);
+    if ring == 0 {
+        return None;
+    }
+    Some(((mmio.read_u32(ring + 0x20) >> 27) & 3) as u8)
+}
+
+/// Bounded recovery for a started slot whose delivered status never equals its
+/// expected completion.
+///
+/// The vendor has no such path because the vendor never observes the case:
+/// `0x0f` is not a completion code, and `txp_pipe_tx_status` simply ignores a
+/// non-matching status. When it does happen the slot stays armed forever, the
+/// software producer freezes, and the packet controller keeps re-executing a
+/// stale command list whose frame pointer has already been recycled.
+///
+/// Rather than invent a timeout, this uses the hardware ring cursor as the
+/// completion authority: once it has advanced past `current`, the hardware is
+/// demonstrably finished with that slot. The frame is then completed as failed
+/// and the cursors retire exactly as the vendor success path retires them,
+/// restoring the `txp_fn_4425` invariant `producer == ring cursor`.
+/// Per-pipe publication timestamps, used to tell a freshly published slot from
+/// a genuinely stuck one. Vendor has no equivalent because its status handling
+/// does not retire slots at all; this exists only to bound our retirement.
+#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+struct PipePublishTimes(core::cell::UnsafeCell<[u32; 4]>);
+
+#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+unsafe impl Sync for PipePublishTimes {}
+
+#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+static PIPE_PUBLISHED_AT: PipePublishTimes = PipePublishTimes(core::cell::UnsafeCell::new([0; 4]));
+
+/// Record when a pipe last had a slot published, for retirement ageing.
+///
+/// # Safety
+/// Single-threaded firmware context; `pipe` must be 0..=3.
+#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+pub unsafe fn note_pipe_publication(pipe: u8) {
+    unsafe {
+        let now = crate::vendor_host_tx::vendor_timer_now();
+        PIPE_PUBLISHED_AT
+            .0
+            .get()
+            .cast::<u32>()
+            .add(usize::from(pipe & 3))
+            .write_volatile(now);
+    }
+}
+
+/// Microseconds since the pipe's most recent publication.
+///
+/// # Safety
+/// Single-threaded firmware context; `pipe` must be 0..=3.
+#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+pub unsafe fn pipe_publication_age(pipe: u8) -> u32 {
+    unsafe {
+        let published = PIPE_PUBLISHED_AT
+            .0
+            .get()
+            .cast::<u32>()
+            .add(usize::from(pipe & 3))
+            .read_volatile();
+        crate::vendor_host_tx::vendor_timer_now().wrapping_sub(published)
+    }
+}
+
+/// A state-1 slot younger than this is assumed to be a frame that simply has
+/// not started yet, not a stuck one. Measured admission-to-confirmation latency
+/// is ~1.4-6 ms with rare outliers to ~64 ms, so this sits above the normal
+/// range while staying well below vendor's 200 ms pipe watchdog.
+#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+pub const MIN_UNSTARTED_RETIREMENT_AGE_US: u32 = 80_000;
+
+pub fn plan_unmatched_tx_status_retirement(
+    input: OrdinaryTxPipeStatusInput,
+    hardware_cursor: Option<u8>,
+) -> Option<OrdinaryTxPipeCursorPlan> {
+    // Slot states: 1 published, 2 started, 3 transmit-success seen. State 4 is
+    // retry-owned and 5 has already been status-processed.
+    //
+    // The caller resolves `slot` from the pipe's *current* pointer, not from
+    // the status, so once hardware advances past a finished frame its status is
+    // matched against the next slot. Under load that slot already holds a
+    // freshly published frame in state 1, and retiring it kills a frame that
+    // was about to transmit. Measured: all 297 retirements in an iperf run were
+    // state 1, ~10% of published frames, against ~1% under ping flood where the
+    // next slot is usually still empty.
+    //
+    // `retire-started-only` restricts this to frames that actually started and
+    // leaves genuinely stuck state-1 slots to the 200 ms pipe watchdog, which
+    // is vendor's own mechanism for an armed pipe that never completes.
+    if !input.pipe_active || !matches!(input.slot_state, 1..=3) {
+        return None;
+    }
+    // Kind 2 advances without completion in the vendor plan; leave it alone.
+    if input.slot_kind == 2 {
+        return None;
+    }
+    // Only act once the hardware has actually left this slot behind.
+    if hardware_cursor? == input.pipe_current & 3 {
+        return None;
+    }
+    Some(if input.pipe_current == input.pipe_last {
+        OrdinaryTxPipeCursorPlan::Recycle {
+            next_head: (input.pipe_last + 1) & 3,
+        }
+    } else {
+        OrdinaryTxPipeCursorPlan::AdvanceCurrent {
+            next_current: (input.pipe_current + 1) & 3,
+        }
+    })
+}
+
 /// Policy boundary for the unresolved `pas_backoff_reset` in ordinary status.
 /// It cannot reject, defer, or return an error after event FIFO consumption.
 pub trait TxStatusPolicy: PipeSlotCompletionEffects {
@@ -1396,8 +2118,64 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
             pipe_last: read_u8(pipe_state + 1),
             pipe_status: read_u8(pipe_state + 5),
         };
+        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::STATUS);
+        crate::host_tx_diagnostics::observe(
+            crate::host_tx_diagnostics::counter::LAST_STATUS,
+            u32::from(status),
+        );
+        crate::host_tx_diagnostics::observe(
+            crate::host_tx_diagnostics::counter::LAST_EXPECTED,
+            u32::from(input.expected_status),
+        );
         let plan = plan_ordinary_tx_pipe_status(input, status);
         if matches!(plan, OrdinaryTxPipeStatusPlan::Ineligible) {
+            crate::host_tx_diagnostics::bump(
+                crate::host_tx_diagnostics::counter::STATUS_INELIGIBLE,
+            );
+            // An armed pipe that keeps rejecting statuses never retires its
+            // slot, so record why the gate refused. `expected_status` is the
+            // slot's `frame + 0x56` byte; the pipe stalls when no delivered
+            // status ever equals it.
+            #[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
+            if input.pipe_active {
+                record_ineligible_tx_status(input, status);
+            }
+            // A state-1 slot has not started transmitting. The slot here comes
+            // from the pipe's `current` pointer rather than from the status, so
+            // under load a status for a finished frame lands on the freshly
+            // published frame behind it; retiring that kills a good frame.
+            // Retiring nothing at state 1 instead wedges the pipe, so age is
+            // the discriminator: only a slot that has been sitting is stuck.
+            #[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+            {
+                let unstarted_and_young = input.slot_state == 1
+                    && pipe_publication_age(pipe) < MIN_UNSTARTED_RETIREMENT_AGE_US;
+                if unstarted_and_young {
+                    crate::host_tx_diagnostics::bump(
+                        crate::host_tx_diagnostics::counter::RETIREMENT_DEFERRED,
+                    );
+                }
+                if let Some(cursor) = plan_unmatched_tx_status_retirement(
+                    input,
+                    hardware_pipe_cursor(&mut VolatileMacPipeMmio, pipe),
+                )
+                .filter(|_| !unstarted_and_young)
+                {
+                    // Which fault this retirement is. State 3 means the frame
+                    // did transmit and only its status failed to match, so
+                    // retiring it reports a false failure to the host.
+                    crate::host_tx_diagnostics::bump(match input.slot_state {
+                        1 => crate::host_tx_diagnostics::counter::RETIRED_UNSTARTED,
+                        2 => crate::host_tx_diagnostics::counter::RETIRED_STARTED,
+                        _ => crate::host_tx_diagnostics::counter::RETIRED_TX_SUCCESS,
+                    });
+                    crate::host_tx_diagnostics::observe(
+                        crate::host_tx_diagnostics::counter::RETIRED_LAST_STATUS,
+                        u32::from(status),
+                    );
+                    retire_unmatched_tx_slot(pipe_state, slot, cursor, backend);
+                }
+            }
             return;
         }
 
@@ -1427,6 +2205,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                 initialize_pipe_status,
                 cursor,
             } => {
+                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::COMPLETED);
                 if initialize_pipe_status {
                     write_u8(pipe_state + 5, 1);
                 }
@@ -1715,7 +2494,6 @@ where
 {
     let pipe = pipe & 3;
     let pipe_state = pipe_state_address(pipe);
-    mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
 
     let flags = mmio.read_u32(frame_node.raw() + 4);
     if mmio.read_u8(slot) == 1 {
@@ -1730,6 +2508,8 @@ where
     build_fixed_rate_retry_duration(mmio, descriptor, frame_node);
     let descriptor_flags = mmio.read_u32(descriptor + 4) | u32::from(status).wrapping_add(0x80);
     mmio.write_u32(descriptor + 4, descriptor_flags);
+
+    mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
 
     let command = mmio.read_u32(pipe_state + 8);
     if mmio.read_u8(PIPE_RETRY_HARDWARE_STATE) & 2 != 0 {
@@ -1751,7 +2531,6 @@ where
         let descriptor_flags = mmio.read_u32(descriptor + 4) | u32::from(status).wrapping_add(0x80);
         mmio.write_u32(descriptor + 4, descriptor_flags);
     }
-    // The shift operand is the current ring cursor, not the pipe index.
     let current = mmio.read_u8(pipe_state + 2) & 3;
     let command_mask = mmio.read_u32(command + 0x20);
     mmio.write_u32(command + 0x20, command_mask & !(1_u32 << current));
@@ -1794,6 +2573,7 @@ where
         return SingleTxRetryOutcome::SlotNotStarted;
     }
 
+    let frame_node = FrameNodeAddress::new(mmio.read_u32(slot + 0x0c));
     // Vendor ownership transition: started -> retry-owned, then globally busy.
     mmio.write_u8(slot + 3, 4);
     mmio.write_u8(PIPE_BUSY, 1);
@@ -1812,7 +2592,6 @@ where
         return SingleTxRetryOutcome::InactivePipeAcknowledged;
     }
 
-    let frame_node = FrameNodeAddress::new(mmio.read_u32(slot + 0x0c));
     if mmio.read_u8(slot + 1) == 6 {
         backend.fatal_unsupported_multi_slot_retry(pipe, slot, frame_node);
     }
@@ -2099,8 +2878,30 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
             return;
         }
 
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        if event.event_type == 0x39 && status == 2 {
+            unsafe {
+                capture_status2_ownership(
+                    event,
+                    saved_scheduler_word,
+                    self.backend.mismatch_count(pipe),
+                    1,
+                )
+            };
+        }
         if !(event.event_type == 0x39 && status == 6) {
             unsafe { service_mac_irq_tx_status_dispatch(status, self.backend) };
+        }
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        if event.event_type == 0x39 && status == 2 {
+            unsafe {
+                capture_status2_ownership(
+                    event,
+                    saved_scheduler_word,
+                    self.backend.mismatch_count(pipe),
+                    2,
+                )
+            };
         }
         if !pipe_service_escalation || pending_mask == 0 {
             return;
@@ -2555,14 +3356,19 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         match crate::rate_policy::retry_step(policy, rate, try_count, long_frame) {
             crate::rate_policy::RetryStep::GiveUp => SingleTxRetryDecision::GiveUp,
             crate::rate_policy::RetryStep::Rearm { rate: next_rate } => {
-                if next_rate != rate && (flags & 0x20 == 0 || next_rate > 13) {
+                let rate_changed = next_rate != rate && (flags & 0x20 == 0 || next_rate > 13);
+                let first_retry = flags & 0x10 == 0;
+                if first_retry || rate_changed {
                     unsafe {
-                        write_u8(frame_node.raw() as usize + 0x0f, next_rate);
+                        if rate_changed {
+                            write_u8(frame_node.raw() as usize + 0x0f, next_rate);
+                        }
                         write_u32(
                             frame_node.raw() as usize + 4,
                             flags
+                                | 0x10
                                 | 0x0008_0000
-                                | if rate > 3 && next_rate < 4 {
+                                | if rate_changed && rate > 3 && next_rate < 4 {
                                     0x0004_0000
                                 } else {
                                     0
@@ -2850,26 +3656,75 @@ pub unsafe fn publish_host_class0_slot(
     }
     let pipe_state = pipe_state_address(pipe);
     let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
+    let live_command = unsafe { read_u32(slot_record as usize + 0x14) };
+    if command != live_command || !(0x0900_0000..0x0940_0000).contains(&command) {
+        unsafe {
+            crate::hif::publish_terminal_exception(
+                [
+                    0x5458_4341,
+                    u32::from(pipe),
+                    u32::from(slot),
+                    slot_record,
+                    command,
+                    live_command,
+                    pipe_state,
+                    hardware_ring,
+                    read_u32(slot_record as usize),
+                    read_u32(slot_record as usize + 8),
+                    read_u32(slot_record as usize + 0x0c),
+                    read_u32(slot_record as usize + 0x10),
+                    read_u32(pipe_state as usize),
+                    read_u32(pipe_state as usize + 4),
+                    read_u32(pipe_state as usize + 8),
+                    read_u32(pipe_state as usize + 0x20),
+                    read_u32(pipe_state as usize + 0x38),
+                    read_u32(pipe_state as usize + 0x50),
+                ],
+                b"xr819-tx-command-address",
+            );
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
     if hardware_ring == 0 {
         return Err(ProbeBuildError::PipeStateUnavailable);
+    }
+    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+    unsafe {
+        crate::hif::validate_tx_boundary(0x12, pipe, slot, command, hardware_ring);
     }
 
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     runtime.backend.reset_for_publication();
     unsafe {
-        // Match the proven class-6 publication path: bring the PHY into its
-        // TX state before triggering the MAC pipe. The pipe producer itself
-        // advances only during completion; first publication records the
-        // consumed slot in `execute_single_probe_publication` without moving
-        // the software producer early.
-        let phy_bisect_stage = start_phy_operation_1();
-        if phy_bisect_stage != 0 {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        write_u16(0x0400_8f76, read_u16(0x0400_8f76).wrapping_add(1));
+        // `txq_build_aggregate_lists()` has already started command 1 before
+        // scheduler reservation and descriptor construction. Publication must
+        // not restart that asynchronous PHY transition at the GO boundary.
+        // `tx_frame_done_release` claims global and per-VIF active-TX
+        // accounting before PAS insertion. Completion drains the matching
+        // counts after hardware ownership ends.
         // Retain the descriptor's PHY-length word for post-completion
         // diagnostics; the slot may be recycled before the host reads MIBs.
         crate::host_tx_diagnostics::capture_descriptor_length(read_u32(command as usize + 0x14));
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        crate::radio::record_tx_command_signature(0, command);
+        // Vendor `txp_fn_4425` asserts producer == hardware ring cursor. Record
+        // both immediately before GO so a divergence is attributable to the
+        // publication that consumed the stale slot.
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        {
+            let (packed, ring_word) = pipe_cursor_diagnostic(&mut VolatileMacPipeMmio, pipe);
+            crate::host_tx_diagnostics::trace(0x4358_0001, packed, ring_word);
+            crate::host_tx_diagnostics::capture_pipe_cursor(
+                packed,
+                !pipe_cursor_invariant_holds(packed),
+            );
+            #[cfg(feature = "pipe-cursor-assert")]
+            if !pipe_cursor_invariant_holds(packed) {
+                report_pipe_cursor_divergence(0x4358_0001, pipe, packed, ring_word);
+            }
+        }
         execute_single_probe_publication(
             &mut VolatileMacPipeMmio,
             SingleProbePublicationInput {
@@ -2883,6 +3738,10 @@ pub unsafe fn publish_host_class0_slot(
                 expects_ack: read_u8(frame_node.raw() as usize + 0x56) != 0xff,
             },
         );
+        // After GO, so the captured words are exactly what the MAC was given,
+        // including the duration descriptor and the frame-kind marker.
+        #[cfg(feature = "class0-descriptor-dump")]
+        report_class0_frame_node(pipe, slot, frame_node.raw());
     }
     Ok(())
 }
@@ -3875,11 +4734,30 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
                 write_u8(pipe_state + 3, 0);
                 write_u8(pipe_state + 4, 0);
                 write_u8(pipe_state + 5, 5);
+                // The vendor retires the hardware ring cursor through
+                // `txp_pipe_advance_slot` once the burst is done. Without it
+                // the software producer rotates while the packet controller
+                // keeps executing whatever slot its own cursor still selects.
+                #[cfg(feature = "pipe-cursor-resync")]
+                resync_pipe_cursor(&mut VolatileMacPipeMmio, pipe);
             } else {
                 write_u8(pipe_state + 2, current.wrapping_add(1) & 3);
             }
         }
 
+        #[cfg(feature = "vendor-host-tx-diagnostics")]
+        {
+            let (packed, ring_word) = pipe_cursor_diagnostic(&mut VolatileMacPipeMmio, pipe);
+            crate::host_tx_diagnostics::trace(0x4358_0002, packed, ring_word);
+            crate::host_tx_diagnostics::capture_pipe_cursor(
+                packed,
+                !pipe_cursor_invariant_holds(packed),
+            );
+            #[cfg(feature = "pipe-cursor-assert")]
+            if !pipe_cursor_invariant_holds(packed) {
+                report_pipe_cursor_divergence(0x4358_0002, pipe, packed, ring_word);
+            }
+        }
         write_u8(0x0400_1f8c + usize::from(pipe), 0);
         if read_u32(0x0400_1d2c) == 4 {
             dispatch_phy_command_3();
@@ -3913,6 +4791,7 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
             return;
         }
 
+        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::TX_START);
         write_u8(slot + 3, 2);
         let frame_node = read_u32(slot + 0x0c) as usize;
         if read_u32(0x0400_1d2c) == 3 {
@@ -4906,6 +5785,100 @@ fn single_frame_slot_matches(
     slot_frame_node == expected_frame_node && slot_kind == 0 && slot_frame_kind == frame_kind
 }
 
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+fn prepare_pre_go_publication<M: MacPipeMmio>(
+    mmio: &mut M,
+    input: SingleProbePublicationInput,
+    duration: u32,
+) {
+    let frame = input.frame_node.raw();
+    // Vendor txp_scheduler_run performs no descriptor readback between its
+    // trigger and GO writes. Gather the expensive image directly into BSS
+    // while the pipe is inactive, avoiding a 152-byte firmware stack copy.
+    unsafe {
+        crate::host_tx_diagnostics::begin_pre_go_snapshot();
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            0,
+            mmio.read_u32(input.slot_record) & 0x00ff_ffff | 0x0100_0000,
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(1, duration);
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            2,
+            mmio.read_u32(input.slot_record + 0x0c),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            3,
+            mmio.read_u32(input.slot_record + 0x10),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            4,
+            mmio.read_u32(input.slot_record + 0x14),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(5, mmio.read_u32(frame + 4));
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            6,
+            u32::from(mmio.read_u16(frame + 8)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            7,
+            u32::from(mmio.read_u16(frame + 0x0a)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            8,
+            u32::from(mmio.read_u8(frame + 0x0d)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            9,
+            u32::from(mmio.read_u8(frame + 0x0f)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            10,
+            u32::from(mmio.read_u16(frame + 0x36)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            11,
+            u32::from(mmio.read_u16(frame + 0x38)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            12,
+            u32::from(mmio.read_u16(frame + 0x3a)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(13, mmio.read_u32(frame + 0x48));
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            14,
+            u32::from(mmio.read_u8(frame + 0x56)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            15,
+            u32::from(mmio.read_u8(frame + 0x69)),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            16,
+            u32::from(mmio.read_u8(frame + 0x6a)),
+        );
+        for index in 0..16_u32 {
+            crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+                17 + index as usize,
+                mmio.read_u32(input.command_storage + index * 4),
+            );
+        }
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(33, duration);
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            34,
+            mmio.read_u32(input.hardware_ring + 0x0c),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            35,
+            mmio.read_u32(input.hardware_ring + 0x10),
+        );
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(36, 0);
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
+            37,
+            mmio.read_u32(input.pipe_state) & 0x00ff_ffff | 0x0100_0000,
+        );
+    }
+}
+
 pub fn execute_single_probe_publication<M: MacPipeMmio>(
     mmio: &mut M,
     input: SingleProbePublicationInput,
@@ -4946,6 +5919,11 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     }
     mmio.write_u8(input.pipe_state + 1, slot);
     mmio.write_u32(input.hardware_ring + 0x14, 0);
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    {
+        let diagnostic_duration = mmio.read_u32(input.slot_record + 8);
+        prepare_pre_go_publication(mmio, input, diagnostic_duration);
+    }
     if publication_bisect_reached(5) {
         return 5;
     }
@@ -4979,6 +5957,16 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         return 7;
     }
 
+    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+    unsafe {
+        crate::hif::validate_tx_boundary(
+            0x13,
+            pipe,
+            slot,
+            input.command_storage,
+            input.hardware_ring,
+        );
+    }
     mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
     if publication_bisect_reached(8) {
         return 8;
@@ -4993,7 +5981,33 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let pipe_flags = mmio.read_u8(input.pipe_state + 4) | 1;
     mmio.write_u8(input.pipe_state + 4, pipe_flags);
     mmio.write_u8(input.pipe_state + 5, 5);
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    unsafe {
+        let actual_ring_duration = mmio.read_u32(input.hardware_ring);
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(33, actual_ring_duration);
+        crate::host_tx_diagnostics::commit_pre_go_snapshot();
+    }
+    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+    unsafe {
+        crate::hif::validate_tx_boundary(
+            0x14,
+            pipe,
+            slot,
+            input.command_storage,
+            input.hardware_ring,
+        );
+    }
     mmio.write_u32(input.hardware_ring + 0x14, 1);
+    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
+    unsafe {
+        crate::hif::validate_tx_boundary(
+            0x15,
+            pipe,
+            slot,
+            input.command_storage,
+            input.hardware_ring,
+        );
+    }
     0
 }
 
@@ -5089,6 +6103,35 @@ impl PreparedProbePublication {
             }
             let pipe_state = pipe_state_address(self.pipe);
             let hardware_ring = read_u32(pipe_state as usize + 8);
+            let live_command = read_u32(slot_record + 0x14);
+            if self.command != live_command || !(0x0900_0000..0x0940_0000).contains(&self.command) {
+                crate::hif::publish_terminal_exception(
+                    [
+                        0x5458_4341,
+                        u32::from(self.pipe),
+                        u32::from(self.slot),
+                        self.slot_record,
+                        self.command,
+                        live_command,
+                        pipe_state,
+                        hardware_ring,
+                        read_u32(slot_record),
+                        read_u32(slot_record + 8),
+                        read_u32(slot_record + 0x0c),
+                        read_u32(slot_record + 0x10),
+                        read_u32(pipe_state as usize),
+                        read_u32(pipe_state as usize + 4),
+                        read_u32(pipe_state as usize + 8),
+                        read_u32(pipe_state as usize + 0x0c + 0x14),
+                        read_u32(pipe_state as usize + 0x24 + 0x14),
+                        read_u32(pipe_state as usize + 0x3c + 0x14),
+                    ],
+                    b"xr819-tx-command-address",
+                );
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
             if hardware_ring == 0 {
                 let cancellation = self.cancel();
                 return Err(cancellation
@@ -5112,6 +6155,8 @@ impl PreparedProbePublication {
             if publication_bisect_reached(8) {
                 return Ok(publication(8));
             }
+            #[cfg(feature = "vendor-host-tx-diagnostics")]
+            crate::radio::record_tx_command_signature(6, self.command);
             execute_single_probe_publication(
                 &mut VolatileMacPipeMmio,
                 SingleProbePublicationInput {
@@ -5172,14 +6217,11 @@ unsafe fn prepare_single_frame_pas_timing(
         let rate = read_u8(frame + 0x0f);
         let rate_map = PAS_VIF_STATE + interface * 0x98 + PAS_RATE_MAP_OFFSET + usize::from(rate);
         let timing_index = usize::from(read_u8(rate_map));
-        // Vendor `pas_compute_tx_timing` uses 0xff for ordinary frames without
-        // RTS/CTS protection. This byte feeds PHY rate-word bits 18:16; the
-        // fallback rate-map index is only for ACK timing and is not a hardware
-        // rate code in the no-protection case.
-        write_u8(
-            frame + 0x0d,
-            single_frame_hw_rate_code(flags, timing_index as u8),
-        );
+        // Preserve frame+0x0d exactly as initialized by the vendor HIF path
+        // from `(wsm_tx_flags & 0x0f) >> 1`. `txp_submit_to_pipe()` passes this
+        // rate attribute directly to `pas_build_phy_rate_words()`. The rate
+        // map index below selects ACK timing only; writing it into frame+0x0d
+        // changed healthy vendor `0x5104....` words into `0x5107....`.
         let ack_table = if flags & 0x4000 != 0 {
             PAS_ACK_TIMING_TABLE + (0x74 - 0x48)
         } else {
@@ -5511,7 +6553,11 @@ unsafe fn emit_prepared_probe_descriptor(
         add(0x2080_0000 | (0x0900_8008_u32.wrapping_add(u32::from(if_id)) & 0x007f_ffff));
         add(0x3200_0000 | u32::from(((address + 0x8a) as *const u16).read_volatile()));
         add(0x2900_0000 | (context.header.wrapping_add(4) & 0x007f_ffff));
-        add(0x2100_0000 | (0x0900_7bc0_u32.wrapping_add(u32::from(vif_slot) * 2) & 0x007f_ffff));
+        add(single_frame_secondary_command(
+            tx_flags,
+            (context.header.wrapping_add(0x16) as *const u16).read_volatile(),
+            vif_slot,
+        ));
         if context.length > 24 {
             let payload = context.header.wrapping_add(24);
             add(0x4000_0000 | (0x007f_fffc & payload & 0xf6ff_ffff));
@@ -6479,6 +7525,14 @@ pub unsafe fn service_host_management_tx(
         }
     };
     if published.bisect_stage == 0 {
+        // Class-6 management publication is accepted by the MAC; capture the
+        // runtime state so the refused class-0 publication can be differenced
+        // against it.
+        #[cfg(feature = "class0-descriptor-dump")]
+        unsafe {
+            record_class6_publication_state(if_id);
+            record_class6_frame_node(published.context.raw());
+        };
         runtime.host_published = Some(published);
         runtime.host_packet_id = request.packet_id;
         runtime.host_rate = request.max_tx_rate;
@@ -7058,6 +8112,205 @@ mod tests {
         assert_eq!(policy.call_count, 0);
     }
 
+    fn unmatched_input(current: u8, last: u8) -> OrdinaryTxPipeStatusInput {
+        OrdinaryTxPipeStatusInput {
+            pipe_active: true,
+            expected_status: 0x11,
+            slot_kind: 0,
+            slot_state: 3,
+            global_busy: false,
+            pipe_current: current,
+            pipe_last: last,
+            pipe_status: 5,
+        }
+    }
+
+    #[test]
+    fn unmatched_status_retires_only_after_hardware_leaves_the_slot() {
+        // Hardware still on the slot: the frame may yet complete normally.
+        assert_eq!(
+            plan_unmatched_tx_status_retirement(unmatched_input(2, 2), Some(2)),
+            None
+        );
+        // Hardware moved on: the observed wedge (producer 2, cursor 3).
+        assert_eq!(
+            plan_unmatched_tx_status_retirement(unmatched_input(2, 2), Some(3)),
+            Some(OrdinaryTxPipeCursorPlan::Recycle { next_head: 3 })
+        );
+        // Mid-burst slots advance instead of recycling the pipe.
+        assert_eq!(
+            plan_unmatched_tx_status_retirement(unmatched_input(1, 2), Some(3)),
+            Some(OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current: 2 })
+        );
+    }
+
+    #[test]
+    fn unmatched_status_retirement_leaves_untouched_pipes_alone() {
+        let idle = OrdinaryTxPipeStatusInput {
+            pipe_active: false,
+            ..unmatched_input(2, 2)
+        };
+        assert_eq!(plan_unmatched_tx_status_retirement(idle, Some(3)), None);
+
+        // A published-but-unstarted slot is still outstanding and must retire
+        // once the hardware has left it: this is the observed state-1 refusal.
+        let published = OrdinaryTxPipeStatusInput {
+            slot_state: 1,
+            ..unmatched_input(2, 2)
+        };
+        assert_eq!(
+            plan_unmatched_tx_status_retirement(published, Some(3)),
+            Some(OrdinaryTxPipeCursorPlan::Recycle { next_head: 3 })
+        );
+
+        // Retry-owned and already-processed slots are not ours to retire.
+        for slot_state in [0_u8, 4, 5] {
+            let owned = OrdinaryTxPipeStatusInput {
+                slot_state,
+                ..unmatched_input(2, 2)
+            };
+            assert_eq!(plan_unmatched_tx_status_retirement(owned, Some(3)), None);
+        }
+
+        // Kind 2 belongs to the vendor advance-without-completion branch.
+        let chained = OrdinaryTxPipeStatusInput {
+            slot_kind: 2,
+            ..unmatched_input(2, 2)
+        };
+        assert_eq!(plan_unmatched_tx_status_retirement(chained, Some(3)), None);
+
+        // No programmed ring means no completion authority.
+        assert_eq!(
+            plan_unmatched_tx_status_retirement(unmatched_input(2, 2), None),
+            None
+        );
+    }
+
+    #[test]
+    fn matching_status_still_uses_the_vendor_plan() {
+        // The recovery path must never shadow a real completion.
+        assert!(matches!(
+            plan_ordinary_tx_pipe_status(unmatched_input(2, 2), 0x11),
+            OrdinaryTxPipeStatusPlan::Complete { .. }
+        ));
+    }
+
+    #[test]
+    fn advance_pipe_slot_retires_armed_pipe_to_last_plus_one() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe_state = pipe_state_address(2);
+        mmio.set(pipe_state, 1); // producer
+        mmio.set(pipe_state + 1, 2); // last consumed
+        mmio.set(pipe_state + 3, 1); // armed
+        mmio.set(pipe_state + 6, 7); // abort counter
+        mmio.set(pipe_state + 8, 0x9000);
+        // Pending-slot mask and hardware-owned high bits must survive.
+        mmio.set(0x9020, 0x8000_000f | (1 << 24) | (1 << 27));
+
+        assert!(advance_pipe_slot(&mut mmio, 2));
+
+        assert_eq!(mmio.get(pipe_state + 3), 0);
+        assert_eq!(mmio.get(pipe_state + 6), 8);
+        assert_eq!(mmio.get(0x9018), PIPE_RETRY_INACTIVE_SENTINEL);
+        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0_u32.wrapping_sub(0x4450));
+        // cursor = (last + 1) & 3 = 3, written to bits 26:24 and 29:27.
+        assert_eq!(mmio.get(0x9020), 0x8000_000f | (3 << 24) | (3 << 27));
+    }
+
+    #[test]
+    fn pipe_watchdog_ignores_unprogrammed_or_idle_pipes() {
+        assert_eq!(plan_pipe_watchdog(false, true, 5), PipeWatchdogAction::Idle);
+        assert_eq!(plan_pipe_watchdog(true, false, 5), PipeWatchdogAction::Idle);
+    }
+
+    #[test]
+    fn pipe_watchdog_counts_down_then_nudges_then_expires() {
+        // Arming reloads the counter to 5, so an armed pipe that never
+        // completes walks 5 -> 3 healthy, 2 -> 1 nudging, then expires.
+        assert_eq!(plan_pipe_watchdog(true, true, 5), PipeWatchdogAction::Tick);
+        assert_eq!(plan_pipe_watchdog(true, true, 3), PipeWatchdogAction::Tick);
+        assert_eq!(plan_pipe_watchdog(true, true, 2), PipeWatchdogAction::Nudge);
+        assert_eq!(plan_pipe_watchdog(true, true, 1), PipeWatchdogAction::Nudge);
+        assert_eq!(
+            plan_pipe_watchdog(true, true, 0),
+            PipeWatchdogAction::Expired
+        );
+        // The vendor read is signed, so an overshoot stays expired rather than
+        // wrapping back into the healthy range.
+        assert_eq!(
+            plan_pipe_watchdog(true, true, -1),
+            PipeWatchdogAction::Expired
+        );
+    }
+
+    #[test]
+    fn advance_pipe_slot_on_idle_pipe_republishes_producer() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe_state = pipe_state_address(0);
+        mmio.set(pipe_state, 2);
+        mmio.set(pipe_state + 1, 3);
+        mmio.set(pipe_state + 3, 0);
+        mmio.set(pipe_state + 6, 0xff);
+        mmio.set(pipe_state + 8, 0x9000);
+
+        assert!(!advance_pipe_slot(&mut mmio, 0));
+
+        // A saturated abort counter is left alone, and the idle branch mirrors
+        // the producer rather than `last + 1`.
+        assert_eq!(mmio.get(pipe_state + 6), 0xff);
+        assert_eq!(mmio.get(0x9020), (2 << 24) | (2 << 27));
+    }
+
+    #[test]
+    fn resync_pipe_cursor_matches_vendor_invariant_and_keeps_mask() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe_state = pipe_state_address(1);
+        mmio.set(pipe_state, 3);
+        mmio.set(pipe_state + 8, 0x9080);
+        mmio.set(0x90a0, 0xc000_00aa | (1 << 24) | (1 << 27));
+
+        resync_pipe_cursor(&mut mmio, 1);
+
+        let word = mmio.get(0x90a0);
+        assert_eq!(word & 0x00ff_ffff, 0xaa);
+        assert_eq!(word & 0xc000_0000, 0xc000_0000);
+        // The invariant asserted by vendor `txp_fn_4425`.
+        assert_eq!((word & 0x3fff_ffff) >> 27, u32::from(mmio.get(pipe_state)));
+        assert_eq!((word >> 24) & 7, 3);
+    }
+
+    #[test]
+    fn resync_pipe_cursor_ignores_unprogrammed_ring() {
+        let mut mmio = MockPipeMmio::new();
+        resync_pipe_cursor(&mut mmio, 3);
+        assert_eq!(mmio.write_count, 0);
+    }
+
+    #[test]
+    fn pipe_cursor_diagnostic_exposes_divergence() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe_state = pipe_state_address(2);
+        mmio.set(pipe_state, 3); // producer
+        mmio.set(pipe_state + 1, 2); // last
+        mmio.set(pipe_state + 2, 2); // current
+        mmio.set(pipe_state + 3, 1); // armed
+        mmio.set(pipe_state + 8, 0x9000);
+        mmio.set(0x9020, (1 << 24) | (1 << 27));
+
+        let (packed, ring_word) = pipe_cursor_diagnostic(&mut mmio, 2);
+
+        assert_eq!(ring_word, (1 << 24) | (1 << 27));
+        assert_eq!(packed & 0x0f, 2);
+        assert_eq!((packed >> 4) & 0x0f, 3);
+        assert_eq!((packed >> 8) & 0x0f, 2);
+        assert_eq!((packed >> 12) & 0x0f, 2);
+        assert_eq!((packed >> 16) & 0x0f, 1);
+        // Producer nibble 3 versus hardware cursor nibble 1: diverged.
+        assert_eq!((packed >> 20) & 0x0f, 1);
+        assert_eq!((packed >> 24) & 0x0f, 1);
+        assert_ne!((packed >> 4) & 0x0f, (packed >> 24) & 0x0f);
+    }
+
     #[test]
     fn single_retry_inactive_pipe_marks_selected_commands_before_ack() {
         let mut mmio = MockPipeMmio::new();
@@ -7248,7 +8501,23 @@ mod tests {
         );
 
         assert_eq!(outcome, SingleFrameRearmOutcome::CommandMaskAcknowledged);
-        assert_eq!(mmio.writes[0], (PIPE_IRQ_TRIGGER, 1 << 25));
+        let trigger_index = mmio
+            .writes
+            .iter()
+            .position(|write| *write == (PIPE_IRQ_TRIGGER, 1 << 25))
+            .unwrap();
+        let descriptor_index = mmio
+            .writes
+            .iter()
+            .rposition(|(address, _)| *address == 0xa004)
+            .unwrap();
+        let command_mask_index = mmio
+            .writes
+            .iter()
+            .position(|(address, _)| *address == 0x9020)
+            .unwrap();
+        assert!(descriptor_index < trigger_index);
+        assert!(trigger_index < command_mask_index);
         assert_eq!(mmio.get(0xa000), 0);
         assert_eq!(mmio.get(PIPE_RETRY_RANDOM_STATE), 0xb013_1713);
         assert_eq!(mmio.get(PIPE_RETRY_RANDOM_STATS), 0x13);
@@ -7393,6 +8662,8 @@ mod tests {
         assert_eq!(mmio.get(slot + 3), 1);
         assert_eq!(mmio.get(slot + 8), 0x0010_0000);
         assert_eq!(mmio.get(hardware_ring), 0x0010_0000);
+        assert_eq!(mmio.get(pipe_state + 1), 0);
+        assert_eq!(mmio.get(pipe_state + 2), 0);
         assert_eq!(mmio.get(pipe_state + 3), 1);
         assert_eq!(mmio.get(pipe_state + 4), 9);
         assert_eq!(mmio.get(pipe_state + 5), 5);
@@ -7542,6 +8813,34 @@ mod tests {
             })
         );
         assert_eq!(MacEvent::decode(u32::MAX), None);
+    }
+
+    #[test]
+    fn literal_status_2_event_has_no_pipe_service_or_retry_escalation() {
+        let event =
+            MacEvent::decode(0x0140_3902).unwrap_or_else(|| panic!("status-2 event decoded empty"));
+        assert_eq!(event.event_type, 0x39);
+        assert_eq!(event.completion_status(), Some(2));
+        assert!(event.completion_marker);
+        assert!(!event.pipe_service_marker);
+        let resolution = resolve_mac_status_event(
+            event,
+            MacStatusSnapshot {
+                pre_service_scheduler_word: SchedulerWord::new(0x100),
+                latched_pipe: 0,
+                pipe_active: true,
+                slot_expected_status: 0x11,
+                slot_state: 5,
+                global_busy: false,
+                mismatch_count: 2,
+            },
+        )
+        .unwrap_or_else(|| panic!("missing status-2 resolution"));
+        assert!(resolution.dispatch_ordinary);
+        assert!(!resolution.ordinary_completion_eligible);
+        assert!(!resolution.direct_retry);
+        assert_eq!(resolution.next_mismatch_count, 2);
+        assert!(!resolution.escalation_retry);
     }
 
     #[test]
@@ -8043,11 +9342,10 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_frames_use_vendor_no_protection_rate_code() {
-        assert_eq!(single_frame_hw_rate_code(0, 6), 0xff);
-        assert_eq!(single_frame_hw_rate_code(0x4000, 6), 0xff);
-        assert_eq!(single_frame_hw_rate_code(0x0400, 6), 6);
-        assert_eq!(single_frame_hw_rate_code(0x0800, 3), 3);
+    fn single_frame_secondary_command_matches_vendor_qos_branch() {
+        assert_eq!(single_frame_secondary_command(0, 0x50, 0), 0x2100_7bc0);
+        assert_eq!(single_frame_secondary_command(0, 0x50, 1), 0x2100_7bc2);
+        assert_eq!(single_frame_secondary_command(1, 0x50, 0), 0x3200_0050);
     }
 
     #[test]

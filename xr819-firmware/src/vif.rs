@@ -280,9 +280,14 @@ pub unsafe fn activate_sta(
         write_u32(base + 0x54, u32::MAX);
         write_u32(base + 0x5c, 0);
 
+        // The synthetic scan record occupies PAS slot 2 only while channel
+        // programming runs. Vendor JOIN recomputes the MAC mode word from the
+        // actual active VIF set, so it must not remain active beside the STA.
+        write_u8(PAS_BASE + 2 * PAS_STRIDE + PAS_ACTIVE_OFFSET, 0);
         write_u8(pas + PAS_ACTIVE_OFFSET, 2);
         write_u8(pas + 0x471, 4);
         write_u8(pas + 0x472, 1);
+        write_u8(pas + 0x481, read_u8(PAS_BASE + 0x459));
         write_u8(pas + 0x473, 0);
         write_u32(pas + 0x478, basic_rates);
         write_u32(pas + 0x488, 0);
@@ -306,6 +311,25 @@ pub unsafe fn activate_sta(
             & (!read_u16(base + 0x15c) | read_u16(base + 0x160)))
             | read_u16(base + 0x15e);
         write_u16(base + 0x2e, effective);
+
+        // Awake-STA subset of vendor `lmc_sched_request_radio(VIF + 0x44)`.
+        // JOIN owns a single channel, so no pending-owner arbitration is
+        // reachable here. Channel programming already completed above; publish
+        // the retained owner and its post-program state before admitting TX.
+        let owner = (base + 0x44) as u32;
+        let current_owner = read_u32(0x0400_8b20);
+        if current_owner != 0 && current_owner != owner {
+            return Err(JoinStateError::Busy);
+        }
+        write_u32(0x0400_8b20, owner);
+        write_u32(0x0400_8b24, 0);
+        write_u32(0x0400_8b2c, 0);
+        write_u8(base + 0x50, 0x30);
+        write_u8(base + 0x66, 3);
+        // The vendor JOIN/channel-program path reaches retained PHY state 3.
+        // The synthetic scan path can leave state 5 behind; carrying it into
+        // ordinary STA TX produces a different packet-controller GO state.
+        write_u8(0x0400_99a9, 3);
     }
     Ok(())
 }
@@ -326,6 +350,14 @@ pub unsafe fn teardown(interface: u8) -> bool {
         write_u32(base + FLAGS_OFFSET, 0);
         write_u16(base + 0x2c, 0);
         write_u16(base + 0x2e, 0);
+        let owner = (base + 0x44) as u32;
+        if read_u32(0x0400_8b20) == owner {
+            write_u32(0x0400_8b20, 0);
+        }
+        if read_u32(0x0400_8b2c) == owner {
+            write_u32(0x0400_8b2c, 0);
+        }
+        write_u8(base + 0x66, 0);
         write_u8(pas + PAS_ACTIVE_OFFSET, 1);
         write_u8(pas + 0x472, 0);
         write_u8(pas + 0x473, 0);

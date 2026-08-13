@@ -88,11 +88,14 @@ pub extern "C" fn xr819_exception_terminal() -> ! {
 
 /// Records a Rust panic distinctly from an architected CPU exception.
 #[cfg(target_arch = "arm")]
-pub fn panic_terminal() -> ! {
+pub fn panic_terminal(line: u32, column: u32, file_hash: u32) -> ! {
     let record = XR819_EXCEPTION_RECORD.0.get();
     unsafe {
         core::ptr::addr_of_mut!((*record).valid).write_volatile(0);
         core::ptr::addr_of_mut!((*record).kind).write_volatile(EXCEPTION_KIND_PANIC);
+        core::ptr::addr_of_mut!((*record).fault_pc).write_volatile(line);
+        core::ptr::addr_of_mut!((*record).exception_lr).write_volatile(column);
+        core::ptr::addr_of_mut!((*record).exception_sp).write_volatile(file_hash);
         core::ptr::addr_of_mut!((*record).valid).write_volatile(EXCEPTION_MAGIC);
     }
     publish_record(b"xr819-rust-panic")
