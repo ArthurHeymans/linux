@@ -33,6 +33,24 @@ pub unsafe fn trace(stage: u32, value0: u32, value1: u32) {
 
 /// Preserve the completed frame header before its borrowed HIF buffer returns.
 #[inline(always)]
+pub unsafe fn capture_retry_feedback(context: u32, status: u32, tx_rate: u8, ack_failures: u8) {
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    unsafe {
+        trace(
+            0x4854_5200 | u32::from(tx_rate),
+            (context.wrapping_add(0x28) as *const u32).read_volatile(),
+            (context.wrapping_add(0x2c) as *const u32).read_volatile(),
+        );
+        (FRAME_ADDRESS as *mut u32)
+            .write_volatile((context.wrapping_add(0x30) as *const u32).read_volatile());
+        (FRAME_METADATA as *mut u32).write_volatile(
+            (status & 0xffff) | (u32::from(ack_failures) << 16) | (u32::from(tx_rate) << 24),
+        );
+    }
+    #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
+    let _ = (context, status, tx_rate, ack_failures);
+}
+
 pub unsafe fn capture_completion(context: u32, status: u16, retries: u8) {
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {

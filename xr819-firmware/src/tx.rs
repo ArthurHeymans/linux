@@ -1554,9 +1554,13 @@ impl BoundedSingleTxRetry {
         if self.attempts >= self.max_retries {
             SingleTxRetryDecision::GiveUp
         } else {
-            self.attempts = self.attempts.saturating_add(1);
+            self.record_rearm();
             SingleTxRetryDecision::Rearm
         }
+    }
+
+    fn record_rearm(&mut self) {
+        self.attempts = self.attempts.saturating_add(1);
     }
 
     pub fn reset(&mut self) {
@@ -1683,6 +1687,8 @@ pub fn build_no_ack_single_frame_duration<M: MacPipeMmio>(
 
 /// Fatal boundary for retry shapes outside the fixed-rate one-frame subset.
 pub trait SingleFrameRearmBackend {
+    fn rebuild_rate_descriptor(&mut self, _pipe: u8, _slot: u32, _frame_node: FrameNodeAddress) {}
+
     fn fatal_unsupported_rearm_shape(
         &mut self,
         pipe: u8,
@@ -1711,8 +1717,11 @@ where
     mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
 
     let flags = mmio.read_u32(frame_node.raw() + 4);
-    if flags & 0x0008_0000 != 0 || mmio.read_u8(slot) == 1 {
+    if mmio.read_u8(slot) == 1 {
         backend.fatal_unsupported_rearm_shape(pipe, slot, frame_node);
+    }
+    if flags & 0x0008_0000 != 0 {
+        backend.rebuild_rate_descriptor(pipe, slot, frame_node);
     }
 
     let descriptor = mmio.read_u32(slot + 0x14);
@@ -2483,6 +2492,26 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 impl SingleFrameRearmBackend for SingleProbeMacBackend {
+    fn rebuild_rate_descriptor(&mut self, pipe: u8, slot: u32, frame_node: FrameNodeAddress) {
+        let context = frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET);
+        if unsafe { prepare_host_frame_timing(context) }.is_err() {
+            terminal_probe_backend_fault(pipe);
+        }
+        let command = unsafe { read_u32(slot as usize + 0x14) };
+        if command == 0
+            || unsafe { emit_host_frame_descriptor_at(context, command.wrapping_add(0x0c)) }
+                .is_err()
+        {
+            terminal_probe_backend_fault(pipe);
+        }
+        unsafe {
+            write_u32(
+                frame_node.raw() as usize + 4,
+                read_u32(frame_node.raw() as usize + 4) & !0x000c_0000,
+            );
+        }
+    }
+
     fn fatal_unsupported_rearm_shape(
         &mut self,
         pipe: u8,
@@ -2499,9 +2528,59 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         &mut self,
         _pipe: u8,
         _slot: u32,
-        _frame_node: FrameNodeAddress,
+        frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
-        self.retry.decide()
+        if !is_wsm_tx_context(frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET)) {
+            return self.retry.decide();
+        }
+
+        let context = frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET);
+        let rate = unsafe { read_u8(frame_node.raw() as usize + 0x0f) };
+        let status_address = context + 0x28 + u32::from(rate >> 3) * 4;
+        let shift = u32::from((rate & 7) * 4);
+        let status = unsafe { read_u32(status_address as usize) };
+        let attempts = (status >> shift) & 0x0f;
+        if attempts < 0x0f {
+            unsafe {
+                write_u32(
+                    status_address as usize,
+                    (status & !(0x0f << shift)) | ((attempts + 1) << shift),
+                );
+            }
+        }
+
+        let policy_index = unsafe { read_u8(frame_node.raw() as usize + 0x0e) };
+        let Some(policy) = crate::rate_policy::get(policy_index) else {
+            return self.retry.decide();
+        };
+        let try_count = unsafe { read_u16(frame_node.raw() as usize + 0x1e) };
+        let flags = unsafe { read_u32(frame_node.raw() as usize + 4) };
+        let long_frame = (flags & 0x7ff) >> 9 != 0;
+        match crate::rate_policy::retry_step(policy, rate, try_count, long_frame) {
+            crate::rate_policy::RetryStep::GiveUp => SingleTxRetryDecision::GiveUp,
+            crate::rate_policy::RetryStep::Rearm { rate: next_rate } => {
+                if next_rate != rate && (flags & 0x20 == 0 || next_rate > 13) {
+                    unsafe {
+                        write_u8(frame_node.raw() as usize + 0x0f, next_rate);
+                        write_u32(
+                            frame_node.raw() as usize + 4,
+                            flags
+                                | 0x0008_0000
+                                | if rate > 3 && next_rate < 4 {
+                                    0x0004_0000
+                                } else {
+                                    0
+                                },
+                        );
+                    }
+                }
+                unsafe {
+                    write_u16(frame_node.raw() as usize + 0x1e, try_count.wrapping_add(1));
+                }
+                self.retry.record_rearm();
+                SingleTxRetryDecision::Rearm
+            }
+        }
     }
 
     fn rearm_and_ack(
@@ -6829,15 +6908,26 @@ mod tests {
         }
     }
 
-    struct MockRearmBackend;
+    struct MockRearmBackend {
+        rebuilt: bool,
+    }
 
     impl MockRearmBackend {
         fn new() -> Self {
-            Self
+            Self { rebuilt: false }
         }
     }
 
     impl SingleFrameRearmBackend for MockRearmBackend {
+        fn rebuild_rate_descriptor(
+            &mut self,
+            _pipe: u8,
+            _slot: u32,
+            _frame_node: FrameNodeAddress,
+        ) {
+            self.rebuilt = true;
+        }
+
         fn fatal_unsupported_rearm_shape(
             &mut self,
             _pipe: u8,
@@ -7173,6 +7263,47 @@ mod tests {
         assert_eq!(mmio.get(0xa008), 0xd800_2138);
         assert_eq!(mmio.get(0x9020), 0x0e);
         assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_feff);
+        assert!(!backend.rebuilt);
+    }
+
+    #[test]
+    fn rate_change_rebuilds_phy_descriptor_before_retry_duration() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe = 0;
+        let pipe_state = pipe_state_address(pipe);
+        mmio.set(pipe_state, 0);
+        mmio.set(pipe_state + 2, 0);
+        mmio.set(pipe_state + 8, 0x9000);
+        mmio.set(0x9020, 1);
+        let slot = pipe_state + 0x0c;
+        mmio.set(slot, 0);
+        mmio.set(slot + 1, 0xff);
+        mmio.set(slot + 0x14, 0xa000);
+        mmio.set(0xa004, 0);
+        let frame = FrameNodeAddress::new(0x0400_90d8);
+        mmio.set(frame.raw() + 4, 0x0008_1018);
+        mmio.set(frame.raw() + 0x0c, 0);
+        mmio.set(frame.raw() + 0x0f, 2);
+        mmio.set(frame.raw() + 0x69, 0);
+        mmio.set(frame.raw() + 0x56, 0xff);
+        mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
+        mmio.set(PIPE_RETRY_MASK_TABLE + 0x4bc, 0);
+        mmio.set(PIPE_RETRY_RATE_MAP + 2, 0);
+        mmio.set(PIPE_RETRY_TIMING_TABLE, 0);
+        mmio.set(PIPE_RETRY_HARDWARE_STATE, 0);
+        let mut backend = MockRearmBackend::new();
+
+        let outcome = execute_fixed_rate_single_frame_rearm(
+            &mut mmio,
+            pipe,
+            slot,
+            frame,
+            0x100,
+            &mut backend,
+        );
+
+        assert_eq!(outcome, SingleFrameRearmOutcome::CommandMaskAcknowledged);
+        assert!(backend.rebuilt);
     }
 
     #[test]

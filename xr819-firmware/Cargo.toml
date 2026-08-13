@@ -12,8 +12,13 @@ crate-type = ["rlib"]
 # Active scan-owned probe TX is now the default firmware behavior. Keep the
 # feature name as an explicit rollback boundary while JOIN/VIF work continues;
 # `--no-default-features` retains the established passive fallback image.
-default = ["probe-tx-experiment"]
+default = ["probe-tx-experiment", "wsm-cw1200-compat"]
 probe-tx-experiment = []
+# WSM wire profile selected through the startup label. CW1200 compatibility is
+# the production default; native XR819 enables extended TX confirmations and
+# native host command semantics for comparison testing.
+wsm-cw1200-compat = []
+wsm-xr819-native = []
 # JOIN and host management TX can be exercised with passive scanning while the
 # independent active-probe preparation path is under hardware diagnosis.
 join-sta-experiment = []

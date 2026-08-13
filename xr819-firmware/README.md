@@ -84,7 +84,25 @@ Host-selected rate control is hardware-validated across CCK, OFDM, and HT. The
 vendor no-protection `bHwRateCode = 0xff` rule fixed legacy OFDM publication,
 and the mixed-mode HT PHY control word now carries the vendor airtime field.
 Forced endpoint tests passed at rates 0–3, 6, 13, 14 (MCS0), and 21 (MCS7),
-followed by a successful host-selected connectivity run.
+followed by a successful host-selected connectivity run. The firmware now also accepts the XR819 host driver's 24-nibble MIB `0x1016`
+retry policies and walks them per frame. A rate change recomputes PAS timing and
+rebuilds the PHY descriptor before rearm; firmware does not run a competing
+adaptive rate-selection algorithm. Native-profile hardware validation observed
+an MCS7 failure followed by successful MCS2 completion: `rate_try[2] =
+0x00100000`, final rate 16, and one ACK failure. This confirms that the host
+series drives hardware fallback and that the extended confirmation reports the
+failed MCS7 attempt.
+
+Two compile-time WSM profiles share that execution path. The default
+`wsm-cw1200-compat` image advertises the established `XR819 open Rust WSM`
+label and emits CW1200-sized confirmations. `wsm-xr819-native` advertises a
+native label, accepts the native four-byte operational-mode MIB, uses
+synchronous JOIN semantics, and emits XR819 confirmations with three packed
+per-rate failure words. The Linux driver chooses the same profile from the startup label; build native
+candidates with `--no-default-features` so both profile features cannot be
+enabled together. The current XR819 test driver is validated with the native
+profile. Its CW1200-compatible parser requires the accompanying profile-selection
+fix before CW1200-sized confirmations can be used safely.
 
 The ordinary vendor path is now specified end-to-end in
 [`../xr819-vendor-host-tx-lifecycle.md`](../xr819-vendor-host-tx-lifecycle.md).
@@ -114,9 +132,9 @@ passed to every MAC-event consumer. This remains a bounded single-outstanding
 non-aggregate implementation, not yet the full production scheduler.
 
 The optional `vendor-host-tx-diagnostics` feature retains the bring-up
-observability without burdening the normal station image. It enables retained
-stage/frame/descriptor snapshots, HIF request counters, and bounded WSM debug
-events through the existing counters MIB. Without the feature, trace writers
+observability without burdening the normal station image. It enables retained stage/frame/descriptor snapshots, HIF request counters,
+bounded WSM debug events, and the latest native retry-feedback words through
+the existing counters MIB. Without the feature, trace writers
 compile to no-ops and the normal counters layout is preserved. Fatal MAC
 exceptions remain available independently because they are part of terminal
 recovery diagnostics rather than the verbose host-TX trace stream.
@@ -265,7 +283,8 @@ Not yet implemented:
 - hardware AES transfer submission and separate IRQ 18/20 completion consumers;
 - complete HIF queue/scheduler accounting;
 - reliable management TX across cold boots;
-- rate fallback policy, aggregation, and throughput validation;
+- controlled degraded-RF fallback and sustained-throughput validation;
+- aggregation;
 - CCMP replay protection and hardware-engine known-answer coverage;
 - production exception reporting and recovery behavior.
 

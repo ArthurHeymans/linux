@@ -19,6 +19,7 @@ use xr819_firmware::platform::{
     wait_for_host_download_completion,
 };
 use xr819_firmware::radio;
+use xr819_firmware::rate_policy;
 use xr819_firmware::scan;
 #[cfg(feature = "tcm-size-diagnostic")]
 use xr819_firmware::tcm;
@@ -35,8 +36,9 @@ use xr819_firmware::wsm::{
     encode_join_complete_indication, encode_join_response, encode_read_mib_data_response,
     encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
     encode_tx_confirm, encode_tx_confirm_details, encode_xr819_tx_confirm,
-    encode_xr819_tx_confirm_details,
+    encode_xr819_tx_confirm_details, encode_xr819_tx_confirm_retry_details,
 };
+use xr819_firmware::wsm_profile;
 #[cfg(feature = "vendor-host-tx-foundation")]
 use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
 
@@ -242,7 +244,7 @@ extern "C" fn rust_main() -> ! {
         firmware_api: 1,
         firmware_build: 1,
         firmware_version: 1,
-        label: b"XR819 open Rust WSM",
+        label: wsm_profile::STARTUP_LABEL,
         config: [0; 4],
     }
     .encode(buffer)
@@ -331,23 +333,22 @@ extern "C" fn rust_main() -> ! {
         if let Some(confirmation) = host_tx_driver.confirmation()
             && transport.output_available()
         {
-            let tx_rate =
-                unsafe { (confirmation.context.wrapping_add(0x63) as *const u8).read_volatile() };
             let output = unsafe { transport.output_buffer() };
             let encoded = if join::uses_cw1200_wsm() {
                 encode_tx_confirm_details(
                     confirmation.packet_id,
                     confirmation.status,
-                    tx_rate,
+                    confirmation.tx_rate,
                     confirmation.ack_failures,
                     output,
                 )
             } else {
-                encode_xr819_tx_confirm_details(
+                encode_xr819_tx_confirm_retry_details(
                     confirmation.packet_id,
                     confirmation.status,
-                    tx_rate,
+                    confirmation.tx_rate,
                     confirmation.ack_failures,
+                    confirmation.rate_try,
                     output,
                 )
             };
@@ -589,6 +590,20 @@ extern "C" fn rust_main() -> ! {
                     encode_status_response(request_id | 0x0400, status, output)
                 } else if request_id == WRITE_MIB_REQ_ID {
                     let status = match WriteMibRequest::parse(request_payload) {
+                        Ok(request)
+                            if request.mib_id == 0x1006
+                                && request.data.len()
+                                    == if wsm_profile::CW1200_COMPATIBLE { 1 } else { 4 } =>
+                        {
+                            0
+                        }
+                        Ok(request)
+                            if request.mib_id == rate_policy::MIB_ID_SET_TX_RATE_RETRY_POLICY =>
+                        {
+                            rate_policy::install(request.data)
+                                .map(|()| 0)
+                                .unwrap_or(STATUS_FAILURE)
+                        }
                         Ok(request)
                             if configuration::retain_interface_mib(
                                 request.mib_id,

@@ -377,7 +377,7 @@ static int wsm_tx_confirm(struct cw1200_common *priv,
 			  struct wsm_buf *buf,
 			  int link_id)
 {
-	struct wsm_tx_confirm tx_confirm;
+	struct wsm_tx_confirm tx_confirm = {};
 
 	tx_confirm.packet_id = WSM_GET32(buf);
 	tx_confirm.status = WSM_GET32(buf);

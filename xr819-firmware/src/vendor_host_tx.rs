@@ -1153,6 +1153,11 @@ pub fn write_host_context_fields<W: HostContextWriter>(writer: &mut W, metadata:
     writer.write_u32(0x18, u32::from(metadata.frame_length));
     writer.write_u32(0x1c, metadata.frame_address);
     writer.write_u8(0x24, metadata.max_tx_rate);
+    writer.write_u8(0x25, 0);
+    writer.write_u16(0x26, 0);
+    writer.write_u32(0x28, 0);
+    writer.write_u32(0x2c, 0);
+    writer.write_u32(0x30, 0);
 
     writer.write_u32(0x80, 1);
     writer.write_u8(0xbd, metadata.interface);
@@ -1741,6 +1746,8 @@ mod tests {
         assert_eq!(read_u32(&image, 0x14), 1 | (0x60 << 11));
         assert_eq!(image[0x0c], 14);
         assert_eq!(image[0x0d], 2);
+        assert_eq!(image[0x24], 14);
+        assert_eq!(&image[0x25..0x34], &[0; 15]);
         assert_eq!(image[0xbf], 8);
         assert_eq!(image[0x53], 0);
         assert_eq!(image[0x52], 1);

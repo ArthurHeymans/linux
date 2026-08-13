@@ -33,7 +33,9 @@ pub struct HostTxConfirmation {
     pub packet_id: u32,
     pub context: u32,
     pub status: u32,
+    pub tx_rate: u8,
     pub ack_failures: u8,
+    pub rate_try: [u32; 3],
 }
 
 impl HostTxDriver {
@@ -387,12 +389,32 @@ impl HostTxDriver {
                 retained,
                 status,
                 ack_failures,
-            } => Some(HostTxConfirmation {
-                packet_id: retained.packet_id(),
-                context: retained.context().raw(),
-                status: *status,
-                ack_failures: *ack_failures,
-            }),
+            } => {
+                let context = retained.context().raw();
+                let tx_rate = unsafe { (context.wrapping_add(0x63) as *const u8).read_volatile() };
+                unsafe {
+                    host_tx_diagnostics::capture_retry_feedback(
+                        context,
+                        *status,
+                        tx_rate,
+                        *ack_failures,
+                    );
+                }
+                Some(HostTxConfirmation {
+                    packet_id: retained.packet_id(),
+                    context,
+                    status: *status,
+                    tx_rate,
+                    ack_failures: *ack_failures,
+                    rate_try: unsafe {
+                        [
+                            (context.wrapping_add(0x28) as *const u32).read_volatile(),
+                            (context.wrapping_add(0x2c) as *const u32).read_volatile(),
+                            (context.wrapping_add(0x30) as *const u32).read_volatile(),
+                        ]
+                    },
+                })
+            }
             _ => None,
         }
     }

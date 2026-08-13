@@ -1084,7 +1084,7 @@ void cw1200_tx_confirm_cb(struct cw1200_common *priv,
 				++tx_count;
 		}
 
-		if (priv->is_xr819) {
+		if (cw1200_uses_xr819_wsm(priv)) {
 			cw1200_xr819_tx_status(priv, arg, tx);
 		} else {
 			for (i = 0; i < IEEE80211_TX_MAX_RATES; ++i) {

@@ -12,10 +12,8 @@ pub enum JoinError {
     Channel,
 }
 
-static mut CW1200_WSM_MODE: bool = false;
-
-pub fn uses_cw1200_wsm() -> bool {
-    unsafe { (&raw const CW1200_WSM_MODE).read_volatile() }
+pub const fn uses_cw1200_wsm() -> bool {
+    crate::wsm_profile::CW1200_COMPATIBLE
 }
 
 /// Activate the minimal vendor STA-BSS state and program its operating channel.
@@ -40,7 +38,6 @@ pub unsafe fn activate_sta(
     crate::vif::join_gate(interface, request.channel_number).map_err(|_| JoinError::VifState)?;
 
     unsafe {
-        (&raw mut CW1200_WSM_MODE).write_volatile(request.flags & 0x20 != 0);
         let _ = crate::vif::teardown(interface);
         if crate::phy::run_channel_transition(request.channel_number, 100_000).is_err() {
             let _ = crate::vif::teardown(interface);
@@ -72,7 +69,6 @@ pub unsafe fn reset(interface: u8) -> bool {
     if !unsafe { crate::vif::teardown(interface) } {
         return false;
     }
-    unsafe { (&raw mut CW1200_WSM_MODE).write_volatile(false) };
     if crate::vif::any_active() {
         return true;
     }
