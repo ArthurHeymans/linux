@@ -7,6 +7,9 @@
 # `vendor-host-tx-foundation` also gates `join-sta-experiment`, no STA JOIN
 # path either. Such an image boots and flashes happily but never associates,
 # which is indistinguishable from a firmware regression at the harness level.
+# The base also keeps the established non-fatal corruption mode and independent
+# host lane: omitting them made a healthy batch run halt on the known
+# `xr819-hif-tx-boundary` detector halfway through the diagnostic flood.
 #
 # `cargo test` does not catch this: the host TX service path is
 # `#[cfg(target_arch = "arm")]`, so the host test build never compiles it. Only
@@ -20,7 +23,7 @@ OUT=${1:?usage: build-ota-image.sh OUT [extra,features]}
 shift
 EXTRA=${1:-}
 
-BASE=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-diagnostics,unmatched-tx-status-recovery
+BASE=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-diagnostics,unmatched-tx-status-recovery,pipe-watchdog,corruption-non-fatal,host-lane-independent
 FEATURES=$BASE${EXTRA:+,$EXTRA}
 
 cd "$(dirname "$0")/.."

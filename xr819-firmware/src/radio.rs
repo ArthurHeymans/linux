@@ -245,6 +245,16 @@ fn next_offset(offset: u32, slot_length: u16) -> u32 {
     )
 }
 
+fn repairable_tail_slot(
+    slot_length: u16,
+    available: u32,
+    next: u32,
+    producer: u32,
+    next_has_magic: bool,
+) -> bool {
+    u32::from(slot_length) <= available && next == producer && !next_has_magic
+}
+
 fn slot_data_fits_fifo(offset: u32, slot_length: u16) -> bool {
     let frame_end = offset as usize + 0x20 + usize::from(slot_length);
     let trailer = (frame_end + 3) & !3;
@@ -277,41 +287,96 @@ unsafe fn set_claim_offset(next: u32) {
 /// Vendor-style recovery for a corrupt current header: walk four-byte-aligned
 /// candidates up to the producer and adopt the next magic slot, or discard the
 /// unread region if no valid slot remains.
+/// Vendor `rxfifo_next_frame` (`0x8af2`, `annotated-main.c:10331`) scan path.
+///
+/// Vendor does not simply take the first word matching the magic. Having found
+/// a candidate it also requires the slot's declared length to fit the remaining
+/// span AND the following slot to carry the magic too, and keeps scanning when
+/// either fails. Without that two-slot lookahead any payload word that happens
+/// to equal `0x00aa55ff` resynchronises us onto garbage, which desynchronises
+/// the consumer further and costs another resync — a plausible amplifier for
+/// runs where resyncs climb from 1 to 21.
+///
+/// The total flush when the span is exhausted IS vendor behaviour
+/// (`annotated-main.c:10373-10380` sets release, consumer and the DMA consumer
+/// at `0x09c00608` all to the producer), so it is kept as-is.
+///
+/// `RX_RESYNC` now packs three fields, since resync counts are small:
+/// bits 0..9 accepted, bits 10..19 flushed, bits 20..31 candidates rejected by
+/// the lookahead.
 unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32) {
-    let mut candidate = consumer;
-    let mut remaining = available_bytes(consumer, producer);
-    while remaining >= 4 {
-        candidate = normalize_offset(candidate.wrapping_add(4));
-        remaining -= 4;
-        if candidate == producer {
-            break;
-        }
-        let address = FIFO_BASE + candidate as usize;
-        if unsafe { (address as *const u32).read_volatile() } == FIFO_MAGIC {
-            unsafe {
-                if HOST_TRANSFER_COUNT != 0 {
-                    #[cfg(not(feature = "corruption-non-fatal"))]
-                    publish_owned_resynchronization(consumer, producer, raw_producer);
-                    #[cfg(feature = "corruption-non-fatal")]
-                    crate::host_tx_diagnostics::bump(
-                        crate::host_tx_diagnostics::counter::RX_RESYNC,
-                    );
+    unsafe {
+        let mut remaining = available_bytes(consumer, producer);
+        let mut candidate = consumer;
+        loop {
+            // Vendor's inner loop: step one word at a time to the next slot
+            // that carries the magic, flushing if the span runs out.
+            loop {
+                if remaining < 4 || candidate == producer {
+                    resync_report(raw_producer, consumer, producer, RESYNC_FLUSHED);
+                    set_claim_offset(producer);
+                    set_release_offset(producer);
+                    return;
                 }
+                remaining -= 4;
+                candidate = normalize_offset(candidate.wrapping_add(4));
+                if fifo_word(candidate) == FIFO_MAGIC {
+                    break;
+                }
+            }
+            let slot_length =
+                ((FIFO_BASE + candidate as usize + 0x18) as *const u16).read_volatile();
+            let next = next_offset(candidate, slot_length);
+            if u32::from(slot_length) <= remaining
+                && slot_length >= 4
+                && fifo_word(next) == FIFO_MAGIC
+            {
+                resync_report(raw_producer, consumer, producer, RESYNC_ACCEPTED);
                 set_claim_offset(candidate);
                 set_release_offset(candidate);
+                return;
             }
-            return;
+            // Candidate carried the magic but failed vendor's validation: a
+            // false positive we would previously have resynchronised onto.
+            bump_resync_field(RESYNC_REJECTED);
         }
     }
+}
+
+const RESYNC_ACCEPTED: u32 = 0;
+const RESYNC_FLUSHED: u32 = 10;
+const RESYNC_REJECTED: u32 = 20;
+
+/// Bump one packed field of the `RX_RESYNC` counter, saturating so a busy field
+/// cannot carry into its neighbour.
+unsafe fn bump_resync_field(shift: u32) {
+    unsafe {
+        let width = if shift == RESYNC_REJECTED { 12 } else { 10 };
+        let mask = ((1_u32 << width) - 1) << shift;
+        let current = crate::host_tx_diagnostics::read(
+            crate::host_tx_diagnostics::counter::RX_RESYNC,
+        );
+        let field = (current & mask) >> shift;
+        if field + 1 < (1 << width) {
+            crate::host_tx_diagnostics::observe(
+                crate::host_tx_diagnostics::counter::RX_RESYNC,
+                (current & !mask) | ((field + 1) << shift),
+            );
+        }
+    }
+}
+
+unsafe fn resync_report(raw_producer: u32, consumer: u32, producer: u32, shift: u32) {
     unsafe {
         if HOST_TRANSFER_COUNT != 0 {
             #[cfg(not(feature = "corruption-non-fatal"))]
             publish_owned_resynchronization(consumer, producer, raw_producer);
             #[cfg(feature = "corruption-non-fatal")]
-            crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RX_RESYNC);
+            {
+                let _ = (raw_producer, consumer, producer);
+            }
         }
-        set_claim_offset(producer);
-        set_release_offset(producer);
+        bump_resync_field(shift);
     }
 }
 
@@ -412,7 +477,7 @@ unsafe fn capture_final_tx_command_signature(command: u32) {
     }
 }
 
-#[cfg(feature = "vendor-host-tx-diagnostics")]
+// Used by the vendor-shaped resync scan in every build, not just diagnostics.
 unsafe fn fifo_word(offset: u32) -> u32 {
     unsafe { ((FIFO_BASE + normalize_offset(offset) as usize) as *const u32).read_volatile() }
 }
@@ -681,12 +746,26 @@ pub unsafe fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command:
                         pointer,
                         command_offset as u32,
                         (matched_words * 4) as u32,
-                        live_owner,
-                        live_pointer,
-                        live_count,
-                        history_generation,
-                        history_match,
-                        history_pointer,
+                        // These six were live_owner/live_pointer/live_count and
+                        // history_generation/history_match/history_pointer, which
+                        // read zero in every capture taken so far. Reused to test
+                        // the three candidate writers in one run:
+                        //  - which TX slot the MAC is actually fetching, versus
+                        //    the slot whose bytes leaked (always 0x0900717c =
+                        //    pipe 0 slot 3 so far);
+                        //  - the ring's own command-list pointer;
+                        //  - whether the AES engine is programmed at a
+                        //    destination inside the RX FIFO.
+                        // Pipe 0 record: PIPE_RECORDS 0x04001680 + 0*0x6c + 0xa0.
+                        u32::from(((0x0400_1720) as *const u8).read_volatile())
+                            | (u32::from(((0x0400_1721) as *const u8).read_volatile()) << 8)
+                            | (u32::from(((0x0400_1722) as *const u8).read_volatile()) << 16)
+                            | (u32::from(((0x0400_1723) as *const u8).read_volatile()) << 24),
+                        ((0x09c6_0020) as *const u32).read_volatile(),
+                        ((0x09c6_000c) as *const u32).read_volatile(),
+                        ((0x09c5_0010) as *const u32).read_volatile(),
+                        ((0x09c5_0014) as *const u32).read_volatile(),
+                        ((0x09c5_0018) as *const u32).read_volatile(),
                         class6_offset,
                         slot[0],
                         slot[1],
@@ -720,7 +799,7 @@ pub unsafe fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command:
                 let expected = [watch[3], watch[4], watch[5], watch[6]];
                 if actual != expected {
                     let (matched_command, _, match_state) = matching_tx_command(address);
-                    crate::hif::publish_terminal_exception(
+                    crate::hif::publish_halting_exception(
                         [
                             0x5258_5442,
                             phase,
@@ -743,9 +822,7 @@ pub unsafe fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command:
                         ],
                         b"xr819-rx-tx-boundary",
                     );
-                    loop {
-                        core::hint::spin_loop();
-                    }
+                    crate::halt_always!();
                 }
             }
             watch[0] = 0;
@@ -790,7 +867,7 @@ unsafe fn publish_owned_resynchronization(consumer: u32, producer: u32, raw_prod
                 ((hardware_ring + 0x20) as *const u32).read_volatile(),
             )
         };
-        crate::hif::publish_terminal_exception(
+        crate::hif::publish_halting_exception(
             [
                 0x5258_5253,
                 raw_producer,
@@ -813,9 +890,7 @@ unsafe fn publish_owned_resynchronization(consumer: u32, producer: u32, raw_prod
             ],
             b"xr819-rx-resync-owned",
         );
-        loop {
-            core::hint::spin_loop();
-        }
+        crate::halt_always!();
     }
 }
 
@@ -845,7 +920,7 @@ unsafe fn release(token: ReleaseToken) {
     unsafe {
         let slot = token.slot as usize;
         if !(FIFO_BASE..FIFO_BASE + FIFO_SIZE as usize).contains(&slot) {
-            crate::hif::publish_terminal_exception(
+            crate::hif::publish_halting_exception(
                 [
                     0x5258_524c,
                     token.slot,
@@ -868,9 +943,11 @@ unsafe fn release(token: ReleaseToken) {
                 ],
                 b"xr819-rx-release-address",
             );
-            loop {
-                core::hint::spin_loop();
-            }
+            // Do NOT convert this into a return: skipping the release stalls
+            // the release head permanently, the FIFO never drains, and every
+            // run dies harder than the hang it was meant to avoid (measured:
+            // 3 of 4 runs failed to associate at all).
+            crate::halt_always!();
         }
         let state = (slot + 8) as *mut u32;
         let value = state.read_volatile();
@@ -908,7 +985,7 @@ unsafe fn release(token: ReleaseToken) {
                         ((hardware_ring + 0x20) as *const u32).read_volatile(),
                     )
                 };
-                crate::hif::publish_terminal_exception(
+                crate::hif::publish_halting_exception(
                     [
                         0x5258_524c,
                         token.slot,
@@ -931,9 +1008,7 @@ unsafe fn release(token: ReleaseToken) {
                     ],
                     b"xr819-rx-release-state",
                 );
-                loop {
-                    core::hint::spin_loop();
-                }
+                crate::halt_always!();
             }
         }
         if ownership == 0 {
@@ -965,6 +1040,37 @@ unsafe fn release(token: ReleaseToken) {
 ///
 /// # Safety
 /// `token` must be the currently outstanding radio transfer token.
+/// RX counters for the lifecycle report: frames seen, frames dropped at the
+/// host-transfer limit, indications published, and slots released.
+///
+/// The radio diagnostics MIB and the class-0 lifecycle MIB share one report
+/// array, so without this the RX and TX sides can never be read in the same
+/// run. Ping shows 2-5% loss with duplicates, which means retransmission, so
+/// whether we are discarding received frames matters.
+///
+/// # Safety
+/// Single-threaded firmware context.
+pub unsafe fn rx_diagnostic_counters() -> (u32, u32, u32, u32) {
+    unsafe {
+        let diagnostics = &*DIAGNOSTICS.0.get();
+        (
+            diagnostics.valid_slots,
+            diagnostics.filtered_frames,
+            diagnostics.indications,
+            diagnostics.released_slots,
+        )
+    }
+}
+
+/// Receive indications currently owned by the host, against `MAX_HOST_TRANSFERS`.
+/// At the limit every further frame is dropped.
+///
+/// # Safety
+/// Single-threaded firmware context.
+pub unsafe fn host_transfers_outstanding() -> u32 {
+    unsafe { HOST_TRANSFER_COUNT }
+}
+
 pub unsafe fn complete_host_transfer(token: ReleaseToken) {
     unsafe {
         if HOST_TRANSFER_COUNT != 0 {
@@ -1011,7 +1117,7 @@ unsafe fn poll_indication(
     if_id: u8,
     active_channel: u16,
     scan_only: bool,
-) -> Option<PendingIndication> {
+) -> Option<PendingIndication> { unsafe {
     let consumer = unsafe { CLAIM_OFFSET };
     let raw_producer = unsafe { DMA_PRODUCER.read_volatile() };
     let producer = normalize_offset(raw_producer);
@@ -1027,20 +1133,40 @@ unsafe fn poll_indication(
     }
 
     let slot = FIFO_BASE + consumer as usize;
+    let slot_length = unsafe { ((slot + 0x18) as *const u16).read_volatile() };
     if unsafe { (slot as *const u32).read_volatile() } != FIFO_MAGIC {
+        let available = available_bytes(consumer, producer);
+        let next = next_offset(consumer, slot_length);
+        let next_has_magic = fifo_word(next) == FIFO_MAGIC;
+        if repairable_tail_slot(slot_length, available, next, producer, next_has_magic) {
+            unsafe {
+                // Vendor `rxfifo_next_frame` repair branch: the current slot's
+                // header marker was damaged, but its bounded length lands
+                // exactly on the producer. Preserve that frame, rebuild the
+                // producer sentinel, and advance ownership normally instead of
+                // destructively scanning or flushing the unread span.
+                ((slot + 4) as *mut u32).write_volatile(next);
+                let state = (slot + 8) as *mut u32;
+                state.write_volatile(claimed_slot_state(state.read_volatile()));
+                set_claim_offset(next);
+                ((FIFO_BASE + next as usize) as *mut u32).write_volatile(FIFO_MAGIC);
+                bump_resync_field(RESYNC_ACCEPTED);
+            }
+        } else {
+            unsafe {
+                let diagnostics = &mut *DIAGNOSTICS.0.get();
+                diagnostics.bad_magic = diagnostics.bad_magic.wrapping_add(1);
+                resynchronize_consumer(consumer, producer, raw_producer);
+            }
+            return None;
+        }
+    } else {
         unsafe {
             let diagnostics = &mut *DIAGNOSTICS.0.get();
-            diagnostics.bad_magic = diagnostics.bad_magic.wrapping_add(1);
-            resynchronize_consumer(consumer, producer, raw_producer);
+            diagnostics.valid_slots = diagnostics.valid_slots.wrapping_add(1);
         }
-        return None;
-    }
-    unsafe {
-        let diagnostics = &mut *DIAGNOSTICS.0.get();
-        diagnostics.valid_slots = diagnostics.valid_slots.wrapping_add(1);
     }
 
-    let slot_length = unsafe { ((slot + 0x18) as *const u16).read_volatile() };
     let available = available_bytes(consumer, producer);
     if slot_length < 4
         || usize::from(slot_length) > MAX_FRAME_LEN + 4
@@ -1096,6 +1222,25 @@ unsafe fn poll_indication(
     // and masks it to ten bits for the low PHY classes.
     let channel = unsafe { ((trailer + 2) as *const u16).read_volatile() } & 0x03ff;
     let rcpi = unsafe { ((trailer + 7) as *const u8).read_volatile() }.max(1);
+    // Vendor copies two adjacent descriptor bytes into the indication's rate
+    // and RCPI fields (`annotated-main.c:13085-13125`: `param_1+0xe` -> +10,
+    // `param_1+0xf` -> +11). Our RCPI is `trailer+7`, matching vendor's +0xf,
+    // so the rate byte is `trailer+6`. We previously hard-coded 0 here, and
+    // `txrx.c:1241-1247` maps that straight to rate_idx 0, so every received
+    // frame was reported to mac80211 as 1 Mbit/s regardless of its real rate.
+    // Clamp before reporting. `txrx.c:1241-1247` treats >=14 as HT with
+    // `rate_idx = rx_rate - 14` and mac80211 then *drops the frame* with a
+    // WARN when that exceeds MCS 76, so one stray descriptor byte costs a
+    // received frame. This chip is 1x1 802.11n, so the legal space is 0..=21:
+    // 0..=3 legacy direct, 4..=13 legacy `rate_idx - 2`, 14..=21 HT MCS0..7.
+    // Anything else is not a rate and is reported as unknown rather than
+    // silently discarding the frame. Measured cost of passing it through raw:
+    // a continuous WARN storm from ieee80211_rx_list and association failing
+    // at AUTHENTICATING because the unicast auth response never survived RX.
+    let rx_rate = match unsafe { ((trailer + 6) as *const u8).read_volatile() } {
+        rate @ 0..=21 => rate,
+        _ => 0,
+    };
     let frame_control = if frame_len >= 2 {
         unsafe { (frame_address as *const u16).read_volatile() }
     } else {
@@ -1167,7 +1312,7 @@ unsafe fn poll_indication(
         // channel 11 appears as 0x010b). CW1200 WSM requires the plain channel
         // number, which is authoritative from the active scan request.
         write_u16(message_address + 8, active_channel);
-        ((message_address + 10) as *mut u8).write_volatile(0);
+        ((message_address + 10) as *mut u8).write_volatile(rx_rate);
         ((message_address + 11) as *mut u8).write_volatile(rcpi);
         write_u32(message_address + 12, indication_flags);
         HOST_TRANSFER_COUNT += 1;
@@ -1180,7 +1325,7 @@ unsafe fn poll_indication(
         length: message_length as u16,
         release: token,
     })
-}
+}}
 
 #[cfg(test)]
 mod tests {
@@ -1194,6 +1339,14 @@ mod tests {
         assert_eq!(available_bytes(0x6ff0, 0x20), 0x30);
         assert!(slot_data_fits_fifo(0x6f00, 100));
         assert!(!slot_data_fits_fifo(0x6fc0, 64));
+    }
+
+    #[test]
+    fn vendor_tail_repair_requires_exact_producer_boundary() {
+        assert!(repairable_tail_slot(100, 100, 0x240, 0x240, false));
+        assert!(!repairable_tail_slot(101, 100, 0x240, 0x240, false));
+        assert!(!repairable_tail_slot(100, 100, 0x23c, 0x240, false));
+        assert!(!repairable_tail_slot(100, 100, 0x240, 0x240, true));
     }
 
     #[test]

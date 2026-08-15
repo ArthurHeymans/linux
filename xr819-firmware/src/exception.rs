@@ -71,10 +71,8 @@ fn publish_record(label: &[u8]) -> ! {
         record.registers[8],
         record.registers[9],
     ];
-    unsafe { crate::hif::publish_terminal_exception(registers, label) };
-    loop {
-        core::hint::spin_loop();
-    }
+    unsafe { crate::hif::publish_halting_exception(registers, label) };
+    crate::halt_always!();
 }
 
 /// Terminal continuation entered by the ARM exception veneers after the core

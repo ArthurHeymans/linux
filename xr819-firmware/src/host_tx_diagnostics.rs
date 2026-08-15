@@ -105,16 +105,29 @@ pub mod counter {
     pub const STATUS_INELIGIBLE: usize = 4;
     /// A slot completed normally.
     pub const COMPLETED: usize = 5;
-    /// A refused slot was retired against the hardware ring cursor.
+    /// A refused slot was retired against the hardware ring cursor. Measures 0
+    /// since retirement was restricted, so it now carries RX valid slots.
     pub const RETIRED: usize = 6;
+    pub const RX_VALID_SLOTS: usize = RETIRED;
     /// A TX confirmation was handed back to the host.
     pub const CONFIRMED: usize = 7;
-    /// Most recent delivered status, and the status the slot expected.
+    /// Most recent delivered status, and the status the slot expected. Both
+    /// measured a constant 0x11, so they now carry the RX side: frames dropped
+    /// at the host-transfer limit, and indications published to the host.
     pub const LAST_STATUS: usize = 8;
     pub const LAST_EXPECTED: usize = 9;
+    pub const RX_FILTERED: usize = LAST_STATUS;
+    pub const RX_INDICATIONS: usize = LAST_EXPECTED;
     /// Pipes recovered by the 200 ms watchdog after being armed without
     /// completing for the whole window.
+    /// Measured 0 in every run, because a frame that never publishes never
+    /// arms a pipe, so this slot now carries the admit-to-publish split:
+    /// low = admission to PAS release (pending gating), high = PAS release to
+    /// publication (scheduler reservation).
     pub const WATCHDOG_RECOVERED: usize = 10;
+    pub const STAGE_PENDING_SPLIT: usize = WATCHDOG_RECOVERED;
+    #[cfg(feature = "stage-latency-sums")]
+    pub const LATENCY_SUM_ADMIT_PUBLISH: usize = WATCHDOG_RECOVERED;
     /// RX consumer resynchronisations, i.e. observed RX FIFO corruption. Only
     /// counted in `corruption-non-fatal` builds; otherwise the firmware halts
     /// and reports the full record instead.
@@ -123,8 +136,23 @@ pub mod counter {
     /// frame, and the worst seen. TCP moves about one segment per 9.3 ms RTT
     /// while 1500-byte airtime at 9 Mbit/s is ~1.3 ms, so most of each frame's
     /// time is unexplained; this says whether it is spent inside our pipeline.
-    pub const LATENCY_LAST: usize = 12;
+    /// Retry-exhaustion give-ups (internal status `0x0b`) — the dominant TX
+    /// outcome, and uncounted until now. `COMPLETED` counts only matched
+    /// successes and the give-up path bumped nothing, so a run whose frames
+    /// mostly failed looked like a run whose frames vanished. That gap produced
+    /// a confident wrong diagnosis: `published - completed` was read as frames
+    /// stuck in a pipe the watchdog could not see, when it was failed TX being
+    /// reported correctly to the host.
+    ///
+    /// This takes over slot 12 from `LATENCY_LAST`, whose question is answered
+    /// (firmware latency is ~1355us of a ~10.8ms per-frame budget). There is no
+    /// spare slot to expand into: `wsm_mib_counters_table` in the host driver is
+    /// exactly 22 words, all of which we use, so counters must be budgeted
+    /// rather than added. Retire a finished one to fund a new one.
+    pub const GIVE_UP: usize = 12;
     pub const LATENCY_MAX: usize = 13;
+    #[cfg(feature = "stage-latency-sums")]
+    pub const LATENCY_SUM_PUBLISH_START: usize = LATENCY_MAX;
     /// Retirements split by the slot state the MAC left behind. `retired` is
     /// ~1% under ping flood but ~10% during iperf, and the split says which
     /// fault that is:
@@ -138,10 +166,31 @@ pub mod counter {
     ///   and backs off - a self-inflicted throughput loss rather than a
     ///   radio problem.
     pub const RETIRED_UNSTARTED: usize = 14;
+    /// Retirement no longer fires, so this carries RX slots released back, in
+    /// the low 16 bits, and host transfers outstanding in the high 16.
+    pub const RX_RELEASED: usize = RETIRED_UNSTARTED;
+    /// Retirements at slot state 2 and 3 were measured at exactly 0 of 297, so
+    /// these two slots now carry the latency breakdown instead; the MIB has no
+    /// free fields and the report array is exactly 22 words.
     pub const RETIRED_STARTED: usize = 15;
     pub const RETIRED_TX_SUCCESS: usize = 16;
+    #[cfg(feature = "stage-latency-sums")]
+    pub const LATENCY_SUM_START_COMPLETE: usize = RETIRED_STARTED;
+    #[cfg(feature = "stage-latency-sums")]
+    pub const LATENCY_SUM_COMPLETE_CONFIRM: usize = RETIRED_TX_SUCCESS;
     /// Delivered status of the most recent retirement, against `LAST_EXPECTED`.
+    /// Retirement now measures 0, so this slot carries the pending-gate reason:
+    /// low 16 = `LeaveQueued` decisions for the frame in flight, high 16 = which
+    /// gates refused, as bits 0 !active_link, 1 global_blocked, 2 !vif_operating,
+    /// 3 !pipe_allowed, 4 expired.
+    ///
+    /// `admission -> PAS release` is 1170-3679 us of a ~4 ms frame while the
+    /// scheduler reservation after it is 32 us, so this gate is the throughput
+    /// ceiling.
     pub const RETIRED_LAST_STATUS: usize = 17;
+    pub const PENDING_GATE: usize = RETIRED_LAST_STATUS;
+    #[cfg(feature = "stage-latency-sums")]
+    pub const LATENCY_SAMPLE_COUNT: usize = RETIRED_LAST_STATUS;
     /// Retirements declined because the slot was published too recently to be
     /// stuck. These are the frames the unaged rule was destroying.
     pub const RETIREMENT_DEFERRED: usize = 18;
@@ -156,6 +205,20 @@ pub mod counter {
     /// the firmware-exception indication and cw1200 tears the link down when it
     /// arrives, by design, so a report-and-continue build must never send one.
     pub const SUPPRESSED_EXCEPTION: usize = 20;
+    /// Where a frame's admission-to-confirmation time actually goes, for the
+    /// most recent frame, packed as two 16-bit microsecond fields per counter
+    /// because the counters MIB has no room left. Saturating at 65 ms.
+    ///
+    /// `STAGE_ADMIT_PUBLISH`: low = admission to publication (our driver
+    /// deciding to send), high = publication to `tx_start` (MAC picking it up).
+    /// `STAGE_START_CONFIRM`: low = `tx_start` to completion (airtime, retries,
+    /// medium), high = completion to confirmation (our driver handing it back).
+    ///
+    /// Only the middle stage is airtime. If the time is in the first or last
+    /// field, deeper TX pipelining cannot help and the fix is in the driver's
+    /// service loop instead.
+    pub const STAGE_ADMIT_PUBLISH: usize = RETIRED_STARTED;
+    pub const STAGE_START_CONFIRM: usize = RETIRED_TX_SUCCESS;
 
     pub(super) const COUNT: usize = 21;
 }
@@ -187,6 +250,24 @@ pub unsafe fn bump(counter: usize) {
     let _ = counter;
 }
 
+/// Overwrites a counter outright. Used to latch a one-shot snapshot of other
+/// counters at the instant of an event, rather than accumulating.
+pub unsafe fn set(counter: usize, value: u32) {
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    unsafe {
+        if counter < counter::COUNT {
+            LIFECYCLE_COUNTERS
+                .0
+                .get()
+                .cast::<u32>()
+                .add(counter)
+                .write_volatile(value);
+        }
+    }
+    #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
+    let _ = (counter, value);
+}
+
 /// Rotating emit state for pushed counter events: `(last_emit, burst_index)`.
 #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
 struct SharedCounterEmit(UnsafeCell<(u32, u8)>);
@@ -197,7 +278,8 @@ unsafe impl Sync for SharedCounterEmit {}
 #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
 static COUNTER_EMIT: SharedCounterEmit = SharedCounterEmit(UnsafeCell::new((0, COUNTER_BURST)));
 
-/// Number of packed pairs in one burst; two counters per debug event.
+/// Number of events in one burst. The normal layout packs two 16-bit counters
+/// per event; `stage-latency-sums` sends five selected full-width counters.
 #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
 const COUNTER_BURST: u8 = 5;
 
@@ -230,15 +312,36 @@ pub unsafe fn take_counter_event(now: u32) -> Option<(u32, u32)> {
         }
 
         let counters = LIFECYCLE_COUNTERS.0.get().cast::<u32>();
-        let low = usize::from(burst_index) * 2;
-        let pack = |index: usize| -> u32 {
-            if index < counter::COUNT {
-                counters.add(index).read_volatile().min(0xffff)
-            } else {
-                0
-            }
+        #[cfg(feature = "stage-latency-sums")]
+        let (event_id, data) = {
+            const PUSHED: [usize; 5] = [
+                counter::LATENCY_SUM_ADMIT_PUBLISH,
+                counter::LATENCY_SUM_PUBLISH_START,
+                counter::LATENCY_SUM_START_COMPLETE,
+                counter::LATENCY_SUM_COMPLETE_CONFIRM,
+                counter::LATENCY_SAMPLE_COUNT,
+            ];
+            let counter = PUSHED[usize::from(burst_index)];
+            (
+                0x4c53_0000 | counter as u32,
+                counters.add(counter).read_volatile(),
+            )
         };
-        let data = pack(low) | (pack(low + 1) << 16);
+        #[cfg(not(feature = "stage-latency-sums"))]
+        let (event_id, data) = {
+            let low = usize::from(burst_index) * 2;
+            let pack = |index: usize| -> u32 {
+                if index < counter::COUNT {
+                    counters.add(index).read_volatile().min(0xffff)
+                } else {
+                    0
+                }
+            };
+            (
+                0x4c43_0000 | u32::from(burst_index),
+                pack(low) | (pack(low + 1) << 16),
+            )
+        };
 
         burst_index += 1;
         let next_last_emit = if burst_index >= COUNTER_BURST {
@@ -247,10 +350,7 @@ pub unsafe fn take_counter_event(now: u32) -> Option<(u32, u32)> {
             last_emit
         };
         state.write_volatile((next_last_emit, burst_index));
-
-        // "C0LC" low half plus the pair index, so the host decoder can
-        // reassemble a burst from the trace.
-        Some((0x4c43_0000 | u32::from(burst_index - 1), data))
+        Some((event_id, data))
     }
 }
 
@@ -275,6 +375,30 @@ pub unsafe fn counters_snapshot() -> [u32; counter::COUNT] {
 /// # Safety
 /// Single-threaded firmware context; the counter block has no other writer.
 #[inline]
+/// Read one counter, for read-modify-write of packed fields.
+///
+/// # Safety
+/// Single-threaded firmware context.
+pub unsafe fn read(counter: usize) -> u32 {
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    unsafe {
+        if counter < counter::COUNT {
+            return LIFECYCLE_COUNTERS
+                .0
+                .get()
+                .cast::<u32>()
+                .add(counter)
+                .read_volatile();
+        }
+        0
+    }
+    #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
+    {
+        let _ = counter;
+        0
+    }
+}
+
 pub unsafe fn observe(counter: usize, value: u32) {
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
@@ -289,6 +413,20 @@ pub unsafe fn observe(counter: usize, value: u32) {
     }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
     let _ = (counter, value);
+}
+
+/// Add one timing sample without allowing a long run to wrap back to a small
+/// plausible value.
+///
+/// # Safety
+/// Single-threaded firmware context; the counter block has no other writer.
+#[cfg(feature = "stage-latency-sums")]
+#[inline]
+pub unsafe fn accumulate(counter: usize, value: u32) {
+    unsafe {
+        let current = read(counter);
+        set(counter, current.saturating_add(value));
+    }
 }
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]
@@ -766,6 +904,16 @@ pub unsafe fn capture_descriptor_length(word: u32) {
 /// existing counters MIB until a paginated diagnostic transport is added.
 #[inline(always)]
 pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transport) {
+    #[cfg(feature = "hardware-ccmp-selftest")]
+    {
+        let snapshot = crate::crypto::hardware_ccmp_selftest_snapshot();
+        if snapshot[0] == 0x4857_434b {
+            let _ = transport;
+            values.fill(0);
+            values[..snapshot.len()].copy_from_slice(&snapshot);
+            return;
+        }
+    }
     #[cfg(all(
         feature = "vendor-host-tx-diagnostics",
         feature = "class0-lifecycle-counters"
@@ -775,14 +923,44 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
         // marker lets the host decoder tell the two layouts apart.
         let _ = transport;
         values.fill(0);
-        values[0] = 0x4330_4c43; // "C0LC"
+        values[0] = if cfg!(feature = "stage-latency-sums") {
+            0x4330_4c53 // "C0LS"
+        } else {
+            0x4330_4c43 // "C0LC"
+        };
         let counters = LIFECYCLE_COUNTERS.0.get().cast::<u32>();
         for index in 0..counter::COUNT {
             values[index + 1] = counters.add(index).read_volatile();
         }
+        // RX state, folded into slots whose TX meaning is now constant. The two
+        // MIBs share one report array, so this is the only way to see both.
+        #[cfg(target_arch = "arm")]
+        {
+            let (valid, filtered, indications, released) = crate::radio::rx_diagnostic_counters();
+            let outstanding = crate::radio::host_transfers_outstanding();
+            values[counter::RX_VALID_SLOTS + 1] = valid;
+            values[counter::RX_FILTERED + 1] = filtered;
+            values[counter::RX_INDICATIONS + 1] = indications;
+            values[counter::RX_RELEASED + 1] = (released & 0xffff) | (outstanding << 16);
+            #[cfg(feature = "tx-pipelining")]
+            {
+                // The strict status gate is now known to converge: every
+                // published depth-2 frame completed or gave up normally. Reuse
+                // the three temporary mismatch slots to prove how often real
+                // batches form and whether a second PAS reservation fails.
+                let (arms, multi_slot_arms, scheduler_capacity) =
+                    crate::tx::batch_lifecycle_snapshot();
+                values[counter::RETIRED_STARTED + 1] = arms;
+                values[counter::RETIRED_TX_SUCCESS + 1] = multi_slot_arms;
+                values[counter::PENDING_GATE + 1] = scheduler_capacity;
+            }
+        }
         return;
     }
-    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    #[cfg(all(
+        feature = "vendor-host-tx-diagnostics",
+        not(feature = "class0-lifecycle-counters")
+    ))]
     unsafe {
         let _ = transport;
         let identity = &*TX_IDENTITY.0.get();

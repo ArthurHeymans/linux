@@ -457,8 +457,16 @@ pub fn prepare_dma_and_clocks() {
 /// order after HIF activation and before `0x000009ac`.
 pub fn register_post_activation_interrupts() {
     register_interrupt_source_with(6, scheduler_event_irq);
-    register_interrupt_source(18);
-    register_interrupt_source(20);
+    #[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+    {
+        register_interrupt_source_with(18, crate::crypto::hardware_crypto_irq18);
+        register_interrupt_source_with(20, crate::crypto::hardware_crypto_irq20);
+    }
+    #[cfg(not(all(feature = "hardware-ccmp-selftest", target_arch = "arm")))]
+    {
+        register_interrupt_source(18);
+        register_interrupt_source(20);
+    }
     register_interrupt_source(21);
 }
 
@@ -470,6 +478,20 @@ pub fn register_packet_dma_interrupts() {
     // no-op callback: an uncleared level source could livelock once CPU IRQ
     // delivery is unmasked. Register it only after the event allocator and
     // source-specific acknowledgement are translated.
+}
+
+/// Services vendor IRQ 26 while this firmware intentionally keeps CPU IRQ/FIQ
+/// masked. This reproduces the generic demultiplexer's acknowledge-before-
+/// callback order instead of merely registering a callback that cannot run.
+pub fn service_masked_packet_dma_interrupt() -> bool {
+    const IRQ26: u32 = 1 << 26;
+    let pending = register32(INTERRUPT_CONTROLLER_BASE + 0x20).get() & IRQ26;
+    if pending == 0 {
+        return false;
+    }
+    interrupt_controller().clear_04.set(pending);
+    packet_dma_irq26();
+    true
 }
 
 pub fn prepare_mac_receive_hardware() {
@@ -592,11 +614,19 @@ pub fn prepare_packet_dma() {
     register32(0x0ab9_8040).set(0);
     register32(0x09c0_080c).set(0);
 
+    // Vendor order, from `mac_hw_reset_regs` (`annotated-main.c:469-477`):
+    // the auxiliary configuration at +0x0c goes in BEFORE the main control word
+    // at +0x00, and the producer/consumer cursors are cleared only afterwards.
+    // Our previous order wrote the control word first, exposing the controller
+    // to stale +0x0c and cursor values across that transition. Final register
+    // image is identical either way, so this only matters if +0x00 latches
+    // internal routing state -- which is exactly what we are testing, since
+    // vendor never leaks TX command-fetch bytes into the RX FIFO and we do.
+    register32(0x09c0_060c).set(0x80);
     register32(0x09c0_0600).set(0x0102_0418);
+    register32(0x09c0_061c).set(7);
     register32(0x09c0_0604).set(0);
     register32(0x09c0_0608).set(0);
-    register32(0x09c0_060c).set(0x80);
-    register32(0x09c0_061c).set(7);
     register32(0x09c0_0620).set(0x3000_0000);
 
     register32(0x09c0_0200).set(0);
@@ -613,9 +643,13 @@ pub fn prepare_packet_dma() {
     for offset in (0x08..=0x2c).step_by(4) {
         register32(0x09c0_0e00 + offset).set(0);
     }
-    register32(0x09c0_0e34).set(3);
+    // Vendor `tsf_hw_init` (`annotated-main.c:18643-18659`) clears +0xe34 to 0
+    // and only then writes 3, producing a 0 -> 3 edge. We wrote 3 directly.
+    // Not equivalent if the register has sticky or write-one-to-set semantics.
+    register32(0x09c0_0e34).set(0);
     register32(0x09c0_0e38).set(0);
     register32(0x09c0_0e3c).set(0);
+    register32(0x09c0_0e34).set(3);
     post_code(0x5044_4d02);
 
     register32(0x09c0_0e60).set(2);
@@ -660,11 +694,14 @@ pub fn prepare_packet_dma() {
     }
     post_code(0x5044_4d04);
 
-    register32(0x09c0_1400).set(0);
+    // Vendor `hif_dbg_ctx_init` (`annotated-main.c:19298-19313`) writes the
+    // base/control register at +0x00 LAST, after its parameters. We wrote it
+    // first, which transiently publishes whatever +0x04..+0x10 held.
     register32(0x09c0_1404).set(0);
     register32(0x09c0_1408).set(0);
     register32(0x09c0_140c).set(0x7ff);
     register32(0x09c0_1410).set(0);
+    register32(0x09c0_1400).set(0);
     post_code(0x5044_4d05);
 
     // Vendor `0xf6 -> 0x4c6`: four software-owned packet-RAM records.

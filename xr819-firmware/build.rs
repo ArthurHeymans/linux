@@ -1,74 +1,124 @@
-use std::env;
-use std::path::PathBuf;
+use aes::Aes128;
+use ccm::{
+    Ccm,
+    aead::{AeadInPlace, KeyInit, generic_array::GenericArray},
+    consts::{U8, U13},
+};
+use std::{env, fs, path::PathBuf};
+
+type AesCcmp = Ccm<Aes128, U8, U13>;
+
+fn rust_array(name: &str, bytes: &[u8]) -> String {
+    let values = bytes
+        .iter()
+        .map(|byte| format!("0x{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("pub const {name}: [u8; {}] = [{values}];\n", bytes.len())
+}
 
 fn main() {
-    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    println!("cargo:rerun-if-env-changed=XR819_TX_BISECT_STAGE");
-    println!("cargo:rerun-if-env-changed=XR819_TX_BISECT_SUBTYPE");
-    println!("cargo:rerun-if-env-changed=XR819_DATA_DIAGNOSTIC_LENGTH");
-    let bisect_stage = env::var("XR819_TX_BISECT_STAGE")
-        .unwrap_or_else(|_| "0".to_owned())
-        .parse::<u8>()
-        .expect("XR819_TX_BISECT_STAGE must be an integer from 0 through 8");
-    assert!(bisect_stage <= 8, "XR819_TX_BISECT_STAGE must be at most 8");
-    println!("cargo:rustc-env=XR819_TX_BISECT_STAGE={bisect_stage}");
-    let bisect_subtype = env::var("XR819_TX_BISECT_SUBTYPE")
-        .unwrap_or_else(|_| "255".to_owned())
-        .parse::<u16>()
-        .expect(
-            "XR819_TX_BISECT_SUBTYPE must be 0 through 15, 253 for protected data, 254 for non-authentication, or 255 for all frames",
-        );
-    assert!(
-        bisect_subtype <= 15 || matches!(bisect_subtype, 253..=255),
-        "XR819_TX_BISECT_SUBTYPE must be 0 through 15, 253 for protected data, 254 for non-authentication, or 255 for all frames"
-    );
-    println!("cargo:rustc-env=XR819_TX_BISECT_SUBTYPE={bisect_subtype}");
-    let data_diagnostic_length = env::var("XR819_DATA_DIAGNOSTIC_LENGTH")
-        .unwrap_or_else(|_| "0".to_owned())
-        .parse::<u16>()
-        .expect("XR819_DATA_DIAGNOSTIC_LENGTH must be an integer from 0 through 2048");
-    assert!(
-        data_diagnostic_length <= 2048,
-        "XR819_DATA_DIAGNOSTIC_LENGTH must be at most 2048"
-    );
-    println!("cargo:rustc-env=XR819_DATA_DIAGNOSTIC_LENGTH={data_diagnostic_length}");
-    println!(
-        "cargo:rustc-link-arg-bin=mailbox=-T{}",
-        manifest_dir.join("link.x").display()
-    );
-    println!("cargo:rustc-link-arg-bin=mailbox=--nmagic");
-    for binary in [
-        "download-boot",
-        "download-boot-low",
-        "download-boot-sectioned",
+    println!("cargo:rerun-if-changed=build.rs");
+    for (name, default) in [
+        ("XR819_TX_BISECT_STAGE", "0"),
+        ("XR819_TX_BISECT_SUBTYPE", "255"),
+        ("XR819_DATA_DIAGNOSTIC_LENGTH", "0"),
     ] {
+        println!("cargo:rerun-if-env-changed={name}");
         println!(
-            "cargo:rustc-link-arg-bin={binary}=-T{}",
-            manifest_dir.join("link-download.x").display()
+            "cargo:rustc-env={name}={}",
+            env::var(name).unwrap_or_else(|_| default.to_owned())
         );
-        println!("cargo:rustc-link-arg-bin={binary}=--nmagic");
     }
-    let target = env::var("TARGET").unwrap();
-    let main_linker = if target.starts_with("thumbv5te-") {
-        "link-main-low.x"
-    } else {
-        "link-main.x"
-    };
-    for binary in ["main-mailbox", "hif-startup", "tx_trace_extract"] {
-        println!(
-            "cargo:rustc-link-arg-bin={binary}=-T{}",
-            manifest_dir.join(main_linker).display()
-        );
-        println!("cargo:rustc-link-arg-bin={binary}=--nmagic");
+
+    let key = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    ];
+    let pn = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab];
+    let header = [
+        0x88, 0x41, 0x00, 0x00, 0x20, 0x05, 0xb6, 0xff, 0x01, 0x43,
+        0x12, 0x42, 0x2a, 0x37, 0x70, 0x07, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0x30, 0x12, 0x03, 0x00,
+    ];
+    let plaintext = [
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    ];
+    let aad = [
+        0x88, 0x41, 0x20, 0x05, 0xb6, 0xff, 0x01, 0x43,
+        0x12, 0x42, 0x2a, 0x37, 0x70, 0x07, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x03, 0x00,
+    ];
+    let nonce = [
+        0x03, 0x12, 0x42, 0x2a, 0x37, 0x70, 0x07,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+    ];
+
+    let mut input = [0_u8; 58];
+    input[..26].copy_from_slice(&header);
+    input[26..34].copy_from_slice(&[
+        pn[5], pn[4], 0, 0x20, pn[3], pn[2], pn[1], pn[0],
+    ]);
+    input[34..50].copy_from_slice(&plaintext);
+
+    let mut output = input;
+    let cipher = AesCcmp::new_from_slice(&key).expect("fixed AES-128 key length");
+    let tag = cipher
+        .encrypt_in_place_detached(
+            GenericArray::from_slice(&nonce),
+            &aad,
+            &mut output[34..50],
+        )
+        .expect("fixed CCMP known-answer generation");
+    output[50..58].copy_from_slice(&tag);
+
+    let matrix_lengths = [1_usize, 15, 16, 17, 1506];
+    let mut matrix_checksums = Vec::new();
+    let mut matrix_mics = Vec::new();
+    for length in matrix_lengths {
+        let mut frame = vec![0_u8; 26 + 8 + length + 8];
+        frame[..26].copy_from_slice(&header);
+        frame[26..34].copy_from_slice(&input[26..34]);
+        for (index, byte) in frame[34..34 + length].iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(17).wrapping_add(3);
+        }
+        let tag = cipher
+            .encrypt_in_place_detached(
+                GenericArray::from_slice(&nonce),
+                &aad,
+                &mut frame[34..34 + length],
+            )
+            .expect("fixed CCMP boundary generation");
+        frame[34 + length..].copy_from_slice(&tag);
+        matrix_checksums.push(frame.iter().fold(0_u32, |value, byte| {
+            value.rotate_left(5).wrapping_add(u32::from(*byte))
+        }));
+        matrix_mics.extend_from_slice(&tag);
     }
-    println!(
-        "cargo:rustc-link-arg-bin=hif-extension-probe=-T{}",
-        manifest_dir.join("link-extension.x").display()
-    );
-    println!("cargo:rustc-link-arg-bin=hif-extension-probe=--nmagic");
-    println!("cargo:rerun-if-changed=link.x");
-    println!("cargo:rerun-if-changed=link-download.x");
-    println!("cargo:rerun-if-changed=link-main.x");
-    println!("cargo:rerun-if-changed=link-main-low.x");
-    println!("cargo:rerun-if-changed=link-extension.x");
+    let lengths = matrix_lengths
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let checksums = matrix_checksums
+        .iter()
+        .map(|value| format!("0x{value:08x}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let generated = [
+        "// @generated by build.rs using RustCrypto AES-CCM.\n".to_owned(),
+        rust_array("HARDWARE_KAT_KEY", &key),
+        rust_array("HARDWARE_KAT_PN", &pn),
+        rust_array("HARDWARE_KAT_INPUT", &input),
+        rust_array("HARDWARE_KAT_EXPECTED", &output),
+        format!("pub const HARDWARE_KAT_MATRIX_LENGTHS: [usize; 5] = [{lengths}];\n"),
+        format!("pub const HARDWARE_KAT_MATRIX_CHECKSUMS: [u32; 5] = [{checksums}];\n"),
+        rust_array("HARDWARE_KAT_MATRIX_MICS", &matrix_mics),
+    ]
+    .concat();
+    let output_path = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"))
+        .join("hardware_ccmp_kat.rs");
+    fs::write(output_path, generated).expect("write generated CCMP known-answer");
 }

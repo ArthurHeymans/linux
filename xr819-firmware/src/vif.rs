@@ -182,6 +182,11 @@ pub unsafe fn apply_edca(
             write_u32(pas + 0x4e8 + queue * 4, entry.max_rx_lifetime);
         }
     }
+    // Vendor copies the WSM payload verbatim into PAS +0x4cc. The host wire
+    // order is params[3], [2], [1], [0], so +0x4dc..+0x4df contain q3..q0.
+    // `edca_apply_params` (annotated-main.c:24040-24043) then packs q2, q0,
+    // q1, q3 in that order. Keep this expressed in wire indices so it remains
+    // visibly identical to the vendor formula.
     let aifs = u32::from(wire[1].aifns)
         .wrapping_add(u32::from(wire[3].aifns.wrapping_sub(1)) << 12)
         .wrapping_add(u32::from(wire[2].aifns) << 8)

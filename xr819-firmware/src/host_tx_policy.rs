@@ -6,40 +6,26 @@
 //! compiled and tested on every build, in the same spirit as
 //! `tx::plan_ordinary_tx_pipe_status`.
 
-/// What to do with a TX completion observed while servicing one host slot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CompletionRouting {
-    /// The completion belongs to the slot being serviced; confirm it.
-    ConfirmServicedSlot,
-    /// The completion names some other context. Record it and do nothing else.
-    Ignore,
-}
-
-/// Decides who may consume a completion drained while servicing one slot.
+/// Match completion-ring evidence against the exact slot recorded before GO.
 ///
-/// Completions come from a single global queue but are drained from inside
-/// per-slot servicing, so a completion frequently names a context other than
-/// the slot doing the draining. Only the serviced slot may consume one.
-///
-/// Routing the completion to whichever slot owns the named context looks
-/// obviously correct and is not: it was measured over the air against an
-/// otherwise identical image and regressed transmission badly, while leaving
-/// the buffer accounting it was meant to fix unchanged.
-///
-/// ```text
-///                 TXed  RXed  ping received        Pending TX  Used bufs
-/// ignore (this)     95   138  51/448 (88.6% loss)           2          7
-/// route to owner    27    43   0/561 ( 100% loss)           2          6
-/// ```
-///
-/// See `xr819-class0-tx-status-findings.md`. Do not reintroduce routing
-/// without new over-the-air evidence.
-pub const fn route_completion(serviced_context: u32, completion_context: u32) -> CompletionRouting {
-    if serviced_context == completion_context {
-        CompletionRouting::ConfirmServicedSlot
-    } else {
-        CompletionRouting::Ignore
-    }
+/// Context-only routing was measured and reverted because it could release a
+/// buffer still referenced by the MAC. The completion drain now carries the
+/// publication's pipe, slot, and frame-node identity; all four fields must
+/// agree before host ownership can be released.
+pub const fn completion_matches_owner(
+    owner_context: u32,
+    owner_frame_node: u32,
+    owner_pipe: u8,
+    owner_slot: u8,
+    completion_context: u32,
+    completion_frame_node: u32,
+    completion_pipe: u8,
+    completion_slot: u8,
+) -> bool {
+    owner_context == completion_context
+        && owner_frame_node == completion_frame_node
+        && owner_pipe == completion_pipe
+        && owner_slot == completion_slot
 }
 
 /// Per-rate attempt nibbles for a frame transmitted at a single rate.
@@ -88,21 +74,22 @@ mod tests {
     }
 
     #[test]
-    fn completion_for_the_serviced_slot_is_confirmed() {
-        assert_eq!(
-            route_completion(0x0901_2340, 0x0901_2340),
-            CompletionRouting::ConfirmServicedSlot
-        );
-    }
-
-    #[test]
-    fn completion_naming_another_context_is_never_routed_to_it() {
-        // Measured: routing these to their owner cost TXed 95 -> 27 and all
-        // ping delivery. The only safe action is to ignore them here.
-        assert_eq!(
-            route_completion(0x0901_2340, 0x0901_5580),
-            CompletionRouting::Ignore
-        );
-        assert_eq!(route_completion(0, 0x0901_5580), CompletionRouting::Ignore);
+    fn completion_requires_context_pipe_slot_and_frame_node() {
+        let owner = (0x0901_2340, 0x0901_2394, 2, 1);
+        assert!(completion_matches_owner(
+            owner.0, owner.1, owner.2, owner.3, owner.0, owner.1, owner.2, owner.3,
+        ));
+        assert!(!completion_matches_owner(
+            owner.0, owner.1, owner.2, owner.3, 0x0901_5580, owner.1, owner.2, owner.3,
+        ));
+        assert!(!completion_matches_owner(
+            owner.0, owner.1, owner.2, owner.3, owner.0, owner.1, owner.2, 2,
+        ));
+        assert!(!completion_matches_owner(
+            owner.0, owner.1, owner.2, owner.3, owner.0, owner.1, 3, owner.3,
+        ));
+        assert!(!completion_matches_owner(
+            owner.0, owner.1, owner.2, owner.3, owner.0, 0x0901_5594, owner.2, owner.3,
+        ));
     }
 }

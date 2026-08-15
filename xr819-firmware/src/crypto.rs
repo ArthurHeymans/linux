@@ -5,6 +5,12 @@ use ccm::{
     consts::{U8, U13},
 };
 use core::cell::UnsafeCell;
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+use tock_registers::{
+    interfaces::{Readable, Writeable},
+    register_structs,
+    registers::ReadWrite,
+};
 
 const MAX_KEYS: usize = 24;
 const CCMP_HEADER_LEN: usize = 8;
@@ -12,7 +18,22 @@ pub(crate) const CCMP_MIC_LEN: usize = 8;
 const AES_GROUP: u8 = 4;
 const AES_PAIRWISE: u8 = 5;
 
+#[cfg(feature = "hardware-ccmp-selftest")]
+mod hardware_kat {
+    include!(concat!(env!("OUT_DIR"), "/hardware_ccmp_kat.rs"));
+}
+
 type AesCcmp = Ccm<Aes128, U8, U13>;
+
+#[cfg(any(
+    all(feature = "hardware-ccmp-pace-1ms", feature = "hardware-ccmp-pace-2ms"),
+    all(feature = "hardware-ccmp-pace-1ms", feature = "hardware-ccmp-pace-4ms"),
+    all(feature = "hardware-ccmp-pace-2ms", feature = "hardware-ccmp-pace-4ms"),
+    all(feature = "hardware-ccmp-pace-1ms", feature = "hardware-ccmp-pace-8ms"),
+    all(feature = "hardware-ccmp-pace-2ms", feature = "hardware-ccmp-pace-8ms"),
+    all(feature = "hardware-ccmp-pace-4ms", feature = "hardware-ccmp-pace-8ms"),
+))]
+compile_error!("select at most one hardware CCMP pacing interval");
 
 #[derive(Clone, Copy)]
 struct KeyRecord {
@@ -54,6 +75,7 @@ pub enum CcmpError {
     MalformedFrame,
     MissingKey,
     Authentication,
+    HardwareTimeout,
 }
 
 pub fn add_key(if_id: u8, request: &crate::wsm::AddKeyRequest<'_>) -> Result<(), KeyError> {
@@ -248,6 +270,596 @@ fn rx_key(if_id: u8, transmitter: &[u8], key_id: u8) -> Option<KeyRecord> {
     }
 }
 
+const fn hardware_aad_tail_command(aad_length: usize) -> Option<u32> {
+    match aad_length {
+        22 => Some(0x148b),
+        24 => Some(0x14ab),
+        28 => Some(0x14eb),
+        30 => Some(0x140b),
+        _ => None,
+    }
+}
+
+fn hardware_ccm_context(
+    frame: &[u8],
+    frame_control: u16,
+    pn: [u8; 6],
+    payload_length: usize,
+) -> Result<[u8; 16], CcmpError> {
+    if payload_length > u16::MAX as usize || frame.len() < 16 {
+        return Err(CcmpError::MalformedFrame);
+    }
+    let mut context = [0_u8; 16];
+    context[0] = 1;
+    context[1] = qos_tid(frame, frame_control)?;
+    context[2..8].copy_from_slice(&frame[10..16]);
+    context[8..14].copy_from_slice(&pn);
+    context[14..16].copy_from_slice(&(payload_length as u16).to_be_bytes());
+    Ok(context)
+}
+
+fn hardware_aad_stream(aad: &[u8; 30], aad_length: usize) -> Result<[u8; 32], CcmpError> {
+    if hardware_aad_tail_command(aad_length).is_none() {
+        return Err(CcmpError::MalformedFrame);
+    }
+    let mut stream = [0_u8; 32];
+    stream[..2].copy_from_slice(&(aad_length as u16).to_be_bytes());
+    stream[2..2 + aad_length].copy_from_slice(&aad[..aad_length]);
+    Ok(stream)
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+register_structs! {
+    AesRegisters {
+        (0x00 => command_status: ReadWrite<u32>),
+        (0x04 => fifo: ReadWrite<u32>),
+        (0x08 => _debug_port: ReadWrite<u32>),
+        (0x0c => _reserved),
+        (0x10 => source: ReadWrite<u32>),
+        (0x14 => destination: ReadWrite<u32>),
+        (0x18 => length: ReadWrite<u32>),
+        (0x1c => @END),
+    }
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+struct SharedHardwareCompletion(UnsafeCell<u32>);
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+unsafe impl Sync for SharedHardwareCompletion {}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+static HARDWARE_COMPLETION: SharedHardwareCompletion = SharedHardwareCompletion(UnsafeCell::new(0));
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+static HARDWARE_IRQ_MASK: SharedHardwareCompletion = SharedHardwareCompletion(UnsafeCell::new(0));
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+static HARDWARE_COMPLETION_STATUS: SharedHardwareCompletion =
+    SharedHardwareCompletion(UnsafeCell::new(0));
+
+#[cfg(all(feature = "hardware-ccmp-verify", target_arch = "arm"))]
+struct SharedHardwareVerifyBuffer(UnsafeCell<[u8; 2048]>);
+
+#[cfg(all(feature = "hardware-ccmp-verify", target_arch = "arm"))]
+unsafe impl Sync for SharedHardwareVerifyBuffer {}
+
+#[cfg(all(feature = "hardware-ccmp-verify", target_arch = "arm"))]
+static HARDWARE_VERIFY_BUFFER: SharedHardwareVerifyBuffer =
+    SharedHardwareVerifyBuffer(UnsafeCell::new([0; 2048]));
+
+#[cfg(feature = "hardware-ccmp-selftest")]
+struct SharedHardwareSelftest(UnsafeCell<[u32; 22]>);
+
+#[cfg(feature = "hardware-ccmp-selftest")]
+unsafe impl Sync for SharedHardwareSelftest {}
+
+#[cfg(feature = "hardware-ccmp-selftest")]
+static HARDWARE_SELFTEST: SharedHardwareSelftest =
+    SharedHardwareSelftest(UnsafeCell::new([0; 22]));
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn aes_registers() -> &'static AesRegisters {
+    unsafe { &*(0x09c5_0000 as *const AesRegisters) }
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+const AES_MODE1_MICROCODE: &[u8; 430] = include_bytes!("../data/aes-mode1.bin");
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn initialize_hardware_aes_engine() -> Result<(), CcmpError> {
+    let registers = aes_registers();
+    registers.command_status.set(0);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers._debug_port.set(0x8000_0000 | u32::from(AES_MODE1_MICROCODE[0]));
+    for byte in &AES_MODE1_MICROCODE[1..] {
+        registers._debug_port.set(u32::from(*byte));
+    }
+    registers.command_status.set(0x9000);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    Ok(())
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn record_hardware_selftest_word(index: usize, value: u32) {
+    unsafe {
+        if index < 22 && HARDWARE_SELFTEST.0.get().cast::<u32>().read_volatile() == 0x4857_434b {
+            HARDWARE_SELFTEST
+                .0
+                .get()
+                .cast::<u32>()
+                .add(index)
+                .write_volatile(value);
+        }
+    }
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn increment_hardware_selftest_word(index: usize) -> u32 {
+    unsafe {
+        let result = HARDWARE_SELFTEST.0.get().cast::<u32>();
+        if index >= 22 || result.read_volatile() != 0x4857_434b {
+            return 0;
+        }
+        let word = result.add(index);
+        let value = word.read_volatile().wrapping_add(1);
+        word.write_volatile(value);
+        value
+    }
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn hardware_crypto_irq(mask: u32) {
+    unsafe {
+        HARDWARE_COMPLETION_STATUS
+            .0
+            .get()
+            .write_volatile(aes_registers().command_status.get());
+        let irqs = HARDWARE_IRQ_MASK.0.get();
+        irqs.write_volatile(irqs.read_volatile() | mask);
+        HARDWARE_COMPLETION.0.get().write_volatile(1);
+    }
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+pub(crate) extern "C" fn hardware_crypto_irq18() {
+    hardware_crypto_irq(1 << 18);
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+pub(crate) extern "C" fn hardware_crypto_irq20() {
+    hardware_crypto_irq(1 << 20);
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn wait_aes_status(predicate: impl Fn(u32) -> bool) -> Result<(), CcmpError> {
+    let started = unsafe { crate::vendor_host_tx::vendor_timer_now() };
+    while !predicate(aes_registers().command_status.get()) {
+        if unsafe { crate::vendor_host_tx::vendor_timer_now() }.wrapping_sub(started) >= 50_000 {
+            return Err(CcmpError::HardwareTimeout);
+        }
+        core::hint::spin_loop();
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn write_fifo_block(block: &[u8]) {
+    for word in block.chunks_exact(4) {
+        aes_registers().fifo.set(u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+    }
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn encrypt_tx_frame_hardware(
+    frame: &mut [u8],
+    frame_control: u16,
+    header: usize,
+    key: &[u8; 16],
+    pn: [u8; 6],
+    aad: &[u8; 30],
+    aad_length: usize,
+) -> Result<(), CcmpError> {
+    let payload_start = header + CCMP_HEADER_LEN;
+    let payload_end = frame.len() - CCMP_MIC_LEN;
+    let payload_length = payload_end
+        .checked_sub(payload_start)
+        .ok_or(CcmpError::MalformedFrame)?;
+    let context = hardware_ccm_context(frame, frame_control, pn, payload_length)?;
+    let aad_stream = hardware_aad_stream(aad, aad_length)?;
+    let registers = aes_registers();
+
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    write_fifo_block(key);
+    registers.command_status.set(0x1100);
+
+    wait_aes_status(|status| status & (1 << 13) != 0)?;
+    record_hardware_selftest_word(9, registers.command_status.get());
+    write_fifo_block(&context);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers.command_status.set(0x1240);
+
+    wait_aes_status(|status| status & (1 << 13) != 0)?;
+    record_hardware_selftest_word(10, registers.command_status.get());
+    write_fifo_block(&aad_stream[..16]);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers.command_status.set(0x1403);
+
+    wait_aes_status(|status| status & (1 << 13) != 0)?;
+    record_hardware_selftest_word(11, registers.command_status.get());
+    write_fifo_block(&aad_stream[16..]);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers
+        .command_status
+        .set(hardware_aad_tail_command(aad_length).ok_or(CcmpError::MalformedFrame)?);
+
+    let payload_address = frame[payload_start..].as_mut_ptr() as usize as u32 & 0xf6ff_ffff;
+    registers.source.set(payload_address);
+    registers.destination.set(payload_address);
+    registers.length.set(payload_length as u32);
+    record_hardware_selftest_word(14, registers.source.get());
+    record_hardware_selftest_word(15, registers.destination.get());
+    record_hardware_selftest_word(16, registers.length.get());
+    unsafe {
+        HARDWARE_COMPLETION.0.get().write_volatile(0);
+        HARDWARE_IRQ_MASK.0.get().write_volatile(0);
+        HARDWARE_COMPLETION_STATUS.0.get().write_volatile(0);
+    }
+    crate::hif::drain_write_buffer();
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    record_hardware_selftest_word(12, registers.command_status.get());
+    registers.command_status.set(0x3008_1009);
+    record_hardware_selftest_word(13, registers.command_status.get());
+
+    let started = unsafe { crate::vendor_host_tx::vendor_timer_now() };
+    while unsafe { HARDWARE_COMPLETION.0.get().read_volatile() } == 0 {
+        unsafe {
+            const IRQ18: u32 = 1 << 18;
+            const IRQ20: u32 = 1 << 20;
+            let pending = (0x0a88_0020 as *const u32).read_volatile() & (IRQ18 | IRQ20);
+            if pending != 0 {
+                // CPU IRQ/FIQ remain masked in this firmware, so reproduce the
+                // vendor demultiplexer's acknowledge-before-callback order in
+                // the foreground. Per-transfer writes to controller +0x14 are
+                // intentionally absent; vendor uses only +0x04 at runtime.
+                (0x0a88_0004 as *mut u32).write_volatile(pending);
+                if pending & IRQ18 != 0 {
+                    hardware_crypto_irq18();
+                }
+                if pending & IRQ20 != 0 {
+                    hardware_crypto_irq20();
+                }
+            }
+        }
+        if unsafe { crate::vendor_host_tx::vendor_timer_now() }.wrapping_sub(started) >= 50_000 {
+            return Err(CcmpError::HardwareTimeout);
+        }
+        core::hint::spin_loop();
+    }
+    crate::hif::drain_write_buffer();
+    // TX encryption completion is established by IRQ 20 and the KAT's exact
+    // ciphertext/MIC match. AES status bit 0 remains clear before and after
+    // acknowledgement for this mode; it is not a TX-success predicate.
+    Ok(())
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+fn decrypt_rx_frame_hardware(
+    frame: &mut [u8],
+    frame_control: u16,
+    header: usize,
+    key: &[u8; 16],
+    pn: [u8; 6],
+    aad: &[u8; 30],
+    aad_length: usize,
+) -> Result<(), CcmpError> {
+    let payload_start = header + CCMP_HEADER_LEN;
+    let payload_end = frame.len() - CCMP_MIC_LEN;
+    let payload_length = payload_end
+        .checked_sub(payload_start)
+        .ok_or(CcmpError::MalformedFrame)?;
+    let context = hardware_ccm_context(frame, frame_control, pn, payload_length)?;
+    let aad_stream = hardware_aad_stream(aad, aad_length)?;
+    let registers = aes_registers();
+
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    write_fifo_block(key);
+    registers.command_status.set(0x1100);
+    wait_aes_status(|status| status & (1 << 13) != 0)?;
+    write_fifo_block(&context);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers.command_status.set(0x1240);
+    wait_aes_status(|status| status & (1 << 13) != 0)?;
+    write_fifo_block(&aad_stream[..16]);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers.command_status.set(0x1402);
+    wait_aes_status(|status| status & (1 << 13) != 0)?;
+    write_fifo_block(&aad_stream[16..]);
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers.command_status.set(
+        hardware_aad_tail_command(aad_length)
+            .ok_or(CcmpError::MalformedFrame)?
+            .wrapping_sub(1),
+    );
+
+    let payload_address = frame[payload_start..].as_mut_ptr() as usize as u32 & 0xf6ff_ffff;
+    registers.source.set(payload_address);
+    registers.destination.set(payload_address);
+    registers.length.set(payload_length as u32);
+    unsafe {
+        HARDWARE_COMPLETION.0.get().write_volatile(0);
+        HARDWARE_IRQ_MASK.0.get().write_volatile(0);
+        HARDWARE_COMPLETION_STATUS.0.get().write_volatile(0);
+    }
+    crate::hif::drain_write_buffer();
+    wait_aes_status(|status| status & (1 << 12) == 0)?;
+    registers.command_status.set(0x3008_1008);
+
+    let started = unsafe { crate::vendor_host_tx::vendor_timer_now() };
+    while unsafe { HARDWARE_COMPLETION.0.get().read_volatile() } == 0 {
+        unsafe {
+            const IRQ18: u32 = 1 << 18;
+            const IRQ20: u32 = 1 << 20;
+            let pending = (0x0a88_0020 as *const u32).read_volatile() & (IRQ18 | IRQ20);
+            if pending != 0 {
+                (0x0a88_0004 as *mut u32).write_volatile(pending);
+                if pending & IRQ18 != 0 {
+                    hardware_crypto_irq18();
+                }
+                if pending & IRQ20 != 0 {
+                    hardware_crypto_irq20();
+                }
+            }
+        }
+        if unsafe { crate::vendor_host_tx::vendor_timer_now() }.wrapping_sub(started) >= 50_000 {
+            return Err(CcmpError::HardwareTimeout);
+        }
+        core::hint::spin_loop();
+    }
+    crate::hif::drain_write_buffer();
+    if unsafe { HARDWARE_COMPLETION_STATUS.0.get().read_volatile() } & 1 == 0 {
+        return Err(CcmpError::Authentication);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+pub fn run_hardware_ccmp_selftest() {
+    use hardware_kat::{
+        HARDWARE_KAT_EXPECTED, HARDWARE_KAT_INPUT, HARDWARE_KAT_KEY,
+        HARDWARE_KAT_MATRIX_CHECKSUMS, HARDWARE_KAT_MATRIX_LENGTHS, HARDWARE_KAT_MATRIX_MICS,
+        HARDWARE_KAT_PN,
+    };
+
+    const SCRATCH: usize = crate::hif::SHARED_BUFFER_BASE;
+    unsafe {
+        let result = HARDWARE_SELFTEST.0.get().cast::<u32>();
+        result.write_volatile(0x4857_434b); // "HWCK"
+        result.add(1).write_volatile(0xffff_0000);
+        for (index, byte) in HARDWARE_KAT_INPUT.iter().copied().enumerate() {
+            (SCRATCH as *mut u8).add(index).write_volatile(byte);
+        }
+        let frame = core::slice::from_raw_parts_mut(SCRATCH as *mut u8, HARDWARE_KAT_INPUT.len());
+        let control = u16::from_le_bytes([frame[0], frame[1]]);
+        let header = header_length(control);
+        let (aad, aad_length) = match build_aad(frame, control) {
+            Ok(value) => value,
+            Err(_) => {
+                result.add(1).write_volatile(0xe004);
+                return;
+            }
+        };
+        let started = crate::vendor_host_tx::vendor_timer_now();
+        result.add(7).write_volatile(aes_registers().command_status.get());
+        let microcode_checksum = AES_MODE1_MICROCODE.iter().fold(0_u32, |value, byte| {
+            value.rotate_left(5).wrapping_add(u32::from(*byte))
+        });
+        result.add(17).write_volatile(microcode_checksum);
+        if initialize_hardware_aes_engine().is_err() {
+            result.add(1).write_volatile(0xe005);
+            result.add(8).write_volatile(aes_registers().command_status.get());
+            result.add(4).write_volatile(
+                crate::vendor_host_tx::vendor_timer_now().wrapping_sub(started),
+            );
+            return;
+        }
+        result.add(8).write_volatile(aes_registers().command_status.get());
+        let operation = encrypt_tx_frame_hardware(
+            frame,
+            control,
+            header,
+            &HARDWARE_KAT_KEY,
+            HARDWARE_KAT_PN,
+            &aad,
+            aad_length,
+        );
+        result
+            .add(4)
+            .write_volatile(crate::vendor_host_tx::vendor_timer_now().wrapping_sub(started));
+        result
+            .add(2)
+            .write_volatile(HARDWARE_IRQ_MASK.0.get().read_volatile());
+        result
+            .add(3)
+            .write_volatile(HARDWARE_COMPLETION_STATUS.0.get().read_volatile());
+        result
+            .add(18)
+            .write_volatile(aes_registers().command_status.get());
+
+        let mismatch = HARDWARE_KAT_EXPECTED
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(index, expected)| frame[*index] != *expected);
+        match (operation, mismatch) {
+            (Err(CcmpError::HardwareTimeout), _) => result.add(1).write_volatile(0xe001),
+            (_, Some((index, expected))) => {
+                result.add(1).write_volatile(0xe003);
+                result.add(5).write_volatile(
+                    ((index as u32) << 16)
+                        | (u32::from(expected) << 8)
+                        | u32::from(frame[index]),
+                );
+            }
+            (Ok(()), None) => result.add(1).write_volatile(1),
+            (Err(CcmpError::Authentication), None) => result.add(1).write_volatile(2),
+            (Err(_), None) => result.add(1).write_volatile(0xe002),
+        }
+        let checksum = frame.iter().fold(0_u32, |value, byte| {
+            value.rotate_left(5).wrapping_add(u32::from(*byte))
+        });
+        result.add(6).write_volatile(checksum);
+
+        if result.add(1).read_volatile() == 1 {
+            for (case, payload_length) in HARDWARE_KAT_MATRIX_LENGTHS.iter().copied().enumerate() {
+                let frame_length = 26 + CCMP_HEADER_LEN + payload_length + CCMP_MIC_LEN;
+                let frame = core::slice::from_raw_parts_mut(SCRATCH as *mut u8, frame_length);
+                frame[..34].copy_from_slice(&HARDWARE_KAT_INPUT[..34]);
+                for (index, byte) in frame[34..34 + payload_length].iter_mut().enumerate() {
+                    *byte = (index as u8).wrapping_mul(17).wrapping_add(3);
+                }
+                frame[34 + payload_length..].fill(0);
+                let control = u16::from_le_bytes([frame[0], frame[1]]);
+                let (aad, aad_length) = match build_aad(frame, control) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        result.add(1).write_volatile(0xe004);
+                        result.add(20).write_volatile(payload_length as u32);
+                        break;
+                    }
+                };
+                let operation = encrypt_tx_frame_hardware(
+                    frame,
+                    control,
+                    header_length(control),
+                    &HARDWARE_KAT_KEY,
+                    HARDWARE_KAT_PN,
+                    &aad,
+                    aad_length,
+                );
+                result.add(2).write_volatile(
+                    result.add(2).read_volatile() | HARDWARE_IRQ_MASK.0.get().read_volatile(),
+                );
+                let actual_checksum = frame.iter().fold(0_u32, |value, byte| {
+                    value.rotate_left(5).wrapping_add(u32::from(*byte))
+                });
+                let mic = &frame[34 + payload_length..];
+                let expected_mic = &HARDWARE_KAT_MATRIX_MICS[case * 8..case * 8 + 8];
+                if operation.is_err()
+                    || actual_checksum != HARDWARE_KAT_MATRIX_CHECKSUMS[case]
+                    || mic != expected_mic
+                {
+                    result.add(1).write_volatile(0xe006);
+                    result.add(5).write_volatile(HARDWARE_KAT_MATRIX_CHECKSUMS[case]);
+                    result.add(6).write_volatile(actual_checksum);
+                    result.add(20).write_volatile(payload_length as u32);
+                    break;
+                }
+                result.add(19).write_volatile((case + 1) as u32);
+            }
+        }
+        if result.add(1).read_volatile() == 1 {
+            let frame = core::slice::from_raw_parts_mut(
+                SCRATCH as *mut u8,
+                HARDWARE_KAT_EXPECTED.len(),
+            );
+            frame.copy_from_slice(&HARDWARE_KAT_EXPECTED);
+            let control = u16::from_le_bytes([frame[0], frame[1]]);
+            let header = header_length(control);
+            let (aad, aad_length) = build_aad(frame, control).expect("fixed RX KAT AAD");
+            let operation = decrypt_rx_frame_hardware(
+                frame,
+                control,
+                header,
+                &HARDWARE_KAT_KEY,
+                HARDWARE_KAT_PN,
+                &aad,
+                aad_length,
+            );
+            result.add(2).write_volatile(
+                result.add(2).read_volatile() | HARDWARE_IRQ_MASK.0.get().read_volatile(),
+            );
+            let payload_end = frame.len() - CCMP_MIC_LEN;
+            if operation.is_err()
+                || frame[header + CCMP_HEADER_LEN..payload_end]
+                    != HARDWARE_KAT_INPUT[header + CCMP_HEADER_LEN..payload_end]
+            {
+                result.add(1).write_volatile(0xe007);
+                result.add(20).write_volatile(1);
+            } else {
+                result.add(19).write_volatile(6);
+                frame.copy_from_slice(&HARDWARE_KAT_EXPECTED);
+                let last = frame.len() - 1;
+                frame[last] ^= 1;
+                let (aad, aad_length) = build_aad(frame, control).expect("fixed RX KAT AAD");
+                if !matches!(
+                    decrypt_rx_frame_hardware(
+                        frame,
+                        control,
+                        header,
+                        &HARDWARE_KAT_KEY,
+                        HARDWARE_KAT_PN,
+                        &aad,
+                        aad_length,
+                    ),
+                    Err(CcmpError::Authentication)
+                ) {
+                    result.add(1).write_volatile(0xe007);
+                    result.add(20).write_volatile(2);
+                } else {
+                    result.add(19).write_volatile(7);
+                }
+            }
+        }
+        result
+            .add(3)
+            .write_volatile(HARDWARE_COMPLETION_STATUS.0.get().read_volatile());
+        result
+            .add(18)
+            .write_volatile(aes_registers().command_status.get());
+        result
+            .add(4)
+            .write_volatile(crate::vendor_host_tx::vendor_timer_now().wrapping_sub(started));
+        for index in 0..(26 + CCMP_HEADER_LEN + 1506 + CCMP_MIC_LEN) {
+            (SCRATCH as *mut u8).add(index).write_volatile(0);
+        }
+    }
+}
+
+#[cfg(feature = "hardware-ccmp-selftest")]
+pub fn hardware_ccmp_selftest_snapshot() -> [u32; 22] {
+    let mut values = [0; 22];
+    unsafe {
+        let source = HARDWARE_SELFTEST.0.get().cast::<u32>();
+        for (index, value) in values.iter_mut().enumerate() {
+            *value = source.add(index).read_volatile();
+        }
+    }
+    values
+}
+
+#[cfg(all(feature = "hardware-ccmp", target_arch = "arm"))]
+fn pace_hardware_ccmp() {
+    let delay_us = if cfg!(feature = "hardware-ccmp-pace-8ms") {
+        8_000
+    } else if cfg!(feature = "hardware-ccmp-pace-4ms") {
+        4_000
+    } else if cfg!(feature = "hardware-ccmp-pace-2ms") {
+        2_000
+    } else if cfg!(feature = "hardware-ccmp-pace-1ms") {
+        1_000
+    } else {
+        0
+    };
+    if delay_us == 0 {
+        return;
+    }
+    let started = unsafe { crate::vendor_host_tx::vendor_timer_now() };
+    while unsafe { crate::vendor_host_tx::vendor_timer_now() }.wrapping_sub(started) < delay_us {
+        core::hint::spin_loop();
+    }
+}
+
 pub fn encrypt_tx_frame(frame: &mut [u8], if_id: u8) -> Result<(), CcmpError> {
     let control = frame_control(frame)?;
     if control & 0x400c != 0x4008 {
@@ -276,18 +888,91 @@ pub fn encrypt_tx_frame(frame: &mut [u8], if_id: u8) -> Result<(), CcmpError> {
         pn[0],
     ]);
     let (aad, aad_length) = build_aad(frame, control)?;
-    let nonce = build_nonce(frame, control, pn)?;
-    let cipher = AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
-    let payload_end = frame.len() - CCMP_MIC_LEN;
-    let tag = cipher
-        .encrypt_in_place_detached(
-            GenericArray::from_slice(&nonce),
-            &aad[..aad_length],
-            &mut frame[header + CCMP_HEADER_LEN..payload_end],
-        )
-        .map_err(|_| CcmpError::Authentication)?;
-    frame[payload_end..].copy_from_slice(&tag);
-    Ok(())
+    #[cfg(all(feature = "hardware-ccmp", target_arch = "arm"))]
+    {
+        #[cfg(feature = "hardware-ccmp-verify")]
+        {
+            if frame.len() > 2048 {
+                return Err(CcmpError::MalformedFrame);
+            }
+            let expected = unsafe {
+                core::slice::from_raw_parts_mut(
+                    HARDWARE_VERIFY_BUFFER.0.get().cast::<u8>(),
+                    frame.len(),
+                )
+            };
+            expected.copy_from_slice(frame);
+            let nonce = build_nonce(expected, control, pn)?;
+            let cipher =
+                AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
+            let payload_end = expected.len() - CCMP_MIC_LEN;
+            let tag = cipher
+                .encrypt_in_place_detached(
+                    GenericArray::from_slice(&nonce),
+                    &aad[..aad_length],
+                    &mut expected[header + CCMP_HEADER_LEN..payload_end],
+                )
+                .map_err(|_| CcmpError::Authentication)?;
+            expected[payload_end..].copy_from_slice(&tag);
+
+            let operation = encrypt_tx_frame_hardware(
+                frame,
+                control,
+                header,
+                &key.key,
+                pn,
+                &aad,
+                aad_length,
+            );
+            increment_hardware_selftest_word(19);
+            let mismatch = frame
+                .iter()
+                .zip(expected.iter())
+                .position(|(actual, wanted)| actual != wanted);
+            if operation.is_err() || mismatch.is_some() {
+                let failures = increment_hardware_selftest_word(20);
+                if failures == 1 {
+                    let detail = mismatch.map_or(0xffff_0000, |position| {
+                        ((position as u32) << 16)
+                            | (u32::from(expected[position]) << 8)
+                            | u32::from(frame[position])
+                    });
+                    record_hardware_selftest_word(21, detail);
+                }
+                frame.copy_from_slice(expected);
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "hardware-ccmp-verify"))]
+        {
+            encrypt_tx_frame_hardware(
+                frame,
+                control,
+                header,
+                &key.key,
+                pn,
+                &aad,
+                aad_length,
+            )?;
+            pace_hardware_ccmp();
+            return Ok(());
+        }
+    }
+    #[cfg(not(all(feature = "hardware-ccmp", target_arch = "arm")))]
+    {
+        let nonce = build_nonce(frame, control, pn)?;
+        let cipher = AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
+        let payload_end = frame.len() - CCMP_MIC_LEN;
+        let tag = cipher
+            .encrypt_in_place_detached(
+                GenericArray::from_slice(&nonce),
+                &aad[..aad_length],
+                &mut frame[header + CCMP_HEADER_LEN..payload_end],
+            )
+            .map_err(|_| CcmpError::Authentication)?;
+        frame[payload_end..].copy_from_slice(&tag);
+        Ok(())
+    }
 }
 
 pub fn decrypt_rx_frame(frame: &mut [u8], if_id: u8) -> Result<bool, CcmpError> {
@@ -309,19 +994,35 @@ pub fn decrypt_rx_frame(frame: &mut [u8], if_id: u8) -> Result<bool, CcmpError> 
         .map_err(|_| CcmpError::MalformedFrame)?;
     let key = rx_key(if_id, &transmitter, key_id).ok_or(CcmpError::MissingKey)?;
     let (aad, aad_length) = build_aad(frame, control)?;
-    let nonce = build_nonce(frame, control, pn)?;
-    let cipher = AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
-    let payload_end = frame.len() - CCMP_MIC_LEN;
-    let tag = GenericArray::clone_from_slice(&frame[payload_end..]);
-    cipher
-        .decrypt_in_place_detached(
-            GenericArray::from_slice(&nonce),
-            &aad[..aad_length],
-            &mut frame[header + CCMP_HEADER_LEN..payload_end],
-            &tag,
-        )
-        .map_err(|_| CcmpError::Authentication)?;
-    Ok(true)
+    #[cfg(all(feature = "hardware-ccmp", target_arch = "arm"))]
+    {
+        decrypt_rx_frame_hardware(
+            frame,
+            control,
+            header,
+            &key.key,
+            pn,
+            &aad,
+            aad_length,
+        )?;
+        return Ok(true);
+    }
+    #[cfg(not(all(feature = "hardware-ccmp", target_arch = "arm")))]
+    {
+        let nonce = build_nonce(frame, control, pn)?;
+        let cipher = AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
+        let payload_end = frame.len() - CCMP_MIC_LEN;
+        let tag = GenericArray::clone_from_slice(&frame[payload_end..]);
+        cipher
+            .decrypt_in_place_detached(
+                GenericArray::from_slice(&nonce),
+                &aad[..aad_length],
+                &mut frame[header + CCMP_HEADER_LEN..payload_end],
+                &tag,
+            )
+            .map_err(|_| CcmpError::Authentication)?;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -417,6 +1118,24 @@ mod tests {
             decrypt_rx_frame(&mut bad_mic, 0),
             Err(CcmpError::Authentication)
         );
+    }
+
+    #[cfg(feature = "hardware-ccmp-selftest")]
+    #[test]
+    fn build_generated_hardware_kat_matches_independent_vector() {
+        assert_eq!(
+            &hardware_kat::HARDWARE_KAT_EXPECTED[34..50],
+            &[
+                0xc7, 0x40, 0x95, 0x9b, 0xf5, 0x9a, 0x96, 0x31, 0xa8, 0xc2, 0xc9, 0xd9, 0x91,
+                0x0d, 0x11, 0x4b,
+            ]
+        );
+        assert_eq!(
+            &hardware_kat::HARDWARE_KAT_EXPECTED[50..58],
+            &[0x11, 0x85, 0x85, 0x5b, 0xce, 0x30, 0xf3, 0xe9]
+        );
+        assert_eq!(hardware_kat::HARDWARE_KAT_MATRIX_LENGTHS, [1, 15, 16, 17, 1506]);
+        assert_eq!(hardware_kat::HARDWARE_KAT_MATRIX_MICS.len(), 5 * CCMP_MIC_LEN);
     }
 
     #[test]

@@ -673,55 +673,12 @@ unsafe fn remove_live_pas(context: HostContextAddress) -> Result<(), CancelError
     Ok(())
 }
 
-/// Publishes why the PAS admission gate refused a class-0 frame, then halts.
-///
-/// A refusal here means no class-0 frame ever reaches the MAC, so no
-/// publication-time capture can fire and the counters MIB cannot be trusted.
-///
-/// # Safety
-/// PHY and VIF state must be readable; the firmware stops here.
-#[cfg(all(target_arch = "arm", feature = "class0-descriptor-dump"))]
-unsafe fn report_pas_admission_refusal(context: HostContextAddress) -> ! {
-    unsafe {
-        let interface = read_live_u8(context.raw() + 0xbd);
-        let vif = 0x0400_3e98 + u32::from(interface) * 0x3b0;
-        crate::hif::publish_terminal_exception(
-            [
-                0x4330_5041, // "C0PA"
-                u32::from(interface),
-                context.raw(),
-                // The two bail conditions inside `advance_awake_station_tx`.
-                u32::from(read_live_u8(0x0400_3a6e)), // PHY state: 1 = needs wake
-                u32::from(read_live_u8(0x0400_99a9)), // retained reprogram latch
-                u32::from(read_live_u8(0x0400_994f)), // wake latch
-                u32::from(read_live_u8(0x0400_9945)), // request argument
-                u32::from(read_live_u16(0x0400_8f76)), // global active count
-                read_live_u32(0x0400_8b20),           // radio owner
-                u32::from(read_live_u8(vif + 0x66)),  // owner state
-                u32::from(read_live_u16(vif + 0x2c)), // active mask
-                u32::from(read_live_u16(vif + 0x2e)), // effective mask
-                u32::from(read_live_u16(vif + 0x30)), // per-VIF active count
-                read_live_u32(0x0400_1fd4),           // scheduler word
-                read_live_u32(0x0400_1d2c),           // PHY command state
-                u32::from(read_live_u8(0x0400_1adc)),
-                u32::from(read_live_u8(0x0400_995f)),
-                read_live_u32(0x0ac8_0064), // PHY controller
-            ],
-            b"xr819-class0-pas-refused",
-        );
-    }
-    loop {
-        core::hint::spin_loop();
-    }
-}
 
 #[cfg(target_arch = "arm")]
 unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
     unsafe {
         let active = read_live_u16(0x0400_8f76);
         if active == 0 && !crate::phy::advance_awake_station_tx() {
-            #[cfg(feature = "class0-descriptor-dump")]
-            report_pas_admission_refusal(context);
             return false;
         }
         write_live_u16(0x0400_8f76, active.wrapping_add(1));
@@ -830,6 +787,15 @@ pub unsafe fn service_pending(
     let submitted = unsafe { read_live_u32(context.raw() + 0x40) };
     let expired = (submitted.wrapping_sub(now).wrapping_add(0x004c_4b40) as i32) < 0;
 
+    let mut decision_input = PendingTaskInput {
+        global_blocked,
+        active_link: true,
+        link_gate_requests_removal: false,
+        vif_operating: false,
+        completion_class,
+        pipe_allowed: false,
+        expired,
+    };
     let decision = if global_blocked {
         pending_task_decision(PendingTaskInput {
             global_blocked: true,
@@ -873,7 +839,7 @@ pub unsafe fn service_pending(
             unsafe { write_live_u32(vif + 0x1c, vif_flags | 0x0400_0000) };
         }
         let state = unsafe { read_live_u8(vif + 0x18) };
-        pending_task_decision(PendingTaskInput {
+        decision_input = PendingTaskInput {
             global_blocked: false,
             active_link,
             link_gate_requests_removal,
@@ -881,9 +847,33 @@ pub unsafe fn service_pending(
             completion_class,
             pipe_allowed: unsafe { program_pipe_eligible(context) },
             expired,
-        })
+        };
+        pending_task_decision(decision_input)
     };
 
+    #[cfg(all(
+        target_arch = "arm",
+        feature = "class0-lifecycle-counters",
+        not(feature = "stage-latency-sums")
+    ))]
+    if matches!(decision, PendingTaskDecision::LeaveQueued) {
+        // Which gate is holding the frame, and for how many service passes.
+        unsafe {
+            let input = decision_input;
+            let mask = u32::from(!input.active_link)
+                | (u32::from(input.global_blocked) << 1)
+                | (u32::from(!input.vif_operating) << 2)
+                | (u32::from(!input.pipe_allowed) << 3)
+                | (u32::from(input.expired) << 4);
+            let previous = crate::host_tx_diagnostics::counters_snapshot()
+                [crate::host_tx_diagnostics::counter::PENDING_GATE];
+            let passes = (previous & 0xffff).saturating_add(1).min(0xffff);
+            crate::host_tx_diagnostics::observe(
+                crate::host_tx_diagnostics::counter::PENDING_GATE,
+                passes | ((previous >> 16) | mask) << 16,
+            );
+        }
+    }
     match decision {
         PendingTaskDecision::LeaveQueued => Ok(PendingServiceReport::LeaveQueued),
         PendingTaskDecision::Complete(status) => {
@@ -1091,6 +1081,8 @@ impl HostSchedulerReservation {
             // has not started yet from one that is genuinely stuck.
             #[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
             crate::tx::note_pipe_publication(self.pipe);
+            #[cfg(target_arch = "arm")]
+            crate::tx::note_stage(0);
         }
         retained.phase = HostTxPhase::Scheduled;
         Ok(())
@@ -1128,6 +1120,10 @@ impl HostSchedulerReservation {
 ///
 /// # Safety
 /// Global PAS and pipe state must be exclusively runtime-owned.
+const fn scheduler_batch_flags(original: u32, staged: u8) -> u32 {
+    original | if staged == 0 { 0x0400_0000 } else { 0x0800_0000 }
+}
+
 #[cfg(target_arch = "arm")]
 pub unsafe fn reserve_non_aggregate_scheduler(
     retained: &mut RetainedHostTx,
@@ -1213,7 +1209,13 @@ pub unsafe fn reserve_non_aggregate_scheduler(
             new_head = new_head.wrapping_add(1) & 0x3f;
         }
         write_live_u32(0x0400_1578, u32::from(new_head));
-        write_live_u32(context.raw() + 0x58, original_flags | 0x0400_0000);
+        // Vendor marks the first ordinary descriptor with bit 26 and every
+        // later descriptor in the same scheduler batch with bit 27 before
+        // `txp_build_pipe_descriptor(..., 0)`.
+        write_live_u32(
+            context.raw() + 0x58,
+            scheduler_batch_flags(original_flags, staged),
+        );
         write_live_u32(
             context.raw() + 0x80,
             read_live_u32(context.raw() + 0x80) | 0x100,
@@ -1988,6 +1990,14 @@ mod tests {
             }),
             NonAggregateSchedulerDecision::Complete(10)
         );
+    }
+
+    #[test]
+    fn ordinary_batch_marks_first_and_later_descriptors_differently() {
+        let original = 0x0000_1234;
+        assert_eq!(scheduler_batch_flags(original, 0), original | 0x0400_0000);
+        assert_eq!(scheduler_batch_flags(original, 1), original | 0x0800_0000);
+        assert_eq!(scheduler_batch_flags(original, 3), original | 0x0800_0000);
     }
 
     #[test]

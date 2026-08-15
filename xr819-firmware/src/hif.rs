@@ -272,7 +272,7 @@ pub unsafe fn validate_tx_boundary(phase: u32, pipe: u8, slot: u8, command: u32,
                     }
                 };
                 unsafe {
-                    publish_terminal_exception(
+                    publish_halting_exception(
                         [
                             0x4849_4650,
                             boundary,
@@ -296,9 +296,7 @@ pub unsafe fn validate_tx_boundary(phase: u32, pipe: u8, slot: u8, command: u32,
                         b"xr819-hif-tx-boundary",
                     );
                 }
-                loop {
-                    core::hint::spin_loop();
-                }
+                crate::halt_always!();
             }
             consumer = consumer.wrapping_add(1);
         }
@@ -387,7 +385,7 @@ pub struct Transport {
 }
 
 #[cfg(all(target_arch = "arm", not(target_feature = "thumb-mode")))]
-fn drain_write_buffer() {
+pub(crate) fn drain_write_buffer() {
     unsafe {
         asm!(
             "mcr p15, 0, {value}, c7, c10, 4",
@@ -412,7 +410,7 @@ global_asm!(
 );
 
 #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
-fn drain_write_buffer() {
+pub(crate) fn drain_write_buffer() {
     unsafe extern "C" {
         fn xr819_drain_write_buffer();
     }
@@ -420,7 +418,7 @@ fn drain_write_buffer() {
 }
 
 #[cfg(not(target_arch = "arm"))]
-fn drain_write_buffer() {
+pub(crate) fn drain_write_buffer() {
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
@@ -477,13 +475,64 @@ fn publish_emergency_descriptor(shared: &HifShared, length: u16) {
 /// # Safety
 /// The fixed HIF shared registers and emergency packet buffer must still be
 /// owned by this firmware. Callers must not reuse the buffer afterward.
-pub unsafe fn publish_terminal_exception(registers: [u32; 18], name: &[u8]) {
-    // WSM id 0x0800 is the firmware-exception indication, and cw1200 is meant
-    // to tear the link down when it arrives (`CW1200_BH_RX_DIAG_EXCEPTION`,
-    // result -EIO, then "[BH] Fatal error, exiting"). That is correct for a
-    // firmware that is halting, and wrong for one that carries on: a
-    // report-and-continue build that publishes here kills the link it was
-    // trying to keep measuring. Count instead and let the caller continue.
+const EXCEPTION_REGISTERS: usize = 22;
+
+/// Writes the exception record to the shared buffer and rings the host.
+unsafe fn publish_exception_now<const N: usize>(registers: [u32; N], name: &[u8]) {
+    const MESSAGE_LENGTH: u16 = 4 + 4 + 18 * 4 + 48;
+    let buffer = SHARED_BUFFER_BASE as *mut u8;
+    // The host counts every message it receives, including this one, against a
+    // single WSM sequence and treats a mismatch as fatal:
+    //   BH RX diag ... id=0800 seq=0/2 ... result=-5  ->  [BH] Fatal error
+    // This path bypasses `stage_next_tx`, the only place sequence bits are
+    // assigned, so it used to emit sequence 0 always. Harmless when halting,
+    // fatal when the firmware carries on afterwards.
+    let sequence = unsafe { next_emergency_sequence() };
+    unsafe {
+        buffer.cast::<u16>().write_volatile(MESSAGE_LENGTH);
+        buffer
+            .add(2)
+            .cast::<u16>()
+            .write_volatile(0x0800 | (sequence << 13));
+        buffer.add(4).cast::<u32>().write_volatile(4);
+        // Callers pass 18 or 22 words; the record holds 22. Zero the tail so a
+        // short caller cannot publish stale buffer contents as register values.
+        for index in 0..EXCEPTION_REGISTERS {
+            let value = registers.get(index).copied().unwrap_or(0);
+            buffer
+                .add(8 + index * 4)
+                .cast::<u32>()
+                .write_volatile(value);
+        }
+        // 8 header + 22*4 registers + 32 name = 128 = MESSAGE_LENGTH. The name
+        // field was 48 bytes for a 15-byte label, so four words were taken from
+        // it rather than changing the message size the driver expects.
+        for index in 0..32 {
+            buffer
+                .add(8 + EXCEPTION_REGISTERS * 4 + index)
+                .write_volatile(name.get(index).copied().unwrap_or(0));
+        }
+        let shared = &*(TX_DESCRIPTOR_BASE as *const HifShared);
+        publish_emergency_descriptor(shared, MESSAGE_LENGTH);
+    }
+}
+
+/// Publishes unconditionally, for callers that are about to halt.
+///
+/// The suppression in `publish_terminal_exception` exists because WSM id 0x0800
+/// makes cw1200 tear the link down, which is wrong for a firmware that carries
+/// on. It is also wrong at a halt site: the firmware stops either way, so
+/// suppressing only removes the one diagnostic that would identify which
+/// detector fired. Measured cost of getting this wrong: runs where the firmware
+/// answered configuration, scanned, delivered 31 beacons, then went silent
+/// mid-join with no record at all, leaving `BH status: terminated`,
+/// `Pending TX: 28` and an unanswered WSM 0x0006 as the only evidence.
+pub unsafe fn publish_halting_exception<const N: usize>(registers: [u32; N], name: &[u8]) {
+    unsafe { publish_exception_now(registers, name) };
+}
+
+pub unsafe fn publish_terminal_exception<const N: usize>(registers: [u32; N], name: &[u8]) {
+    // Report-and-continue builds must not kill the link they are measuring.
     #[cfg(feature = "corruption-non-fatal")]
     {
         let _ = (registers, name);
@@ -495,46 +544,16 @@ pub unsafe fn publish_terminal_exception(registers: [u32; 18], name: &[u8]) {
         return;
     }
     #[cfg(not(feature = "corruption-non-fatal"))]
-    const MESSAGE_LENGTH: u16 = 4 + 4 + 18 * 4 + 48;
-    #[cfg(not(feature = "corruption-non-fatal"))]
-    let buffer = SHARED_BUFFER_BASE as *mut u8;
-    // The host counts every message it receives, including this one, against a
-    // single WSM sequence and treats a mismatch as fatal:
-    //   BH RX diag ... id=0800 seq=0/2 ... result=-5  ->  [BH] Fatal error
-    // This path bypasses `stage_next_tx`, the only place sequence bits are
-    // assigned, so it used to emit sequence 0 always. Harmless when halting,
-    // fatal when the firmware carries on afterwards.
-    #[cfg(not(feature = "corruption-non-fatal"))]
-    let sequence = unsafe { next_emergency_sequence() };
-    #[cfg(not(feature = "corruption-non-fatal"))]
     unsafe {
-        buffer.cast::<u16>().write_volatile(MESSAGE_LENGTH);
-        buffer
-            .add(2)
-            .cast::<u16>()
-            .write_volatile(0x0800 | (sequence << 13));
-        buffer.add(4).cast::<u32>().write_volatile(4);
-        for (index, value) in registers.into_iter().enumerate() {
-            buffer
-                .add(8 + index * 4)
-                .cast::<u32>()
-                .write_volatile(value);
-        }
-        for index in 0..48 {
-            buffer
-                .add(8 + 18 * 4 + index)
-                .write_volatile(name.get(index).copied().unwrap_or(0));
-        }
-        let shared = &*(TX_DESCRIPTOR_BASE as *const HifShared);
-        publish_emergency_descriptor(shared, MESSAGE_LENGTH);
-    }
+        publish_exception_now(registers, name)
+    };
 }
 
 /// Publish the existing terminal MAC-event diagnostic shape.
 ///
 /// # Safety
 /// The fixed emergency HIF resources must still be owned by this firmware.
-pub unsafe fn publish_mac_fatal_exception(registers: [u32; 18]) {
+pub unsafe fn publish_mac_fatal_exception<const N: usize>(registers: [u32; N]) {
     unsafe { publish_terminal_exception(registers, b"xr819-mac-event") };
 }
 
@@ -683,7 +702,7 @@ impl Transport {
                     };
                     let (command, match_state, ring_state) =
                         matching_tx_command([actual, following[0], following[1], following[2]]);
-                    publish_terminal_exception(
+                    publish_halting_exception(
                         [
                             0x4849_4642,
                             consumer,
@@ -707,9 +726,7 @@ impl Transport {
                         b"xr819-hif-buffer-mutated",
                     );
                 }
-                loop {
-                    core::hint::spin_loop();
-                }
+                crate::halt_always!();
             }
             consumer = consumer.wrapping_add(1);
         }
@@ -879,47 +896,6 @@ impl Transport {
         drain_write_buffer();
     }
 
-    /// Snapshot of the output-path accounting that gates every host-visible
-    /// channel.
-    ///
-    /// `output_available` and `response_available` both need a free shared
-    /// slot, and `request_available` needs `response_available`, so exhausting
-    /// the four shared slots stops indications and host requests (including
-    /// MIB reads) at the same instant. Shared slots are freed only by
-    /// `reclaim_tx`, which runs only when HIF status bit 1 has set
-    /// `tx_completion_pending`.
-    #[cfg(feature = "hif-stall-dump")]
-    pub fn stall_snapshot(&self) -> [u32; 14] {
-        let slots =
-            self.shared_slots_in_use
-                .iter()
-                .enumerate()
-                .fold(
-                    0_u32,
-                    |mask, (index, in_use)| {
-                        if *in_use { mask | (1 << index) } else { mask }
-                    },
-                );
-        let owned = (0..4_usize).fold(0_u32, |mask, slot| {
-            mask | ((self.shared.tx[slot].control.get() & 1) << slot)
-        });
-        [
-            slots,
-            u32::from(self.tx_completion_pending),
-            u32::from(self.rx_request_pending),
-            self.state.tx_producer.get(),
-            self.state.tx_consumer.get(),
-            self.state.tx_queued.get(),
-            self.state.tx_reclaimed.get(),
-            owned,
-            self.shared.status.get(),
-            self.shared.tx[0].control.get(),
-            self.shared.tx[1].control.get(),
-            self.shared.tx[2].control.get(),
-            self.shared.tx[3].control.get(),
-            u32::from(self.prepared_shared_slot.is_some()),
-        ]
-    }
 
     pub fn publication_available(&mut self) -> bool {
         self.reclaim_tx();
@@ -1114,9 +1090,7 @@ impl Transport {
                     self.state.tx_queued.get(),
                 ]);
             }
-            loop {
-                core::hint::spin_loop();
-            }
+            crate::halt_always!();
         }
         if wire_len < 4 || raw_id & 0x0c00 != 0 {
             unsafe {

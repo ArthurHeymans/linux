@@ -576,6 +576,14 @@ unsafe fn program_mac_address(source: usize, base: usize, mode: u32) {
 }
 
 unsafe fn rebuild_pipe_state() {
+    // `prepare_packet_dma` already programmed these once, before MAC core
+    // enable, which is where vendor's `mac_hw_init_pipes` does it and the only
+    // time vendor does it (`annotated-main.c:18541-18587`). Repeating it here
+    // re-writes ring+0x14 (GO) while the MAC is live, and cycles 0x09c00e8c
+    // 0xbf -> 0 -> 0xbf underneath a running command-fetch engine. Final
+    // register values are identical, so this only matters if any of it
+    // disturbs fetch state -- which is what `vendor-single-init` tests.
+    #[cfg(not(feature = "vendor-single-init"))]
     unsafe {
         write_u32(0x09c0_0e8c, 0);
         write_u32(0x09c0_0e60, 2);
@@ -583,12 +591,15 @@ unsafe fn rebuild_pipe_state() {
         write_u32(0x09c0_0e88, 0xff);
     }
     let descriptors = [0x09c6_0000, 0x09c6_0080, 0x09c6_0100, 0x09c6_0180];
-    let addresses = [0x7080_u32, 0x71d0, 0x7320, 0x7470];
-    for (base, address) in descriptors.into_iter().zip(addresses) {
-        unsafe {
-            write_u32(base + 0x0c, address);
-            write_u32(base + 0x10, 0x54);
-            write_u32(base + 0x14, 1);
+    #[cfg(not(feature = "vendor-single-init"))]
+    {
+        let addresses = [0x7080_u32, 0x71d0, 0x7320, 0x7470];
+        for (base, address) in descriptors.into_iter().zip(addresses) {
+            unsafe {
+                write_u32(base + 0x0c, address);
+                write_u32(base + 0x10, 0x54);
+                write_u32(base + 0x14, 1);
+            }
         }
     }
     for index in 0..4 {
@@ -611,7 +622,10 @@ unsafe fn rebuild_pipe_state() {
             };
         }
     }
-    unsafe { write_u32(0x09c0_0e8c, 0xbf) };
+    #[cfg(not(feature = "vendor-single-init"))]
+    unsafe {
+        write_u32(0x09c0_0e8c, 0xbf)
+    };
     unsafe {
         write_u32(0x0901_6a28, 0x4e14_0000);
         for index in 0..33 {

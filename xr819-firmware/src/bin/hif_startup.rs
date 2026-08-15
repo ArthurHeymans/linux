@@ -15,14 +15,12 @@ use xr819_firmware::platform::{
     enable_packet_controller, initialize_runtime_state, prepare_dma_and_clocks,
     prepare_high_platform_support, prepare_mac_receive_hardware, prepare_main_control,
     prepare_memory_and_interrupts, prepare_packet_dma, program_station_address,
-    register_packet_dma_interrupts, register_post_activation_interrupts, try_activate_hif,
-    wait_for_host_download_completion,
+    register_packet_dma_interrupts, register_post_activation_interrupts,
+    service_masked_packet_dma_interrupt, try_activate_hif, wait_for_host_download_completion,
 };
 use xr819_firmware::radio;
 use xr819_firmware::rate_policy;
 use xr819_firmware::scan;
-#[cfg(feature = "tcm-size-diagnostic")]
-use xr819_firmware::tcm;
 use xr819_firmware::tx;
 use xr819_firmware::vif;
 #[cfg(feature = "join-sta-experiment")]
@@ -305,12 +303,18 @@ extern "C" fn rust_main() -> ! {
 
     debug_stop(5, 0x5354_4705);
     register_post_activation_interrupts();
+    #[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+    xr819_firmware::crypto::run_hardware_ccmp_selftest();
     let mut transport = unsafe { Transport::initialize() };
     let mut mac_events = unsafe { tx::MacEventQueue::claim() };
     debug_stop(6, 0x5354_4706);
 
     // Vendor 0x9ac calls packet-DMA initialization immediately after 0x94c.
     prepare_packet_dma();
+    // Vendor programs the RX/MAC tables once, after MAC core enable, via
+    // `rx_subsystem_init`; we also do it there (`mac.rs:831`). This earlier
+    // copy has no vendor counterpart.
+    #[cfg(not(feature = "vendor-single-init"))]
     prepare_mac_receive_hardware();
     unsafe { radio::initialize() };
     register_packet_dma_interrupts();
@@ -364,12 +368,6 @@ extern "C" fn rust_main() -> ! {
     let mut pending_join_complete: Option<u32> = None;
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     let mut pending_tx_debug_event: Option<(u32, u32)> = None;
-    // Vendor timestamp at which the output path was first seen blocked.
-    #[cfg(all(feature = "hif-stall-dump", target_arch = "arm"))]
-    let mut output_blocked_since: Option<u32> = None;
-    // Vendor timestamp of the first class-0 publication.
-    #[cfg(all(feature = "class0-first-frame-dump", target_arch = "arm"))]
-    let mut first_publication_at: Option<u32> = None;
     // Vendor timestamp of the last 200ms TX pipe watchdog tick.
     #[cfg(all(feature = "pipe-watchdog", target_arch = "arm"))]
     let mut last_watchdog_tick: u32 = 0;
@@ -379,11 +377,19 @@ extern "C" fn rust_main() -> ! {
     let mut response_scratch = [0_u8; SHARED_BUFFER_SIZE];
     #[cfg(feature = "vendor-host-tx-foundation")]
     let mut host_tx_driver = HostTxDriver::new();
+    // Main-loop rate. Admission -> publication is 37 ms under load with a
+    // budget of 4 over 30 contexts, implying ~5 ms per pass, and raising the
+    // budget made things worse, so the cost is per pass. An earlier attempt
+    // timestamped each iteration from 0x0ac00004; reading that register every
+    // pass broke association outright, so count iterations instead and derive
+    // the rate from the counter delta between harness samples. An increment is
+    // nearly free where an MMIO read is not.
     loop {
         #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
         unsafe {
             xr819_firmware::hif::validate_tx_boundary(0x20, 0xff, 0xff, 0, 0);
         }
+        let _ = service_masked_packet_dma_interrupt();
         let _ = transport.service_interrupt();
         #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
         unsafe {
@@ -422,104 +428,7 @@ extern "C" fn rust_main() -> ! {
         // TX confirmations to starve the command lane.
         let host_request_waiting = transport.request_available();
 
-        // Every host-visible channel dies at the same moment under load: the
-        // counters MIB returns zeros and indications stop, while the driver
-        // still reports the BH alive. Both need a free shared slot, so catch
-        // the moment the output path has been blocked continuously and report
-        // the accounting through the emergency descriptor, which does not need
-        // a shared slot and is therefore still deliverable.
-        #[cfg(all(feature = "hif-stall-dump", target_arch = "arm"))]
-        {
-            let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
-            if transport.output_available() {
-                output_blocked_since = None;
-            } else {
-                let since = *output_blocked_since.get_or_insert(now);
-                if now.wrapping_sub(since) > 3_000_000 {
-                    let snapshot = transport.stall_snapshot();
-                    unsafe {
-                        xr819_firmware::hif::publish_terminal_exception(
-                            [
-                                0x4849_5354, // "HIST"
-                                now.wrapping_sub(since),
-                                snapshot[0],
-                                snapshot[1],
-                                snapshot[2],
-                                snapshot[3],
-                                snapshot[4],
-                                snapshot[5],
-                                snapshot[6],
-                                snapshot[7],
-                                snapshot[8],
-                                snapshot[9],
-                                snapshot[10],
-                                snapshot[11],
-                                snapshot[12],
-                                snapshot[13],
-                                0,
-                                0,
-                            ],
-                            b"xr819-hif-output-stalled",
-                        );
-                    }
-                    loop {
-                        core::hint::spin_loop();
-                    }
-                }
-            }
-        }
 
-        // Report the fate of the first class-0 frame over the emergency
-        // descriptor. The counters MIB cannot answer this: it is readable only
-        // before any data frame exists, and the first published frame that the
-        // MAC refuses disables the host command lane entirely.
-        #[cfg(all(feature = "class0-first-frame-dump", target_arch = "arm"))]
-        {
-            let counters = unsafe { xr819_firmware::host_tx_diagnostics::counters_snapshot() };
-            let published = counters[xr819_firmware::host_tx_diagnostics::counter::PUBLISHED];
-            let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
-            if published > 0 {
-                let since = *first_publication_at.get_or_insert(now);
-                // The first frames succeed, so a short window only shows a
-                // healthy funnel. The late window instead lands inside the
-                // flood, where the path has wedged.
-                let window = if cfg!(feature = "class0-late-frame-dump") {
-                    20_000_000
-                } else {
-                    500_000
-                };
-                if now.wrapping_sub(since) > window {
-                    unsafe {
-                        xr819_firmware::hif::publish_terminal_exception(
-                            [
-                                0x4330_4646, // "C0FF"
-                                now.wrapping_sub(since),
-                                counters[0],
-                                counters[1],
-                                counters[2],
-                                counters[3],
-                                counters[4],
-                                counters[5],
-                                counters[6],
-                                counters[7],
-                                counters[8],
-                                counters[9],
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                            ],
-                            b"xr819-class0-first-frame",
-                        );
-                    }
-                    loop {
-                        core::hint::spin_loop();
-                    }
-                }
-            }
-        }
 
         #[cfg(feature = "vendor-host-tx-foundation")]
         if let Some(event) = unsafe {
@@ -967,15 +876,6 @@ extern "C" fn rust_main() -> ! {
                             unsafe { (0x0940_0000 as *const u32).read_volatile() }
                         },
                     ];
-                    #[cfg(feature = "tcm-size-diagnostic")]
-                    {
-                        let info = tcm::read_region_info();
-                        values[17] = info.tcm_type_register;
-                        values[18] = info.dtcm_register;
-                        values[19] = info.itcm_register;
-                        values[20] = tcm::size_kib(info.dtcm_register).unwrap_or(0xffff)
-                            | (tcm::size_kib(info.itcm_register).unwrap_or(0xffff) << 16);
-                    }
                     #[cfg(feature = "vendor-host-tx-foundation")]
                     host_tx_diagnostics::populate_counters(&mut values, &transport);
                     let mut data = [0_u8; 88];
