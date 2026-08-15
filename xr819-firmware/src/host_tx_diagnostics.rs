@@ -145,8 +145,19 @@ pub mod counter {
     /// Retirements declined because the slot was published too recently to be
     /// stuck. These are the frames the unaged rule was destroying.
     pub const RETIREMENT_DEFERRED: usize = 18;
+    /// Staged HIF output buffers whose header no longer matches what we wrote,
+    /// i.e. the corruption reaching the TX output ring. Counted rather than
+    /// published in `corruption-non-fatal` builds: `publish_terminal_exception`
+    /// emits WSM id 0x0800 with no sequence bits, and the host validates the
+    /// sequence before special-casing exceptions, so reporting one during live
+    /// operation is itself fatal (`BH RX diag ... seq=0/2 ... result=-5`).
+    pub const OUTPUT_CORRUPTION: usize = 19;
+    /// Terminal exceptions suppressed instead of published. WSM id 0x0800 is
+    /// the firmware-exception indication and cw1200 tears the link down when it
+    /// arrives, by design, so a report-and-continue build must never send one.
+    pub const SUPPRESSED_EXCEPTION: usize = 20;
 
-    pub(super) const COUNT: usize = 19;
+    pub(super) const COUNT: usize = 21;
 }
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]

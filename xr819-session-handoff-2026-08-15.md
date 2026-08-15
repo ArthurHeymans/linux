@@ -95,6 +95,14 @@ requires the host to set a non-zero TX TID mask via the block-ack policy MIB.
    instead of 1, using hardware chaining that already exists. Evidence-backed
    recipe above. Largest win available and does not depend on rates,
    aggregation, or the corruption.
+
+   **Status attribution is ordinal and already batch-safe.** Vendor's
+   `txp_pipe_tx_status` (`0x9a32`) selects the slot from the pipe's `current`
+   pointer (`+0xa2`), not from anything in the status, and advances `current` by
+   one per accepted status. The MAC walks slots in order, so N armed slots
+   produce N statuses matched against successive `current` values. Depth 1 is
+   the degenerate case of the same scheme, so pipelining does not need a new
+   completion-matching design.
 2. **Rate selection and aggregation.** Rate index 7 is OFDM 9 Mbit/s and
    `AGG TXed` is 0. Worth doing, but airtime is ~0.5 ms of a ~10 ms budget, so
    expect roughly 10% rather than a multiple until pipelining lands.
@@ -131,6 +139,35 @@ one in `hif.rs`; `corruption-non-fatal` neutralises all of them. Do not count
 corruption inside `hif::validate_tx_boundary`: it runs several times per
 main-loop pass, so a counter there measures call frequency (it read 2,162,040)
 rather than corruption events.
+
+## Vendor ignores unmatched TX statuses; do not retire on them
+
+`txp_pipe_tx_status` gates on three things and does nothing whatsoever if any
+fails:
+
+```c
+iVar6 = *(byte *)(iVar5 + 0xa2) * 0x18 + iVar5 + 0xa0;   // slot from `current`
+if ((*(char *)(iVar5 + 0xa3) == '\x01') &&        // pipe armed
+    (*(byte *)(iVar6 + 0xd) == param_1) &&        // delivered == expected
+    (*(char *)(iVar6 + 0xf) == '\x03'))           // slot state 3
+```
+
+There is no else branch. A status that does not match is **normal** and is
+discarded; a pipe that genuinely stops is recovered by the 200 ms watchdog
+(`FUN_00003bac`), which is the only recovery mechanism vendor has.
+
+Our cursor-based retirement had no vendor counterpart. Because the slot comes
+from `current`, a status for a finished frame is evaluated against the frame
+published behind it, and retirement destroyed that frame before it transmitted:
+all 297 retirements in an iperf run were slot state 1, ~10% of published frames
+under load against ~1% under ping flood. Retiring nothing there is what vendor
+does.
+
+The watchdog reporting zero recoveries in healthy runs is **correct**, not a
+sign it is broken: `armed` is cleared on every normal completion, so the gate is
+false whenever traffic flows. The single run that wedged lost its MIB lane
+before the counters could be read, so the watchdog has never actually been
+observed under the condition it exists for.
 
 ## Reading the decompilation: the raw image is incomplete
 

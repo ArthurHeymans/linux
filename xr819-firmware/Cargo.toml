@@ -88,6 +88,23 @@ pipe-watchdog = ["vendor-host-tx-diagnostics", "unmatched-tx-status-recovery"]
 # Requires pipe-watchdog: genuinely stuck state-1 slots are then recovered by
 # vendor's own 200 ms watchdog instead.
 retire-started-only = ["pipe-watchdog"]
+# Stage several frames into one pipe batch before arming. Vendor's
+# txp_scheduler_run assembles a batch, loops slot state and ring duration from
+# producer to `last`, then arms once and writes GO once; it never appends to an
+# armed pipe. Throughput is otherwise pinned at 1/latency with ~4 ms of each
+# frame's ~10 ms round trip spent inside our own pipeline.
+# Do not gate host request polling on class-0 TX being idle. A stuck data frame
+# otherwise starves the host command lane until the driver declares a fatal
+# error, which is faster than the pipe watchdog can recover and is why removing
+# the frame-destroying retirement exposed wedges.
+# Tick the pipe watchdog every 40 ms instead of vendor's 200 ms, so a wedged
+# pipe recovers in ~200 ms rather than a full second. A stuck slot blocks every
+# reservation for its pipe, and the host gives up well before one second.
+fast-pipe-watchdog = ["pipe-watchdog"]
+host-lane-independent = ["vendor-host-tx-foundation"]
+tx-pipelining = ["vendor-host-tx-foundation"]
+# Four slots per pipe, the hardware maximum, instead of two.
+tx-pipelining-depth-4 = ["tx-pipelining"]
 # Destructive diagnostic: preserve encrypted payload/MIC but clear the 802.11
 # Protected bit on non-EAPOL data immediately before MAC publication.
 clear-protected-data-diagnostic = []

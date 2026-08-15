@@ -166,6 +166,13 @@ impl HostTxDriver {
             }
             budget -= 1;
         }
+        // Vendor arms once for a whole batch, after its publish loop. Any slots
+        // staged during this pass are armed together here, so a batch never
+        // waits for the next service call.
+        #[cfg(target_arch = "arm")]
+        if tx::tx_batch_depth() > 1 {
+            unsafe { tx::arm_staged_pipes() };
+        }
         diagnostic
     }
 
@@ -322,17 +329,40 @@ impl HostTxDriver {
                     }
                 }
 
+                // Depth 1 keeps the historic gate: one frame in flight at a
+                // time. Beyond that, a further frame may be staged while the
+                // pipe is still unarmed; `reserve_non_aggregate_scheduler`
+                // itself refuses an armed pipe, so this cannot append to a
+                // running batch.
+                let staged_headroom = {
+                    let depth = tx::tx_batch_depth();
+                    depth > 1 && unsafe { tx::staged_slots_total() } < depth
+                };
                 if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
                     && allow_hardware_publication
-                    && self.hardware_runtime_owner().is_none()
+                    && (self.hardware_runtime_owner().is_none() || staged_headroom)
                 {
                     match unsafe { vendor_host_tx::reserve_non_aggregate_scheduler(&mut retained) }
                     {
                         Ok(reservation) => {
                             let pipe = reservation.pipe();
                             let slot = reservation.slot();
-                            match unsafe { reservation.publish(&mut retained) } {
+                            // Stage without arming when batching; the arm for
+                            // every staged slot happens once, after servicing.
+                            let batch = if tx::tx_batch_depth() > 1 {
+                                if unsafe { tx::staged_slots(pipe) } == 0 {
+                                    tx::BatchPosition::First
+                                } else {
+                                    tx::BatchPosition::Middle
+                                }
+                            } else {
+                                tx::BatchPosition::Only
+                            };
+                            match unsafe { reservation.publish_in_batch(&mut retained, batch) } {
                                 Ok(()) => {
+                                    if !batch.arms() {
+                                        unsafe { tx::note_staged_slot(pipe) };
+                                    }
                                     unsafe {
                                         host_tx_diagnostics::trace(
                                             0x4854_7000,

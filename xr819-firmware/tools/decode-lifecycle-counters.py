@@ -35,6 +35,8 @@ FIELDS = [
     ("rx_multicast_frames", "retired_tx_success"),
     ("rx_frames_success", "retired_last_status"),
     ("rx_cmac_icv_errors", "retirement_deferred"),
+    ("rx_cmac_replays", "output_corruption"),
+    ("rx_mgmt_ccmp_replays", "suppressed_exception"),
 ]
 
 

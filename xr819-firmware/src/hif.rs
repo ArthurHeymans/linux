@@ -426,6 +426,41 @@ fn drain_write_buffer() {
 
 fn postcode(_value: u32) {}
 
+/// Sequence skew contributed by emergency-channel publications.
+///
+/// `tx_producer` cannot absorb these: it also indexes the output buffer and
+/// descriptor slots, so advancing it to consume a sequence would skip a ring
+/// entry and desynchronise reclaim accounting. Tracking the skew separately
+/// keeps the ring intact and the host's sequence stream continuous.
+struct EmergencySequenceSkew(core::cell::UnsafeCell<u32>);
+
+unsafe impl Sync for EmergencySequenceSkew {}
+
+static EMERGENCY_SEQUENCE_SKEW: EmergencySequenceSkew =
+    EmergencySequenceSkew(core::cell::UnsafeCell::new(0));
+
+/// Sequence skew applied to ordinary staged output.
+///
+/// # Safety
+/// Single-threaded firmware context.
+pub unsafe fn emergency_sequence_skew() -> u32 {
+    unsafe { EMERGENCY_SEQUENCE_SKEW.0.get().read_volatile() }
+}
+
+/// Claim the next WSM sequence for an emergency-channel message.
+///
+/// # Safety
+/// Single-threaded firmware context; HIF state must be mapped.
+unsafe fn next_emergency_sequence() -> u16 {
+    unsafe {
+        let state = &*(STATE_BASE as *const HifState);
+        let skew = EMERGENCY_SEQUENCE_SKEW.0.get();
+        let sequence = state.tx_producer.get().wrapping_add(skew.read_volatile());
+        skew.write_volatile(skew.read_volatile().wrapping_add(1));
+        (sequence & 7) as u16
+    }
+}
+
 fn publish_emergency_descriptor(shared: &HifShared, length: u16) {
     shared
         .emergency_address
@@ -443,11 +478,41 @@ fn publish_emergency_descriptor(shared: &HifShared, length: u16) {
 /// The fixed HIF shared registers and emergency packet buffer must still be
 /// owned by this firmware. Callers must not reuse the buffer afterward.
 pub unsafe fn publish_terminal_exception(registers: [u32; 18], name: &[u8]) {
+    // WSM id 0x0800 is the firmware-exception indication, and cw1200 is meant
+    // to tear the link down when it arrives (`CW1200_BH_RX_DIAG_EXCEPTION`,
+    // result -EIO, then "[BH] Fatal error, exiting"). That is correct for a
+    // firmware that is halting, and wrong for one that carries on: a
+    // report-and-continue build that publishes here kills the link it was
+    // trying to keep measuring. Count instead and let the caller continue.
+    #[cfg(feature = "corruption-non-fatal")]
+    {
+        let _ = (registers, name);
+        unsafe {
+            crate::host_tx_diagnostics::bump(
+                crate::host_tx_diagnostics::counter::SUPPRESSED_EXCEPTION,
+            );
+        }
+        return;
+    }
+    #[cfg(not(feature = "corruption-non-fatal"))]
     const MESSAGE_LENGTH: u16 = 4 + 4 + 18 * 4 + 48;
+    #[cfg(not(feature = "corruption-non-fatal"))]
     let buffer = SHARED_BUFFER_BASE as *mut u8;
+    // The host counts every message it receives, including this one, against a
+    // single WSM sequence and treats a mismatch as fatal:
+    //   BH RX diag ... id=0800 seq=0/2 ... result=-5  ->  [BH] Fatal error
+    // This path bypasses `stage_next_tx`, the only place sequence bits are
+    // assigned, so it used to emit sequence 0 always. Harmless when halting,
+    // fatal when the firmware carries on afterwards.
+    #[cfg(not(feature = "corruption-non-fatal"))]
+    let sequence = unsafe { next_emergency_sequence() };
+    #[cfg(not(feature = "corruption-non-fatal"))]
     unsafe {
         buffer.cast::<u16>().write_volatile(MESSAGE_LENGTH);
-        buffer.add(2).cast::<u16>().write_volatile(0x0800);
+        buffer
+            .add(2)
+            .cast::<u16>()
+            .write_volatile(0x0800 | (sequence << 13));
         buffer.add(4).cast::<u32>().write_volatile(4);
         for (index, value) in registers.into_iter().enumerate() {
             buffer
@@ -590,6 +655,22 @@ impl Transport {
                 unsafe { (buffer_address as *const u32).read_volatile() }
             };
             if buffer_address == 0 || actual != expected {
+                // Report-only: publishing here would kill the link outright.
+                // The exception path writes WSM id 0x0800 with no sequence bits
+                // and bypasses `stage_next_tx`, so the host sees an
+                // out-of-sequence message and terminates its BH thread. That is
+                // acceptable when halting and fatal when continuing.
+                #[cfg(feature = "corruption-non-fatal")]
+                {
+                    unsafe {
+                        crate::host_tx_diagnostics::bump(
+                            crate::host_tx_diagnostics::counter::OUTPUT_CORRUPTION,
+                        );
+                    }
+                    consumer = consumer.wrapping_add(1);
+                    continue;
+                }
+                #[cfg(not(feature = "corruption-non-fatal"))]
                 unsafe {
                     let following = if buffer_address == 0 {
                         [0; 3]
@@ -695,7 +776,10 @@ impl Transport {
         // mutable in-place response header ownership inseparable.
         let length = unsafe { (buffer_address as *const u16).read_volatile() };
         let header_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
-        let sequence = ((staged as u16) & 7) << 13;
+        // Emergency-channel publications consume sequence numbers the host
+        // counts, so ordinary output has to skip past them.
+        let sequence =
+            (((staged.wrapping_add(unsafe { emergency_sequence_skew() })) as u16) & 7) << 13;
         let sequenced_id = (header_id & 0x1fff) | sequence;
         unsafe { ((buffer_address + 2) as *mut u16).write_volatile(sequenced_id) };
         #[cfg(feature = "vendor-host-tx-diagnostics")]

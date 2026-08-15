@@ -13,8 +13,8 @@ set -u
 IMG=$1
 LABEL=$2
 SP=/nix/store/nkkj35yh0rmj71bwyz8wn7jg6mkm15bx-sshpass-1.10/bin/sshpass
-SSH="$SP -p 1234 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@192.168.0.104"
-SCP="$SP -p 1234 scp -o StrictHostKeyChecking=no -o ConnectTimeout=5"
+SSH="$SP -p 1234 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 root@192.168.0.104"
+SCP="$SP -p 1234 scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2"
 
 # The exit trap installs a recovery image and reboots the board, so a run
 # started too soon after a previous one races that reboot: ssh times out, the
@@ -22,7 +22,7 @@ SCP="$SP -p 1234 scp -o StrictHostKeyChecking=no -o ConnectTimeout=5"
 # for the board to answer ssh before touching it.
 wait_board_ready() {
   for i in $(seq 1 100); do
-    if $SSH 'exit 0' 2>/dev/null; then
+    if timeout 20 $SSH 'exit 0' 2>/dev/null; then
       [ "$i" -gt 1 ] && echo "BOARD_READY_AFTER=${i}"
       return 0
     fi
@@ -126,5 +126,5 @@ ip netns exec "$NS" timeout 20 ping -c 20 -i 0.2 -W 2 "$SERVER" 2>&1 | tail -3
 echo ===STATUS===
 cat "$dir/status" || true
 echo ===DMESG===
-dmesg | grep -E '\[BH\]|Fatal error|WARNING:|rx blew up|exception' | tail -60
+dmesg | grep -E '\[BH\]|Fatal error|WARNING:|rx blew up|exception|Timeout|timeout|Missed interrupt|wsm|WSM|cw1200|bh_error|outstanding' | tail -80
 REMOTE

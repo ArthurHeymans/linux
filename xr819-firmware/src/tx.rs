@@ -1992,6 +1992,100 @@ fn hardware_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> Option<u8> {
 /// demonstrably finished with that slot. The frame is then completed as failed
 /// and the cursors retire exactly as the vendor success path retires them,
 /// restoring the `txp_fn_4425` invariant `producer == ring cursor`.
+/// Frames staged into a pipe but not yet armed. Vendor's `txp_scheduler_run`
+/// assembles a whole batch, then arms once and writes GO once; it never appends
+/// to an armed pipe. So depth comes from staging several slots before the arm,
+/// not from publishing onto a running pipe.
+#[cfg(target_arch = "arm")]
+struct StagedSlots(core::cell::UnsafeCell<[u8; 4]>);
+
+#[cfg(target_arch = "arm")]
+unsafe impl Sync for StagedSlots {}
+
+#[cfg(target_arch = "arm")]
+static STAGED_SLOTS: StagedSlots = StagedSlots(core::cell::UnsafeCell::new([0; 4]));
+
+/// How many frames may be in flight on one pipe. A pipe has four slots; depth 1
+/// reproduces the single-frame path exactly.
+pub const fn tx_batch_depth() -> u8 {
+    if cfg!(feature = "tx-pipelining-depth-4") {
+        4
+    } else if cfg!(feature = "tx-pipelining") {
+        2
+    } else {
+        1
+    }
+}
+
+/// Slots staged into `pipe` and awaiting the batch arm.
+///
+/// # Safety
+/// Single-threaded firmware context; `pipe` must be 0..=3.
+#[cfg(target_arch = "arm")]
+pub unsafe fn staged_slots(pipe: u8) -> u8 {
+    unsafe {
+        STAGED_SLOTS
+            .0
+            .get()
+            .cast::<u8>()
+            .add(usize::from(pipe & 3))
+            .read_volatile()
+    }
+}
+
+/// Total slots staged across all pipes and awaiting an arm.
+///
+/// # Safety
+/// Single-threaded firmware context.
+#[cfg(target_arch = "arm")]
+pub unsafe fn staged_slots_total() -> u8 {
+    (0..4).map(|pipe| unsafe { staged_slots(pipe) }).sum()
+}
+
+/// Record that a slot was staged into `pipe` without arming.
+///
+/// # Safety
+/// Single-threaded firmware context; `pipe` must be 0..=3.
+#[cfg(target_arch = "arm")]
+pub unsafe fn note_staged_slot(pipe: u8) {
+    unsafe {
+        let cell = STAGED_SLOTS.0.get().cast::<u8>().add(usize::from(pipe & 3));
+        cell.write_volatile(cell.read_volatile().saturating_add(1));
+    }
+}
+
+/// Arm every pipe holding staged slots, once per pipe.
+///
+/// This is the tail of vendor's publish loop: arm, mark programmed, reload the
+/// watchdog, then GO. Splitting it out is what lets several slots share one arm.
+///
+/// # Safety
+/// Must run from the single-threaded firmware context that owns pipe state.
+#[cfg(target_arch = "arm")]
+pub unsafe fn arm_staged_pipes() {
+    unsafe {
+        for pipe in 0..4_u8 {
+            if staged_slots(pipe) == 0 {
+                continue;
+            }
+            let pipe_state = pipe_state_address(pipe);
+            let hardware_ring = read_u32(pipe_state as usize + 8);
+            if hardware_ring != 0 {
+                write_u8(pipe_state as usize + 3, 1);
+                write_u8(pipe_state as usize + 4, read_u8(pipe_state as usize + 4) | 1);
+                write_u8(pipe_state as usize + 5, 5);
+                write_u32(hardware_ring as usize + 0x14, 1);
+            }
+            STAGED_SLOTS
+                .0
+                .get()
+                .cast::<u8>()
+                .add(usize::from(pipe))
+                .write_volatile(0);
+        }
+    }
+}
+
 /// Per-pipe publication timestamps, used to tell a freshly published slot from
 /// a genuinely stuck one. Vendor has no equivalent because its status handling
 /// does not retire slots at all; this exists only to bound our retirement.
@@ -3640,6 +3734,7 @@ pub unsafe fn publish_host_class0_slot(
     slot: u8,
     slot_record: u32,
     command: u32,
+    batch: BatchPosition,
 ) -> Result<(), ProbeBuildError> {
     if !is_wsm_tx_context(context) || pipe >= 4 || slot >= 4 {
         return Err(ProbeBuildError::UnsupportedPublicationShape);
@@ -3736,6 +3831,7 @@ pub unsafe fn publish_host_class0_slot(
                 hardware_ring,
                 frame_node,
                 expects_ack: read_u8(frame_node.raw() as usize + 0x56) != 0xff,
+                batch,
             },
         );
         // After GO, so the captured words are exactly what the MAC was given,
@@ -5769,6 +5865,34 @@ pub struct SingleProbePublicationInput {
     pub hardware_ring: u32,
     pub frame_node: FrameNodeAddress,
     pub expects_ack: bool,
+    /// Batch position. `txp_scheduler_run` sets `current` to the producer once,
+    /// then loops slot state and ring duration from there to `last`, and only
+    /// afterwards arms the pipe and writes GO. Staging a second frame must
+    /// therefore leave `current` alone (it tracks hardware progress) and must
+    /// not arm; the final frame of a batch arms once for all of them.
+    pub batch: BatchPosition,
+}
+
+/// Where a staged frame sits in a pipe batch. `Only` reproduces the exact
+/// single-frame sequence, so a depth-1 build is unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BatchPosition {
+    Only,
+    First,
+    Middle,
+    Last,
+}
+
+impl BatchPosition {
+    /// Vendor writes `current = producer` once, before the publish loop.
+    pub const fn sets_current(self) -> bool {
+        matches!(self, Self::Only | Self::First)
+    }
+
+    /// Vendor arms and writes GO once, after the publish loop.
+    pub const fn arms(self) -> bool {
+        matches!(self, Self::Only | Self::Last)
+    }
 }
 
 /// Final matching-payload publication sequence for one kind-0 no-ACK frame.
@@ -5887,7 +6011,12 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let slot = input.slot & 3;
     let frame = input.frame_node.raw();
 
-    mmio.write_u8(input.pipe_state + 2, slot);
+    // `current` tracks hardware progress through the batch, so only the first
+    // staged frame sets it (vendor: `*(byte *)(iVar4 + 0xa2) = *pbVar8`, once,
+    // before the publish loop).
+    if input.batch.sets_current() {
+        mmio.write_u8(input.pipe_state + 2, slot);
+    }
     // The inactive first-submission branch of `txp_scheduler_run` does not
     // call `txp_pipe_advance_slot`; startup already synchronized the ring and
     // software cursors. Slot-advance publication belongs only to cleanup/rearm
@@ -5974,9 +6103,15 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
 
     let active_count = mmio.read_u8(0x0400_3a6c).wrapping_add(1);
     mmio.write_u8(0x0400_3a6c, active_count);
+    // Vendor's publish loop body: mark the slot published and push its duration
+    // into the ring, once per slot from producer to `last`.
     mmio.write_u8(input.slot_record + 3, 1);
     let duration = mmio.read_u32(input.slot_record + 8);
     mmio.write_u32(input.hardware_ring, duration);
+    if !input.batch.arms() {
+        // Staged, not armed: the batch's final frame arms for all of them.
+        return 0;
+    }
     mmio.write_u8(input.pipe_state + 3, 1);
     let pipe_flags = mmio.read_u8(input.pipe_state + 4) | 1;
     mmio.write_u8(input.pipe_state + 4, pipe_flags);
@@ -6168,6 +6303,7 @@ impl PreparedProbePublication {
                     hardware_ring,
                     frame_node,
                     expects_ack: self.context.expects_ack,
+                    batch: BatchPosition::Only,
                 },
             );
             // Mirror the execution record through ordinary WSM event
@@ -8647,6 +8783,7 @@ mod tests {
                 hardware_ring,
                 frame_node: frame,
                 expects_ack: false,
+                batch: BatchPosition::Only,
             },
         );
 

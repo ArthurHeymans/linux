@@ -1056,6 +1056,20 @@ impl HostSchedulerReservation {
         self,
         retained: &mut RetainedHostTx,
     ) -> Result<(), (Self, crate::tx::ProbeBuildError)> {
+        unsafe { self.publish_in_batch(retained, crate::tx::BatchPosition::Only) }
+    }
+
+    /// Stage this reservation as part of a pipe batch. `Only` is the historic
+    /// single-frame path; `First`/`Middle` write the slot without arming, and
+    /// `Last` arms the pipe for every slot staged since `First`.
+    ///
+    /// # Safety
+    /// Same as `publish`.
+    pub unsafe fn publish_in_batch(
+        self,
+        retained: &mut RetainedHostTx,
+        batch: crate::tx::BatchPosition,
+    ) -> Result<(), (Self, crate::tx::ProbeBuildError)> {
         if retained.context != self.context || retained.phase != HostTxPhase::SchedulerReserved {
             return Err((self, crate::tx::ProbeBuildError::PipeSlotOwnershipMismatch));
         }
@@ -1066,6 +1080,7 @@ impl HostSchedulerReservation {
                 self.slot,
                 self.slot_record,
                 self.command,
+                batch,
             )
         } {
             return Err((self, error));
@@ -1165,7 +1180,13 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     }
 
     let pipe_state = 0x0400_1720 + u32::from(pipe) * 0x6c;
-    let slot = unsafe { read_live_u8(pipe_state) } & 3;
+    // The producer byte does not move until a slot completes, so a second frame
+    // staged into the same batch must take the next slot along.
+    #[cfg(target_arch = "arm")]
+    let staged = unsafe { crate::tx::staged_slots(pipe) };
+    #[cfg(not(target_arch = "arm"))]
+    let staged = 0;
+    let slot = unsafe { read_live_u8(pipe_state) }.wrapping_add(staged) & 3;
     let slot_record = pipe_state + 0x0c + u32::from(slot) * 0x18;
     let command = unsafe { read_live_u32(slot_record + 0x14) };
     let hardware_ring = unsafe { read_live_u32(pipe_state + 8) };

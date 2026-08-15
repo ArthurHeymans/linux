@@ -397,7 +397,19 @@ extern "C" fn rust_main() -> ! {
         #[cfg(all(feature = "pipe-watchdog", target_arch = "arm"))]
         {
             let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
-            if now.wrapping_sub(last_watchdog_tick) >= 200_000 {
+            // Vendor ticks at 200 ms, so a wedged pipe costs a full second to
+            // recover. Vendor can afford that; we cannot. A pipe stays armed
+            // while stuck, which blocks every new reservation for that pipe, so
+            // frames queue behind it and admission-to-confirmation latency runs
+            // to hundreds of milliseconds until the host's TX-confirm timeout
+            // kills the link. Retirement cannot help either: it only runs from
+            // a delivered status, and a wedged pipe stops delivering them.
+            let tick_period = if cfg!(feature = "fast-pipe-watchdog") {
+                40_000
+            } else {
+                200_000
+            };
+            if now.wrapping_sub(last_watchdog_tick) >= tick_period {
                 last_watchdog_tick = now;
                 unsafe {
                     tx::service_pipe_watchdog_tick_runtime();
@@ -761,8 +773,19 @@ extern "C" fn rust_main() -> ! {
         // converge on one vendor scheduler, so leave the host descriptor owned
         // by the transport while class-0 hardware publication is active rather
         // than entering the independent management publisher.
+        // Answering host requests must not depend on a data frame completing.
+        // `management_runtime_available` is false while any class-0 frame is in
+        // flight, so gating the poll on it starves the command lane under
+        // continuous TX and forever if a frame sticks: the host stops getting
+        // replies and declares `[BH] Fatal error` long before the 5 x 200 ms
+        // pipe watchdog can recover the slot. Vendor has no such coupling,
+        // which is why it can discard unmatched statuses and lean on the
+        // watchdog. The management publisher this gate was protecting is
+        // already gated separately where it is serviced.
+        let host_lane_available =
+            cfg!(feature = "host-lane-independent") || management_runtime_available;
         if transport.publication_available()
-            && management_runtime_available
+            && host_lane_available
             && let Some(request) = transport.poll_request()
         {
             let output = &mut response_scratch;
