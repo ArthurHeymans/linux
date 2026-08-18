@@ -379,6 +379,12 @@ runtime/stack windows as separate `MEMORY` regions. Linker `ASSERT` expressions
 hard-fail image overflow or changes contradicting those observed boundaries;
 they deliberately do not claim undocumented physical TCM capacities.
 
+CPU-only HIF queue and ring ownership no longer uses the vendor
+`0x04009754..0x04009928` DTCM records. `HifQueues` and `HifRingState` values are
+initialized in Rust BSS and borrowed exclusively by `Transport`; only the two
+sequence counters needed by terminal exception publication use a private shared
+cell. Hardware descriptors and packet-RAM addresses remain fixed.
+
 An explicit `tcm-size-diagnostic` feature adds ARM interworking helpers for the
 CP15 TCM type and region registers. The registers are read only when the host
 requests diagnostic MIB `0x100c`; normal startup remains unchanged. This is a

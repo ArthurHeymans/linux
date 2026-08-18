@@ -123,7 +123,6 @@ const BOOT_STATE_BASE: usize = 0x0400_1fd4;
 const CLOCK_PARAMETERS_BASE: usize = 0x0400_218c;
 const INTERRUPT_ROUTING_BASE: usize = 0x0abb_0000;
 const HOST_DOWNLOAD_STATE: usize = 0x0400_1428;
-const HIF_SOFTWARE_STATE_BASE: usize = 0x0400_9754;
 const HIF_SHARED_BASE: usize = 0x0ab0_0100;
 const IRQ_CALLBACK_TABLE: usize = 0x0400_11bc;
 const VENDOR_BSS_START: usize = 0x0400_2078;
@@ -238,8 +237,6 @@ pub fn initialize_runtime_state() {
         (0x0400_142c as *mut u32).write_volatile(0x1234_5678);
         (0x0400_1430 as *mut u32).write_volatile(0);
 
-        (0x0400_11b4 as *mut u32).write_volatile(0x0204_0a01);
-        (0x0400_11b8 as *mut u32).write_volatile(0x0000_1f40);
     }
 }
 
@@ -767,7 +764,6 @@ pub fn finalize_interrupt_routing() {
 pub fn try_activate_hif(max_polls: u32) -> bool {
     unsafe {
         let _ = (HIF_SHARED_BASE.wrapping_add(0x40) as *const u32).read_volatile();
-        (HIF_SOFTWARE_STATE_BASE as *mut u32).write_volatile(1);
         for _ in 0..max_polls {
             if (HIF_SHARED_BASE.wrapping_add(0x34) as *const u32).read_volatile() & (1 << 10) == 0 {
                 return true;

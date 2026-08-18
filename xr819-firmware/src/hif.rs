@@ -1,7 +1,8 @@
 //! Minimal XR819 host-interface descriptor transport.
 //!
-//! The addresses and descriptor layout are intentionally kept close to the
-//! vendor firmware while the transport is being reconstructed.
+//! Hardware descriptor and packet-RAM addresses follow the XR819 interface.
+//! CPU-only queue ownership is native Rust state rather than a mirror of the
+//! vendor firmware's fixed DTCM globals.
 
 #[cfg(all(target_arch = "arm", not(target_feature = "thumb-mode")))]
 use core::arch::asm;
@@ -39,41 +40,6 @@ register_structs! {
         (0x100 => @END),
     },
 
-    HifState {
-        (0x00 => tx_queued: ReadWrite<u32>),
-        (0x04 => tx_reclaimed: ReadWrite<u32>),
-        (0x08 => rx_producer: ReadWrite<u32>),
-        (0x0c => rx_consumer: ReadWrite<u32>),
-        (0x10 => rx_mask: ReadWrite<u32>),
-        (0x14 => rx_descriptors: ReadWrite<u32>),
-        (0x18 => tx_producer: ReadWrite<u32>),
-        (0x1c => tx_consumer: ReadWrite<u32>),
-        (0x20 => tx_mask: ReadWrite<u32>),
-        (0x24 => tx_descriptors: ReadWrite<u32>),
-        (0x28 => tx_length_mask: ReadWrite<u32, HifControl::Register>),
-        (0x2c => @END),
-    },
-
-    ControlShadow {
-        (0x00 => rx_available: ReadWrite<u32>),
-        (0x04 => tx_pending: ReadWrite<u32>),
-        (0x08 => @END),
-    },
-
-    HifSoftwareState {
-        (0x00 => mode: ReadWrite<u32>),
-        (0x04 => rx_credit: ReadWrite<u16>),
-        (0x06 => _reserved0),
-        (0x08 => activity_timestamp: ReadWrite<u32>),
-        (0x0c => _reserved1),
-        (0x20 => rx_buffers: [ReadWrite<u32>; 32]),
-        (0xa0 => rx_released: ReadWrite<u32>),
-        (0xa4 => buffer_size: ReadWrite<u16>),
-        (0xa6 => _reserved2),
-        (0xa8 => tx_buffers: [ReadWrite<u32>; 64]),
-        (0x1a8 => @END),
-    },
-
     InterruptController {
         (0x00 => _reserved0),
         (0x0c => enable: ReadWrite<u32>),
@@ -94,13 +60,9 @@ register_structs! {
     }
 }
 
-const STATE_BASE: usize = 0x0400_98fc;
 const INTERRUPT_CONTROLLER_BASE: usize = 0x0a88_0000;
-const IRQ_CALLBACK_TABLE: usize = 0x0400_11bc;
 const RX_DESCRIPTOR_BASE: usize = 0x0ab0_0000;
 const TX_DESCRIPTOR_BASE: usize = 0x0ab0_0100;
-const CONTROL_SHADOW_BASE: usize = 0x0400_11ac;
-const HIF_SOFTWARE_STATE_BASE: usize = 0x0400_9754;
 const RX_BUFFER_BASE: usize = 0x0900_8a68;
 const RX_BUFFER_SIZE: usize = 1632;
 const RX_BUFFER_COUNT: usize = 30;
@@ -291,9 +253,67 @@ pub struct DebugSnapshot {
     pub malformed_requests: u32,
 }
 
+/// Firmware-owned HIF ring cursors formerly stored in the vendor DTCM record
+/// at `0x040098fc`.
+pub struct HifRingState {
+    tx_queued: u32,
+    tx_reclaimed: u32,
+    rx_producer: u32,
+    rx_consumer: u32,
+    tx_consumer: u32,
+    tx_length_mask: u32,
+}
+
+impl Default for HifRingState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HifRingState {
+    pub const fn new() -> Self {
+        Self {
+            tx_queued: 0,
+            tx_reclaimed: 0,
+            rx_producer: 0,
+            rx_consumer: 0,
+            tx_consumer: 0,
+            tx_length_mask: 0,
+        }
+    }
+}
+
+/// Firmware-owned packet-buffer queues formerly stored in the vendor DTCM
+/// `HifSoftwareState` record at `0x04009754`.
+///
+/// Hardware consumes the descriptors and packet-RAM addresses, not this CPU
+/// bookkeeping. Keeping it behind the unique `Transport` owner removes the
+/// vendor address and prevents unrelated code from mutating queue ownership.
+pub struct HifQueues {
+    rx_buffers: [u32; 32],
+    rx_released: u32,
+    tx_buffers: [u32; 64],
+}
+
+impl Default for HifQueues {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HifQueues {
+    pub const fn new() -> Self {
+        Self {
+            rx_buffers: [0; 32],
+            rx_released: 0,
+            tx_buffers: [0; 64],
+        }
+    }
+}
+
 pub struct Transport {
-    state: &'static HifState,
-    software_state: &'static HifSoftwareState,
+    state: &'static mut HifRingState,
+    queues: &'static mut HifQueues,
     shared: &'static HifShared,
     output_releases: [Option<RxToken>; 64],
     output_shared_slots: [Option<u8>; 64],
@@ -347,37 +367,65 @@ pub(crate) fn drain_write_buffer() {
 
 fn postcode(_value: u32) {}
 
-/// Sequence skew contributed by emergency-channel publications.
+#[derive(Clone, Copy)]
+struct HifSequenceCounters {
+    tx_producer: u32,
+    emergency_skew: u32,
+}
+
+/// Sequence state shared with terminal exception publication.
 ///
-/// `tx_producer` cannot absorb these: it also indexes the output buffer and
-/// descriptor slots, so advancing it to consume a sequence would skip a ring
-/// entry and desynchronise reclaim accounting. Tracking the skew separately
-/// keeps the ring intact and the host's sequence stream continuous.
-struct EmergencySequenceSkew(core::cell::UnsafeCell<u32>);
+/// Normal ring ownership remains inside `Transport`, but terminal exceptions
+/// can occur without a borrow of it. Keeping only these two single-word
+/// counters in one private static avoids exposing the complete HIF ring state
+/// globally while preserving the vendor sequence calculation exactly.
+struct SharedHifSequence(core::cell::UnsafeCell<HifSequenceCounters>);
 
-unsafe impl Sync for EmergencySequenceSkew {}
+unsafe impl Sync for SharedHifSequence {}
 
-static EMERGENCY_SEQUENCE_SKEW: EmergencySequenceSkew =
-    EmergencySequenceSkew(core::cell::UnsafeCell::new(0));
+static HIF_SEQUENCE: SharedHifSequence = SharedHifSequence(core::cell::UnsafeCell::new(
+    HifSequenceCounters {
+        tx_producer: 0,
+        emergency_skew: 0,
+    },
+));
+
+fn tx_producer() -> u32 {
+    unsafe { (&raw const (*HIF_SEQUENCE.0.get()).tx_producer).read_volatile() }
+}
+
+fn set_tx_producer(value: u32) {
+    unsafe { (&raw mut (*HIF_SEQUENCE.0.get()).tx_producer).write_volatile(value) };
+}
+
+fn reset_hif_sequence() {
+    unsafe {
+        HIF_SEQUENCE.0.get().write(HifSequenceCounters {
+            tx_producer: 0,
+            emergency_skew: 0,
+        });
+    }
+}
 
 /// Sequence skew applied to ordinary staged output.
 ///
 /// # Safety
-/// Single-threaded firmware context.
+/// The caller must observe the firmware's single-core HIF sequencing rules.
 pub unsafe fn emergency_sequence_skew() -> u32 {
-    unsafe { EMERGENCY_SEQUENCE_SKEW.0.get().read_volatile() }
+    unsafe { (&raw const (*HIF_SEQUENCE.0.get()).emergency_skew).read_volatile() }
 }
 
 /// Claim the next WSM sequence for an emergency-channel message.
 ///
 /// # Safety
-/// Single-threaded firmware context; HIF state must be mapped.
+/// The caller must own the emergency HIF channel.
 unsafe fn next_emergency_sequence() -> u16 {
     unsafe {
-        let state = &*(STATE_BASE as *const HifState);
-        let skew = EMERGENCY_SEQUENCE_SKEW.0.get();
-        let sequence = state.tx_producer.get().wrapping_add(skew.read_volatile());
-        skew.write_volatile(skew.read_volatile().wrapping_add(1));
+        let counters = HIF_SEQUENCE.0.get();
+        let skew = (&raw mut (*counters).emergency_skew);
+        let current_skew = skew.read_volatile();
+        let sequence = tx_producer().wrapping_add(current_skew);
+        skew.write_volatile(current_skew.wrapping_add(1));
         (sequence & 7) as u16
     }
 }
@@ -474,64 +522,53 @@ pub unsafe fn publish_mac_fatal_exception<const N: usize>(registers: [u32; N]) {
     unsafe { publish_terminal_exception(registers, b"xr819-mac-event") };
 }
 
-extern "C" fn diagnostic_hif_irq_stub() {}
-
 impl Transport {
     /// Initializes the fixed descriptor rings used by the XR819 HIF block.
     ///
     /// # Safety
     ///
     /// No other firmware may own the HIF or the fixed shared-memory regions.
-    pub unsafe fn initialize() -> Self {
+    pub unsafe fn initialize(
+        state: &'static mut HifRingState,
+        queues: &'static mut HifQueues,
+    ) -> Self {
         postcode(0x4849_4e00);
-        let state = unsafe { &*(STATE_BASE as *const HifState) };
         let interrupt_controller =
             unsafe { &*(INTERRUPT_CONTROLLER_BASE as *const InterruptController) };
         let rx_shared = unsafe { &*(RX_DESCRIPTOR_BASE as *const RxShared) };
-        let control_shadow = unsafe { &*(CONTROL_SHADOW_BASE as *const ControlShadow) };
-        let software_state = unsafe { &*(HIF_SOFTWARE_STATE_BASE as *const HifSoftwareState) };
         let shared = unsafe { &*(TX_DESCRIPTOR_BASE as *const HifShared) };
 
-        state.tx_queued.set(0);
-        state.tx_reclaimed.set(0);
-        state.rx_producer.set(RX_BUFFER_COUNT as u32);
-        state.rx_consumer.set(0);
-        state.rx_mask.set(31);
-        state.rx_descriptors.set(RX_DESCRIPTOR_BASE as u32);
-        state.tx_producer.set(0);
-        state.tx_consumer.set(0);
-        state.tx_mask.set(3);
-        state.tx_descriptors.set(TX_DESCRIPTOR_BASE as u32);
+        *state = HifRingState {
+            tx_queued: 0,
+            tx_reclaimed: 0,
+            rx_producer: RX_BUFFER_COUNT as u32,
+            rx_consumer: 0,
+            tx_consumer: 0,
+            tx_length_mask: 0,
+        };
+        reset_hif_sequence();
         postcode(0x4849_4e01);
 
         for (index, descriptor) in rx_shared.descriptors.iter().enumerate() {
             postcode(0x4849_5100 | index as u32);
             if index < RX_BUFFER_COUNT {
                 let address = RX_BUFFER_BASE + index * RX_BUFFER_SIZE;
-                software_state.rx_buffers[index].set(address as u32);
+                queues.rx_buffers[index] = address as u32;
                 descriptor.address.set((address as u32) & 0xf6ff_ffff);
                 descriptor
                     .control
                     .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
             } else {
-                software_state.rx_buffers[index].set(0);
+                queues.rx_buffers[index] = 0;
                 descriptor.address.set(0);
                 descriptor.control.set(0);
             }
         }
         postcode(0x4849_4e02);
-        software_state.buffer_size.set(RX_BUFFER_SIZE as u16);
-        control_shadow.rx_available.set(RX_BUFFER_COUNT as u32);
-        control_shadow.tx_pending.set(0);
         postcode(0x4849_4e03);
 
-        // Literal callback-table and source-enable effects of the vendor's
-        // register_irq(13, callback) call. CPU IRQs remain masked until the
-        // real handler and scheduler have been translated.
-        let callback = diagnostic_hif_irq_stub as *const () as usize as u32 | 1;
-        unsafe {
-            ((IRQ_CALLBACK_TABLE + (31 - 13) * 4) as *mut u32).write_volatile(callback);
-        }
+        // Enable the HIF source in the hardware interrupt controller. CPU IRQs
+        // remain masked, so no vendor software callback table is required.
         interrupt_controller
             .enable
             .set(interrupt_controller.enable.get() | (1 << 13));
@@ -541,20 +578,18 @@ impl Transport {
             .interrupt_ack
             .write(HifControl::LENGTH_MASK.val(0x07ff));
         postcode(0x4849_4e05);
-        let control = if software_state.mode.get() == 1 && shared.control.get() & (1 << 10) != 0 {
+        let control = if shared.control.get() & (1 << 10) != 0 {
             0x07f7
         } else {
             0x07ff
         };
-        state
-            .tx_length_mask
-            .write(HifControl::LENGTH_MASK.val(control & 0x07f8));
+        state.tx_length_mask = control & 0x07f8;
         shared.control.write(HifControl::LENGTH_MASK.val(control));
         postcode(0x4849_4e06);
 
         Self {
             state,
-            software_state,
+            queues,
             shared,
             output_releases: [const { None }; 64],
             output_shared_slots: [const { None }; 64],
@@ -578,12 +613,12 @@ impl Transport {
 
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     fn validate_staged_tx_buffers(&self) {
-        let producer = self.state.tx_producer.get();
-        let mut consumer = self.state.tx_consumer.get();
+        let producer = tx_producer();
+        let mut consumer = self.state.tx_consumer;
         while consumer != producer {
             let queue_slot = (consumer & 63) as usize;
             let descriptor_slot = (consumer & 3) as usize;
-            let buffer_address = self.software_state.tx_buffers[queue_slot].get();
+            let buffer_address = self.queues.tx_buffers[queue_slot];
             let expected = unsafe { (*OUTPUT_HEADERS.0.get())[queue_slot] };
             let actual = if buffer_address == 0 {
                 0
@@ -635,20 +670,20 @@ impl Transport {
 
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     pub fn debug_snapshot(&self) -> DebugSnapshot {
-        let rx_consumer = self.state.rx_consumer.get();
+        let rx_consumer = self.state.rx_consumer;
         let rx_descriptor = unsafe {
             &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[(rx_consumer & 31) as usize]
         };
         DebugSnapshot {
-            tx_queued: self.state.tx_queued.get(),
-            tx_producer: self.state.tx_producer.get(),
-            tx_consumer: self.state.tx_consumer.get(),
-            tx_length_mask: self.state.tx_length_mask.get(),
+            tx_queued: self.state.tx_queued,
+            tx_producer: tx_producer(),
+            tx_consumer: self.state.tx_consumer,
+            tx_length_mask: self.state.tx_length_mask,
             descriptor_address: self.shared.tx[0].address.get(),
             descriptor_control: self.shared.tx[0].control.get(),
             hif_control: self.shared.control.get(),
             hif_length_mask: self.shared.interrupt_ack.get(),
-            rx_producer: self.state.rx_producer.get(),
+            rx_producer: self.state.rx_producer,
             rx_consumer,
             rx_descriptor_address: rx_descriptor.address.get(),
             rx_descriptor_control: rx_descriptor.control.get(),
@@ -658,15 +693,15 @@ impl Transport {
     }
 
     fn stage_next_tx(&mut self) {
-        let staged = self.state.tx_producer.get();
-        let reclaimed = self.state.tx_consumer.get();
-        let queued = self.state.tx_queued.get();
+        let staged = tx_producer();
+        let reclaimed = self.state.tx_consumer;
+        let queued = self.state.tx_queued;
         if staged == queued || !tx_ring_has_capacity(staged, reclaimed) {
             return;
         }
 
         let queue_slot = (staged & 63) as usize;
-        let buffer_address = self.software_state.tx_buffers[queue_slot].get() as usize;
+        let buffer_address = self.queues.tx_buffers[queue_slot] as usize;
         // Vendor staging reads MsgLen from the queued buffer rather than
         // retaining a separate length snapshot. This keeps descriptor and
         // mutable in-place response header ownership inseparable.
@@ -705,7 +740,7 @@ impl Transport {
                 descriptor_control,
             );
         }
-        self.state.tx_producer.set(staged.wrapping_add(1));
+        set_tx_producer(staged.wrapping_add(1));
     }
 
     fn reclaim_tx(&mut self) {
@@ -713,9 +748,9 @@ impl Transport {
             return;
         }
         self.tx_completion_pending = false;
-        let producer = self.state.tx_producer.get();
-        let mut consumer = self.state.tx_consumer.get();
-        let mut queue_consumer = self.state.tx_reclaimed.get();
+        let producer = tx_producer();
+        let mut consumer = self.state.tx_consumer;
+        let mut queue_consumer = self.state.tx_reclaimed;
         while consumer != producer {
             let descriptor_slot = (consumer & 3) as usize;
             if self.shared.tx[descriptor_slot].control.get() & 1 != 0 {
@@ -723,7 +758,7 @@ impl Transport {
             }
 
             let queue_slot = (queue_consumer & 63) as usize;
-            let buffer_address = self.software_state.tx_buffers[queue_slot].get();
+            let buffer_address = self.queues.tx_buffers[queue_slot];
             let header = if buffer_address == 0 {
                 0
             } else {
@@ -740,14 +775,14 @@ impl Transport {
             }
 
             consumer = consumer.wrapping_add(1);
-            self.state.tx_consumer.set(consumer);
+            self.state.tx_consumer = consumer;
             // Preserve vendor `hif_tx_confirm_drain()` ordering exactly: make
             // the descriptor slot reusable and push its successor before
             // releasing the completed message's backing storage.
             self.stage_next_tx();
 
             queue_consumer = queue_consumer.wrapping_add(1);
-            self.state.tx_reclaimed.set(queue_consumer);
+            self.state.tx_reclaimed = queue_consumer;
             if let Some(token) = self.output_releases[queue_slot].take() {
                 unsafe {
                     crate::host_tx_diagnostics::record(
@@ -770,14 +805,14 @@ impl Transport {
                     (*OUTPUT_HASHES.0.get())[queue_slot] = 0;
                 }
             }
-            self.software_state.tx_buffers[queue_slot].set(0);
+            self.queues.tx_buffers[queue_slot] = 0;
         }
         drain_write_buffer();
     }
 
     pub fn publication_available(&mut self) -> bool {
         self.reclaim_tx();
-        output_queue_has_capacity(self.state.tx_queued.get(), self.state.tx_reclaimed.get())
+        output_queue_has_capacity(self.state.tx_queued, self.state.tx_reclaimed)
     }
 
     pub fn output_available(&mut self) -> bool {
@@ -809,7 +844,7 @@ impl Transport {
     }
 
     fn detach_rx_buffer(&mut self, consumer: u32) {
-        self.state.rx_consumer.set(consumer.wrapping_add(1));
+        self.state.rx_consumer = consumer.wrapping_add(1);
         drain_write_buffer();
     }
 
@@ -818,28 +853,26 @@ impl Transport {
         if buffer_address == 0 {
             return;
         }
-        self.software_state
-            .rx_released
-            .set(self.software_state.rx_released.get().wrapping_add(1));
-        let producer = self.state.rx_producer.get();
+        self.queues.rx_released = self.queues.rx_released.wrapping_add(1);
+        let producer = self.state.rx_producer;
         let producer_slot = (producer & 31) as usize;
         let producer_descriptor =
             unsafe { &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[producer_slot] };
-        self.software_state.rx_buffers[producer_slot].set(buffer_address as u32);
+        self.queues.rx_buffers[producer_slot] = buffer_address as u32;
         producer_descriptor
             .address
             .set((buffer_address as u32) & 0xf6ff_ffff);
         producer_descriptor
             .control
             .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
-        self.state.rx_producer.set(producer.wrapping_add(1));
+        self.state.rx_producer = producer.wrapping_add(1);
         unsafe {
             crate::host_tx_diagnostics::record(
                 crate::host_tx_diagnostics::EVENT_REQUEST_CREDIT,
                 producer_slot as u16,
                 buffer_address as u32,
                 producer.wrapping_add(1),
-                self.state.rx_consumer.get(),
+                self.state.rx_consumer,
             );
         }
     }
@@ -850,8 +883,8 @@ impl Transport {
     }
 
     fn next_request_descriptor_ready(&self) -> bool {
-        let consumer = self.state.rx_consumer.get();
-        if consumer == self.state.rx_producer.get() {
+        let consumer = self.state.rx_consumer;
+        if consumer == self.state.rx_producer {
             return false;
         }
         let descriptor = unsafe {
@@ -883,7 +916,7 @@ impl Transport {
     /// Whether one command response can be copied into independent output
     /// storage without consuming a request buffer first.
     pub fn response_available(&self) -> bool {
-        output_queue_has_capacity(self.state.tx_queued.get(), self.state.tx_reclaimed.get())
+        output_queue_has_capacity(self.state.tx_queued, self.state.tx_reclaimed)
             && self.shared_slots_in_use.iter().any(|used| !*used)
             && self.prepared_shared_slot.is_none()
     }
@@ -899,8 +932,8 @@ impl Transport {
         // Consume exactly one scheduled invocation. A ready successor below
         // schedules the next invocation, matching vendor cooperative dispatch.
         self.rx_request_pending = false;
-        let consumer = self.state.rx_consumer.get();
-        if consumer == self.state.rx_producer.get() {
+        let consumer = self.state.rx_consumer;
+        if consumer == self.state.rx_producer {
             return None;
         }
 
@@ -913,7 +946,7 @@ impl Transport {
         }
 
         let slot = (consumer & 31) as usize;
-        let buffer_address = self.software_state.rx_buffers[slot].get() as usize;
+        let buffer_address = self.queues.rx_buffers[slot] as usize;
         let descriptor_len = (control & 0x1ffe) as usize;
         if buffer_address == 0 || descriptor_len < 4 {
             #[cfg(feature = "vendor-host-tx-diagnostics")]
@@ -950,7 +983,7 @@ impl Transport {
                 publish_mac_fatal_exception([
                     buffer_address as u32,
                     consumer,
-                    self.state.rx_producer.get(),
+                    self.state.rx_producer,
                     control,
                     wire_len as u32,
                     u32::from(raw_id),
@@ -963,9 +996,9 @@ impl Transport {
                     word(0x18),
                     word(0x1c),
                     self.shared.status.get(),
-                    self.state.tx_producer.get(),
-                    self.state.tx_consumer.get(),
-                    self.state.tx_queued.get(),
+                    tx_producer(),
+                    self.state.tx_consumer,
+                    self.state.tx_queued,
                 ]);
             }
             crate::halt_always!();
@@ -1028,20 +1061,20 @@ impl Transport {
         release: Option<RxToken>,
         shared_slot: Option<u8>,
     ) {
-        let queued = self.state.tx_queued.get();
+        let queued = self.state.tx_queued;
         assert!(output_queue_has_capacity(
             queued,
-            self.state.tx_reclaimed.get()
+            self.state.tx_reclaimed
         ));
         let queue_slot = (queued & 63) as usize;
-        self.software_state.tx_buffers[queue_slot].set(buffer_address as u32);
+        self.queues.tx_buffers[queue_slot] = buffer_address as u32;
         debug_assert_eq!(
             unsafe { (buffer_address as *const u16).read_volatile() },
             length
         );
         self.output_releases[queue_slot] = release;
         self.output_shared_slots[queue_slot] = shared_slot;
-        self.state.tx_queued.set(queued.wrapping_add(1));
+        self.state.tx_queued = queued.wrapping_add(1);
         let header = unsafe { (buffer_address as *const u32).read_volatile() };
         #[cfg(feature = "vendor-host-tx-diagnostics")]
         {

@@ -7,7 +7,7 @@ use core::mem::{MaybeUninit, size_of};
 use core::panic::PanicInfo;
 use xr819_firmware::configuration;
 use xr819_firmware::crypto;
-use xr819_firmware::hif::{SHARED_BUFFER_SIZE, Transport};
+use xr819_firmware::hif::{HifQueues, HifRingState, SHARED_BUFFER_SIZE, Transport};
 use xr819_firmware::join;
 use xr819_firmware::mac;
 use xr819_firmware::mac_domain::MacDomain;
@@ -59,6 +59,8 @@ impl<T> SingleBootCell<T> {
     }
 }
 
+static HIF_RING_STATE: SingleBootCell<HifRingState> = SingleBootCell::new();
+static HIF_QUEUES: SingleBootCell<HifQueues> = SingleBootCell::new();
 static TRANSPORT: SingleBootCell<Transport> = SingleBootCell::new();
 static RESPONSE_SCRATCH: SingleBootCell<[u8; SHARED_BUFFER_SIZE]> = SingleBootCell::new();
 static HOST_TX_DRIVER: SingleBootCell<HostTxDriver> = SingleBootCell::new();
@@ -311,7 +313,11 @@ extern "C" fn rust_main() -> ! {
     register_post_activation_interrupts();
     #[cfg(target_arch = "arm")]
     xr819_firmware::crypto::run_hardware_ccmp_selftest();
-    let transport = unsafe { TRANSPORT.init_with(|| Transport::initialize()) };
+    let hif_ring_state = unsafe { HIF_RING_STATE.init_with(HifRingState::new) };
+    let hif_queues = unsafe { HIF_QUEUES.init_with(HifQueues::new) };
+    let transport = unsafe {
+        TRANSPORT.init_with(|| Transport::initialize(hif_ring_state, hif_queues))
+    };
     let mut mac_events = unsafe { tx::MacEventQueue::claim() };
     let mut mac_domain = MacDomain::new();
     debug_stop(6, 0x5354_4706);
