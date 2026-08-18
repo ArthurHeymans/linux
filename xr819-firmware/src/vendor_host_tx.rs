@@ -673,7 +673,6 @@ unsafe fn remove_live_pas(context: HostContextAddress) -> Result<(), CancelError
     Ok(())
 }
 
-
 #[cfg(target_arch = "arm")]
 unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
     unsafe {
@@ -851,29 +850,6 @@ pub unsafe fn service_pending(
         pending_task_decision(decision_input)
     };
 
-    #[cfg(all(
-        target_arch = "arm",
-        feature = "class0-lifecycle-counters",
-        not(feature = "stage-latency-sums")
-    ))]
-    if matches!(decision, PendingTaskDecision::LeaveQueued) {
-        // Which gate is holding the frame, and for how many service passes.
-        unsafe {
-            let input = decision_input;
-            let mask = u32::from(!input.active_link)
-                | (u32::from(input.global_blocked) << 1)
-                | (u32::from(!input.vif_operating) << 2)
-                | (u32::from(!input.pipe_allowed) << 3)
-                | (u32::from(input.expired) << 4);
-            let previous = crate::host_tx_diagnostics::counters_snapshot()
-                [crate::host_tx_diagnostics::counter::PENDING_GATE];
-            let passes = (previous & 0xffff).saturating_add(1).min(0xffff);
-            crate::host_tx_diagnostics::observe(
-                crate::host_tx_diagnostics::counter::PENDING_GATE,
-                passes | ((previous >> 16) | mask) << 16,
-            );
-        }
-    }
     match decision {
         PendingTaskDecision::LeaveQueued => Ok(PendingServiceReport::LeaveQueued),
         PendingTaskDecision::Complete(status) => {
@@ -1077,12 +1053,6 @@ impl HostSchedulerReservation {
         }
         unsafe {
             crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
-            // Retirement ages state-1 slots against this to tell a frame that
-            // has not started yet from one that is genuinely stuck.
-            #[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
-            crate::tx::note_pipe_publication(self.pipe);
-            #[cfg(target_arch = "arm")]
-            crate::tx::note_stage(0);
         }
         retained.phase = HostTxPhase::Scheduled;
         Ok(())
@@ -1121,7 +1091,12 @@ impl HostSchedulerReservation {
 /// # Safety
 /// Global PAS and pipe state must be exclusively runtime-owned.
 const fn scheduler_batch_flags(original: u32, staged: u8) -> u32 {
-    original | if staged == 0 { 0x0400_0000 } else { 0x0800_0000 }
+    original
+        | if staged == 0 {
+            0x0400_0000
+        } else {
+            0x0800_0000
+        }
 }
 
 #[cfg(target_arch = "arm")]
@@ -1176,13 +1151,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     }
 
     let pipe_state = 0x0400_1720 + u32::from(pipe) * 0x6c;
-    // The producer byte does not move until a slot completes, so a second frame
-    // staged into the same batch must take the next slot along.
-    #[cfg(target_arch = "arm")]
-    let staged = unsafe { crate::tx::staged_slots(pipe) };
-    #[cfg(not(target_arch = "arm"))]
-    let staged = 0;
-    let slot = unsafe { read_live_u8(pipe_state) }.wrapping_add(staged) & 3;
+    let slot = unsafe { read_live_u8(pipe_state) } & 3;
     let slot_record = pipe_state + 0x0c + u32::from(slot) * 0x18;
     let command = unsafe { read_live_u32(slot_record + 0x14) };
     let hardware_ring = unsafe { read_live_u32(pipe_state + 8) };
@@ -1214,7 +1183,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         // `txp_build_pipe_descriptor(..., 0)`.
         write_live_u32(
             context.raw() + 0x58,
-            scheduler_batch_flags(original_flags, staged),
+            scheduler_batch_flags(original_flags, 0),
         );
         write_live_u32(
             context.raw() + 0x80,

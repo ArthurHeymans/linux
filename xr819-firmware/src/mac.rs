@@ -497,7 +497,7 @@ pub unsafe fn program_scan_station_mode() {
 ///
 /// # Safety
 /// MAC mode registers must be exclusively owned during JOIN activation.
-#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+#[cfg(target_arch = "arm")]
 unsafe fn active_station_mode_word() -> u32 {
     unsafe {
         let reference_path = read_u8(PAS_BASE - 0x17);
@@ -516,7 +516,7 @@ unsafe fn active_station_mode_word() -> u32 {
     }
 }
 
-#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn program_joined_station_mode() {
     unsafe {
         let mode = active_station_mode_word();
@@ -534,7 +534,7 @@ pub unsafe fn program_joined_station_mode() {
 ///
 /// # Safety
 /// Address-match registers must be exclusively owned.
-#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
     unsafe {
         write_u32(
@@ -582,8 +582,7 @@ unsafe fn rebuild_pipe_state() {
     // re-writes ring+0x14 (GO) while the MAC is live, and cycles 0x09c00e8c
     // 0xbf -> 0 -> 0xbf underneath a running command-fetch engine. Final
     // register values are identical, so this only matters if any of it
-    // disturbs fetch state -- which is what `vendor-single-init` tests.
-    #[cfg(not(feature = "vendor-single-init"))]
+    // disturbs fetch state.
     unsafe {
         write_u32(0x09c0_0e8c, 0);
         write_u32(0x09c0_0e60, 2);
@@ -591,7 +590,6 @@ unsafe fn rebuild_pipe_state() {
         write_u32(0x09c0_0e88, 0xff);
     }
     let descriptors = [0x09c6_0000, 0x09c6_0080, 0x09c6_0100, 0x09c6_0180];
-    #[cfg(not(feature = "vendor-single-init"))]
     {
         let addresses = [0x7080_u32, 0x71d0, 0x7320, 0x7470];
         for (base, address) in descriptors.into_iter().zip(addresses) {
@@ -622,10 +620,7 @@ unsafe fn rebuild_pipe_state() {
             };
         }
     }
-    #[cfg(not(feature = "vendor-single-init"))]
-    unsafe {
-        write_u32(0x09c0_0e8c, 0xbf)
-    };
+    unsafe { write_u32(0x09c0_0e8c, 0xbf) };
     unsafe {
         write_u32(0x0901_6a28, 0x4e14_0000);
         for index in 0..33 {
@@ -688,7 +683,7 @@ pub unsafe fn initialize_wsm_tx_context_pool() {
 
 /// Hardware-owning prefix of vendor `mac_radio_stop` for the current
 /// no-active-VIF scan branch. TX ownership must already be proven empty.
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn begin_unjoined_scan_radio_stop() {
     unsafe {
         write_u32(SHARED + 0x18, 0);
@@ -709,7 +704,7 @@ pub unsafe fn begin_unjoined_scan_radio_stop() {
 
 /// Final state publication from vendor `mac_radio_stop`, after packet RX,
 /// PHY command 7, and software RX draining have completed.
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn finish_unjoined_scan_radio_stop() {
     unsafe {
         write_u16(0x0400_3a68, 0);

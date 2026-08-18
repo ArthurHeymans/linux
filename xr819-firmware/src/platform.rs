@@ -457,12 +457,12 @@ pub fn prepare_dma_and_clocks() {
 /// order after HIF activation and before `0x000009ac`.
 pub fn register_post_activation_interrupts() {
     register_interrupt_source_with(6, scheduler_event_irq);
-    #[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+    #[cfg(target_arch = "arm")]
     {
         register_interrupt_source_with(18, crate::crypto::hardware_crypto_irq18);
         register_interrupt_source_with(20, crate::crypto::hardware_crypto_irq20);
     }
-    #[cfg(not(all(feature = "hardware-ccmp-selftest", target_arch = "arm")))]
+    #[cfg(not(target_arch = "arm"))]
     {
         register_interrupt_source(18);
         register_interrupt_source(20);

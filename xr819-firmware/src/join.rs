@@ -1,7 +1,7 @@
 //! Minimal STA JOIN activation boundary.
 //!
-//! This is deliberately feature-gated until ordinary WSM TX can carry the
-//! authentication and association frames that Linux sends after JOIN success.
+//! Ordinary WSM TX carries the authentication and association frames Linux
+//! sends after JOIN success.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JoinError {
@@ -12,15 +12,11 @@ pub enum JoinError {
     Channel,
 }
 
-pub const fn uses_cw1200_wsm() -> bool {
-    crate::wsm_profile::CW1200_COMPATIBLE
-}
-
 /// Activate the minimal vendor STA-BSS state and program its operating channel.
 ///
 /// # Safety
 /// JOIN must exclusively own channel, VIF/PAS, and MAC address-match state.
-#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn activate_sta(
     interface: u8,
     request: &crate::wsm::JoinRequest<'_>,
@@ -58,7 +54,7 @@ pub unsafe fn activate_sta(
     Ok(())
 }
 
-#[cfg(all(target_arch = "arm", feature = "join-sta-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn reset(interface: u8) -> bool {
     if !crate::vif::is_active(interface) {
         return interface < 2;

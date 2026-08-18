@@ -15,10 +15,6 @@ pub const fn size_kib(region_register: u32) -> Option<u32> {
     if value < 0 { None } else { Some(value as u32) }
 }
 
-
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

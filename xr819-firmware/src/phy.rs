@@ -1847,7 +1847,6 @@ pub unsafe fn advance_awake_station_tx() -> bool {
         // the accepted class-6 publication versus the refused class-0 one shows
         // the working path publishes with retained state 5, so forcing it to 3
         // here put the PHY into a configuration the MAC does not accept.
-        #[cfg(not(feature = "phy-advance-vendor-exact"))]
         if retained_state == 5 {
             write_u8(0x0400_99a9, 3);
         }
@@ -1864,7 +1863,7 @@ pub unsafe fn advance_awake_station_tx() -> bool {
 
 /// Exact `phy_cal_step_start` used by `mac_radio_stop` after command 7 has
 /// been stopped.
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn start_scan_stop_calibration_state() {
     unsafe {
         (0x0ac8_0064 as *mut u32).write_volatile(0x10);
@@ -1877,7 +1876,7 @@ pub unsafe fn start_scan_stop_calibration_state() {
     }
 }
 
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn begin_scan_stop_rx_disable() {
     unsafe {
         let control = (0x09c0_0600 as *mut u32).read_volatile();
@@ -1885,7 +1884,7 @@ pub unsafe fn begin_scan_stop_rx_disable() {
     }
 }
 
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub unsafe fn scan_stop_rx_hardware_drained() -> bool {
     let drained = unsafe { (0x09c0_0600 as *const u32).read_volatile() & (1 << 23) == 0 };
     if drained {

@@ -7,7 +7,6 @@ use core::panic::PanicInfo;
 use xr819_firmware::configuration;
 use xr819_firmware::crypto;
 use xr819_firmware::hif::{SHARED_BUFFER_SIZE, Transport};
-#[cfg(feature = "join-sta-experiment")]
 use xr819_firmware::join;
 use xr819_firmware::mac;
 use xr819_firmware::phy::{initialize_mac_core_mode0, initialize_mac_software_state};
@@ -23,7 +22,6 @@ use xr819_firmware::rate_policy;
 use xr819_firmware::scan;
 use xr819_firmware::tx;
 use xr819_firmware::vif;
-#[cfg(feature = "join-sta-experiment")]
 use xr819_firmware::wsm::JoinRequest;
 use xr819_firmware::wsm::{
     ADD_KEY_REQ_ID, AddKeyRequest, CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID,
@@ -33,11 +31,9 @@ use xr819_firmware::wsm::{
     TxRequest, WRITE_MIB_REQ_ID, WriteMibRequest, encode_configuration_response,
     encode_join_complete_indication, encode_join_response, encode_read_mib_data_response,
     encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
-    encode_tx_confirm, encode_tx_confirm_details, encode_xr819_tx_confirm,
+    encode_tx_confirm, encode_xr819_tx_confirm,
     encode_xr819_tx_confirm_details, encode_xr819_tx_confirm_retry_details,
 };
-use xr819_firmware::wsm_profile;
-#[cfg(feature = "vendor-host-tx-foundation")]
 use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
 
 // The ARM9 exception vectors execute in ARM state even though the firmware
@@ -164,7 +160,7 @@ xr819_exception_common:
 // Explicit rollback boundary for scan-owned active probe TX. This feature is
 // enabled by default after repeated cross-scan hardware validation; building
 // with `--no-default-features` retains the passive fallback.
-const ENABLE_SINGLE_PROBE_EXPERIMENT: bool = cfg!(feature = "probe-tx-experiment");
+const ENABLE_SINGLE_PROBE_EXPERIMENT: bool = true;
 
 unsafe extern "C" {
     static mut __bss_start: u32;
@@ -205,7 +201,6 @@ fn encode_debug_event(event_id: u32, data: u32, output: &mut [u8]) -> Option<usi
     Some(12)
 }
 
-#[cfg(feature = "join-sta-experiment")]
 unsafe fn service_management_request(
     events: &mut tx::MacEventQueue,
     request: &TxRequest<'_>,
@@ -220,17 +215,7 @@ unsafe fn service_management_request(
         } => {
             *publish_response = true;
             if bisect_stage != 0 {
-                if join::uses_cw1200_wsm() {
-                    encode_tx_confirm_details(packet_id, STATUS_FAILURE, 0, bisect_stage, output)
-                } else {
-                    encode_xr819_tx_confirm_details(
-                        packet_id,
-                        STATUS_FAILURE,
-                        0,
-                        bisect_stage,
-                        output,
-                    )
-                }
+                encode_xr819_tx_confirm_details(packet_id, STATUS_FAILURE, 0, bisect_stage, output)
             } else {
                 let edca = unsafe { (0x09c0_0e64 as *const u32).read_volatile() };
                 let quantum0 = unsafe { (0x09c0_0e70 as *const u32).read_volatile() };
@@ -247,11 +232,7 @@ unsafe fn service_management_request(
             }
         }
         tx::HostManagementTxReport::Failed { packet_id, .. } => {
-            if join::uses_cw1200_wsm() {
-                encode_tx_confirm(packet_id, STATUS_FAILURE, output)
-            } else {
-                encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
-            }
+            encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
         }
         _ => {
             *publish_response = false;
@@ -303,7 +284,7 @@ extern "C" fn rust_main() -> ! {
 
     debug_stop(5, 0x5354_4705);
     register_post_activation_interrupts();
-    #[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+    #[cfg(target_arch = "arm")]
     xr819_firmware::crypto::run_hardware_ccmp_selftest();
     let mut transport = unsafe { Transport::initialize() };
     let mut mac_events = unsafe { tx::MacEventQueue::claim() };
@@ -314,7 +295,6 @@ extern "C" fn rust_main() -> ! {
     // Vendor programs the RX/MAC tables once, after MAC core enable, via
     // `rx_subsystem_init`; we also do it there (`mac.rs:831`). This earlier
     // copy has no vendor counterpart.
-    #[cfg(not(feature = "vendor-single-init"))]
     prepare_mac_receive_hardware();
     unsafe { radio::initialize() };
     register_packet_dma_interrupts();
@@ -354,7 +334,7 @@ extern "C" fn rust_main() -> ! {
         firmware_api: 1,
         firmware_build: 1,
         firmware_version: 1,
-        label: wsm_profile::STARTUP_LABEL,
+        label: b"XR819 open Rust native",
         config: [0; 4],
     }
     .encode(buffer)
@@ -369,13 +349,12 @@ extern "C" fn rust_main() -> ! {
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     let mut pending_tx_debug_event: Option<(u32, u32)> = None;
     // Vendor timestamp of the last 200ms TX pipe watchdog tick.
-    #[cfg(all(feature = "pipe-watchdog", target_arch = "arm"))]
+    #[cfg(target_arch = "arm")]
     let mut last_watchdog_tick: u32 = 0;
     // Command responses and retained class-0 confirmations are copied into
     // their original 1632-byte request buffers before publication. This buffer
     // is scratch only and is never exposed through a HIF descriptor.
     let mut response_scratch = [0_u8; SHARED_BUFFER_SIZE];
-    #[cfg(feature = "vendor-host-tx-foundation")]
     let mut host_tx_driver = HostTxDriver::new();
     // Main-loop rate. Admission -> publication is 37 ms under load with a
     // budget of 4 over 30 contexts, implying ~5 ms per pass, and raising the
@@ -400,7 +379,7 @@ extern "C" fn rust_main() -> ! {
         // armed without completing. Without it an armed pipe is unrecoverable:
         // retirement only ever runs from a delivered status, and the MAC stops
         // delivering statuses for a wedged pipe.
-        #[cfg(all(feature = "pipe-watchdog", target_arch = "arm"))]
+        #[cfg(target_arch = "arm")]
         {
             let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
             // Vendor ticks at 200 ms, so a wedged pipe costs a full second to
@@ -410,12 +389,7 @@ extern "C" fn rust_main() -> ! {
             // to hundreds of milliseconds until the host's TX-confirm timeout
             // kills the link. Retirement cannot help either: it only runs from
             // a delivered status, and a wedged pipe stops delivering them.
-            let tick_period = if cfg!(feature = "fast-pipe-watchdog") {
-                40_000
-            } else {
-                200_000
-            };
-            if now.wrapping_sub(last_watchdog_tick) >= tick_period {
+            if now.wrapping_sub(last_watchdog_tick) >= 200_000 {
                 last_watchdog_tick = now;
                 unsafe {
                     tx::service_pipe_watchdog_tick_runtime();
@@ -428,9 +402,6 @@ extern "C" fn rust_main() -> ! {
         // TX confirmations to starve the command lane.
         let host_request_waiting = transport.request_available();
 
-
-
-        #[cfg(feature = "vendor-host-tx-foundation")]
         if let Some(event) = unsafe {
             host_tx_driver.service(
                 &mut mac_events,
@@ -445,12 +416,8 @@ extern "C" fn rust_main() -> ! {
             xr819_firmware::hif::validate_tx_boundary(0x22, 0xff, 0xff, 0, 0);
         }
 
-        #[cfg(feature = "vendor-host-tx-foundation")]
         let management_runtime_available = host_tx_driver.management_runtime_available();
-        #[cfg(not(feature = "vendor-host-tx-foundation"))]
-        let management_runtime_available = true;
 
-        #[cfg(feature = "join-sta-experiment")]
         if management_runtime_available
             && pending_tx_confirmation.is_none()
             && let tx::HostManagementTxReport::Completed {
@@ -461,23 +428,6 @@ extern "C" fn rust_main() -> ! {
             } = unsafe { tx::service_host_management_tx(&mut mac_events, None, 32) }
         {
             pending_tx_confirmation = Some((packet_id, status, tx_rate, ack_failures));
-        }
-
-        #[cfg(not(feature = "vendor-host-tx-foundation"))]
-        if pending_tx_debug_event.is_none() {
-            pending_tx_debug_event = tx::take_tx_debug_event();
-        }
-
-        // Push the class-0 lifecycle counters into the host-side trace. The
-        // counters MIB stops answering under load, which is exactly when these
-        // matter; indications keep flowing past that point.
-        #[cfg(all(feature = "class0-lifecycle-counters", target_arch = "arm"))]
-        if pending_tx_debug_event.is_none() {
-            pending_tx_debug_event = unsafe {
-                xr819_firmware::host_tx_diagnostics::take_counter_event(
-                    xr819_firmware::vendor_host_tx::vendor_timer_now(),
-                )
-            };
         }
 
         if let Some((event_id, data)) = pending_tx_debug_event
@@ -502,46 +452,31 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
-        #[cfg(feature = "join-sta-experiment")]
         if let Some((packet_id, status, tx_rate, ack_failures)) = pending_tx_confirmation
             && !host_request_waiting
             && transport.output_available()
         {
             let output = unsafe { transport.output_buffer() };
-            let encoded = if join::uses_cw1200_wsm() {
-                encode_tx_confirm_details(packet_id, status, tx_rate, ack_failures, output)
-            } else {
-                encode_xr819_tx_confirm_details(packet_id, status, tx_rate, ack_failures, output)
-            };
+            let encoded =
+                encode_xr819_tx_confirm_details(packet_id, status, tx_rate, ack_failures, output);
             if let Ok(length) = encoded {
                 pending_tx_confirmation = None;
                 transport.publish(length as u16);
             }
         }
 
-        #[cfg(feature = "vendor-host-tx-foundation")]
         if let Some(confirmation) = host_tx_driver.confirmation()
             && !host_request_waiting
             && transport.response_available()
         {
-            let encoded = if join::uses_cw1200_wsm() {
-                encode_tx_confirm_details(
-                    confirmation.packet_id,
-                    confirmation.status,
-                    confirmation.tx_rate,
-                    confirmation.ack_failures,
-                    &mut response_scratch,
-                )
-            } else {
-                encode_xr819_tx_confirm_retry_details(
-                    confirmation.packet_id,
-                    confirmation.status,
-                    confirmation.tx_rate,
-                    confirmation.ack_failures,
-                    confirmation.rate_try,
-                    &mut response_scratch,
-                )
-            };
+            let encoded = encode_xr819_tx_confirm_retry_details(
+                confirmation.packet_id,
+                confirmation.status,
+                confirmation.tx_rate,
+                confirmation.ack_failures,
+                confirmation.rate_try,
+                &mut response_scratch,
+            );
             if encoded.is_ok() {
                 unsafe {
                     host_tx_diagnostics::capture_confirmation_identity(
@@ -573,7 +508,6 @@ extern "C" fn rust_main() -> ! {
             pending_scan_completion = scan::service();
         }
 
-        #[cfg(feature = "probe-tx-experiment")]
         {
             let mut probe_ssid = [0_u8; scan::MAX_SSID_LEN];
             let mut opportunity = scan::claim_probe_opportunity();
@@ -691,8 +625,7 @@ extern "C" fn rust_main() -> ! {
         // which is why it can discard unmatched statuses and lean on the
         // watchdog. The management publisher this gate was protecting is
         // already gated separately where it is serviced.
-        let host_lane_available =
-            cfg!(feature = "host-lane-independent") || management_runtime_available;
+        let host_lane_available = true;
         if transport.publication_available()
             && host_lane_available
             && let Some(request) = transport.poll_request()
@@ -741,35 +674,7 @@ extern "C" fn rust_main() -> ! {
             } else if request_id == START_SCAN_REQ_ID {
                 let status = match StartScanRequest::parse(request_payload) {
                     Ok(scan_request) => {
-                        #[cfg(feature = "probe-tx-experiment")]
                         let preparation: Result<(), ()> = Ok(());
-                        #[cfg(not(feature = "probe-tx-experiment"))]
-                        let preparation = if scan_request.num_probes == 0 {
-                            Ok(())
-                        } else {
-                            let channel = scan_request
-                                .channel(0)
-                                .ok()
-                                .and_then(|value| u8::try_from(value.number).ok());
-                            let ssid = if scan_request.num_ssids == 0 {
-                                Some(&[][..])
-                            } else {
-                                scan_request.ssid(0).ok()
-                            };
-                            match (channel, ssid) {
-                                (Some(channel), Some(ssid)) => unsafe {
-                                    tx::validate_probe_preparation(
-                                        configuration::template_frame(),
-                                        ssid,
-                                        channel,
-                                        request_if_id,
-                                    )
-                                    .map(|_| ())
-                                    .map_err(|_| ())
-                                },
-                                _ => Err(()),
-                            }
-                        };
                         match preparation {
                             Ok(()) => match scan::begin(&scan_request, request_if_id) {
                                 Ok(()) => 0,
@@ -806,13 +711,7 @@ extern "C" fn rust_main() -> ! {
                 encode_status_response(request_id | 0x0400, status, output)
             } else if request_id == WRITE_MIB_REQ_ID {
                 let status = match WriteMibRequest::parse(request_payload) {
-                    Ok(request)
-                        if request.mib_id == 0x1006
-                            && request.data.len()
-                                == if wsm_profile::CW1200_COMPATIBLE { 1 } else { 4 } =>
-                    {
-                        0
-                    }
+                    Ok(request) if request.mib_id == 0x1006 && request.data.len() == 4 => 0,
                     Ok(request)
                         if request.mib_id == rate_policy::MIB_ID_SET_TX_RATE_RETRY_POLICY =>
                     {
@@ -876,7 +775,6 @@ extern "C" fn rust_main() -> ! {
                             unsafe { (0x0940_0000 as *const u32).read_volatile() }
                         },
                     ];
-                    #[cfg(feature = "vendor-host-tx-foundation")]
                     host_tx_diagnostics::populate_counters(&mut values, &transport);
                     let mut data = [0_u8; 88];
                     for (index, value) in values.into_iter().enumerate() {
@@ -903,26 +801,19 @@ extern "C" fn rust_main() -> ! {
             } else if request_id == RESET_REQ_ID {
                 let status = match ResetRequest::parse(request_payload) {
                     Ok(_) => {
-                        #[cfg(feature = "vendor-host-tx-foundation")]
                         unsafe {
                             host_tx_driver.reset();
                         }
-                        #[cfg(feature = "join-sta-experiment")]
-                        {
-                            if unsafe { join::reset(request_if_id) } {
-                                0
-                            } else {
-                                STATUS_FAILURE
-                            }
+                        if unsafe { join::reset(request_if_id) } {
+                            0
+                        } else {
+                            STATUS_FAILURE
                         }
-                        #[cfg(not(feature = "join-sta-experiment"))]
-                        0
                     }
                     Err(_) => STATUS_FAILURE,
                 };
                 encode_status_response(request_id | 0x0400, status, output)
             } else if request_id == JOIN_REQ_ID {
-                #[cfg(feature = "join-sta-experiment")]
                 let status = match JoinRequest::parse(request_payload) {
                     Ok(join_request) => unsafe {
                         join::activate_sta(request_if_id, &join_request)
@@ -931,8 +822,6 @@ extern "C" fn rust_main() -> ! {
                     },
                     Err(_) => STATUS_FAILURE,
                 };
-                #[cfg(not(feature = "join-sta-experiment"))]
-                let status = STATUS_FAILURE;
                 if status == 0
                     && request_payload
                         .get(0x0f)
@@ -942,7 +831,6 @@ extern "C" fn rust_main() -> ! {
                 }
                 encode_join_response(status, -160, 200, output)
             } else if request_id == TX_REQ_ID {
-                #[cfg(feature = "vendor-host-tx-foundation")]
                 unsafe {
                     host_tx_diagnostics::trace(
                         0x4854_0004,
@@ -951,59 +839,39 @@ extern "C" fn rust_main() -> ! {
                         0,
                     );
                 }
-                #[cfg(feature = "join-sta-experiment")]
-                {
-                    match TxRequest::parse(request_payload) {
-                        Ok(tx_request) => {
-                            #[cfg(feature = "vendor-host-tx-foundation")]
-                            unsafe {
-                                let frame_control =
-                                    u16::from_le_bytes([tx_request.frame[0], tx_request.frame[1]]);
-                                host_tx_diagnostics::trace(
-                                    0x4854_0005,
-                                    u32::from(frame_control)
-                                        | (u32::try_from(tx_request.frame.len())
-                                            .unwrap_or(u32::MAX)
-                                            << 16),
-                                    u32::from(tx_request.is_unicast_data())
-                                        | (u32::from(tx_request.is_unicast_eapol()) << 1),
-                                );
-                            }
-                            #[cfg(feature = "vendor-host-tx-foundation")]
-                            if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
-                                let packet_id = tx_request.packet_id;
-                                let admitted = unsafe {
-                                    host_tx_driver.admit(
-                                        request_buffer.take().expect("request buffer is present"),
-                                        request_if_id,
-                                        &mut transport,
-                                    )
-                                };
-                                if admitted {
-                                    publish_response = false;
-                                    Ok(0)
-                                } else {
-                                    unsafe {
-                                        host_tx_diagnostics::trace(0x4854_00e1, packet_id, 0);
-                                    }
-                                    if join::uses_cw1200_wsm() {
-                                        encode_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                    } else {
-                                        encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
-                                    }
-                                }
+                match TxRequest::parse(request_payload) {
+                    Ok(tx_request) => {
+                        unsafe {
+                            let frame_control =
+                                u16::from_le_bytes([tx_request.frame[0], tx_request.frame[1]]);
+                            host_tx_diagnostics::trace(
+                                0x4854_0005,
+                                u32::from(frame_control)
+                                    | (u32::try_from(tx_request.frame.len()).unwrap_or(u32::MAX)
+                                        << 16),
+                                u32::from(tx_request.is_unicast_data())
+                                    | (u32::from(tx_request.is_unicast_eapol()) << 1),
+                            );
+                        }
+                        if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
+                            let packet_id = tx_request.packet_id;
+                            let admitted = unsafe {
+                                host_tx_driver.admit(
+                                    request_buffer.take().expect("request buffer is present"),
+                                    request_if_id,
+                                    &mut transport,
+                                )
+                            };
+                            if admitted {
+                                publish_response = false;
+                                Ok(0)
                             } else {
                                 unsafe {
-                                    service_management_request(
-                                        &mut mac_events,
-                                        &tx_request,
-                                        request_if_id,
-                                        output,
-                                        &mut publish_response,
-                                    )
+                                    host_tx_diagnostics::trace(0x4854_00e1, packet_id, 0);
                                 }
+                                encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
                             }
-                            #[cfg(not(feature = "vendor-host-tx-foundation"))]
+                        } else {
                             unsafe {
                                 service_management_request(
                                     &mut mac_events,
@@ -1014,28 +882,16 @@ extern "C" fn rust_main() -> ! {
                                 )
                             }
                         }
-                        Err(_) => {
-                            let packet_id = request_payload
-                                .get(..4)
-                                .map(|value| {
-                                    u32::from_le_bytes([value[0], value[1], value[2], value[3]])
-                                })
-                                .unwrap_or(0);
-                            if join::uses_cw1200_wsm() {
-                                encode_tx_confirm(packet_id, STATUS_FAILURE, output)
-                            } else {
-                                encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
-                            }
-                        }
                     }
-                }
-                #[cfg(not(feature = "join-sta-experiment"))]
-                {
-                    let packet_id = request_payload
-                        .get(..4)
-                        .map(|value| u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
-                        .unwrap_or(0);
-                    encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+                    Err(_) => {
+                        let packet_id = request_payload
+                            .get(..4)
+                            .map(|value| {
+                                u32::from_le_bytes([value[0], value[1], value[2], value[3]])
+                            })
+                            .unwrap_or(0);
+                        encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
+                    }
                 }
             } else {
                 // Do not report success for commands whose state effects are

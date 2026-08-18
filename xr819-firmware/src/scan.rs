@@ -19,7 +19,6 @@ pub const VENDOR_MAX_SCAN_CHANNELS: usize = 34;
 pub const MAX_SCAN_SSIDS: usize = 2;
 pub const MAX_SSID_LEN: usize = 32;
 
-#[cfg(any(target_arch = "arm", test, feature = "probe-tx-experiment"))]
 fn deadline_reached(now: u32, deadline: u32) -> bool {
     now.wrapping_sub(deadline) as i32 >= 0
 }
@@ -98,7 +97,6 @@ pub struct ProbeOpportunity {
     pub ssid_index: u8,
 }
 
-#[cfg(feature = "probe-tx-experiment")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActiveProbePhase {
     Disabled,
@@ -124,9 +122,7 @@ struct ScanStorage {
     dwell_last_now: u32,
     dwell_waits: u32,
     hardware_error_code: u32,
-    #[cfg(feature = "probe-tx-experiment")]
     finish_state: u8,
-    #[cfg(feature = "probe-tx-experiment")]
     finish_deadline: u32,
     if_id: u8,
     band: u8,
@@ -139,21 +135,14 @@ struct ScanStorage {
     num_ssids: u8,
     ssid_lengths: [u8; MAX_SCAN_SSIDS],
     ssids: [[u8; MAX_SSID_LEN]; MAX_SCAN_SSIDS],
-    #[cfg(feature = "probe-tx-experiment")]
     probe_deadline: u32,
-    #[cfg(feature = "probe-tx-experiment")]
     probe_generation: u32,
-    #[cfg(feature = "probe-tx-experiment")]
     probe_phase: ActiveProbePhase,
-    #[cfg(feature = "probe-tx-experiment")]
     probe_round: u8,
-    #[cfg(feature = "probe-tx-experiment")]
     probe_ssid_index: u8,
-    #[cfg(feature = "probe-tx-experiment")]
     probe_last_status: u16,
     /// Destructive boot-wide guard. Increase only after the previous bounded
     /// publication/reclamation count has completed repeatedly on hardware.
-    #[cfg(feature = "probe-tx-experiment")]
     probe_publication_budget: u8,
 }
 
@@ -174,9 +163,7 @@ impl ScanStorage {
             dwell_last_now: 0,
             dwell_waits: 0,
             hardware_error_code: 0,
-            #[cfg(feature = "probe-tx-experiment")]
             finish_state: 0,
-            #[cfg(feature = "probe-tx-experiment")]
             finish_deadline: 0,
             if_id: 0,
             band: 0,
@@ -193,19 +180,12 @@ impl ScanStorage {
             num_ssids: 0,
             ssid_lengths: [0; MAX_SCAN_SSIDS],
             ssids: [[0; MAX_SSID_LEN]; MAX_SCAN_SSIDS],
-            #[cfg(feature = "probe-tx-experiment")]
             probe_deadline: 0,
-            #[cfg(feature = "probe-tx-experiment")]
             probe_generation: 0,
-            #[cfg(feature = "probe-tx-experiment")]
             probe_phase: ActiveProbePhase::Disabled,
-            #[cfg(feature = "probe-tx-experiment")]
             probe_round: 0,
-            #[cfg(feature = "probe-tx-experiment")]
             probe_ssid_index: 0,
-            #[cfg(feature = "probe-tx-experiment")]
             probe_last_status: 0,
-            #[cfg(feature = "probe-tx-experiment")]
             probe_publication_budget: 4,
         }
     }
@@ -270,27 +250,10 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     storage.flags = request.flags;
     // Active builds retain the host's requested dwell. The no-default-features
     // image remains the conservative passive rollback.
-    #[cfg(feature = "probe-tx-experiment")]
     let passive_fallback = false;
-    #[cfg(not(feature = "probe-tx-experiment"))]
-    let passive_fallback = request.num_probes != 0;
-    #[cfg(feature = "probe-tx-experiment")]
     {
         storage.num_probes = request.num_probes;
         storage.probe_delay = request.probe_delay;
-    }
-    #[cfg(not(feature = "probe-tx-experiment"))]
-    {
-        storage.num_probes = if passive_fallback {
-            0
-        } else {
-            request.num_probes
-        };
-        storage.probe_delay = if passive_fallback {
-            0
-        } else {
-            request.probe_delay
-        };
     }
     storage.num_channels = request.num_channels;
     for index in 0..num_channels {
@@ -337,12 +300,10 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     storage.dwell_last_now = 0;
     storage.dwell_waits = 0;
     storage.hardware_error_code = 0;
-    #[cfg(feature = "probe-tx-experiment")]
     {
         storage.finish_state = 0;
         storage.finish_deadline = 0;
     }
-    #[cfg(feature = "probe-tx-experiment")]
     {
         storage.probe_publication_budget = 4;
         storage.probe_deadline = 0;
@@ -364,7 +325,7 @@ pub fn begin(request: &StartScanRequest<'_>, if_id: u8) -> Result<(), ScanError>
     Ok(())
 }
 
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 unsafe fn service_unjoined_scan_finish(storage: &mut ScanStorage) -> bool {
     match storage.finish_state {
         0 => false,
@@ -438,7 +399,7 @@ pub fn service() -> Option<ScanCompletion> {
         return None;
     }
 
-    #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+    #[cfg(target_arch = "arm")]
     if storage.finish_state != 0 {
         if !unsafe { service_unjoined_scan_finish(storage) } {
             return None;
@@ -456,7 +417,6 @@ pub fn service() -> Option<ScanCompletion> {
                 let armed = vendor_timer();
                 storage.dwell_deadline =
                     armed.wrapping_add(channel.max_channel_time.saturating_mul(0x400));
-                #[cfg(feature = "probe-tx-experiment")]
                 {
                     storage.probe_deadline = armed.wrapping_add(u32::from(storage.probe_delay));
                     storage.probe_phase =
@@ -475,7 +435,6 @@ pub fn service() -> Option<ScanCompletion> {
             Err(error) => {
                 storage.hardware_error_code = transition_error_code(error);
                 storage.hardware_status = 1;
-                #[cfg(feature = "probe-tx-experiment")]
                 {
                     storage.probe_phase = ActiveProbePhase::Failed;
                 }
@@ -504,7 +463,6 @@ pub fn service() -> Option<ScanCompletion> {
     }
 
     if storage.hardware_status == 0 {
-        #[cfg(feature = "probe-tx-experiment")]
         if !matches!(
             storage.probe_phase,
             ActiveProbePhase::Disabled | ActiveProbePhase::Done | ActiveProbePhase::Failed
@@ -532,7 +490,6 @@ pub fn service() -> Option<ScanCompletion> {
         storage.current_channel_index = storage.current_channel_index.wrapping_add(1);
         if storage.current_channel_index < storage.num_channels {
             storage.hardware_tune_pending = true;
-            #[cfg(feature = "probe-tx-experiment")]
             {
                 storage.probe_phase =
                     if storage.num_probes == 0 || storage.probe_publication_budget == 0 {
@@ -545,7 +502,7 @@ pub fn service() -> Option<ScanCompletion> {
         }
     }
 
-    #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+    #[cfg(target_arch = "arm")]
     if storage.num_probes != 0 && storage.hardware_status == 0 {
         // JOIN is not accepted yet, but distinguish the vendor active-VIF
         // branch now so future activation can never destructively execute the
@@ -609,7 +566,6 @@ pub fn active_channel() -> Option<u16> {
 
 /// Claims the next probe opportunity for the current channel. An opportunity
 /// is visible only after tuning, RX enable, and the scheduled probe delay.
-#[cfg(feature = "probe-tx-experiment")]
 fn claim_probe_opportunity_at(storage: &mut ScanStorage, now: u32) -> Option<ProbeOpportunity> {
     if !storage.active
         || storage.hardware_status != 0
@@ -634,18 +590,17 @@ fn claim_probe_opportunity_at(storage: &mut ScanStorage, now: u32) -> Option<Pro
     })
 }
 
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub fn claim_probe_opportunity() -> Option<ProbeOpportunity> {
     let storage = unsafe { &mut *SCAN.0.get() };
     claim_probe_opportunity_at(storage, vendor_timer())
 }
 
-#[cfg(not(all(target_arch = "arm", feature = "probe-tx-experiment")))]
+#[cfg(not(target_arch = "arm"))]
 pub const fn claim_probe_opportunity() -> Option<ProbeOpportunity> {
     None
 }
 
-#[cfg(feature = "probe-tx-experiment")]
 pub fn copy_probe_ssid(
     opportunity: ProbeOpportunity,
     output: &mut [u8; MAX_SSID_LEN],
@@ -672,7 +627,6 @@ pub fn copy_probe_ssid(
     Some(length)
 }
 
-#[cfg(feature = "probe-tx-experiment")]
 fn complete_probe_at(
     storage: &mut ScanStorage,
     opportunity: ProbeOpportunity,
@@ -708,19 +662,18 @@ fn complete_probe_at(
     true
 }
 
-#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+#[cfg(target_arch = "arm")]
 pub fn complete_probe(opportunity: ProbeOpportunity, status: u16) -> bool {
     let storage = unsafe { &mut *SCAN.0.get() };
     complete_probe_at(storage, opportunity, status, vendor_timer())
 }
 
-#[cfg(all(not(target_arch = "arm"), feature = "probe-tx-experiment"))]
+#[cfg(not(target_arch = "arm"))]
 pub fn complete_probe(opportunity: ProbeOpportunity, status: u16) -> bool {
     let storage = unsafe { &mut *SCAN.0.get() };
     complete_probe_at(storage, opportunity, status, storage.probe_deadline)
 }
 
-#[cfg(feature = "probe-tx-experiment")]
 pub fn fail_probe(opportunity: ProbeOpportunity) -> bool {
     let storage = unsafe { &mut *SCAN.0.get() };
     if storage.probe_generation != opportunity.generation
@@ -843,7 +796,6 @@ mod tests {
         assert!(deadline_reached(1234, 1234));
     }
 
-    #[cfg(feature = "probe-tx-experiment")]
     #[test]
     fn active_probe_state_serializes_requested_publications() {
         let mut storage = ScanStorage::new();

@@ -126,11 +126,8 @@ pub mod counter {
     /// publication (scheduler reservation).
     pub const WATCHDOG_RECOVERED: usize = 10;
     pub const STAGE_PENDING_SPLIT: usize = WATCHDOG_RECOVERED;
-    #[cfg(feature = "stage-latency-sums")]
-    pub const LATENCY_SUM_ADMIT_PUBLISH: usize = WATCHDOG_RECOVERED;
-    /// RX consumer resynchronisations, i.e. observed RX FIFO corruption. Only
-    /// counted in `corruption-non-fatal` builds; otherwise the firmware halts
-    /// and reports the full record instead.
+    /// RX consumer resynchronisations, i.e. observed recoverable RX FIFO
+    /// corruption.
     pub const RX_RESYNC: usize = 11;
     /// Microseconds from host admission to confirmation for the most recent
     /// frame, and the worst seen. TCP moves about one segment per 9.3 ms RTT
@@ -151,8 +148,6 @@ pub mod counter {
     /// rather than added. Retire a finished one to fund a new one.
     pub const GIVE_UP: usize = 12;
     pub const LATENCY_MAX: usize = 13;
-    #[cfg(feature = "stage-latency-sums")]
-    pub const LATENCY_SUM_PUBLISH_START: usize = LATENCY_MAX;
     /// Retirements split by the slot state the MAC left behind. `retired` is
     /// ~1% under ping flood but ~10% during iperf, and the split says which
     /// fault that is:
@@ -174,10 +169,6 @@ pub mod counter {
     /// free fields and the report array is exactly 22 words.
     pub const RETIRED_STARTED: usize = 15;
     pub const RETIRED_TX_SUCCESS: usize = 16;
-    #[cfg(feature = "stage-latency-sums")]
-    pub const LATENCY_SUM_START_COMPLETE: usize = RETIRED_STARTED;
-    #[cfg(feature = "stage-latency-sums")]
-    pub const LATENCY_SUM_COMPLETE_CONFIRM: usize = RETIRED_TX_SUCCESS;
     /// Delivered status of the most recent retirement, against `LAST_EXPECTED`.
     /// Retirement now measures 0, so this slot carries the pending-gate reason:
     /// low 16 = `LeaveQueued` decisions for the frame in flight, high 16 = which
@@ -189,15 +180,13 @@ pub mod counter {
     /// ceiling.
     pub const RETIRED_LAST_STATUS: usize = 17;
     pub const PENDING_GATE: usize = RETIRED_LAST_STATUS;
-    #[cfg(feature = "stage-latency-sums")]
-    pub const LATENCY_SAMPLE_COUNT: usize = RETIRED_LAST_STATUS;
     /// Retirements declined because the slot was published too recently to be
     /// stuck. These are the frames the unaged rule was destroying.
     pub const RETIREMENT_DEFERRED: usize = 18;
     /// Staged HIF output buffers whose header no longer matches what we wrote,
     /// i.e. the corruption reaching the TX output ring. Counted rather than
-    /// published in `corruption-non-fatal` builds: `publish_terminal_exception`
-    /// emits WSM id 0x0800 with no sequence bits, and the host validates the
+    /// published: `publish_terminal_exception` emits WSM id 0x0800 with no
+    /// sequence bits, and the host validates the
     /// sequence before special-casing exceptions, so reporting one during live
     /// operation is itself fatal (`BH RX diag ... seq=0/2 ... result=-5`).
     pub const OUTPUT_CORRUPTION: usize = 19;
@@ -268,92 +257,6 @@ pub unsafe fn set(counter: usize, value: u32) {
     let _ = (counter, value);
 }
 
-/// Rotating emit state for pushed counter events: `(last_emit, burst_index)`.
-#[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-struct SharedCounterEmit(UnsafeCell<(u32, u8)>);
-
-#[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-unsafe impl Sync for SharedCounterEmit {}
-
-#[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-static COUNTER_EMIT: SharedCounterEmit = SharedCounterEmit(UnsafeCell::new((0, COUNTER_BURST)));
-
-/// Number of events in one burst. The normal layout packs two 16-bit counters
-/// per event; `stage-latency-sums` sends five selected full-width counters.
-#[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-const COUNTER_BURST: u8 = 5;
-
-/// Microseconds between bursts.
-#[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-const COUNTER_PERIOD_US: u32 = 2_000_000;
-
-/// Produces the next pushed counter event, if one is due.
-///
-/// Counters are read back through the counters MIB, but that read stops
-/// working under load: a post-flood sample returned all zeros with
-/// `BH errcode: 1` while `bh_rx_trace` was still advancing (ordinal 104 -> 127
-/// across the same flood). Indications therefore survive past the point where
-/// MIB reads fail, so the counters are also pushed as debug events, which the
-/// driver records host-side.
-///
-/// # Safety
-/// Single-threaded firmware context.
-#[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-pub unsafe fn take_counter_event(now: u32) -> Option<(u32, u32)> {
-    unsafe {
-        let state = COUNTER_EMIT.0.get();
-        let (last_emit, mut burst_index) = state.read_volatile();
-
-        if burst_index >= COUNTER_BURST {
-            if now.wrapping_sub(last_emit) < COUNTER_PERIOD_US {
-                return None;
-            }
-            burst_index = 0;
-        }
-
-        let counters = LIFECYCLE_COUNTERS.0.get().cast::<u32>();
-        #[cfg(feature = "stage-latency-sums")]
-        let (event_id, data) = {
-            const PUSHED: [usize; 5] = [
-                counter::LATENCY_SUM_ADMIT_PUBLISH,
-                counter::LATENCY_SUM_PUBLISH_START,
-                counter::LATENCY_SUM_START_COMPLETE,
-                counter::LATENCY_SUM_COMPLETE_CONFIRM,
-                counter::LATENCY_SAMPLE_COUNT,
-            ];
-            let counter = PUSHED[usize::from(burst_index)];
-            (
-                0x4c53_0000 | counter as u32,
-                counters.add(counter).read_volatile(),
-            )
-        };
-        #[cfg(not(feature = "stage-latency-sums"))]
-        let (event_id, data) = {
-            let low = usize::from(burst_index) * 2;
-            let pack = |index: usize| -> u32 {
-                if index < counter::COUNT {
-                    counters.add(index).read_volatile().min(0xffff)
-                } else {
-                    0
-                }
-            };
-            (
-                0x4c43_0000 | u32::from(burst_index),
-                pack(low) | (pack(low + 1) << 16),
-            )
-        };
-
-        burst_index += 1;
-        let next_last_emit = if burst_index >= COUNTER_BURST {
-            now
-        } else {
-            last_emit
-        };
-        state.write_volatile((next_last_emit, burst_index));
-        Some((event_id, data))
-    }
-}
-
 /// Copies the class-0 lifecycle counters.
 ///
 /// # Safety
@@ -413,20 +316,6 @@ pub unsafe fn observe(counter: usize, value: u32) {
     }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
     let _ = (counter, value);
-}
-
-/// Add one timing sample without allowing a long run to wrap back to a small
-/// plausible value.
-///
-/// # Safety
-/// Single-threaded firmware context; the counter block has no other writer.
-#[cfg(feature = "stage-latency-sums")]
-#[inline]
-pub unsafe fn accumulate(counter: usize, value: u32) {
-    unsafe {
-        let current = read(counter);
-        set(counter, current.saturating_add(value));
-    }
 }
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]
@@ -904,7 +793,6 @@ pub unsafe fn capture_descriptor_length(word: u32) {
 /// existing counters MIB until a paginated diagnostic transport is added.
 #[inline(always)]
 pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transport) {
-    #[cfg(feature = "hardware-ccmp-selftest")]
     {
         let snapshot = crate::crypto::hardware_ccmp_selftest_snapshot();
         if snapshot[0] == 0x4857_434b {
@@ -914,53 +802,7 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
             return;
         }
     }
-    #[cfg(all(
-        feature = "vendor-host-tx-diagnostics",
-        feature = "class0-lifecycle-counters"
-    ))]
-    unsafe {
-        // Report the lifecycle counters instead of the identity snapshot. The
-        // marker lets the host decoder tell the two layouts apart.
-        let _ = transport;
-        values.fill(0);
-        values[0] = if cfg!(feature = "stage-latency-sums") {
-            0x4330_4c53 // "C0LS"
-        } else {
-            0x4330_4c43 // "C0LC"
-        };
-        let counters = LIFECYCLE_COUNTERS.0.get().cast::<u32>();
-        for index in 0..counter::COUNT {
-            values[index + 1] = counters.add(index).read_volatile();
-        }
-        // RX state, folded into slots whose TX meaning is now constant. The two
-        // MIBs share one report array, so this is the only way to see both.
-        #[cfg(target_arch = "arm")]
-        {
-            let (valid, filtered, indications, released) = crate::radio::rx_diagnostic_counters();
-            let outstanding = crate::radio::host_transfers_outstanding();
-            values[counter::RX_VALID_SLOTS + 1] = valid;
-            values[counter::RX_FILTERED + 1] = filtered;
-            values[counter::RX_INDICATIONS + 1] = indications;
-            values[counter::RX_RELEASED + 1] = (released & 0xffff) | (outstanding << 16);
-            #[cfg(feature = "tx-pipelining")]
-            {
-                // The strict status gate is now known to converge: every
-                // published depth-2 frame completed or gave up normally. Reuse
-                // the three temporary mismatch slots to prove how often real
-                // batches form and whether a second PAS reservation fails.
-                let (arms, multi_slot_arms, scheduler_capacity) =
-                    crate::tx::batch_lifecycle_snapshot();
-                values[counter::RETIRED_STARTED + 1] = arms;
-                values[counter::RETIRED_TX_SUCCESS + 1] = multi_slot_arms;
-                values[counter::PENDING_GATE + 1] = scheduler_capacity;
-            }
-        }
-        return;
-    }
-    #[cfg(all(
-        feature = "vendor-host-tx-diagnostics",
-        not(feature = "class0-lifecycle-counters")
-    ))]
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
         let _ = transport;
         let identity = &*TX_IDENTITY.0.get();

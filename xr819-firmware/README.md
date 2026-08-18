@@ -4,8 +4,8 @@ This directory is an experimental `no_std` Rust implementation of firmware for
 the XRadio XR819. It is expected to become a separate repository if hardware
 bring-up succeeds.
 
-The initial compatibility target is the CW1200 WSM ABI used by Linux's
-`cw1200` driver. XR819-specific PHY, calibration and host-interface code stays
+The host protocol is the XR819-native extension of the CW1200 WSM ABI used by
+the Linux driver. XR819-specific PHY, calibration and host-interface code stays
 behind that protocol boundary.
 
 ## Current state
@@ -17,11 +17,11 @@ a WPA2 network, completes the four-way handshake, and carries sustained TCP/UDP
 traffic with hardware CCMP.
 
 The intermittent terminal RX/MAC collapse was traced to Rust RX ownership logic,
-not AES or a required FIQ path. In `corruption-non-fatal`, a corrupt RX
-release-head ownership word was marked pending and then returned without
-advancing the head; no later owner could revisit it. Continuing through normal
-head reclamation fixes the terminal stall. RX resynchronization also defers its
-hardware-consumer update while zero-copy HIF slots remain host-owned.
+not AES or a required FIQ path. A corrupt RX release-head ownership word was
+marked pending and then returned without advancing the head; no later owner
+could revisit it. Continuing through normal head reclamation fixes the terminal
+stall. RX resynchronization also defers its hardware-consumer update while
+zero-copy HIF slots remain host-owned.
 
 The clean production image qualified healthy in three fresh boots at
 4.87-5.09 Mbit/s TCP and 7.92-7.93 Mbit/s UDP delivered, with 20/20 final ping,
@@ -61,8 +61,7 @@ For example:
 
 ```sh
 XR819_TX_BISECT_STAGE=1 cargo build --release --bin hif-startup \
-  --target thumbv5te-none-eabi -Z build-std=core \
-  --no-default-features --features join-sta-experiment
+  --target thumbv5te-none-eabi -Z build-std=core
 ```
 
 Stage zero or an unset variable preserves normal behavior. Start at stage 1
@@ -99,39 +98,32 @@ Forced endpoint tests passed at rates 0–3, 6, 13, 14 (MCS0), and 21 (MCS7),
 followed by a successful host-selected connectivity run. The firmware now also accepts the XR819 host driver's 24-nibble MIB `0x1016`
 retry policies and walks them per frame. A rate change recomputes PAS timing and
 rebuilds the PHY descriptor before rearm; firmware does not run a competing
-adaptive rate-selection algorithm. Native-profile hardware validation observed
-an MCS7 failure followed by successful MCS2 completion: `rate_try[2] =
-0x00100000`, final rate 16, and one ACK failure. This confirms that the host
-series drives hardware fallback and that the extended confirmation reports the
-failed MCS7 attempt.
+adaptive rate-selection algorithm. Hardware validation observed an MCS7 failure followed by successful MCS2
+completion: `rate_try[2] = 0x00100000`, final rate 16, and one ACK failure. This
+confirms that the host series drives hardware fallback and that the extended
+confirmation reports the failed MCS7 attempt.
 
-Two compile-time WSM profiles share that execution path. The default
-`wsm-cw1200-compat` image advertises the established `XR819 open Rust WSM`
-label and emits CW1200-sized confirmations. `wsm-xr819-native` advertises a
-native label, accepts the native four-byte operational-mode MIB, uses
-synchronous JOIN semantics, and emits XR819 confirmations with three packed
-per-rate failure words. The Linux driver chooses the same profile from the startup label; build native
-candidates with `--no-default-features` so both profile features cannot be
-enabled together. The current XR819 test driver is validated with the native
-profile. Its CW1200-compatible parser requires the accompanying profile-selection
-fix before CW1200-sized confirmations can be used safely.
+Firmware always advertises `XR819 open Rust native`, accepts the native
+four-byte operational-mode MIB, uses synchronous JOIN semantics, and emits
+XR819 confirmations with three packed per-rate failure words. There is no
+compile-time wire-profile selection.
 
 The ordinary vendor path is now specified end-to-end in
 [`../xr819-vendor-host-tx-lifecycle.md`](../xr819-vendor-host-tx-lifecycle.md).
 Implementation has moved away from class-6 context copying: `vendor_host_tx.rs`
 models exact host-context initialization, mode-0 pending-list append, PAS-ring
 compaction/insertion, and pending-task outcomes. HIF requests now carry an
-explicit packet-RAM release token. The opt-in `vendor-host-tx-foundation`
-feature now admits ordinary non-EAPOL data into a real host-pool context and
-retains the original request token. It now applies vendor-shaped header
+explicit packet-RAM release token. The normal feature-free firmware admits
+ordinary non-EAPOL data into a real host-pool context and retains the original
+request token. It now applies vendor-shaped header
 classification, per-link/TID sequence assignment, software CCMP, VIF-slot
 selection, PAS timing, descriptor construction, ownership bit `0x20`, and
 mode-0 pending-list insertion. RESET now unlinks a queued context before freeing
 it and returning the retained HIF request. Live pending-task service now applies
 VIF/link, expiry, TBTT, and power-save gates; rejected class-0 frames are
 confirmed before their HIF token is returned, while eligible frames enter the
-compacting global PAS ring with ownership bit `0x40`. The feature performs reversible non-aggregate scheduler selection, AC-to-pipe
-mapping, PAS-slot removal, pipe-slot reservation, and kind-0 descriptor
+compacting global PAS ring with ownership bit `0x40`. The implementation performs reversible non-aggregate scheduler selection,
+AC-to-pipe mapping, PAS-slot removal, pipe-slot reservation, and kind-0 descriptor
 generation before crossing into hardware ownership. It starts the PHY, triggers
 the MAC, services retries/completion, emits the class-0 WSM confirmation, and
 frees the context/HIF request only after confirmation publication. Management

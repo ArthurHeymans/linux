@@ -80,7 +80,14 @@ mod tests {
             owner.0, owner.1, owner.2, owner.3, owner.0, owner.1, owner.2, owner.3,
         ));
         assert!(!completion_matches_owner(
-            owner.0, owner.1, owner.2, owner.3, 0x0901_5580, owner.1, owner.2, owner.3,
+            owner.0,
+            owner.1,
+            owner.2,
+            owner.3,
+            0x0901_5580,
+            owner.1,
+            owner.2,
+            owner.3,
         ));
         assert!(!completion_matches_owner(
             owner.0, owner.1, owner.2, owner.3, owner.0, owner.1, owner.2, 2,
@@ -89,7 +96,14 @@ mod tests {
             owner.0, owner.1, owner.2, owner.3, owner.0, owner.1, 3, owner.3,
         ));
         assert!(!completion_matches_owner(
-            owner.0, owner.1, owner.2, owner.3, owner.0, 0x0901_5594, owner.2, owner.3,
+            owner.0,
+            owner.1,
+            owner.2,
+            owner.3,
+            owner.0,
+            0x0901_5594,
+            owner.2,
+            owner.3,
         ));
     }
 }

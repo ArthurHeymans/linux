@@ -223,84 +223,7 @@ pub unsafe fn validate_tx_boundary(phase: u32, pipe: u8, slot: u8, command: u32,
     // so a counter bump at this point measures call frequency rather than
     // corruption events (it read 2,162,040 on the first attempt). Corruption is
     // counted where it is actually detected, in `radio.rs`.
-    #[cfg(feature = "corruption-non-fatal")]
     return;
-    #[cfg(not(feature = "corruption-non-fatal"))]
-    {
-        let state = unsafe { &*(STATE_BASE as *const HifState) };
-        let software_state = unsafe { &*(HIF_SOFTWARE_STATE_BASE as *const HifSoftwareState) };
-        let producer = state.tx_producer.get();
-        let mut consumer = state.tx_consumer.get();
-        while consumer != producer {
-            let queue_slot = (consumer & 63) as usize;
-            let buffer = software_state.tx_buffers[queue_slot].get();
-            let expected = unsafe { (*OUTPUT_HEADERS.0.get())[queue_slot] };
-            let expected_hash = unsafe { (*OUTPUT_HASHES.0.get())[queue_slot] };
-            let (actual, actual_hash) = if buffer == 0 {
-                (0, 0)
-            } else {
-                unsafe {
-                    (
-                        (buffer as *const u32).read_volatile(),
-                        output_prefix_hash(buffer, expected as u16),
-                    )
-                }
-            };
-            if buffer == 0 || actual != expected || actual_hash != expected_hash {
-                let words = if buffer == 0 {
-                    [0; 4]
-                } else {
-                    unsafe {
-                        [
-                            ((buffer + 8) as *const u32).read_volatile(),
-                            ((buffer + 0x0c) as *const u32).read_volatile(),
-                            ((buffer + 0x10) as *const u32).read_volatile(),
-                            ((buffer + 0x14) as *const u32).read_volatile(),
-                        ]
-                    }
-                };
-                let (matched_command, match_state, _) = unsafe { matching_tx_command(words) };
-                let boundary = phase | (u32::from(pipe) << 8) | (u32::from(slot) << 16);
-                let ring_words = if ring == 0 {
-                    [0; 2]
-                } else {
-                    unsafe {
-                        [
-                            ((ring + 0x14) as *const u32).read_volatile(),
-                            ((ring + 0x20) as *const u32).read_volatile(),
-                        ]
-                    }
-                };
-                unsafe {
-                    publish_halting_exception(
-                        [
-                            0x4849_4650,
-                            boundary,
-                            consumer,
-                            producer,
-                            buffer,
-                            expected,
-                            actual,
-                            expected_hash,
-                            actual_hash,
-                            words[0],
-                            words[1],
-                            words[2],
-                            words[3],
-                            command,
-                            matched_command,
-                            match_state,
-                            ring_words[0],
-                            ring_words[1],
-                        ],
-                        b"xr819-hif-tx-boundary",
-                    );
-                }
-                crate::halt_always!();
-            }
-            consumer = consumer.wrapping_add(1);
-        }
-    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -533,7 +456,6 @@ pub unsafe fn publish_halting_exception<const N: usize>(registers: [u32; N], nam
 
 pub unsafe fn publish_terminal_exception<const N: usize>(registers: [u32; N], name: &[u8]) {
     // Report-and-continue builds must not kill the link they are measuring.
-    #[cfg(feature = "corruption-non-fatal")]
     {
         let _ = (registers, name);
         unsafe {
@@ -541,11 +463,6 @@ pub unsafe fn publish_terminal_exception<const N: usize>(registers: [u32; N], na
                 crate::host_tx_diagnostics::counter::SUPPRESSED_EXCEPTION,
             );
         }
-        return;
-    }
-    #[cfg(not(feature = "corruption-non-fatal"))]
-    unsafe {
-        publish_exception_now(registers, name)
     };
 }
 
@@ -679,7 +596,6 @@ impl Transport {
                 // and bypasses `stage_next_tx`, so the host sees an
                 // out-of-sequence message and terminates its BH thread. That is
                 // acceptable when halting and fatal when continuing.
-                #[cfg(feature = "corruption-non-fatal")]
                 {
                     unsafe {
                         crate::host_tx_diagnostics::bump(
@@ -688,43 +604,6 @@ impl Transport {
                     }
                     consumer = consumer.wrapping_add(1);
                     continue;
-                }
-                #[cfg(not(feature = "corruption-non-fatal"))]
-                unsafe {
-                    let following = if buffer_address == 0 {
-                        [0; 3]
-                    } else {
-                        [
-                            ((buffer_address + 4) as *const u32).read_volatile(),
-                            ((buffer_address + 8) as *const u32).read_volatile(),
-                            ((buffer_address + 0x0c) as *const u32).read_volatile(),
-                        ]
-                    };
-                    let (command, match_state, ring_state) =
-                        matching_tx_command([actual, following[0], following[1], following[2]]);
-                    publish_halting_exception(
-                        [
-                            0x4849_4642,
-                            consumer,
-                            producer,
-                            self.state.tx_queued.get(),
-                            self.state.tx_reclaimed.get(),
-                            queue_slot as u32,
-                            descriptor_slot as u32,
-                            buffer_address,
-                            expected,
-                            actual,
-                            self.shared.tx[descriptor_slot].address.get(),
-                            self.shared.tx[descriptor_slot].control.get(),
-                            following[0],
-                            following[1],
-                            following[2],
-                            command,
-                            match_state,
-                            ring_state,
-                        ],
-                        b"xr819-hif-buffer-mutated",
-                    );
                 }
                 crate::halt_always!();
             }
@@ -895,7 +774,6 @@ impl Transport {
         }
         drain_write_buffer();
     }
-
 
     pub fn publication_available(&mut self) -> bool {
         self.reclaim_tx();

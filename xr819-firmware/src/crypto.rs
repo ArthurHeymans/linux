@@ -1,11 +1,13 @@
+#[cfg(not(target_arch = "arm"))]
 use aes::Aes128;
+#[cfg(not(target_arch = "arm"))]
 use ccm::{
     Ccm,
     aead::{AeadInPlace, KeyInit, generic_array::GenericArray},
     consts::{U8, U13},
 };
 use core::cell::UnsafeCell;
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_structs,
@@ -18,22 +20,12 @@ pub(crate) const CCMP_MIC_LEN: usize = 8;
 const AES_GROUP: u8 = 4;
 const AES_PAIRWISE: u8 = 5;
 
-#[cfg(feature = "hardware-ccmp-selftest")]
 mod hardware_kat {
     include!(concat!(env!("OUT_DIR"), "/hardware_ccmp_kat.rs"));
 }
 
+#[cfg(not(target_arch = "arm"))]
 type AesCcmp = Ccm<Aes128, U8, U13>;
-
-#[cfg(any(
-    all(feature = "hardware-ccmp-pace-1ms", feature = "hardware-ccmp-pace-2ms"),
-    all(feature = "hardware-ccmp-pace-1ms", feature = "hardware-ccmp-pace-4ms"),
-    all(feature = "hardware-ccmp-pace-2ms", feature = "hardware-ccmp-pace-4ms"),
-    all(feature = "hardware-ccmp-pace-1ms", feature = "hardware-ccmp-pace-8ms"),
-    all(feature = "hardware-ccmp-pace-2ms", feature = "hardware-ccmp-pace-8ms"),
-    all(feature = "hardware-ccmp-pace-4ms", feature = "hardware-ccmp-pace-8ms"),
-))]
-compile_error!("select at most one hardware CCMP pacing interval");
 
 #[derive(Clone, Copy)]
 struct KeyRecord {
@@ -308,7 +300,7 @@ fn hardware_aad_stream(aad: &[u8; 30], aad_length: usize) -> Result<[u8; 32], Cc
     Ok(stream)
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 register_structs! {
     AesRegisters {
         (0x00 => command_status: ReadWrite<u32>),
@@ -322,56 +314,44 @@ register_structs! {
     }
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 struct SharedHardwareCompletion(UnsafeCell<u32>);
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 unsafe impl Sync for SharedHardwareCompletion {}
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 static HARDWARE_COMPLETION: SharedHardwareCompletion = SharedHardwareCompletion(UnsafeCell::new(0));
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 static HARDWARE_IRQ_MASK: SharedHardwareCompletion = SharedHardwareCompletion(UnsafeCell::new(0));
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 static HARDWARE_COMPLETION_STATUS: SharedHardwareCompletion =
     SharedHardwareCompletion(UnsafeCell::new(0));
 
-#[cfg(all(feature = "hardware-ccmp-verify", target_arch = "arm"))]
-struct SharedHardwareVerifyBuffer(UnsafeCell<[u8; 2048]>);
-
-#[cfg(all(feature = "hardware-ccmp-verify", target_arch = "arm"))]
-unsafe impl Sync for SharedHardwareVerifyBuffer {}
-
-#[cfg(all(feature = "hardware-ccmp-verify", target_arch = "arm"))]
-static HARDWARE_VERIFY_BUFFER: SharedHardwareVerifyBuffer =
-    SharedHardwareVerifyBuffer(UnsafeCell::new([0; 2048]));
-
-#[cfg(feature = "hardware-ccmp-selftest")]
 struct SharedHardwareSelftest(UnsafeCell<[u32; 22]>);
 
-#[cfg(feature = "hardware-ccmp-selftest")]
 unsafe impl Sync for SharedHardwareSelftest {}
 
-#[cfg(feature = "hardware-ccmp-selftest")]
-static HARDWARE_SELFTEST: SharedHardwareSelftest =
-    SharedHardwareSelftest(UnsafeCell::new([0; 22]));
+static HARDWARE_SELFTEST: SharedHardwareSelftest = SharedHardwareSelftest(UnsafeCell::new([0; 22]));
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn aes_registers() -> &'static AesRegisters {
     unsafe { &*(0x09c5_0000 as *const AesRegisters) }
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 const AES_MODE1_MICROCODE: &[u8; 430] = include_bytes!("../data/aes-mode1.bin");
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn initialize_hardware_aes_engine() -> Result<(), CcmpError> {
     let registers = aes_registers();
     registers.command_status.set(0);
     wait_aes_status(|status| status & (1 << 12) == 0)?;
-    registers._debug_port.set(0x8000_0000 | u32::from(AES_MODE1_MICROCODE[0]));
+    registers
+        ._debug_port
+        .set(0x8000_0000 | u32::from(AES_MODE1_MICROCODE[0]));
     for byte in &AES_MODE1_MICROCODE[1..] {
         registers._debug_port.set(u32::from(*byte));
     }
@@ -380,7 +360,7 @@ fn initialize_hardware_aes_engine() -> Result<(), CcmpError> {
     Ok(())
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn record_hardware_selftest_word(index: usize, value: u32) {
     unsafe {
         if index < 22 && HARDWARE_SELFTEST.0.get().cast::<u32>().read_volatile() == 0x4857_434b {
@@ -394,7 +374,7 @@ fn record_hardware_selftest_word(index: usize, value: u32) {
     }
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn increment_hardware_selftest_word(index: usize) -> u32 {
     unsafe {
         let result = HARDWARE_SELFTEST.0.get().cast::<u32>();
@@ -408,7 +388,7 @@ fn increment_hardware_selftest_word(index: usize) -> u32 {
     }
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn hardware_crypto_irq(mask: u32) {
     unsafe {
         HARDWARE_COMPLETION_STATUS
@@ -421,17 +401,17 @@ fn hardware_crypto_irq(mask: u32) {
     }
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 pub(crate) extern "C" fn hardware_crypto_irq18() {
     hardware_crypto_irq(1 << 18);
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 pub(crate) extern "C" fn hardware_crypto_irq20() {
     hardware_crypto_irq(1 << 20);
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn wait_aes_status(predicate: impl Fn(u32) -> bool) -> Result<(), CcmpError> {
     let started = unsafe { crate::vendor_host_tx::vendor_timer_now() };
     while !predicate(aes_registers().command_status.get()) {
@@ -443,14 +423,16 @@ fn wait_aes_status(predicate: impl Fn(u32) -> bool) -> Result<(), CcmpError> {
     Ok(())
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn write_fifo_block(block: &[u8]) {
     for word in block.chunks_exact(4) {
-        aes_registers().fifo.set(u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+        aes_registers()
+            .fifo
+            .set(u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
     }
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn encrypt_tx_frame_hardware(
     frame: &mut [u8],
     frame_control: u16,
@@ -543,7 +525,7 @@ fn encrypt_tx_frame_hardware(
     Ok(())
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 fn decrypt_rx_frame_hardware(
     frame: &mut [u8],
     frame_control: u16,
@@ -623,12 +605,11 @@ fn decrypt_rx_frame_hardware(
     Ok(())
 }
 
-#[cfg(all(feature = "hardware-ccmp-selftest", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 pub fn run_hardware_ccmp_selftest() {
     use hardware_kat::{
-        HARDWARE_KAT_EXPECTED, HARDWARE_KAT_INPUT, HARDWARE_KAT_KEY,
-        HARDWARE_KAT_MATRIX_CHECKSUMS, HARDWARE_KAT_MATRIX_LENGTHS, HARDWARE_KAT_MATRIX_MICS,
-        HARDWARE_KAT_PN,
+        HARDWARE_KAT_EXPECTED, HARDWARE_KAT_INPUT, HARDWARE_KAT_KEY, HARDWARE_KAT_MATRIX_CHECKSUMS,
+        HARDWARE_KAT_MATRIX_LENGTHS, HARDWARE_KAT_MATRIX_MICS, HARDWARE_KAT_PN,
     };
 
     const SCRATCH: usize = crate::hif::SHARED_BUFFER_BASE;
@@ -650,20 +631,26 @@ pub fn run_hardware_ccmp_selftest() {
             }
         };
         let started = crate::vendor_host_tx::vendor_timer_now();
-        result.add(7).write_volatile(aes_registers().command_status.get());
+        result
+            .add(7)
+            .write_volatile(aes_registers().command_status.get());
         let microcode_checksum = AES_MODE1_MICROCODE.iter().fold(0_u32, |value, byte| {
             value.rotate_left(5).wrapping_add(u32::from(*byte))
         });
         result.add(17).write_volatile(microcode_checksum);
         if initialize_hardware_aes_engine().is_err() {
             result.add(1).write_volatile(0xe005);
-            result.add(8).write_volatile(aes_registers().command_status.get());
-            result.add(4).write_volatile(
-                crate::vendor_host_tx::vendor_timer_now().wrapping_sub(started),
-            );
+            result
+                .add(8)
+                .write_volatile(aes_registers().command_status.get());
+            result
+                .add(4)
+                .write_volatile(crate::vendor_host_tx::vendor_timer_now().wrapping_sub(started));
             return;
         }
-        result.add(8).write_volatile(aes_registers().command_status.get());
+        result
+            .add(8)
+            .write_volatile(aes_registers().command_status.get());
         let operation = encrypt_tx_frame_hardware(
             frame,
             control,
@@ -696,9 +683,7 @@ pub fn run_hardware_ccmp_selftest() {
             (_, Some((index, expected))) => {
                 result.add(1).write_volatile(0xe003);
                 result.add(5).write_volatile(
-                    ((index as u32) << 16)
-                        | (u32::from(expected) << 8)
-                        | u32::from(frame[index]),
+                    ((index as u32) << 16) | (u32::from(expected) << 8) | u32::from(frame[index]),
                 );
             }
             (Ok(()), None) => result.add(1).write_volatile(1),
@@ -750,7 +735,9 @@ pub fn run_hardware_ccmp_selftest() {
                     || mic != expected_mic
                 {
                     result.add(1).write_volatile(0xe006);
-                    result.add(5).write_volatile(HARDWARE_KAT_MATRIX_CHECKSUMS[case]);
+                    result
+                        .add(5)
+                        .write_volatile(HARDWARE_KAT_MATRIX_CHECKSUMS[case]);
                     result.add(6).write_volatile(actual_checksum);
                     result.add(20).write_volatile(payload_length as u32);
                     break;
@@ -759,10 +746,8 @@ pub fn run_hardware_ccmp_selftest() {
             }
         }
         if result.add(1).read_volatile() == 1 {
-            let frame = core::slice::from_raw_parts_mut(
-                SCRATCH as *mut u8,
-                HARDWARE_KAT_EXPECTED.len(),
-            );
+            let frame =
+                core::slice::from_raw_parts_mut(SCRATCH as *mut u8, HARDWARE_KAT_EXPECTED.len());
             frame.copy_from_slice(&HARDWARE_KAT_EXPECTED);
             let control = u16::from_le_bytes([frame[0], frame[1]]);
             let header = header_length(control);
@@ -826,7 +811,6 @@ pub fn run_hardware_ccmp_selftest() {
     }
 }
 
-#[cfg(feature = "hardware-ccmp-selftest")]
 pub fn hardware_ccmp_selftest_snapshot() -> [u32; 22] {
     let mut values = [0; 22];
     unsafe {
@@ -836,28 +820,6 @@ pub fn hardware_ccmp_selftest_snapshot() -> [u32; 22] {
         }
     }
     values
-}
-
-#[cfg(all(feature = "hardware-ccmp", target_arch = "arm"))]
-fn pace_hardware_ccmp() {
-    let delay_us = if cfg!(feature = "hardware-ccmp-pace-8ms") {
-        8_000
-    } else if cfg!(feature = "hardware-ccmp-pace-4ms") {
-        4_000
-    } else if cfg!(feature = "hardware-ccmp-pace-2ms") {
-        2_000
-    } else if cfg!(feature = "hardware-ccmp-pace-1ms") {
-        1_000
-    } else {
-        0
-    };
-    if delay_us == 0 {
-        return;
-    }
-    let started = unsafe { crate::vendor_host_tx::vendor_timer_now() };
-    while unsafe { crate::vendor_host_tx::vendor_timer_now() }.wrapping_sub(started) < delay_us {
-        core::hint::spin_loop();
-    }
 }
 
 pub fn encrypt_tx_frame(frame: &mut [u8], if_id: u8) -> Result<(), CcmpError> {
@@ -888,77 +850,12 @@ pub fn encrypt_tx_frame(frame: &mut [u8], if_id: u8) -> Result<(), CcmpError> {
         pn[0],
     ]);
     let (aad, aad_length) = build_aad(frame, control)?;
-    #[cfg(all(feature = "hardware-ccmp", target_arch = "arm"))]
+    #[cfg(target_arch = "arm")]
     {
-        #[cfg(feature = "hardware-ccmp-verify")]
-        {
-            if frame.len() > 2048 {
-                return Err(CcmpError::MalformedFrame);
-            }
-            let expected = unsafe {
-                core::slice::from_raw_parts_mut(
-                    HARDWARE_VERIFY_BUFFER.0.get().cast::<u8>(),
-                    frame.len(),
-                )
-            };
-            expected.copy_from_slice(frame);
-            let nonce = build_nonce(expected, control, pn)?;
-            let cipher =
-                AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
-            let payload_end = expected.len() - CCMP_MIC_LEN;
-            let tag = cipher
-                .encrypt_in_place_detached(
-                    GenericArray::from_slice(&nonce),
-                    &aad[..aad_length],
-                    &mut expected[header + CCMP_HEADER_LEN..payload_end],
-                )
-                .map_err(|_| CcmpError::Authentication)?;
-            expected[payload_end..].copy_from_slice(&tag);
-
-            let operation = encrypt_tx_frame_hardware(
-                frame,
-                control,
-                header,
-                &key.key,
-                pn,
-                &aad,
-                aad_length,
-            );
-            increment_hardware_selftest_word(19);
-            let mismatch = frame
-                .iter()
-                .zip(expected.iter())
-                .position(|(actual, wanted)| actual != wanted);
-            if operation.is_err() || mismatch.is_some() {
-                let failures = increment_hardware_selftest_word(20);
-                if failures == 1 {
-                    let detail = mismatch.map_or(0xffff_0000, |position| {
-                        ((position as u32) << 16)
-                            | (u32::from(expected[position]) << 8)
-                            | u32::from(frame[position])
-                    });
-                    record_hardware_selftest_word(21, detail);
-                }
-                frame.copy_from_slice(expected);
-            }
-            return Ok(());
-        }
-        #[cfg(not(feature = "hardware-ccmp-verify"))]
-        {
-            encrypt_tx_frame_hardware(
-                frame,
-                control,
-                header,
-                &key.key,
-                pn,
-                &aad,
-                aad_length,
-            )?;
-            pace_hardware_ccmp();
-            return Ok(());
-        }
+        encrypt_tx_frame_hardware(frame, control, header, &key.key, pn, &aad, aad_length)?;
+        return Ok(());
     }
-    #[cfg(not(all(feature = "hardware-ccmp", target_arch = "arm")))]
+    #[cfg(not(target_arch = "arm"))]
     {
         let nonce = build_nonce(frame, control, pn)?;
         let cipher = AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
@@ -994,20 +891,12 @@ pub fn decrypt_rx_frame(frame: &mut [u8], if_id: u8) -> Result<bool, CcmpError> 
         .map_err(|_| CcmpError::MalformedFrame)?;
     let key = rx_key(if_id, &transmitter, key_id).ok_or(CcmpError::MissingKey)?;
     let (aad, aad_length) = build_aad(frame, control)?;
-    #[cfg(all(feature = "hardware-ccmp", target_arch = "arm"))]
+    #[cfg(target_arch = "arm")]
     {
-        decrypt_rx_frame_hardware(
-            frame,
-            control,
-            header,
-            &key.key,
-            pn,
-            &aad,
-            aad_length,
-        )?;
+        decrypt_rx_frame_hardware(frame, control, header, &key.key, pn, &aad, aad_length)?;
         return Ok(true);
     }
-    #[cfg(not(all(feature = "hardware-ccmp", target_arch = "arm")))]
+    #[cfg(not(target_arch = "arm"))]
     {
         let nonce = build_nonce(frame, control, pn)?;
         let cipher = AesCcmp::new_from_slice(&key.key).map_err(|_| CcmpError::Authentication)?;
@@ -1120,22 +1009,27 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "hardware-ccmp-selftest")]
     #[test]
     fn build_generated_hardware_kat_matches_independent_vector() {
         assert_eq!(
             &hardware_kat::HARDWARE_KAT_EXPECTED[34..50],
             &[
-                0xc7, 0x40, 0x95, 0x9b, 0xf5, 0x9a, 0x96, 0x31, 0xa8, 0xc2, 0xc9, 0xd9, 0x91,
-                0x0d, 0x11, 0x4b,
+                0xc7, 0x40, 0x95, 0x9b, 0xf5, 0x9a, 0x96, 0x31, 0xa8, 0xc2, 0xc9, 0xd9, 0x91, 0x0d,
+                0x11, 0x4b,
             ]
         );
         assert_eq!(
             &hardware_kat::HARDWARE_KAT_EXPECTED[50..58],
             &[0x11, 0x85, 0x85, 0x5b, 0xce, 0x30, 0xf3, 0xe9]
         );
-        assert_eq!(hardware_kat::HARDWARE_KAT_MATRIX_LENGTHS, [1, 15, 16, 17, 1506]);
-        assert_eq!(hardware_kat::HARDWARE_KAT_MATRIX_MICS.len(), 5 * CCMP_MIC_LEN);
+        assert_eq!(
+            hardware_kat::HARDWARE_KAT_MATRIX_LENGTHS,
+            [1, 15, 16, 17, 1506]
+        );
+        assert_eq!(
+            hardware_kat::HARDWARE_KAT_MATRIX_MICS.len(),
+            5 * CCMP_MIC_LEN
+        );
     }
 
     #[test]

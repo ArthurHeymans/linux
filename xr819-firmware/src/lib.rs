@@ -23,24 +23,14 @@ macro_rules! halt_always {
     };
 }
 
-/// Halts in halting builds; under `corruption-non-fatal` records and continues.
-///
-/// Use only where the firmware can genuinely carry on. Note the failure mode
-/// this exists to prevent: `publish_terminal_exception` returns immediately
-/// under `corruption-non-fatal`, so a site that publishes and *then* spins
-/// unconditionally goes silent — the host receives no exception while the
-/// firmware stops, `TXed` freezes and the driver waits on buffers that never
-/// come back. That is strictly worse than halting loudly.
+/// Records a recoverable corruption report and allows execution to continue.
 #[macro_export]
 macro_rules! halt_unless_reporting {
-    () => {
-        #[cfg(not(feature = "corruption-non-fatal"))]
-        $crate::halt_always!();
-    };
+    () => {};
 }
 
 pub mod host_tx_diagnostics;
-#[cfg(all(feature = "vendor-host-tx-foundation", target_arch = "arm"))]
+#[cfg(target_arch = "arm")]
 pub mod host_tx_driver;
 // Deliberately not ARM-gated: `host_tx_driver` is invisible to host test runs,
 // so its hardware-free decisions live here where they are always compiled.
@@ -58,4 +48,3 @@ pub mod tx;
 pub mod vendor_host_tx;
 pub mod vif;
 pub mod wsm;
-pub mod wsm_profile;
