@@ -348,9 +348,12 @@ extern "C" fn rust_main() -> ! {
     let mut pending_join_complete: Option<u32> = None;
     let mut pending_tx_confirmation: Option<(u32, u32, u8, u8)> = None;
     let mut pending_tx_debug_event: Option<(u32, u32)> = None;
-    // Vendor timestamp of the last 200ms TX pipe watchdog tick.
+    // Vendor timestamp of the last 200ms TX pipe watchdog tick. A software
+    // divider keeps the hardware timer out of the hot main-loop path.
     #[cfg(target_arch = "arm")]
     let mut last_watchdog_tick: u32 = 0;
+    #[cfg(target_arch = "arm")]
+    let mut watchdog_timer_countdown: u8 = 0;
     // Command responses and retained class-0 confirmations are copied into
     // their original 1632-byte request buffers before publication. This buffer
     // is scratch only and is never exposed through a HIF descriptor.
@@ -381,16 +384,20 @@ extern "C" fn rust_main() -> ! {
         // delivering statuses for a wedged pipe.
         #[cfg(target_arch = "arm")]
         {
-            let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
-            // The vendor-shaped five-tick expiry takes about one second. A
-            // stuck pipe remains armed during that window and blocks every new
-            // reservation for the pipe. Retirement cannot help because it only
-            // runs from a delivered status, and a wedged pipe stops delivering
-            // them.
-            if now.wrapping_sub(last_watchdog_tick) >= 200_000 {
-                last_watchdog_tick = now;
-                unsafe {
-                    tx::service_pipe_watchdog_tick_runtime();
+            let (next_countdown, sample_timer) =
+                tx::advance_watchdog_timer_divider(watchdog_timer_countdown);
+            watchdog_timer_countdown = next_countdown;
+            if sample_timer {
+                let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
+                // The vendor-shaped five-tick expiry takes about one second. A
+                // stuck pipe remains armed during that window and blocks every
+                // new reservation for the pipe. Retirement cannot help because
+                // it only runs from a delivered status.
+                if now.wrapping_sub(last_watchdog_tick) >= 200_000 {
+                    last_watchdog_tick = now;
+                    unsafe {
+                        tx::service_pipe_watchdog_tick_runtime();
+                    }
                 }
             }
         }

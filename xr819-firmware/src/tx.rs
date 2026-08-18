@@ -1657,6 +1657,18 @@ unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
     }
 }
 
+/// Number of cooperative main-loop passes between expensive hardware-timer
+/// samples. The timer still determines elapsed time; this only gates MMIO.
+pub const WATCHDOG_TIMER_SAMPLE_DIVIDER: u8 = 16;
+
+pub const fn advance_watchdog_timer_divider(countdown: u8) -> (u8, bool) {
+    if countdown == 0 {
+        (WATCHDOG_TIMER_SAMPLE_DIVIDER - 1, true)
+    } else {
+        (countdown - 1, false)
+    }
+}
+
 /// One pipe's watchdog decision, from vendor `FUN_00003bac` (the 200 ms timer
 /// that Ghidra never turned into a function, recovered by disassembly).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7655,6 +7667,19 @@ mod tests {
         assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0_u32.wrapping_sub(0x4450));
         // cursor = (last + 1) & 3 = 3, written to bits 26:24 and 29:27.
         assert_eq!(mmio.get(0x9020), 0x8000_000f | (3 << 24) | (3 << 27));
+    }
+
+    #[test]
+    fn watchdog_timer_divider_samples_once_per_sixteen_passes() {
+        let mut countdown = 0;
+        let mut samples = 0;
+        for _ in 0..64 {
+            let (next, due) = advance_watchdog_timer_divider(countdown);
+            countdown = next;
+            samples += usize::from(due);
+        }
+        assert_eq!(samples, 4);
+        assert_eq!(countdown, 0);
     }
 
     #[test]
