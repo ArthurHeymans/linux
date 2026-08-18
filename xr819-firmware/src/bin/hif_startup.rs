@@ -59,9 +59,13 @@ impl<T> SingleBootCell<T> {
     }
 }
 
+#[unsafe(link_section = ".dtcm.bss.hif_ring_state")]
 static HIF_RING_STATE: SingleBootCell<HifRingState> = SingleBootCell::new();
+#[unsafe(link_section = ".dtcm.bss.hif_queues")]
 static HIF_QUEUES: SingleBootCell<HifQueues> = SingleBootCell::new();
+#[unsafe(link_section = ".dtcm.bss.transport")]
 static TRANSPORT: SingleBootCell<Transport> = SingleBootCell::new();
+#[unsafe(link_section = ".dtcm.bss.response_scratch")]
 static RESPONSE_SCRATCH: SingleBootCell<[u8; SHARED_BUFFER_SIZE]> = SingleBootCell::new();
 static HOST_TX_DRIVER: SingleBootCell<HostTxDriver> = SingleBootCell::new();
 
@@ -192,18 +196,31 @@ const ENABLE_SINGLE_PROBE_EXPERIMENT: bool = true;
 unsafe extern "C" {
     static mut __bss_start: u32;
     static mut __bss_end: u32;
+    static mut __dtcm_bss_start: u32;
+    static mut __dtcm_bss_end: u32;
 }
 
 #[unsafe(no_mangle)]
 #[used]
 static STARTUP_DEBUG_STAGE: u32 = u32::MAX;
 
-unsafe fn clear_rust_bss() {
-    let mut address = (&raw mut __bss_start) as usize;
-    let end = (&raw mut __bss_end) as usize;
+unsafe fn clear_words(mut address: usize, end: usize) {
     while address < end {
         unsafe { (address as *mut u32).write_volatile(0) };
         address += size_of::<u32>();
+    }
+}
+
+unsafe fn clear_rust_bss() {
+    unsafe {
+        clear_words(
+            (&raw mut __bss_start) as usize,
+            (&raw mut __bss_end) as usize,
+        );
+        clear_words(
+            (&raw mut __dtcm_bss_start) as usize,
+            (&raw mut __dtcm_bss_end) as usize,
+        );
     }
 }
 

@@ -333,11 +333,18 @@ python3 tools/inspect-vendor-container.py fw_xr819.bin
 python3 tools/pack-sectioned-elf.py firmware.elf firmware.sections
 ```
 
-`download-boot-sectioned` is the non-default loader for the packed copy/fill
-stream. It has cold-booted both the repackaged stable ELF and a coherent
-JOIN-enabled Rust ELF; the latter published startup successfully and then
-stopped at the first start-scan request. DTCM placement still requires a
-complete ownership map for fixed vendor-compatible state.
+`download-boot-sectioned` loads the packed copy/fill stream. Build its raw ARM
+bootstrap with:
+
+```sh
+./tools/build-sectioned-bootloader.sh boot_xr819.bin
+```
+
+The bootstrap starts at `0x08000000`, relocates its body to `0x09010000`, and
+uses the reserved DTCM stack at `0x0400c000`. Linker-owned native DTCM sections
+are bounded below `0x0400b000`, so their copy/fill records cannot overlap active
+bootstrap frames. Moving this stack into staging SRAM was tested separately and
+rejected after repeated TX failures and a lost final ping.
 
 ### Split high-SRAM extensions
 
@@ -362,28 +369,30 @@ arbitrary low image.
 
 ### TCM layout checks
 
-The low Thumb image currently keeps `.text`, `.rodata`, `.data`, and `.bss` in
-the writable ITCM mapping. The `0x1c000` linker bound is a conservative observed
-envelope, not a proven physical capacity: matching vendor ITCM content ends at
-the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary. Vendor
-DTCM initialization then contributes `0x2fb0` bytes at `0x04000000`, while
-runtime state reaches much higher addresses and the reset bootstrap assigns
-mode stacks within `0x0400b000..0x0400c000`.
+The low Thumb image keeps `.text`, `.rodata`, ordinary `.data`, and ordinary
+`.bss` in the writable ITCM mapping. The `0x1c000` linker bound is a conservative
+observed envelope, not a proven physical capacity: matching vendor ITCM content
+ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 
-Moving normal Rust data into DTCM requires a split-image downloader and a
-complete collision map; a flat raw image cannot represent both address-zero
-ITCM and `0x04000000` DTCM without a large hole.
+`link-main-low.x` now divides observed DTCM ownership explicitly:
 
-`link-main-low.x` models the conservative ITCM envelope and the observed DTCM
-runtime/stack windows as separate `MEMORY` regions. Linker `ASSERT` expressions
-hard-fail image overflow or changes contradicting those observed boundaries;
-they deliberately do not claim undocumented physical TCM capacities.
+```text
+0x04000000..0x0400a000  untranslated vendor-compatible state
+0x0400a000..0x0400b000  linker-owned native Rust DTCM
+0x0400b000..0x0400c000  exception and system stacks
+```
 
-CPU-only HIF queue and ring ownership no longer uses the vendor
-`0x04009754..0x04009928` DTCM records. `HifQueues` and `HifRingState` values are
-initialized in Rust BSS and borrowed exclusively by `Transport`; only the two
-sequence counters needed by terminal exception publication use a private shared
-cell. Hardware descriptors and packet-RAM addresses remain fixed.
+The vendor image initializes through `0x04009c44`; rounding legacy ownership to
+`0x0400a000` preserves a 956-byte research margin. Linker assertions prevent
+native state from entering either the legacy window or stacks. The sectioned
+image packer emits the native `.dtcm.bss` as a DTCM fill record, and main entry
+also clears its linker-symbol range explicitly.
+
+CPU-only HIF queue/ring ownership, `Transport`, its response scratch, and the
+small shared HIF sequence state occupy 1,720 bytes of native DTCM. Hardware
+descriptors and packet-RAM addresses remain fixed. Further translations should
+move into this linker-owned region; as the contiguous legacy boundary is pushed
+down, `DTCM_NATIVE` can grow without changing Rust object identities.
 
 An explicit `tcm-size-diagnostic` feature adds ARM interworking helpers for the
 CP15 TCM type and region registers. The registers are read only when the host

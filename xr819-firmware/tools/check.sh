@@ -21,4 +21,8 @@ cargo +nightly test --features vendor-host-tx-diagnostics
 echo "== arm check: feature-free firmware =="
 cargo +nightly check --release --bin hif-startup --target "$TARGET" "${BUILD_STD[@]}"
 
+echo "== arm check: sectioned-image bootstrap =="
+cargo +nightly check --release --bin download-boot-sectioned \
+  --target armv5te-none-eabi "${BUILD_STD[@]}"
+
 echo "ALL CHECKS PASSED"

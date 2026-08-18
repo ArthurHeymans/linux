@@ -32,6 +32,9 @@ pub extern "C" fn _start() -> ! {
         "ldrlo r4, [r0], #4",
         "strlo r4, [r1], #4",
         "blo 2b",
+        // The loader stack remains in the reserved DTCM stack window. Native
+        // section records are linker-bounded below 0x0400b000 and therefore
+        // cannot overlap these active bootstrap frames.
         "ldr sp, =0x0400c000",
         "bx r3",
         main = sym rust_main,

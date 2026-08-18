@@ -15,8 +15,15 @@ MEMORY
 {
     /* Vendor ITCM content ends at 0x1b3dc; round up to the next 4 KiB page. */
     ITCM_OBSERVED (rwx) : ORIGIN = 0x00000000, LENGTH = 0x1c000
-    /* Vendor bootstrap/runtime ownership observed below the mode stacks. */
-    DTCM_RUNTIME (rw) : ORIGIN = 0x04000000, LENGTH = 0x0b000
+    /*
+     * Untranslated vendor-compatible state occupies the lower DTCM. The
+     * matching vendor image initializes through 0x04009c44; round its legacy
+     * ownership envelope up to the next 1 KiB boundary. Native Rust state is
+     * linker-owned in the following 4 KiB page, while the existing exception
+     * and system stacks retain the top 4 KiB.
+     */
+    DTCM_LEGACY (rw) : ORIGIN = 0x04000000, LENGTH = 0x0a000
+    DTCM_NATIVE (rw) : ORIGIN = 0x0400a000, LENGTH = 0x01000
     DTCM_STACKS  (rw) : ORIGIN = 0x0400b000, LENGTH = 0x01000
 }
 
@@ -56,9 +63,18 @@ SECTIONS
         KEEP(*(.noinit.exception))
     } > ITCM_OBSERVED
 
-    __itcm_image_end = .;
+    .dtcm.bss (NOLOAD) : ALIGN(8)
+    {
+        __dtcm_bss_start = .;
+        *(.dtcm.bss .dtcm.bss.*)
+        __dtcm_bss_end = .;
+    } > DTCM_NATIVE
+
+    __itcm_image_end = ADDR(.noinit.exception) + SIZEOF(.noinit.exception);
     __itcm_observed_limit = ORIGIN(ITCM_OBSERVED) + LENGTH(ITCM_OBSERVED);
-    __dtcm_base = ORIGIN(DTCM_RUNTIME);
+    __dtcm_legacy_base = ORIGIN(DTCM_LEGACY);
+    __dtcm_native_base = ORIGIN(DTCM_NATIVE);
+    __dtcm_native_limit = ORIGIN(DTCM_NATIVE) + LENGTH(DTCM_NATIVE);
     __dtcm_stack_floor = ORIGIN(DTCM_STACKS);
     __dtcm_stack_top = ORIGIN(DTCM_STACKS) + LENGTH(DTCM_STACKS);
 
@@ -66,8 +82,14 @@ SECTIONS
            "XR819 image exceeds the conservative vendor ITCM envelope")
     ASSERT(__bss_end <= __itcm_observed_limit,
            "XR819 ITCM-backed BSS exceeds the observed envelope")
-    ASSERT(ORIGIN(DTCM_STACKS) == ORIGIN(DTCM_RUNTIME) + LENGTH(DTCM_RUNTIME),
-           "XR819 observed DTCM runtime/stack windows overlap or have a gap")
+    ASSERT(ORIGIN(DTCM_NATIVE) == ORIGIN(DTCM_LEGACY) + LENGTH(DTCM_LEGACY),
+           "XR819 legacy and native DTCM windows are not contiguous")
+    ASSERT(ORIGIN(DTCM_STACKS) == ORIGIN(DTCM_NATIVE) + LENGTH(DTCM_NATIVE),
+           "XR819 native DTCM and stack windows are not contiguous")
+    ASSERT(__dtcm_bss_end <= __dtcm_native_limit,
+           "XR819 native DTCM BSS exceeds its linker-owned page")
+    ASSERT(__dtcm_native_base == 0x0400a000,
+           "XR819 native DTCM base changed")
     ASSERT(__dtcm_stack_floor == 0x0400b000,
            "XR819 observed stack floor changed")
     ASSERT(__dtcm_stack_top == 0x0400c000,
