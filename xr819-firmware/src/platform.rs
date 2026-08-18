@@ -673,6 +673,12 @@ pub fn prepare_packet_dma() {
     // Tail of FUN_0000f4f4. The earlier failure here was caused by keeping the
     // Rust stack in the 0xfffxxxxx window across the 0x0aa80004 transition;
     // with the vendor low SRAM stack, this packet-memory window is accessible.
+    // Vendor `mac_hw_init_pipes` calls `phy_set_band_reg(1)` before it
+    // publishes the automatic-response command list. Keep that ordering: the
+    // final register/RAM image is identical, but +0xe8c may latch response-list
+    // interpretation across the transition.
+    register32(0x09c0_0e8c).set(0xbf);
+    post_code(0x5044_4d03);
     let list_base = 0x0901_6a28;
     register32(list_base).set(0x4e14_0000);
     for index in 0..33 {
@@ -680,8 +686,6 @@ pub fn prepare_packet_dma() {
     }
     register32(list_base + 4 + 33 * 4).set(0xf000_0000);
     post_code(0x5044_4d23);
-    register32(0x09c0_0e8c).set(0xbf);
-    post_code(0x5044_4d03);
 
     // Hardware-visible head of FUN_00000044, called here by FUN_000000f6.
     register32(0x09c0_1300).set(0);

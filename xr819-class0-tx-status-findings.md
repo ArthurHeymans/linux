@@ -11,7 +11,33 @@ This supersedes the
 and the falsified producer-advancement experiment recorded in
 [`xr819-session-handoff-2026-08-10.md`](xr819-session-handoff-2026-08-10.md).
 
-## Result: the link works
+## Final correction: terminal collapse was an RX release-head logic bug
+
+The earlier description below that corruption was “rare and survivable” is true
+only for the initial low-rate run and is superseded for sustained hardware-CCMP
+traffic. Exact TX command words can corrupt an RX slot's ownership word. In
+`corruption-non-fatal`, Rust normalized that word to the vendor pending-release
+marker and immediately returned. If the corrupt slot was already
+`RELEASE_OFFSET`, no later callback could revisit it, so the release cursor and
+packet-DMA consumer remained pinned until terminal RX death.
+
+The fixed release path normalizes the word and then continues through ordinary
+head release and the consecutive pending-successor walk. Three no-FIQ
+qualifications with this correction were healthy at 3.85-4.93 Mbit/s TCP and
+7.92-7.93 Mbit/s UDP delivered, all ending 20/20 ping. Restoring only the old
+early return reproduced terminal failure in two of three runs. This isolates
+the terminal-collapse trigger from the still-open question of why packet
+controller command content reaches RX RAM in the first place.
+
+RX resynchronization now also defers its hardware-consumer jump while zero-copy
+HIF transfers remain outstanding. The old resync behavior stayed reachable 3/3
+in isolation, so it was not the terminal-collapse trigger, but it violated RX
+buffer ownership and remains corrected.
+
+FIQ is not required for this fix. The complete FIQ experiment is preserved on
+Jujutsu bookmark `feature/mac-fiq` at commit `0d4c3ee4`.
+
+## Historical result: the link first worked
 
 **The firmware carries real traffic.** Measured over the air, board to a wired
 server, with the halting diagnostics disabled (`corruption-non-fatal`):
@@ -59,8 +85,9 @@ dies — the observability collapse was downstream of the halts as well.
 2. `retired 401` of 5400 (7.4%) under TCP load, versus 21 of 2646 (0.8%) under
    ping flood. Something about sustained bidirectional load raises the failure
    rate.
-3. The corruption itself is still unexplained (see below) and should be fixed
-   rather than tolerated.
+3. The hardware/controller reason TX command content first reaches RX RAM is
+   still unexplained. The Rust release-head bug that converted that corruption
+   into a terminal FIFO stall is fixed and isolated above.
 
 ## Summary
 

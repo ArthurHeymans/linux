@@ -30,6 +30,27 @@ substantial PHY state. The modulation/baseband datapath is presumably hardware,
 but channel selection, calibration and coefficient programming are performed by
 ARM firmware through memory-mapped registers.
 
+## Runtime collapse resolution
+
+The later sustained-traffic collapse was not caused by AES and did not require
+restoring vendor FIQ in production. Exact TX packet-controller command words can
+appear in valid RX payloads, corrupting an RX slot ownership word. The open
+firmware's `corruption-non-fatal` path converted that word to the vendor pending
+release marker but returned immediately. When the corrupt slot was the release
+head, no later callback could revisit it; the hardware consumer remained pinned
+and RX stopped permanently.
+
+The fixed path continues through ordinary head reclamation after normalization.
+Three exact production runs delivered 4.87-5.09 Mbit/s TCP and 7.92-7.93 Mbit/s
+UDP with final ping 20/20. Restoring only the old early return reproduced
+terminal collapse in two of three isolation runs. RX resynchronization also now
+preserves outstanding zero-copy HIF ownership by deferring its hardware-consumer
+jump until older release tokens return.
+
+A complete source-`0x16` FIQ implementation was recovered and qualified but is
+not required for the production fix. It is preserved on Jujutsu bookmark
+`feature/mac-fiq` at commit `0d4c3ee4`.
+
 ## Analysed images
 
 The principal image currently loaded in Ghidra is the 2018 XR819 firmware:

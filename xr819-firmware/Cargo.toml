@@ -103,7 +103,9 @@ wide-service-budget = []
 # Recovery semantics must not force the hot-path flight recorder on. The
 # diagnostic feature still enables these explicitly in canonical debug images.
 corruption-non-fatal = ["vendor-host-tx-foundation"]
-pipe-watchdog = ["vendor-host-tx-foundation", "unmatched-tx-status-recovery"]
+# Vendor watchdog recovery is independent of the non-vendor unmatched-status
+# retirement. Keeping them coupled silently defeated strict slot ownership.
+pipe-watchdog = ["vendor-host-tx-foundation"]
 # Retire only slots whose frame actually started transmitting. A TX status is
 # matched against the pipe's current slot rather than the slot it was generated
 # for, so under load a status for a finished frame lands on the freshly

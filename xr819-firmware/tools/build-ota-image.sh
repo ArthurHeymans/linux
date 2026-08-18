@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Build and pack the canonical over-the-air test image.
 #
-# Feature sets are easy to get wrong by hand, and a wrong one fails silently:
-# `unmatched-tx-status-recovery` pulls in nothing on its own, so building with
-# it alone produces an image with no host TX driver and, because
-# `vendor-host-tx-foundation` also gates `join-sta-experiment`, no STA JOIN
-# path either. Such an image boots and flashes happily but never associates,
-# which is indistinguishable from a firmware regression at the harness level.
+# Feature sets are easy to get wrong by hand, and a wrong one fails silently.
+# The canonical profile uses strict vendor-shaped status ownership: unmatched
+# retirement is an explicit comparison feature and must not be pulled into
+# normal watchdog images. `vendor-host-tx-foundation` also gates the STA JOIN
+# path, so omitting it produces an image that boots but never associates.
 # The base also keeps the established non-fatal corruption mode and independent
 # host lane: omitting them made a healthy batch run halt on the known
 # `xr819-hif-tx-boundary` detector halfway through the diagnostic flood.
@@ -23,7 +22,7 @@ OUT=${1:?usage: build-ota-image.sh OUT [extra,features]}
 shift
 EXTRA=${1:-}
 
-BASE=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-diagnostics,unmatched-tx-status-recovery,pipe-watchdog,corruption-non-fatal,host-lane-independent
+BASE=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-diagnostics,pipe-watchdog,corruption-non-fatal,host-lane-independent
 FEATURES=$BASE${EXTRA:+,$EXTRA}
 
 cd "$(dirname "$0")/.."

@@ -21,15 +21,16 @@ cd "$(dirname "$0")/.."
 TARGET=thumbv5te-none-eabi
 BUILD_STD=(-Z build-std=core)
 
-# Feature sets that must always compile for ARM: the normal image, and the
-# canonical over-the-air test image from tools/build-ota-image.sh.
+# Feature sets that must always compile for ARM: the normal image, the strict
+# canonical OTA profile, and the qualified hardware-CCMP profile.
 NORMAL=probe-tx-experiment,wsm-cw1200-compat
-OTA=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-diagnostics,unmatched-tx-status-recovery
+OTA=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-diagnostics,pipe-watchdog,corruption-non-fatal,host-lane-independent
+HARDWARE=probe-tx-experiment,wsm-xr819-native,vendor-host-tx-foundation,pipe-watchdog,corruption-non-fatal,host-lane-independent,phy-start-before-scheduler,hardware-ccmp
 
 echo "== host tests =="
 cargo test --features vendor-host-tx-diagnostics
 
-for features in "$NORMAL" "$OTA"; do
+for features in "$NORMAL" "$OTA" "$HARDWARE"; do
   echo "== arm check: $features =="
   cargo check --release --bin hif-startup --target "$TARGET" "${BUILD_STD[@]}" \
     --no-default-features --features "$features"

@@ -13,10 +13,22 @@ behind that protocol boundary.
 The current `hif-startup` binary delivers a CW1200 startup indication, completes
 Linux probe, performs calibrated multi-channel active scans, transmits retained
 probe-request templates, returns real beacon/probe-response indications, joins
-a WPA2 network, and completes the four-way handshake. It remains an instrumented
-bring-up image rather than a complete vendor-order implementation: association
-is timing-sensitive and protected payload TX still stalls after hardware-ring
-activation, so DHCP and ordinary IP traffic do not work yet.
+a WPA2 network, completes the four-way handshake, and carries sustained TCP/UDP
+traffic with hardware CCMP.
+
+The intermittent terminal RX/MAC collapse was traced to Rust RX ownership logic,
+not AES or a required FIQ path. In `corruption-non-fatal`, a corrupt RX
+release-head ownership word was marked pending and then returned without
+advancing the head; no later owner could revisit it. Continuing through normal
+head reclamation fixes the terminal stall. RX resynchronization also defers its
+hardware-consumer update while zero-copy HIF slots remain host-owned.
+
+The clean production image qualified healthy in three fresh boots at
+4.87-5.09 Mbit/s TCP and 7.92-7.93 Mbit/s UDP delivered, with 20/20 final ping,
+zero TX failures, zero credit failures, and no exceptions. The exact image is
+`88298e828ef298af0644a4afe0dd0c206849061bc6b501f800bfdb5ca29f4a53`.
+The complete synchronous FIQ experiment is preserved separately on Jujutsu
+bookmark `feature/mac-fiq`; FIQ is not required for the production RX fix.
 The exact vendor call order, Radare2 excerpts, current implementation delta,
 and experiment ledger are in
 [`../xr819-hif-startup-flow.md`](../xr819-hif-startup-flow.md). Salvaged
@@ -276,17 +288,15 @@ Implemented:
   PAS fallback/rate tables, IFS timing, ACK/CTS control descriptors, mode/BSSID
   restoration, and register-context save ordering.
 
-Not yet implemented:
+Not yet implemented or production-complete:
 
-- active-VIF channel restoration, power-save resumption, and scheduler-bit-21
-  work beyond the returned single-probe domain;
-- hardware AES transfer submission and separate IRQ 18/20 completion consumers;
-- complete HIF queue/scheduler accounting;
-- reliable management TX across cold boots;
-- controlled degraded-RF fallback and sustained-throughput validation;
+- active-VIF channel restoration and complete power-save resumption;
+- complete HIF output-queue parity with vendor firmware;
+- controlled degraded-RF fallback and long-duration soak qualification;
 - aggregation;
-- CCMP replay protection and hardware-engine known-answer coverage;
-- production exception reporting and recovery behavior.
+- CCMP replay protection;
+- production recovery policy for architected CPU exceptions and unrecoverable
+  packet-controller faults.
 
 ## Intended bring-up order
 

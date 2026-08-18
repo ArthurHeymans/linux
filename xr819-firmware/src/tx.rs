@@ -1634,7 +1634,10 @@ pub(crate) fn ineligible_tx_status_snapshot() -> (u32, u32, u32) {
 /// # Safety
 /// The pipe must be armed, the slot started, and the caller must exclusively
 /// own the pipe records and completion state.
-#[cfg(all(target_arch = "arm", feature = "unmatched-tx-status-recovery"))]
+#[cfg(all(
+    target_arch = "arm",
+    any(feature = "unmatched-tx-status-recovery", feature = "pipe-watchdog")
+))]
 unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
     pipe_state: usize,
     slot: usize,
@@ -7538,6 +7541,11 @@ pub unsafe fn stop_phy_operation_7() {
 #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
 pub unsafe fn fatal_scan_stop_timeout() -> ! {
     terminal_probe_backend_fault(0)
+}
+
+#[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]
+pub unsafe fn set_scheduler_bits(mask: u32) {
+    unsafe { raise_scheduler_bits(mask) };
 }
 
 #[cfg(all(target_arch = "arm", feature = "probe-tx-experiment"))]

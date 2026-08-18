@@ -7,6 +7,43 @@ the detailed evidence, then
 
 Supersedes [`xr819-session-handoff-2026-08-10.md`](xr819-session-handoff-2026-08-10.md).
 
+## Current resolved state — read before the historical ledger
+
+The intermittent terminal RX/MAC collapse is resolved by a Rust RX ownership
+fix. Under `corruption-non-fatal`, a corrupt RX release-head ownership word was
+changed to pending and the function returned. Because that slot was already the
+head, no later owner could revisit it; `DMA_CONSUMER` remained pinned and RX
+stopped permanently. The release path now continues through normal head
+reclamation after normalization.
+
+A second correctness fix prevents RX resynchronization from advancing the
+hardware consumer across outstanding zero-copy HIF slots. It was not the
+terminal-collapse trigger in isolation, but it closes a real ownership
+violation. Strict TX status ownership, independent pipe-watchdog configuration,
+atomic scan scheduler-bit updates, and vendor ACK-list initialization order are
+also retained.
+
+Validated results:
+
+- combined FIQ/RX fixes: 3/3 healthy, TCP 4.34-4.80 Mbit/s, UDP delivered
+  7.91-7.93 Mbit/s;
+- the same RX fixes without FIQ: 3/3 healthy, TCP 3.85-4.93 Mbit/s, UDP
+  delivered 7.92-7.93 Mbit/s;
+- restoring only the old corrupt-head return: 1/3 healthy, with two terminal
+  0/20-ping collapses;
+- restoring only the old resync jump: 3/3 reachable.
+
+FIQ is not required for the production fix. Its complete implementation and
+failure history are preserved on Jujutsu bookmark `feature/mac-fiq` at commit
+`0d4c3ee4`; do not delete or conflate that branch with the clean production
+line based on validated commit `12025526`. Final production image
+`88298e828ef298af0644a4afe0dd0c206849061bc6b501f800bfdb5ca29f4a53`
+qualified healthy 3/3 at 4.87-5.09 Mbit/s TCP and 7.92-7.93 Mbit/s UDP, with
+20/20 final ping in every run.
+
+Everything below is an evidence ledger. Sections labelled rejected, superseded,
+or historical are not active implementation directions.
+
 ## Verdicts contaminated by the rx_rate defect — treat as UNTESTED
 
 Everything measured between the `rx_rate` raw-byte change and its clamp ran with
@@ -1176,3 +1213,655 @@ wifi netns against a server on the board's wired `end0`. It waits for the board
 to answer ssh before touching it, so a reboot race cannot masquerade as a
 firmware failure. Decode counters with
 `tools/decode-lifecycle-counters.py < run.log`.
+
+## Hardware CCMP and the intermittent fast-path collapse
+
+Hardware AES-CCM is functionally validated. The vendor mode-1 AES program was
+recovered from DTCM `0x04000830..0x040009de` and loaded through the vendor
+`0x80000006`, byte-stream, `0x9000` sequence. CPU IRQ/FIQ remain masked in this
+firmware, so completion is reproduced in the foreground: wait for controller
+pending IRQ 18/20, acknowledge controller `+0x04`, then invoke the matching
+callback. Polling AES bit 29 was wrong; callback-only waiting also timed out
+because the CPU interrupt dispatcher cannot run.
+
+The RustCrypto-generated boot KAT now covers exact TX ciphertext/MIC, repeated
+payload lengths 1/15/16/17/1506, exact RX plaintext, and corrupted-MIC rejection.
+IRQ 20 completes the tested TX and RX operations. The seven-operation KAT takes
+about 947 us.
+
+Correct hardware completion demonstrated the expected acceleration. One TX-only
+run reached TCP 3.01 Mbit/s and UDP sender 7.86 Mbit/s at 54 Mbit/s with zero TX
+failures before RX later stopped. Full TX+RX hardware runs have delivered:
+
+```text
+TCP          UDP delivered   final ping
+3.46 Mbit/s  5.50 Mbit/s     19/20
+2.90 Mbit/s  3.89 Mbit/s     20/20
+3.12 Mbit/s  4.49 Mbit/s     20/20
+```
+
+The transform itself is not the intermittent failure: live shadow comparison
+verified 6513 and 6660 hardware-encrypted frames against RustCrypto with zero
+mismatches. An 8 ms post-crypto delay is healthy, while 1/2/4 ms are not. This
+establishes a load/timing threshold but is not an acceptable fix; vendor queues
+hardware crypto asynchronously and does not deliberately pace it.
+
+### Collapse signature
+
+Five byte-identical full-hardware runs produced two valid and three dead runs.
+A later three-run set was entirely dead, while another vendor-order set produced
+one valid and two dead runs. Dead runs usually carry traffic initially, then RX
+and TX counters freeze, TX failures rise to about 2300-2600, the rate falls to
+6-24 Mbit/s, BH remains alive, queues drain, and final ping is 0/20. A corrected
+TX-only run also showed a second phenotype: TX stayed strong at 54 Mbit/s with
+zero failures while RX stopped. Do not assume every terminal signature has one
+cause.
+
+### Failed or neutral investigations
+
+- **AES bit-29 completion:** real bug; replaced with actual pending IRQ 20.
+  Peak throughput improved, but the later collapse remains.
+- **Packet-DMA IRQ 26 foreground servicing:** neutral.
+- **Hardware RX crypto:** valid decrypt and bad-MIC KATs pass; enabling it live
+  did not remove collapse.
+- **Vendor RX tail repair:** ported and neutral.
+- **Host-request suppression of RX:** removing the absolute gate was neutral.
+- **Vendor-style RX drain-until-empty:** bounded 32-slot draining regressed
+  initial ping loss to 10.9% and collapsed earlier; reverted.
+- **PN publication ordering:** thousands of strict PN decreases occur in both
+  valid and failed runs. The first diagnostic incorrectly counted equality;
+  after correction, decrease count still did not correlate with validity.
+- **RX FIFO corruption/resynchronisation at terminal failure:** three failed
+  runs recorded zero accepted/flushed/rejected resyncs and ended with DMA
+  producer exactly equal to claim. They did not terminate with unread or
+  desynchronised FIFO data.
+- **Vendor pending-list/PAS-ring scheduling order:** replacing context-array
+  rotation with vendor queue order produced one valid and two dead runs, matching
+  existing variability. Reverted; scheduling order is not established as the
+  cause.
+
+These negative results are important: do not repeat RX fairness, drain depth,
+PN-order-count, IRQ 26, tail-repair, or vendor-order experiments as if they were
+new leads.
+
+### Version-control boundary
+
+Validated ownership repair, AES microcode/KATs, pending-IRQ completion, hardware
+TX/RX, IRQ 26 foreground service, and RX tail repair are committed as Jujutsu
+change `yzpzlxuk`, commit `12025526`, titled
+`Add vendor-shaped TX ownership and hardware CCMP`. The failed scheduling and
+cold-read experiments were reverted from the following working-copy change.
+
+### Masked IRQ 6/21 audit
+
+Raw vendor disassembly corrects and narrows the remaining masked-interrupt lead:
+
+- Startup `0x00000c38` registers IRQ 6 callback `0x0000f25e`, not `0x0000f1fe`
+  as an old Rust comment claimed, and scheduler task `0x0000f204` on event bit
+  27. The callback only raises the event. The task disables/reprograms the timer
+  compare, walks the sorted timer list at `0x04002014`, unlinks expired entries,
+  and invokes their callbacks. Servicing the IRQ without translating that timer
+  queue would therefore be incomplete and unsafe.
+- Startup `0x00000b88` registers IRQ 21 callback `mic_complete` at `0x0000ef1c`
+  and deferred task `0x0000ee90` on event bit 29. This is the vendor MIC-engine
+  request/completion queue. The open firmware does not submit that queue, but
+  this does **not** prove the hardware source is inactive: the open startup also
+  does not explicitly reset the `0x09c40000` MIC register block, and it enables
+  IRQ 21 with no way to acknowledge a stale or spontaneous completion while CPU
+  IRQ/FIQ are masked. Treat IRQ 21 as an enabled-but-unowned source until the
+  pending-bit experiment resolves it.
+
+Do not blindly foreground-dispatch IRQ 6 or 21. A zero-extra-MMIO diagnostic
+used the interrupt-controller pending word already read every main-loop pass for
+IRQ 26 service and latched IRQ 6/21 presence and rising edges only when state
+changed. Three runs of image
+`8f095332051b388e94bdccd515a4375ecc8e775ca547e3ec85ca71bd33026847`
+produced one collapsed and two valid links. All three recorded exactly:
+
+```text
+observed pending mask  0x00000000
+IRQ 6 rising edges     0
+IRQ 21 rising edges    0
+```
+
+Thus neither enabled-but-unowned source asserted during these runs, including
+the collapse. IRQ 6/21 pending service is ruled out for the observed failure and
+the temporary diagnostic was reverted. IRQ 21 was worth checking despite being
+the MIC engine; its subsystem identity alone was not evidence that the hardware
+source stayed inactive.
+
+### Content-corruption blind spot and packet-DMA IRQ 27
+
+A read-only adversarial review exposed an overstatement in the zero-resync
+conclusion. Canonical `corruption-non-fatal` builds return immediately from
+`radio::validate_tx_boundary`, so they do **not** scan the RX producer delta for
+the historical TX-command signature. The cumulative resync fields prove only
+that framing, lengths, magic and ownership stayed coherent. They do not exclude
+TX command bytes inside an otherwise valid payload, data overwritten before the
+consumer sees it, or the packet-DMA producer engine stopping entirely.
+
+Vendor `fw_subsystem_init` registers IRQ 27 as `event_send_error_0x34`, alongside
+packet-DMA IRQ 26. A no-extra-MMIO experiment enabled IRQ 27, acknowledged it
+from the pending word already read for IRQ 26, cold-latched its count, and split
+RX decrypt/authentication errors from generic filtering. Image
+`31d933859df43933a59753571de1f3459c40ae30e2d9ddd6cceddf7beafc9279`
+produced one valid and two collapsed runs:
+
+```text
+run        valid   IRQ27   RX decrypt errors   final TX failures
+1          yes          0       1436                 15
+2          no           0       1049               2525
+3          no           0        845               2318
+```
+
+IRQ 27 did not assert, including in either collapse, so the vendor packet-DMA
+error line does not report this failure. Decrypt-error count also does not
+correlate: the valid run had the most errors in both absolute terms and relative
+to RXed. The temporary IRQ27/error diagnostic was reverted. This does not clear
+a silent producer-engine wedge; it only proves that vendor's explicit error
+source stays quiet.
+
+### Vendor single-initialisation experiment
+
+Static comparison found that normal open-firmware startup programmed RX/MAC
+register tables before `initialize_vendor_startup_state`, then rebuilt pipe
+hardware later, including live writes to ring GO and a `0x09c00e8c` cycle.
+Vendor performs those initialisations once. The existing `vendor-single-init`
+feature removes the earlier RX-table copy and the later hardware pipe rewrite
+while retaining software pipe-record reconstruction.
+
+Three runs of image
+`97f71ce32fcb641dc433738a20b4ace34c078efcd98a60cb7da5db4ca59b8e6f`
+produced one scan-only association failure, one healthy run (TCP 2.74 Mbit/s,
+UDP delivered 5.05 Mbit/s, zero TX failures), and one ordinary collapse (TCP
+965 Kbit/s, no UDP server report, 2470 TX failures, final ping 0/20). This
+matches baseline variability. Duplicate live pipe/RX initialisation is not
+established as the collapse cause; leave the feature off.
+
+### Fresh-boot downlink-only isolation
+
+Three runs removed the initial ping flood and all uplink iperf load. Each fresh
+boot received a 30-second TCP stream from the wired `end0` address to the Wi-Fi
+netns, followed by downlink UDP. All three collapsed during TCP downlink:
+
+```text
+run   first intervals                    cumulative TCP   TX failures   final ping
+1     2.83M, then zero                    226 Kbit/s           9          0/20
+2     3.77M, 54.8K, then zero             315 Kbit/s           9          0/20
+3     4.40M, 3.36M, 96.8K, then zero      644 Kbit/s          10          0/20
+```
+
+The UDP client continued to print the offered 8.39 Mbit/s but received no final
+server acknowledgement; those UDP figures are invalid. Image:
+`6f01365e7ff0221947ddeccfdd39116c6b5a4aa0a3701d584785b4371f5b3604`.
+
+This is a major discriminator: high-rate uplink publication is not required.
+Downlink still produces TCP ACK frames (713/986/2002 TXed at terminal state),
+but at far lower TX volume than the ordinary uplink harness. The terminal state
+has only 9-10 TX failures rather than ~2500, so this is the RX-dominant phenotype.
+Prioritise RX slot retention/HIF release, RX producer/MAC receive state, and
+shared RX/TX turnaround over host-TX scheduler ordering.
+
+### RX ownership/HIF pressure is not the collapse
+
+A zero-extra-MMIO image cold-latched current/high-water ownership at existing
+RX/HIF transitions. Standard uplink-harness collapses reached only RX host
+high-water 4 and HIF software-output high-water 4-7, then drained to zero.
+Downlink-only qualification was even clearer:
+
+```text
+run       result      RX host high-water   HIF output high-water
+1         collapsed          4                     4
+2         healthy           16                    16
+3         collapsed          4                     5
+limits                       24                    64
+```
+
+The healthy run carried TCP 3.79 Mbit/s and downlink UDP 7.80 Mbit/s with zero
+TX failures and final ping 20/20. The collapsed runs stopped during TCP and
+ended at 0/20. Higher ownership pressure correlates with successful traffic,
+not failure. Neither the 24-slot RX host limit nor 64-entry HIF output queue is
+the cause. The temporary pressure instrumentation should be removed after the
+RX-restart experiment that reuses its cold snapshot words.
+
+### Vendor RX restart recovery experiment
+
+Vendor `mac_rx_restart` (`0x000002f4`) saves and clears RX-related bits 2..5 in
+`0x09c00e8c`, disables packet DMA by clearing `0x09c00600` bit 0, waits for busy
+bit 23 to drain, re-enables RX, and restores the saved mask. The open experiment
+ports that sequence behind `rx-progress-restart`, waits for class-0 and
+management MAC ownership to become idle, and cold-latches attempts/successes.
+It uses the already-maintained RX indication counter and existing 200 ms pipe
+watchdog timer read.
+
+The first trigger armed after >=16 indications per tick and required five fully
+empty ticks. It never fired in any run (`attempts=0`), including one collapsed
+run, so its two healthy downlink results cannot be credited to recovery. More
+importantly, this is not vendor policy: vendor reaches `mac_rx_restart` only
+inside `tx_flush_all_queues` after repeated pipe-idle timeout, abort-all, and a
+forced cleanup timeout. The proposed low-progress trigger was rejected and its
+follow-up run was cancelled. Do not present invented periodic RX restart as a
+vendor-shaped fix.
+
+### New lead: missing RX FIFO low-space resume handshake
+
+Independent foreground and subagent reads of raw vendor code converged on the
+same omitted RX lifecycle. At the tail of `rxfifo_next_frame` (`0x00008bda`),
+vendor computes free FIFO space and, below `0x1000`, snapshots the live mode word
+from `0x09c00200` into RX FIFO state `0x04001698`. At the tail of
+`rxfifo_release_slot` (`0x00008cfc`), once free space rises above `0x0fff`, it
+writes that saved word back to `0x09c00200` and clears the latch. The write-back
+is the only visible resume/kick operation.
+
+Vendor is interrupt-driven: an HIF completion/release can preempt after
+`rxfifo_next_frame` returns and before `rx_handler_main_loop` clears the temporary
+latch. The open firmware keeps CPU IRQ/FIQ masked and serializes HIF reclaim and
+RX polling, eliminating that release window entirely. This is not ownership
+saturation: healthy downlink reached host/HIF high-water 16, while collapsed
+runs reached only 4-5. It is a missing low-space transition that can leave the
+producer silently stopped after the consumer later drains, exactly matching
+producer==claim, zero resync and IRQ27 silence.
+
+Feature `rx-low-space-resume` adapts the vendor handshake to cooperative service:
+when claim leaves less than 4 KiB free, snapshot `0x09c00200`; when release
+restores more than 4 KiB, write the same word back. Reads/writes occur only on
+that vendor threshold transition, not as recurring instrumentation. Cold fields
+count entries, resumes and a pending latch. Image
+`3226392a8e6584d391ee2b0f664df8fa25a29e20c18ca71d636d87ef4aabf06a`
+produced one healthy and two collapsed downlink runs. Both collapsed runs
+entered low-space once, while the healthy run did not, but all three reported
+zero resume writes. That exposed a porting error rather than falsifying the
+lead: the first implementation normalized ring free space. Vendor literally
+computes unsigned `(release - claim) + 0x7000`; after release wraps ahead of
+claim, a value above `0x7000` is intentional and makes the resume test succeed.
+The normalized helper remained below threshold and suppressed the write-back.
+Image `fb51f8fd740e57a920c5800710935623a59e44fb4334d92fb99d177d802bc42a`
+used the exact vendor wrapping expression. All three fresh-boot downlink runs
+collapsed: cumulative TCP was 1.37 Mbit/s, 1.78 Mbit/s and 546 Kbit/s; each ended
+with 0/20 ping and only 7, 7 and 8 TX failures. Crucially, all three recorded
+zero low-space entries and zero resume writes. The earlier one-entry correlation
+was entirely an artifact of normalizing the ring expression. Vendor's actual
+less-than-4-KiB condition did not occur in these collapses, so the low-space
+resume handshake is ruled out as their cause. The experimental feature and
+snapshot decoder fields were reverted.
+
+### New lead: missing packet-DMA self-write after every RX drain
+
+Vendor `rx_handler_main_loop` (`0x00008e3e`) clears FIFO state `+0x18` after
+`rxfifo_next_frame`; when no next frame exists it executes the literal MMIO
+self-write `*0x09c00600 = *0x09c00600` before returning. Rust
+`radio::poll_indication` returned immediately when claim equalled producer and
+omitted this action. In vendor's event-driven task the write occurs once after a
+drain cycle, not as a continuous empty-FIFO poll. It is therefore plausibly a
+packet-DMA producer re-arm or shared TX-fetch/RX-write turnaround action and is
+a better match for silent producer death than the disproved low-space path.
+
+Feature `rx-empty-rearm` tracks nonempty-to-empty drain transitions and performs
+that exact control read/self-write only once per transition. Cold fields count
+drain cycles, writes, and an active unfinished drain. It adds no MMIO to the
+nonempty hot path beyond vendor's required empty-tail action. Image
+`dda46bb26b2cc7e9e9c58d36c2351000c097e6b1a0109eb9625d27eaa287b0b4`
+produced one healthy and two collapsed downlink runs, matching baseline
+variability. The healthy run delivered 4.26 Mbit/s TCP and 7.92 Mbit/s UDP with
+20/20 final ping. The collapsed runs delivered cumulative 1.85 and 1.49 Mbit/s
+TCP and ended 0/20 with only 6 and 7 TX failures. Every observed drain transition
+executed its write: 36,890/36,890, 12,082/12,082 and 9,759/9,759 cycles/rearms,
+with no pending drain. The write therefore executed heavily before both healthy
+and collapsed outcomes and did not prevent terminal RX death. The feature and
+snapshot decoder fields were reverted.
+
+### PHY timer audit correction
+
+The PAC timer at `0x04001d18` is real. Startup registers timer callback
+`0x00002aa3`, which raises scheduler bit 18; task callback `0x00002ab0` either
+finishes a state-2 PHY transition or calls `pac_phy_start_op(4)`. Command 4
+checks/latches temperature/calibration state through `0x000167ec` and
+`0x0001a140`; deferred work is later serviced by scheduler command 6. Rust
+replaces this timer callback with `inactive_startup_task` and never claims
+scheduler bit 18, so the lifecycle is incomplete.
+
+However, `pac_phy_start_op(1)` starts the same 10,000,000-tick timer for each
+nonempty TX queue batch, and vendor `timer_start` (`0x0000f2aa`) cancels and
+restarts an already-active timer. TCP downlink ACK traffic therefore continually
+postpones expiry just as vendor does. This missing maintenance may remove a
+post-idle recovery path, but it is not currently the strongest initiator for a
+5-15-second collapse during active downlink. Do not describe it as periodic
+under sustained TX without accounting for the restart semantics.
+
+### Completed evidence: nonfatal valid-payload TX-command content watch
+
+Feature `rx-content-watch` restores visibility that `corruption-non-fatal`
+previously compiled out, without restoring a halting producer-delta scan. At the
+final class-0 publication boundary it snapshots five 96-bit anchors from the
+fully built TX command into a bounded 128-entry direct-mapped ordinary-SRAM
+table. The RX parser hashes each four-byte-aligned 96-bit window of a valid,
+contiguous frame payload and performs an exact three-word comparison on a table
+hit. It records only match count, first command pointer, and first command/RX
+offsets. Thus it detects recent historical TX-command content inside an
+otherwise valid RX slot, has a negligible 96-bit false-match probability, does
+not read producer/control MMIO, and never emits a host event or changes recovery.
+
+Host tests (137), ARM release check, Python compile and source diagnostics pass.
+Image `42a833e2c61365116bee92dff80d311b8f63ed25f00de647c361d87c54854729`
+produced two collapsed runs with zero matches and one healthy run with nine
+matches, all at command offset 0 and RX offset 0. The healthy-only offset-zero
+matches are low-information/common frame-leading content, not evidence of
+corruption. The detector was tightened to reject triples with fewer than two
+nonzero words or three identical words, and now snapshots every distinctive
+96-bit window spanning command offsets `0x0c..0x50`, the same region used by the
+historical halting detector. The direct table grew to 256 entries; RX lookup cost
+remains one hash and one exact comparison only on a table hit. Image
+`be5bce8b09bf862f9f98afa04bb79191c25e297dd5fd40e0c5f75a9e71450d01`
+produced three collapsed runs. Match counts were 9, 0 and 5, so content matches
+are not required for collapse but may identify one corruption phenotype. The
+host driver's MIB printout omits `rx_cmac_key_id_errors`, so the displayed zero
+command/RX offsets were missing telemetry rather than real offsets. The first
+match is now packed entirely into printed `rx_cmac_replays`: command slot,
+command offset and RX offset. Image
+`8328e3b48db227e3187b79bacb934bf947386023efb435ef38d28767a56f0d8b`
+produced three collapsed runs, all with nonfatal exact 96-bit matches to recent
+TX commands. Counts were 5, 3 and 10. Every first match began at command offset
+`0x0c`; the matching triples appeared at unrelated valid-RX payload offsets
+`0x1b4`, `0x5e0` and `0x078`, from command slots `0x09007080`, `0x09007128` and
+`0x0900717c`. Final pings were 0/20; cumulative TCP was 886, 499 and 1130 Kbit/s.
+This is not the earlier command-offset-zero/common-header artifact. It reproduces
+historical TX-command leakage without halting and proves that valid FIFO framing
+can conceal packet-controller content corruption. It does not yet prove all
+collapses require leakage: the preceding refined image had one collapsed run
+with zero retained matches, possibly due direct-table replacement or a separate
+collapse phenotype.
+
+The cold record now also includes the exact matched words, hash, RX indication
+index and TX command generation, packed into host-visible MIB words 13-20. Image
+`38a1733681aa984ac2cf9dc32b9a62c5839634e46a3d73d24107e34106ff4afa`
+was cancelled when investigation pivoted from further confirmation to a
+corrective sequencing experiment. A mistakenly overlapping launch briefly
+contended for the board; both affected runs were terminated and their logs must
+be discarded.
+
+### Rejected experiment: post-publication MAC FIQ service
+
+The leaked command starts at `command+0x0c`, which is the first packet-controller
+opcode emitted by `emit_prepared_probe_descriptor`: `0x51...`, followed by
+`0x50...` and `0x52...`. This is command-fetch content, not common 802.11 frame
+data. A concrete vendor/open ordering mismatch surrounds it. Vendor source
+`0x16` runs `mac_irq_handler` by immediate FIQ preemption. Open firmware masks
+CPU FIQ. `HostTxDriver::service` first drains old MAC events, then may publish a
+new class-0 pipe trigger; the main loop subsequently consumes RX packet RAM
+without servicing the phase/start event created by that new command fetch. The
+new event waits until the next cooperative pass. Vendor never exposes this
+TX-fetch-to-RX-consumer interval.
+
+Feature `mac-post-publish-service` adds a hardware-only MAC drain after class-0
+publication and immediately before RX FIFO polling. It cannot publish another
+TX command or advance software-only contexts; it only executes newly pending
+MAC events and routes completions. This is a corrective scheduling change, not
+telemetry. Host tests (137), ARM release check and LSP diagnostics pass. Image
+`bd3cb892beeca586cfada900b7114d3ab50e6845cd979b3eb0f66f392533dfa7`
+was promising but incomplete. One run terminally collapsed (884 Kbit/s TCP,
+0/20 final ping). Two runs remained reachable through the end: one delivered
+2.59 Mbit/s TCP and 6.82 Mbit/s UDP; the other was degraded at 1.47 Mbit/s TCP
+and 877 Kbit/s UDP but finished 20/20 ping. Baseline fresh-boot downlink had
+collapsed terminally 3/3, so servicing once before RX appears to reduce terminal
+failure but does not close the race. A single immediate readiness sample can
+occur before the phase/start event becomes visible.
+
+The corrective path now tracks whether this service pass actually armed a TX
+command. Only then it waits up to 64 short readiness polls for the source-0x16
+MAC event and drains it before RX packet-RAM access. There is no wait on ordinary
+passes and no diagnostic state. Image
+`98820e109faa9619b5215f60acfab1ab43ada5aa325c53f72f0b04c706871be1`
+terminally collapsed in two of three runs (1.84 Mbit/s and 18.3 Kbit/s
+cumulative TCP, both 0/20 final ping). The third delivered 3.98 Mbit/s TCP and
+4.95 Mbit/s UDP with 19/20 final ping. Bounded waiting for the MAC phase/start
+event is not sufficient; delayed FIQ servicing influences timing but is not the
+hardware exclusion mechanism.
+
+### Rejected experiment: TX-fetch/RX-DMA exclusion
+
+Feature `tx-fetch-rx-dma-guard` directly serializes the confirmed shared
+packet-RAM collision. Immediately before an armed class-0 publication it saves
+`0x09c00600`, clears bit 0 to stop RX packet-DMA writes, and waits up to 1024
+short polls for busy bit 23 to drain. It then publishes the TX command. After the
+new source-0x16 event is serviced (or the bounded event wait expires), it restores
+the exact saved control word. The guard executes only on passes that actually
+arm a TX command. This uses the same stop/drain primitive present in vendor
+`phy_rx_disable_and_drain`/`mac_rx_restart`, but applies it narrowly to compensate
+for the open firmware's missing hardware/FIQ exclusion around command fetch.
+Host tests (137), ARM release check and LSP diagnostics pass. Image
+`ce175037087b373b2581fbfd3084d11bdeef872bf8540079fc7754c85a054c94`
+kept two of three runs healthy (TCP 2.99/2.50 Mbit/s, UDP 7.92/6.37 Mbit/s,
+20/20 final ping) but one terminally collapsed at 711 Kbit/s and 0/20. The
+guard therefore changes the failure probability substantially but restoring RX
+DMA at the MAC phase/start event is too early: that event proves execution has
+started, not that command fetch ownership has retired.
+
+Feature `tx-fetch-rx-dma-until-completion` retains the same RX-DMA stop/drain
+through the strict matching `(context, frame_node, pipe, slot)` TX completion,
+then restores the exact saved control word before confirmation processing. This
+is the first software-visible point that proves the command slot has retired.
+Image `12c26ad5302c77d1c5d8000a99eca69cfb9f183171af87b119a780a1f11ee752`
+failed decisively: all runs fell to about 9.6-9.9 Kbit/s, TXed stayed at 4-5,
+and final ping was 0/20. TX completion depends on the receive path, so holding
+RX packet DMA disabled through completion deadlocks ordinary TX. All DMA-guard
+and cooperative post-publication experiments were reverted.
+
+### Preserved experimental branch: real source-0x16 MAC FIQ
+
+Rust has no ARM FIQ ABI. `cortex-a-rt` explicitly leaves FIQ as a raw assembly
+hook because FIQ banks `r8-r14`; its normal IRQ trampoline also uses ARMv7
+`SRS/RFE`, unavailable on ARM9/ARMv5. `aarch32-cpu` supplies ARMv4-compatible
+FIQ mask/unmask helpers but no context wrapper. Therefore feature `mac-fiq`
+installs a minimal ARM veneer into the existing FIQ vector literal: preserve
+shared `r0-r7` plus `r12/lr` on the preinitialized 8-byte-aligned FIQ stack,
+call a Thumb `extern "C"` Rust handler, restore, and return with
+`subs pc, lr, #4` using hardware `SPSR_fiq` restoration.
+
+The Rust FIQ body exclusively drains the destructive MAC event FIFO with the
+existing complete bounded vendor dispatcher. It does not drain scheduler tasks
+or route host completions; foreground performs those while briefly masking FIQ.
+Foreground no longer reads/destructively consumes the MAC FIFO under this
+feature. Startup patches only vector literal `__xr819_vectors+0x3c`, enables
+source `0x16`, and clears only CPSR F while leaving IRQ masked. Final disassembly
+confirms ARM veneer `0x1c4`, odd Thumb handler target, and the shared static MAC
+backend (not a promoted stack copy). Host tests (137), ARM release build and LSP
+diagnostics pass. Image
+`51f417f62e1f3505f24d7aba934ae086c60b4b5c1d0d0a2a3db1c89d577aa5f5`
+failed to leave scanning in all three runs, without an exception record. The
+veneer returned correctly, but scan/management foreground paths still called
+`service_single_probe_runtime_inactive`, creating a second destructive consumer
+of `0x09c00a20/24` alongside FIQ. The shared credit path then failed.
+
+Under `mac-fiq`, `service_single_probe_runtime_inactive` now masks FIQ briefly
+and drains only scheduler/completion state; it never reads the MAC FIFO. This
+covers class-0, scan probe and management callers, making source `0x16` the sole
+destructive FIFO owner. The exported FIQ handler uses `black_box` around the
+shared static backend pointer; release disassembly confirms it passes static
+address `0x00010a58` rather than an optimizer-promoted stack temporary. Image
+`648e386a3822079a491671ac66313aeb9a7ed9cbe91255429fa91a9f44885cb8`
+still failed scan credits. Several narrower FIQ ownership variants were then
+qualified:
+
+- routing without ordinary source enable: no FIQ arrived after join, so TX
+  completion stopped;
+- enabling source 22 only after key install: FIQ arrived, but direct Rust backend
+  execution still broke credits;
+- minimal FIQ raw-word queue with foreground event execution: scan/auth was kept
+  cooperative until key install, and the hardware drain tail was moved after
+  foreground effects, but joined class-0 TX still stopped at 4-5 frames and
+  credits failed.
+
+The ARM veneer and banked-register handling were valid and no exception record
+was produced. The unresolved part is interrupt-controller/FIFO acknowledgement
+and exact source-0x16 ownership semantics, not Rust's basic exception return.
+A real FIQ cannot be introduced safely by approximating those semantics. A
+later minimal variant enabled FIQ only after key installation, drained raw words
+into a 64-entry SRAM ring, executed them in foreground, and moved the drain tail
+after event effects. With controller source 22 disabled no FIQ arrived; with it
+enabled the first joined class-0 TX stopped at 4-5 frames and host credits
+failed. This held even after cooperative scan/auth ownership was preserved until
+the post-key transition. All `mac-fiq` code and features were reverted. Do not
+resume this path without raw vendor FIQ entry/exit and controller
+acknowledgement disassembly beyond `mac_irq_handler` itself.
+
+### Completed correction: genuinely strict TX-status ownership
+
+A feature dependency error invalidated the earlier assumption that watchdog
+images had tested strict ownership. `pipe-watchdog` implicitly enabled
+`unmatched-tx-status-recovery`, so omitting the latter from the command line did
+nothing and reproduced byte-identical image
+`6f01365e7ff0221947ddeccfdd39116c6b5a4aa0a3701d584785b4371f5b3604`.
+The watchdog also called a helper compiled only by the unmatched feature, which
+made the hidden coupling structural rather than declarative.
+
+`pipe-watchdog` is now independent, while its forced-retirement helper is built
+for either recovery mechanism. Image
+`eb968c54376a2c90025f687a26f3ba25a90afc6fd10ca8d85bf9ef07f84da384`
+is the first real image that discards unmatched statuses like vendor and retains
+only vendor's bounded pipe-watchdog retirement. It passes 137 host tests, ARM
+release check, and clean LSP diagnostics. Its three serialized fresh-boot
+results were: one terminal collapse (190 Kbit/s cumulative TCP, 10 TX failures,
+0/20 final ping) and two healthy runs (3.51/3.52 Mbit/s TCP, 6.98/7.92 Mbit/s
+UDP delivered, zero TX failures, 20/20 final ping). There were no credit-failed
+reports. A same-session three-run control with unmatched retirement explicitly
+enabled, image
+`944a20fb8529cb1fb7ff525990c5fccf31cf5ab74e68f0e056ebfe586c42e0a7`,
+terminally collapsed 3/3: 878 Kbit/s, 292 Kbit/s, and 1.39 Mbit/s cumulative
+TCP; 8-9 TX failures; final ping 0/20 in every run. No credit-failed report was
+present. The matched 2/3 healthy versus 0/3 healthy result establishes that the
+non-vendor retirement materially raises collapse probability by retiring the
+wrong active slot. Keep the feature decoupling, but do not claim it is the sole
+cause: one strict run still collapsed.
+
+Feature `ack-template-watch` performs a cold read only when the counters MIB is
+explicitly requested. It verifies all 35 immutable vendor automatic-ACK command
+words, records the first mismatch, and captures `0x09c00e8c/e90`. It adds no
+recurring hot-path reads. Strict image
+`1623c0f2fe009d72411e41d135749c399fc7e5dd214754c8498fa63b73dff879`
+produced two terminal collapses (904/218 Kbit/s cumulative TCP, final ping 0/20)
+and one healthy run (4.89 Mbit/s TCP, 5.39 Mbit/s UDP delivered, final ping
+20/20). All three, including both collapsed runs, reported zero ACK-list
+mismatches, `0x09c00e8c = 0xbf`, and `0x09c00e90 = 0x000f0002` on their final
+available cold read. Static ACK-template/register corruption is therefore ruled
+out; the missing ACKs are a live response-engine/packet-controller symptom.
+
+A focused raw-disassembly audit recovered vendor source-0x16 entry at
+`0x1c..0x28` and handler `0x9eb4..0xa05c`. Vendor performs no software
+controller pending read, mask, acknowledge, EOI, or rearm in FIQ: it
+unconditionally pops `0x09c00a20`, executes all effects synchronously, drains
+until signed-empty using `0x09c00a24`, runs the empty tail, and returns through
+`ldmia ... pc^`. The matching container's initialized DTCM proves
+`*(u32 *)0x04001430 == 0`; ordinary controller bit 22 is not vendor behavior.
+Vendor enables FIQ from startup through route `0x1600a037`. The failed late-FIQ
+experiments therefore combined a non-vendor ordinary source enable with a
+deferred handler contract vendor never uses.
+
+The audit also found one concrete cold-order mismatch: vendor writes
+`0x09c00e8c = 0xbf` before constructing `0x09016a28..0x09016ab0`, while open
+firmware did the reverse. This is corrected in image
+`3bb8a0294f4499f6610ee1bda5b4f2ab9fa0a5daeb940adbe1d418fd160e8c9f`,
+which was serialized with strict status ownership. The first attempt
+never associated and is discarded. The next two runs were healthy and are the
+fastest stable open-firmware downlink samples so far: 5.01/4.72 Mbit/s TCP,
+7.92/7.91 Mbit/s UDP delivered, final ping 20/20. The replacement third valid
+run terminally collapsed after 15-20 seconds (1.22 Mbit/s cumulative TCP, eight
+TX failures, final ping 0/20). The order is vendor-exact and worth keeping, but
+its 2/3 healthy rate does not improve on strict ownership alone and it is not the
+root cause.
+
+The next exact-FIQ implementation found a concrete flaw in every earlier veneer
+experiment: release `rust_main` reserves a `0x15bc`-byte frame from system SP
+`0x0400c000` down to about `0x0400aa44`, so vendor FIQ SP `0x0400b500` lies
+inside active Rust foreground locals. Each FIQ invocation overwrote the main
+loop frame, directly explaining scan-credit corruption despite a correct
+exception return. Feature `mac-fiq` now uses FIQ SP `0x0400a800`, in the unused
+DTCM gap above vendor initialized state ending at `0x04009c44` and below the
+Rust foreground frame. FIQ is enabled from startup through route `0x1600a037`
+without ordinary bit 22, drains source 0x16 synchronously and unbounded to empty,
+and foreground masks FIQ around every mutable/shared backend access. Image
+`5f7b608928fd0de8504912f9fb1d8b8d8a499c7a1e5a4de9b859839d0e0aeeba`
+passed 137 host tests, ARM release check, clean LSP, and release-disassembly
+checks, but failed before startup because `mac-fiq` disabled cooperative FIFO
+service before CPU FIQ was active, accumulating a boot-event backlog. A runtime
+ownership transition now keeps foreground cooperative service through the first
+valid configuration response, then marks FIQ active and unmasks it atomically.
+
+The first transition image faulted at `0x18e`: Rust emitted a Thumb `bl` directly
+into the ARM FIQ-unmask helper because the assembly symbol lacked `%function`
+metadata. Marking it as an ARM function produces verified `blx`. The next image
+ran but eventually returned to DTCM data address `0x04001720`. Preserving `r12`
+and 8-byte AAPCS stack alignment did not change that signature. Release
+disassembly then exposed the cause: LTO promoted the small shared MAC backend
+into an FIQ-stack temporary and passed SP as the backend pointer, so event
+effects overwrote the exception return frame. `service_mac_fiq` is now
+`inline(never)` and passes a `black_box`-opaque pointer to static address
+`0x00010888`; release disassembly verifies the real static pointer is supplied.
+This removed exceptions and credit failures, but the first safe run still
+stopped at 5 TX / 114 RX frames with final ping 0/20.
+
+Image `cd1e8656d183cb548034f2992506b782d226ebc76b100aeb0d9837aac360b5eb`
+adds only ordinary-SRAM transition counters: FIQ entries/events/empty entries,
+maximum event batch, completion queued, foreground runtime calls, scheduler
+drains, and completions taken. They are exposed only on explicit cold counters
+MIB reads. The final three-run FIQ qualification was mechanically stable but
+not curative: run 1 collapsed early, run 2 sustained 5.04 Mbit/s TCP and then
+collapsed after UDP with final ping 0/20, and run 3 remained healthy at 4.59
+Mbit/s TCP / 7.92 Mbit/s UDP with final ping 19/20. FIQ therefore finished 1/3
+fully healthy versus strict cooperative service at 2/3. The complete experiment
+is preserved on Jujutsu bookmark `feature/mac-fiq`, now at change `rnrlxtqz`,
+commit `0d4c3ee4` (`Fix RX release ownership after corruption`). The original FIQ
+checkpoint remains its parent at `88caff1b`.
+
+An adversarial Rust review then found a critical remaining race: foreground
+`reserve_non_aggregate_scheduler` removes PAS ownership, rewrites the slot
+record, and clears/rebuilds the 16-word packet-controller command stream before
+`publish_host_class0_slot` acquires its FIQ guard. FIQ can process the same pipe
+while that stream is partial. The guard now covers reservation through
+publication or complete rollback; failed publication no longer leaves a
+partially built reservation exposed across main-loop passes. The review also
+found two terminal RX ownership bugs: `corruption-non-fatal` normalized a corrupt
+release-head word and returned before advancing it, and resynchronization moved
+`DMA_CONSUMER` across outstanding zero-copy HIF slots. Corrupt heads now continue
+through normal release, while a resync defers the hardware release cursor until
+all older host transfers return. Scan scheduler-bit RMW now uses the common
+IRQ/FIQ-masked set/clear primitive. Image
+`7b094ae01bf19cca38ee597aeda6dafaf708d2ca029510d06236f097ca471fe7`
+passes host tests, ARM release check and clean LSP. Its serialized three-run
+qualification was the first completely healthy set: 4.34/4.80/4.46 Mbit/s TCP,
+7.91/7.92/7.93 Mbit/s UDP delivered, zero TX/credit failures or exceptions, and
+final ping 20/20, 20/20, 19/20. This is 3/3 healthy versus the mechanically
+stable FIQ image at 1/3. Image
+`79061908e8893aaa2a4c62ee74c4e10b4669fd813ebcde113b3ff3971ecc5201`
+contains the same strict/RX logic corrections without `mac-fiq` and was also
+healthy 3/3: 3.85/4.93/4.77 Mbit/s TCP, 7.93/7.92/7.92 Mbit/s UDP delivered,
+final ping 20/20 in every run, with zero credit failures or exceptions. FIQ is
+therefore not required to close the original collapse. The root correction is
+in RX ownership handling. Two three-run destructive rollback variants were run:
+image
+`80a28edb1aba7b1a93c32652ff0a50471d4bdc4a1c5cadf87dec238be0d856f9`
+restores only the old corrupt-release-head early return while keeping safe
+resync; image
+`d349a7fb1ac3601338d9780ec6c4e6c9aa8ef336d85af33a87814f022496665a`
+restores only the old resync release jump while keeping corrupt-head recovery.
+The isolation was decisive. Restoring the old corrupt-head early return produced
+only 1/3 healthy runs; the other two terminally collapsed at 1.99 Mbit/s and
+930 Kbit/s cumulative TCP with final ping 0/20. Restoring only the old resync
+release jump remained reachable 3/3 at 5.32/4.96/5.30 Mbit/s TCP and final ping
+20/20, although one UDP run degraded to 3.39 Mbit/s. Therefore the original
+terminal-collapse trigger was the `corruption-non-fatal` release-head return:
+TX command content changed the head ownership word, Rust marked it pending and
+returned, and no later owner could revisit or advance the FIFO head. Continuing
+through normal head reclamation closes the terminal failure. Deferred resync
+release remains as an independent zero-copy ownership correctness fix. Temporary
+legacy rollback features were removed after isolation. The FIQ implementation
+and FIQ-specific full-transaction guard remain preserved separately on bookmark
+`feature/mac-fiq`. A clean production line based directly on validated commit
+`12025526` contains strict watchdog/status feature separation, the vendor ACK
+initialization order, corrupt-head reclamation, deferred resync release, atomic
+scan scheduler-bit updates, and corrected canonical build profiles without FIQ.
+Exact production image
+`88298e828ef298af0644a4afe0dd0c206849061bc6b501f800bfdb5ca29f4a53`
+passes 138 host tests, all `tools/check.sh` ARM profiles, and clean LSP. Its
+final serialized qualification was healthy 3/3: 5.09/4.87/5.08 Mbit/s TCP,
+7.92/7.93/7.93 Mbit/s UDP delivered, final ping 20/20 in every run, and zero TX
+failures, credit failures, or exceptions. This is the production endpoint.

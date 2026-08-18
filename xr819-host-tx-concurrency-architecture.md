@@ -8,11 +8,20 @@ This document is the implementation plan following the vendor-firmware audit of
 It supersedes attempts to add a FIFO above the single-outstanding executor or to
 reduce the advertised HIF input-buffer count.
 
-The current validated baseline remains commit `9f0b0896` with native XR819 WSM
-and one outstanding ordinary class-0 frame. The request arena and single-owner
-executor are implemented, but burst validation exposed an incomplete HIF output
-model. The next implementation must preserve the executor while reproducing the
-vendor's atomic request-credit and 64-entry output-staging lifecycle.
+The validated implementation baseline advanced to commit `12025526`, with a
+clean RX-ownership correction on top. The 30-context request arena, independent
+host command lane, strict `(context, frame_node, pipe, slot)` completion identity,
+and single-owner class-0 executor are implemented and carry sustained TCP/UDP
+traffic.
+
+The terminal load collapse was downstream of TX ownership: when packet-controller
+command content corrupted the current RX release-head ownership word,
+`corruption-non-fatal` marked it pending and returned, permanently pinning the
+FIFO head. Continuing through normal head reclamation resolves the collapse.
+RX resynchronization also no longer releases hardware across outstanding
+zero-copy HIF slots. The remaining architectural work is vendor-parity output
+queueing, aggregation, power-save behavior, and reducing the throughput gap—not
+replacing the validated executor or adding a FIFO above it.
 
 ## Vendor facts that constrain the design
 

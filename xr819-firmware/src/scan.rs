@@ -221,13 +221,11 @@ static SCAN: SharedScan = SharedScan(UnsafeCell::new(ScanStorage::new()));
 fn set_vendor_scan_active(active: bool) {
     unsafe {
         (0x0400_860c as *mut u8).write_volatile(u8::from(active));
-        let events = 0x0400_1fd4 as *mut u32;
-        let value = events.read_volatile();
-        events.write_volatile(if active {
-            value | (1 << 10)
+        if active {
+            crate::tx::set_scheduler_bits(1 << 10);
         } else {
-            value & !(1 << 10)
-        });
+            crate::tx::clear_scheduler_bits(1 << 10);
+        }
     }
 }
 

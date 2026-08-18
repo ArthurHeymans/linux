@@ -8,6 +8,13 @@ and failed experiments that must not be repeated without new evidence.
 The broader PHY/calibration investigation remains in
 [`xr819-firmware-reverse-engineering.md`](xr819-firmware-reverse-engineering.md).
 
+Runtime status: vendor source-`0x16` FIQ entry and synchronous FIFO-drain
+semantics were recovered, implemented, and preserved on Jujutsu bookmark
+`feature/mac-fiq`. FIQ is not required for the production collapse fix. The
+terminal failure was a Rust RX release-head early return under
+`corruption-non-fatal`; see `xr819-session-handoff-2026-08-15.md` for the final
+isolation runs and exact production image.
+
 ## Source images and analysis setup
 
 Primary 2018 images:

@@ -34,6 +34,10 @@ const MAX_FRAME_LEN: usize = MAX_WSM_RX_MESSAGE_LEN - WSM_RX_HEADROOM;
 static mut RELEASE_OFFSET: u32 = 0;
 static mut CLAIM_OFFSET: u32 = 0;
 static mut HOST_TRANSFER_COUNT: u32 = 0;
+// A resync may move the parser past corrupt bytes while older zero-copy slots
+// remain host-owned. Defer the hardware consumer jump until the last such token
+// returns; otherwise packet DMA can overwrite a buffer still exposed to HIF.
+static mut RESYNC_RELEASE_DEFERRED: bool = false;
 const MAX_HOST_TRANSFERS: u32 = 24;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -167,6 +171,7 @@ pub unsafe fn initialize() {
     unsafe {
         ((VENDOR_FIFO_STATE + 0x18) as *mut u32).write_volatile(0);
         synchronize_after_wake(0);
+        RESYNC_RELEASE_DEFERRED = false;
         *DIAGNOSTICS.0.get() = ReceiveDiagnostics::default();
     }
 }
@@ -182,6 +187,7 @@ pub unsafe fn synchronize_after_wake(producer: u32) {
         RELEASE_OFFSET = producer;
         CLAIM_OFFSET = producer;
         HOST_TRANSFER_COUNT = 0;
+        RESYNC_RELEASE_DEFERRED = false;
         ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(producer);
         ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(producer);
         DMA_CONSUMER.write_volatile(producer);
@@ -304,6 +310,26 @@ unsafe fn set_claim_offset(next: u32) {
 /// `RX_RESYNC` now packs three fields, since resync counts are small:
 /// bits 0..9 accepted, bits 10..19 flushed, bits 20..31 candidates rejected by
 /// the lookahead.
+const fn resync_release_can_advance(
+    host_transfer_count: u32,
+    release_offset: u32,
+    previous_claim: u32,
+) -> bool {
+    host_transfer_count == 0 && release_offset == previous_claim
+}
+
+unsafe fn apply_resynchronized_offset(previous_claim: u32, target: u32) {
+    unsafe {
+        set_claim_offset(target);
+        if resync_release_can_advance(HOST_TRANSFER_COUNT, RELEASE_OFFSET, previous_claim) {
+            set_release_offset(target);
+            RESYNC_RELEASE_DEFERRED = false;
+        } else {
+            RESYNC_RELEASE_DEFERRED = true;
+        }
+    }
+}
+
 unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32) {
     unsafe {
         let mut remaining = available_bytes(consumer, producer);
@@ -314,8 +340,7 @@ unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32
             loop {
                 if remaining < 4 || candidate == producer {
                     resync_report(raw_producer, consumer, producer, RESYNC_FLUSHED);
-                    set_claim_offset(producer);
-                    set_release_offset(producer);
+                    apply_resynchronized_offset(consumer, producer);
                     return;
                 }
                 remaining -= 4;
@@ -332,8 +357,7 @@ unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32
                 && fifo_word(next) == FIFO_MAGIC
             {
                 resync_report(raw_producer, consumer, producer, RESYNC_ACCEPTED);
-                set_claim_offset(candidate);
-                set_release_offset(candidate);
+                apply_resynchronized_offset(consumer, candidate);
                 return;
             }
             // Candidate carried the magic but failed vendor's validation: a
@@ -966,7 +990,6 @@ unsafe fn release(token: ReleaseToken) {
             {
                 crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RX_RESYNC);
                 state.write_volatile(pending_release_state(value));
-                return;
             }
             #[cfg(not(feature = "corruption-non-fatal"))]
             {
@@ -1031,6 +1054,10 @@ unsafe fn release(token: ReleaseToken) {
             }
             let next = ((next_slot + 4) as *const u32).read_volatile();
             release_head_slot(next_slot, normalize_offset(next), next_state & 0xff);
+        }
+        if RESYNC_RELEASE_DEFERRED && HOST_TRANSFER_COUNT == 0 {
+            set_release_offset(CLAIM_OFFSET);
+            RESYNC_RELEASE_DEFERRED = false;
         }
     }
 }
@@ -1375,5 +1402,12 @@ mod tests {
         assert_eq!(claimed_slot_state(0x1234_56a5), 0x0000_00a5);
         assert_eq!(pending_release_state(0x1234_56a5), 0xffff_ffa5);
         assert_eq!(FIFO_RELEASED | claimed_slot_state(0x1234_56a5), 0xcccc_cca5);
+    }
+
+    #[test]
+    fn resync_never_releases_across_host_owned_slots() {
+        assert!(!resync_release_can_advance(1, 0x100, 0x100));
+        assert!(!resync_release_can_advance(0, 0x080, 0x100));
+        assert!(resync_release_can_advance(0, 0x100, 0x100));
     }
 }
