@@ -17,9 +17,9 @@ const WSM_TX_CONTEXT_FREE_HEAD: usize = 0x0400_87b0;
 const TX_BUFFER_BASE: usize = 0x0901_4fa8;
 const TX_BUFFER_SIZE: usize = 0x400;
 const FRAME_NODE_OFFSET: u32 = 0x54;
-// Allocation counters and probe sequence remain in the untranslated vendor
-// accounting record. Only its independently decoded completed-frame FIFO has
-// moved into linker-owned native DTCM.
+// Allocation counters remain in the untranslated vendor accounting record.
+// Its independently decoded probe sequence and completed-frame FIFO are
+// linker-owned native DTCM state.
 const COMPLETION_ACCOUNTING_STATE: usize = 0x0400_8f6c;
 const COMPLETION_RING_CAPACITY: usize = 64;
 
@@ -42,6 +42,22 @@ static COMPLETION_RING: SharedCompletionRing = SharedCompletionRing(UnsafeCell::
         frame_nodes: [0; COMPLETION_RING_CAPACITY],
     },
 ));
+
+struct SharedProbeContextSequence(UnsafeCell<u16>);
+
+unsafe impl Sync for SharedProbeContextSequence {}
+
+#[unsafe(link_section = ".dtcm.bss.probe_context_sequence")]
+static PROBE_CONTEXT_SEQUENCE: SharedProbeContextSequence =
+    SharedProbeContextSequence(UnsafeCell::new(0));
+
+unsafe fn probe_context_sequence() -> u16 {
+    unsafe { PROBE_CONTEXT_SEQUENCE.0.get().read_volatile() }
+}
+
+unsafe fn set_probe_context_sequence(value: u16) {
+    unsafe { PROBE_CONTEXT_SEQUENCE.0.get().write_volatile(value) };
+}
 
 impl SharedCompletionRing {
     unsafe fn cursors(&self) -> (u32, u32) {
@@ -6117,9 +6133,9 @@ pub unsafe fn prepare_probe_context(
         ((context_address + 0x4c) as *mut u32).write_volatile(0);
         ((context_address + 0x53) as *mut u8).write_volatile(6);
         ((context_address + 0x52) as *mut u8).write_volatile(1);
-        let sequence = ((global + 8) as *const u16).read_volatile();
+        let sequence = probe_context_sequence();
         ((context_address + 0x50) as *mut u16).write_volatile(sequence);
-        ((global + 8) as *mut u16).write_volatile(sequence.wrapping_add(1));
+        set_probe_context_sequence(sequence.wrapping_add(1));
         ((context_address + 0x0f) as *mut u8).write_volatile(0);
         ((context_address + 0xa7) as *mut u8).write_volatile(1);
         ((context_address + 0x58) as *mut u32).write_volatile(0);
