@@ -390,7 +390,7 @@ impl HostTxDriver {
                     vendor_host_tx::HostTxPhase::PostCryptoQueued
                         | vendor_host_tx::HostTxPhase::PendingEligible
                 ) {
-                    match unsafe { vendor_host_tx::service_pending(&mut retained) } {
+                    match unsafe { vendor_host_tx::service_pending(mac_domain, &mut retained) } {
                         Ok(vendor_host_tx::PendingServiceReport::Complete(status)) => {
                             let _ = retained.transition(vendor_host_tx::HostTxPhase::Completing);
                             let completion_order = self.allocate_confirmation_order();
@@ -498,8 +498,10 @@ impl HostTxDriver {
                             return event;
                         }
                         Err(vendor_host_tx::SchedulerReserveError::Expired) => {
-                            if unsafe { vendor_host_tx::reject_unscheduled_pas(&mut retained) }
-                                .is_ok()
+                            if unsafe {
+                                vendor_host_tx::reject_unscheduled_pas(&mut guard, &mut retained)
+                            }
+                            .is_ok()
                             {
                                 let _ =
                                     retained.transition(vendor_host_tx::HostTxPhase::Completing);
@@ -627,7 +629,8 @@ impl HostTxDriver {
     ///
     /// # Safety
     /// The caller must serialize scheduler, pending-list, and HIF mutation.
-    pub unsafe fn reset(&mut self) {
+    pub unsafe fn reset(&mut self, mac_domain: &mut crate::mac_domain::MacDomain) {
+        let mut guard = mac_domain.enter();
         for index in 0..HOST_CONTEXT_COUNT {
             let Some(state) = self.states[index].take() else {
                 continue;
@@ -639,15 +642,15 @@ impl HostTxDriver {
                     reservation,
                     ..
                 } => {
-                    let _ = unsafe { reservation.cancel(&mut retained) };
+                    let _ = unsafe { reservation.cancel(&mut guard, &mut retained) };
                     let completion_order = self.allocate_confirmation_order();
-                    unsafe { Self::cancelled_confirmation(retained, completion_order) }
+                    unsafe { Self::cancelled_confirmation(&mut guard, retained, completion_order) }
                 }
                 HostTxState::Owned { retained, .. }
                     if retained.phase() != vendor_host_tx::HostTxPhase::Scheduled =>
                 {
                     let completion_order = self.allocate_confirmation_order();
-                    unsafe { Self::cancelled_confirmation(retained, completion_order) }
+                    unsafe { Self::cancelled_confirmation(&mut guard, retained, completion_order) }
                 }
                 state @ HostTxState::Owned { .. } => state,
             });
@@ -655,6 +658,7 @@ impl HostTxDriver {
     }
 
     unsafe fn cancelled_confirmation(
+        guard: &mut crate::mac_domain::MacDomainGuard<'_>,
         retained: vendor_host_tx::RetainedHostTx,
         completion_order: u32,
     ) -> HostTxState {
@@ -670,7 +674,7 @@ impl HostTxDriver {
         };
         let release = unsafe {
             retained
-                .cancel_before_pas()
+                .cancel_before_pas(guard)
                 .expect("reversible host TX cancellation")
         };
         HostTxState::Confirming {

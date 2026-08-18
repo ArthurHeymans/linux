@@ -801,7 +801,7 @@ extern "C" fn rust_main() -> ! {
                 let status = match ResetRequest::parse(request_payload) {
                     Ok(_) => {
                         unsafe {
-                            host_tx_driver.reset();
+                            host_tx_driver.reset(&mut mac_domain);
                         }
                         if unsafe { join::reset(request_if_id) } {
                             0

@@ -134,12 +134,17 @@ impl RetainedHostTx {
     ///
     /// # Safety
     /// No concurrent Rust code may mutate the pending list.
-    pub unsafe fn cancel_before_pas(self) -> Result<crate::hif::RequestReleaseToken, CancelError> {
+    pub unsafe fn cancel_before_pas(
+        self,
+        _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    ) -> Result<crate::hif::RequestReleaseToken, CancelError> {
         match self.phase {
             HostTxPhase::Submitted | HostTxPhase::Classified | HostTxPhase::PendingEligible => {}
-            HostTxPhase::PostCryptoQueued => unsafe { remove_pending_context(self.context)? },
+            HostTxPhase::PostCryptoQueued => unsafe {
+                remove_pending_context(_guard, self.context)?
+            },
             HostTxPhase::PasQueued => unsafe {
-                remove_live_pas(self.context)?;
+                remove_live_pas(_guard, self.context)?;
                 release_pas_accounting(self.context);
             },
             HostTxPhase::SchedulerReserved | HostTxPhase::Scheduled | HostTxPhase::Completing => {
@@ -430,9 +435,11 @@ pub unsafe fn enqueue_post_crypto(retained: &mut RetainedHostTx) -> Result<(), P
 }
 
 #[cfg(target_arch = "arm")]
-unsafe fn remove_pending_context(context: HostContextAddress) -> Result<(), CancelError> {
+unsafe fn remove_pending_context(
+    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    context: HostContextAddress,
+) -> Result<(), CancelError> {
     const PENDING: u32 = 0x0400_8ad8;
-    let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     let mut prior = 0_u32;
     let mut current = unsafe { read_live_u32(PENDING) };
     while current != 0 && current != context.raw() {
@@ -440,7 +447,6 @@ unsafe fn remove_pending_context(context: HostContextAddress) -> Result<(), Canc
         current = unsafe { read_live_u32(current + 4) };
     }
     if current == 0 {
-        unsafe { crate::tx::restore_irq_fiq_saved(previous) };
         return Err(CancelError::MissingFromPendingList);
     }
     let next = unsafe { read_live_u32(current + 4) };
@@ -454,7 +460,6 @@ unsafe fn remove_pending_context(context: HostContextAddress) -> Result<(), Canc
             write_live_u32(PENDING + 4, prior);
         }
         write_live_u32(current + 4, 0);
-        crate::tx::restore_irq_fiq_saved(previous);
     }
     Ok(())
 }
@@ -607,9 +612,11 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
 }
 
 #[cfg(target_arch = "arm")]
-unsafe fn push_live_pas(context: HostContextAddress) -> Result<(), PendingServiceError> {
+unsafe fn push_live_pas(
+    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    context: HostContextAddress,
+) -> Result<(), PendingServiceError> {
     const RING: u32 = 0x0400_1578;
-    let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     let old_tail = unsafe { read_live_u32(RING + 4) as u8 & 0x3f };
     let mut scan = unsafe { read_live_u32(RING) as u8 & 0x3f };
     let mut write = old_tail;
@@ -631,7 +638,6 @@ unsafe fn push_live_pas(context: HostContextAddress) -> Result<(), PendingServic
     }
     let next = write.wrapping_add(1) & 0x3f;
     if next == old_tail {
-        unsafe { crate::tx::restore_irq_fiq_saved(previous) };
         return Err(PendingServiceError::PasRingFull);
     }
     unsafe {
@@ -640,16 +646,17 @@ unsafe fn push_live_pas(context: HostContextAddress) -> Result<(), PendingServic
             context.raw() + PAS_OFFSET as u32,
         );
         write_live_u32(RING + 4, u32::from(next));
-        crate::tx::restore_irq_fiq_saved(previous);
     }
     Ok(())
 }
 
 #[cfg(target_arch = "arm")]
-unsafe fn remove_live_pas(context: HostContextAddress) -> Result<(), CancelError> {
+unsafe fn remove_live_pas(
+    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    context: HostContextAddress,
+) -> Result<(), CancelError> {
     const RING: u32 = 0x0400_1578;
     let target = context.raw() + PAS_OFFSET as u32;
-    let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     let head = unsafe { read_live_u32(RING) as u8 & 0x3f };
     let tail = unsafe { read_live_u32(RING + 4) as u8 & 0x3f };
     let mut scan = head;
@@ -664,12 +671,10 @@ unsafe fn remove_live_pas(context: HostContextAddress) -> Result<(), CancelError
         scan = scan.wrapping_add(1) & 0x3f;
     }
     if !found {
-        unsafe { crate::tx::restore_irq_fiq_saved(previous) };
         return Err(CancelError::MissingFromPasRing);
     }
     // Leave the hole for the vendor compaction step performed by the next PAS
     // insertion. This matches normal completion/removal ring semantics.
-    unsafe { crate::tx::restore_irq_fiq_saved(previous) };
     Ok(())
 }
 
@@ -703,7 +708,10 @@ unsafe fn release_pas_accounting(context: HostContextAddress) {
 }
 
 #[cfg(target_arch = "arm")]
-unsafe fn release_pending_to_pas(retained: &mut RetainedHostTx) -> Result<(), PendingServiceError> {
+unsafe fn release_pending_to_pas(
+    mac_domain: &mut crate::mac_domain::MacDomain,
+    retained: &mut RetainedHostTx,
+) -> Result<(), PendingServiceError> {
     let context = retained.context;
     unsafe {
         write_live_u32(
@@ -714,7 +722,11 @@ unsafe fn release_pending_to_pas(retained: &mut RetainedHostTx) -> Result<(), Pe
         if !claim_pas_accounting(context) {
             return Err(PendingServiceError::PhyState);
         }
-        if let Err(error) = push_live_pas(context) {
+        let push_result = {
+            let mut guard = mac_domain.enter();
+            push_live_pas(&mut guard, context)
+        };
+        if let Err(error) = push_result {
             release_pas_accounting(context);
             return Err(error);
         }
@@ -765,10 +777,11 @@ pub unsafe fn pending_live_diagnostic(retained: &RetainedHostTx) -> PendingLiveD
 
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_pending(
+    mac_domain: &mut crate::mac_domain::MacDomain,
     retained: &mut RetainedHostTx,
 ) -> Result<PendingServiceReport, PendingServiceError> {
     if retained.phase == HostTxPhase::PendingEligible {
-        unsafe { release_pending_to_pas(retained)? };
+        unsafe { release_pending_to_pas(mac_domain, retained)? };
         return Ok(PendingServiceReport::PasQueued);
     }
     if retained.phase != HostTxPhase::PostCryptoQueued {
@@ -853,14 +866,22 @@ pub unsafe fn service_pending(
     match decision {
         PendingTaskDecision::LeaveQueued => Ok(PendingServiceReport::LeaveQueued),
         PendingTaskDecision::Complete(status) => {
-            unsafe { remove_pending_context(context).map_err(PendingServiceError::PendingList)? };
+            let remove_result = {
+                let mut guard = mac_domain.enter();
+                unsafe { remove_pending_context(&mut guard, context) }
+            };
+            remove_result.map_err(PendingServiceError::PendingList)?;
             retained.phase = HostTxPhase::PendingEligible;
             Ok(PendingServiceReport::Complete(status))
         }
         PendingTaskDecision::ReleaseToPas => {
-            unsafe { remove_pending_context(context).map_err(PendingServiceError::PendingList)? };
+            let remove_result = {
+                let mut guard = mac_domain.enter();
+                unsafe { remove_pending_context(&mut guard, context) }
+            };
+            remove_result.map_err(PendingServiceError::PendingList)?;
             retained.phase = HostTxPhase::PendingEligible;
-            unsafe { release_pending_to_pas(retained)? };
+            unsafe { release_pending_to_pas(mac_domain, retained)? };
             Ok(PendingServiceReport::PasQueued)
         }
     }
@@ -973,12 +994,15 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
 /// # Safety
 /// The frame must still be present in the global PAS ring and own no pipe slot.
 #[cfg(target_arch = "arm")]
-pub unsafe fn reject_unscheduled_pas(retained: &mut RetainedHostTx) -> Result<(), CancelError> {
+pub unsafe fn reject_unscheduled_pas(
+    guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    retained: &mut RetainedHostTx,
+) -> Result<(), CancelError> {
     if retained.phase != HostTxPhase::PasQueued {
         return Err(CancelError::HardwareOwned);
     }
     unsafe {
-        remove_live_pas(retained.context)?;
+        remove_live_pas(guard, retained.context)?;
         release_pas_accounting(retained.context);
     }
     retained.phase = HostTxPhase::PendingEligible;
@@ -1065,7 +1089,11 @@ impl HostSchedulerReservation {
     ///
     /// # Safety
     /// The reservation must not have been published.
-    pub unsafe fn cancel(self, retained: &mut RetainedHostTx) -> bool {
+    pub unsafe fn cancel(
+        self,
+        _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+        retained: &mut RetainedHostTx,
+    ) -> bool {
         if retained.context != self.context || retained.phase != HostTxPhase::SchedulerReserved {
             return false;
         }
