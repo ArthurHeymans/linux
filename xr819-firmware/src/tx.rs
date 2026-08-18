@@ -59,6 +59,23 @@ unsafe fn set_probe_context_sequence(value: u16) {
     unsafe { PROBE_CONTEXT_SEQUENCE.0.get().write_volatile(value) };
 }
 
+struct SharedPasAccounting(UnsafeCell<u16>);
+
+unsafe impl Sync for SharedPasAccounting {}
+
+#[unsafe(link_section = ".dtcm.bss.pas_accounting")]
+static PAS_ACCOUNTING: SharedPasAccounting = SharedPasAccounting(UnsafeCell::new(0));
+
+#[inline(always)]
+pub(crate) unsafe fn active_pas_contexts() -> u16 {
+    unsafe { PAS_ACCOUNTING.0.get().read_volatile() }
+}
+
+#[inline(always)]
+pub(crate) unsafe fn set_active_pas_contexts(value: u16) {
+    unsafe { PAS_ACCOUNTING.0.get().write_volatile(value) };
+}
+
 impl SharedCompletionRing {
     unsafe fn cursors(&self) -> (u32, u32) {
         let state = self.0.get();
@@ -1262,7 +1279,7 @@ unsafe fn capture_status2_ownership(
         diagnostic_pointer_word(command, 0x1c),
         u32::from(unsafe { read_u8(PIPE_BUSY as usize) }),
         u32::from(unsafe { read_u8(0x0400_3a6c) }),
-        u32::from(unsafe { read_u16(0x0400_8f76) }),
+        u32::from(unsafe { active_pas_contexts() }),
         completion_consumer,
         completion_producer,
         unsafe { read_u32(PIPE_IRQ_PENDING as usize) },
@@ -5018,7 +5035,7 @@ where
                     backend.find_pipe_by_mac_upper(mac_upper)
                 });
             }
-            write_u16(0x0400_8f76, read_u16(0x0400_8f76).wrapping_sub(1));
+            set_active_pas_contexts(active_pas_contexts().wrapping_sub(1));
             if interface < 3 {
                 let active = 0x0400_3e98 + interface * 0x3b0 + 0x30;
                 write_u16(active, read_u16(active).wrapping_sub(1));
@@ -5037,7 +5054,7 @@ where
             backend.complete_context(context, status);
         }
 
-        if read_u16(0x0400_8f76) == 0 && backend.completion_idle_policy_enabled() {
+        if active_pas_contexts() == 0 && backend.completion_idle_policy_enabled() {
             start_phy_operation_7(backend);
             let owner = read_u32(0x0400_8b2c);
             if owner != 0 {
@@ -5993,7 +6010,7 @@ impl PreparedProbePublication {
             // Vendor queue accounting increments the global active-completion
             // count before hardware ownership. `service_completion_drain`
             // performs the matching decrement before callback return.
-            write_u16(0x0400_8f76, read_u16(0x0400_8f76).wrapping_add(1));
+            set_active_pas_contexts(active_pas_contexts().wrapping_add(1));
             if publication_bisect_reached(7) {
                 return Ok(publication(7));
             }
@@ -7121,7 +7138,7 @@ pub fn probe_runtime_quiescent() -> bool {
     runtime.published.is_none()
         && runtime.host_published.is_none()
         && unsafe { read_u8(0x0400_8f70) } == 0
-        && unsafe { read_u16(0x0400_8f76) } == 0
+        && unsafe { active_pas_contexts() } == 0
         && unsafe {
             let (consumer, producer) = COMPLETION_RING.cursors();
             consumer == producer

@@ -681,11 +681,11 @@ unsafe fn remove_live_pas(
 #[cfg(target_arch = "arm")]
 unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
     unsafe {
-        let active = read_live_u16(0x0400_8f76);
+        let active = crate::tx::active_pas_contexts();
         if active == 0 && !crate::phy::advance_awake_station_tx() {
             return false;
         }
-        write_live_u16(0x0400_8f76, active.wrapping_add(1));
+        crate::tx::set_active_pas_contexts(active.wrapping_add(1));
         let interface = read_live_u8(context.raw() + 0xbd);
         if interface < 3 {
             let vif_active = 0x0400_3e98 + u32::from(interface) * 0x3b0 + 0x30;
@@ -698,7 +698,7 @@ unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
 #[cfg(target_arch = "arm")]
 unsafe fn release_pas_accounting(context: HostContextAddress) {
     unsafe {
-        write_live_u16(0x0400_8f76, read_live_u16(0x0400_8f76).wrapping_sub(1));
+        crate::tx::set_active_pas_contexts(crate::tx::active_pas_contexts().wrapping_sub(1));
         let interface = read_live_u8(context.raw() + 0xbd);
         if interface < 3 {
             let vif_active = 0x0400_3e98 + u32::from(interface) * 0x3b0 + 0x30;
