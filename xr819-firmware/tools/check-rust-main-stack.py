@@ -24,6 +24,28 @@ def rust_main_frame(elf: Path) -> int:
     except StopIteration as error:
         raise RuntimeError("rust_main symbol not found") from error
 
+    prologue = disassembly[start + 1 : start + 16]
+    push = re.compile(r"\bpush\s+\{([^}]+)\}")
+    saved_bytes = 0
+    if match := next((push.search(line) for line in prologue if push.search(line)), None):
+        registers = 0
+        for item in (part.strip() for part in match.group(1).split(",")):
+            if "-" in item:
+                first, last = item.split("-", 1)
+                registers += int(last.removeprefix("r")) - int(first.removeprefix("r")) + 1
+            else:
+                registers += 1
+        saved_bytes = registers * 4
+
+    direct_sub = re.compile(r"\bsub\s+sp,\s*#0x([0-9a-f]+)")
+    direct_bytes = sum(
+        int(match.group(1), 16)
+        for line in prologue
+        if (match := direct_sub.search(line))
+    )
+    if direct_bytes:
+        return saved_bytes + direct_bytes
+
     load = re.compile(
         r"^\s*[0-9a-f]+:\s+.*\bldr\s+(r\d+),\s*\[pc,.*@\s*0x([0-9a-f]+)"
     )
@@ -31,7 +53,7 @@ def rust_main_frame(elf: Path) -> int:
     literal_address: int | None = None
     register: str | None = None
 
-    for line in disassembly[start + 1 : start + 12]:
+    for line in prologue:
         if literal_address is None:
             if match := load.search(line):
                 register = match.group(1)
@@ -56,7 +78,7 @@ def rust_main_frame(elf: Path) -> int:
     signed = encoded - (1 << 32) if encoded & 0x8000_0000 else encoded
     if signed >= 0:
         raise RuntimeError(f"unexpected non-negative stack adjustment {signed}")
-    return -signed
+    return saved_bytes - signed
 
 
 def main() -> int:

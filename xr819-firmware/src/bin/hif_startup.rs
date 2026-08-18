@@ -41,8 +41,8 @@ use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
 /// Const-initialized storage taken once by the single reset-time owner.
 ///
 /// Unlike a general static cell this needs no atomics: the references never
-/// escape `rust_main`, and reset invokes `take()` exactly once before entering
-/// the cooperative loop.
+/// escape `rust_main`, and reset initializes each cell exactly once before
+/// entering the cooperative loop.
 struct SingleBootCell<T>(UnsafeCell<MaybeUninit<T>>);
 
 unsafe impl<T> Sync for SingleBootCell<T> {}
@@ -59,6 +59,7 @@ impl<T> SingleBootCell<T> {
     }
 }
 
+static TRANSPORT: SingleBootCell<Transport> = SingleBootCell::new();
 static RESPONSE_SCRATCH: SingleBootCell<[u8; SHARED_BUFFER_SIZE]> = SingleBootCell::new();
 static HOST_TX_DRIVER: SingleBootCell<HostTxDriver> = SingleBootCell::new();
 
@@ -310,7 +311,7 @@ extern "C" fn rust_main() -> ! {
     register_post_activation_interrupts();
     #[cfg(target_arch = "arm")]
     xr819_firmware::crypto::run_hardware_ccmp_selftest();
-    let mut transport = unsafe { Transport::initialize() };
+    let transport = unsafe { TRANSPORT.init_with(|| Transport::initialize()) };
     let mut mac_events = unsafe { tx::MacEventQueue::claim() };
     let mut mac_domain = MacDomain::new();
     debug_stop(6, 0x5354_4706);
@@ -806,7 +807,7 @@ extern "C" fn rust_main() -> ! {
                             unsafe { (0x0940_0000 as *const u32).read_volatile() }
                         },
                     ];
-                    host_tx_diagnostics::populate_counters(&mut values, &transport);
+                    host_tx_diagnostics::populate_counters(&mut values, &*transport);
                     let mut data = [0_u8; 88];
                     for (index, value) in values.into_iter().enumerate() {
                         data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -890,7 +891,7 @@ extern "C" fn rust_main() -> ! {
                                 host_tx_driver.admit(
                                     request_buffer.take().expect("request buffer is present"),
                                     request_if_id,
-                                    &mut transport,
+                                    &mut *transport,
                                 )
                             };
                             if admitted {
