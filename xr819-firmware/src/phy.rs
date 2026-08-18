@@ -5,6 +5,7 @@
 //! programming remains bounded at the translated request ABI before `0xf802`.
 
 use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 
 use zerocopy::byteorder::little_endian::U16;
 use zerocopy::{Immutable, IntoBytes};
@@ -1899,8 +1900,16 @@ pub unsafe fn scan_stop_rx_hardware_drained() -> bool {
 unsafe fn run_vendor_mode_calibration(
     calibration_max_polls: u32,
 ) -> Result<(), IqCalibrationHardwareError> {
-    unsafe { run_iq_calibration(true, calibration_max_polls) }?;
+    let _ = unsafe { run_iq_calibration_core(true, calibration_max_polls) }?;
+    unsafe { run_vendor_dynamic_mode_calibration() };
+    Ok(())
+}
 
+/// Keep the dynamic-IQ phase out of the preceding IQ calibration frame. The
+/// recovered vendor sequence is unchanged, but sequential temporary sets no
+/// longer occupy the system stack simultaneously.
+#[inline(never)]
+unsafe fn run_vendor_dynamic_mode_calibration() {
     // Fixed mode-zero arguments assembled by `rf_apply_channel_settings(0,
     // 0x07ff0110)` at 0x1899c. At 0x18a54 the vendor stores 12 in snapshot
     // offset 0x290; `rf_save_band_regs` uses that field as the mode-zero index
@@ -1932,7 +1941,6 @@ unsafe fn run_vendor_mode_calibration(
     };
     let mut samples = [0_u32; 64];
     let _ = unsafe { run_vendor_dynamic_iq_hardware_calibration(configuration, &mut samples) };
-    Ok(())
 }
 
 unsafe fn begin_channel_transition(
@@ -2283,6 +2291,24 @@ pub enum IqCalibrationHardwareError {
     SecondaryTargetTimeout,
     InvalidSecondaryScale,
 }
+
+struct SharedIqCalibrationScratch {
+    samples: UnsafeCell<[IqCalibrationSample; 12]>,
+    series: UnsafeCell<MaybeUninit<IqCalibrationSeries>>,
+}
+unsafe impl Sync for SharedIqCalibrationScratch {}
+
+static IQ_CALIBRATION_SCRATCH: SharedIqCalibrationScratch = SharedIqCalibrationScratch {
+    samples: UnsafeCell::new(
+        [IqCalibrationSample {
+            baseline_i: 0,
+            baseline_q: 0,
+            target_i: 0,
+            target_q: 0,
+        }; 12],
+    ),
+    series: UnsafeCell::new(MaybeUninit::uninit()),
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DynamicIqInitialCandidate {
@@ -3907,25 +3933,15 @@ pub fn iq_calibration_publication(
 
 /// Allocation-free twelve-gain arithmetic and publication plan from the main
 /// loop of vendor `0x17c20`. Hardware sample acquisition remains separate.
-pub fn build_iq_calibration_series(
-    samples: [IqCalibrationSample; 12],
+fn build_iq_calibration_series_in<'a>(
+    samples: &[IqCalibrationSample; 12],
     initial_shift_state: u32,
-) -> IqCalibrationSeries {
-    const EMPTY: IqCalibrationIteration = IqCalibrationIteration {
-        gain_index: 0,
-        sample: IqCalibrationSample {
-            baseline_i: 0,
-            baseline_q: 0,
-            target_i: 0,
-            target_q: 0,
-        },
-        scale_i: 0,
-        scale_q: 0,
-        coefficient: IqCalibrationCoefficient { i: 0, q: 0 },
-        publication: None,
+    output: &'a mut MaybeUninit<IqCalibrationSeries>,
+) -> &'a mut IqCalibrationSeries {
+    let series = output.as_mut_ptr();
+    let iterations = unsafe {
+        core::ptr::addr_of_mut!((*series).iterations).cast::<IqCalibrationIteration>()
     };
-
-    let mut iterations = [EMPTY; 12];
     let mut final_shift_state = initial_shift_state;
     for index in 0..12 {
         let sample = samples[index];
@@ -3940,26 +3956,35 @@ pub fn build_iq_calibration_series(
         if let Some(publication) = publication {
             final_shift_state = publication.next_shift_state;
         }
-        iterations[index] = IqCalibrationIteration {
-            gain_index: IQ_CALIBRATION_GAIN_INDICES[index],
-            sample,
-            scale_i: sample
-                .target_i
-                .wrapping_sub(sample.baseline_i)
-                .wrapping_mul(-0x100),
-            scale_q: sample
-                .target_q
-                .wrapping_sub(sample.baseline_q)
-                .wrapping_mul(-0x100),
-            coefficient,
-            publication,
-        };
+        unsafe {
+            iterations.add(index).write(IqCalibrationIteration {
+                gain_index: IQ_CALIBRATION_GAIN_INDICES[index],
+                sample,
+                scale_i: sample
+                    .target_i
+                    .wrapping_sub(sample.baseline_i)
+                    .wrapping_mul(-0x100),
+                scale_q: sample
+                    .target_q
+                    .wrapping_sub(sample.baseline_q)
+                    .wrapping_mul(-0x100),
+                coefficient,
+                publication,
+            });
+        }
     }
+    unsafe {
+        core::ptr::addr_of_mut!((*series).final_shift_state).write(final_shift_state);
+        output.assume_init_mut()
+    }
+}
 
-    IqCalibrationSeries {
-        iterations,
-        final_shift_state,
-    }
+pub fn build_iq_calibration_series(
+    samples: &[IqCalibrationSample; 12],
+    initial_shift_state: u32,
+) -> IqCalibrationSeries {
+    let mut output = MaybeUninit::uninit();
+    *build_iq_calibration_series_in(samples, initial_shift_state, &mut output)
 }
 
 pub unsafe fn apply_iq_calibration_primary(series: &IqCalibrationSeries) {
@@ -4099,10 +4124,14 @@ unsafe fn finish_iq_calibration_hardware(
 ///
 /// The caller must exclusively own the RF calibration engine and MAC/PHY
 /// register banks.
-pub unsafe fn run_iq_calibration(
+#[inline(never)]
+unsafe fn run_iq_calibration_core(
     include_secondary: bool,
     max_polls: u32,
-) -> Result<IqCalibrationHardwareResult, IqCalibrationHardwareError> {
+) -> Result<
+    (IqCalibrationReferences, Option<IqCalibrationCoefficient>),
+    IqCalibrationHardwareError,
+> {
     const EMPTY_SAMPLE: IqCalibrationSample = IqCalibrationSample {
         baseline_i: 0,
         baseline_q: 0,
@@ -4120,7 +4149,8 @@ pub unsafe fn run_iq_calibration(
     let initial_shift_state = unsafe { ((profile_base + 0x2c) as *const u32).read_volatile() };
     unsafe { configure_calibration_mode(0) };
     let snapshot = unsafe { begin_iq_calibration_path(0, 0) };
-    let mut samples = [EMPTY_SAMPLE; 12];
+    let samples = unsafe { &mut *IQ_CALIBRATION_SCRATCH.samples.get() };
+    samples.fill(EMPTY_SAMPLE);
     for (index, gain_index) in IQ_CALIBRATION_GAIN_INDICES.iter().copied().enumerate() {
         unsafe { set_calibration_gain(gain_index as i32) };
         let baseline = match unsafe { run_calibration_sample(0x11, 0x11, max_polls) } {
@@ -4156,7 +4186,8 @@ pub unsafe fn run_iq_calibration(
             }
         }
     }
-    let series = build_iq_calibration_series(samples, initial_shift_state);
+    let series_storage = unsafe { &mut *IQ_CALIBRATION_SCRATCH.series.get() };
+    let series = build_iq_calibration_series_in(samples, initial_shift_state, series_storage);
     let final_iteration = &series.iterations[11];
     let references = IqCalibrationReferences {
         coefficient_i: final_iteration.coefficient.i,
@@ -4211,14 +4242,24 @@ pub unsafe fn run_iq_calibration(
     };
 
     unsafe {
-        apply_iq_calibration_primary(&series);
+        apply_iq_calibration_primary(series);
         if let Some(correction) = secondary {
             write_u16(0x0abb_8198, pack_iq_signed8_pair(correction));
             write_u16(0x0abb_819c, 0);
         }
-        apply_iq_calibration_normalized(&series);
+        apply_iq_calibration_normalized(series);
         finish_iq_calibration_hardware(snapshot, selected_mode);
     }
+    Ok((references, secondary))
+}
+
+pub unsafe fn run_iq_calibration(
+    include_secondary: bool,
+    max_polls: u32,
+) -> Result<IqCalibrationHardwareResult, IqCalibrationHardwareError> {
+    let (references, secondary) =
+        unsafe { run_iq_calibration_core(include_secondary, max_polls) }?;
+    let series = unsafe { *(&*IQ_CALIBRATION_SCRATCH.series.get()).assume_init_ref() };
     Ok(IqCalibrationHardwareResult {
         series,
         references,
@@ -5094,7 +5135,7 @@ mod tests {
             target_i: 20,
             target_q: 0,
         };
-        let series = build_iq_calibration_series([repeated_sample; 12], 0x0025_4310);
+        let series = build_iq_calibration_series(&[repeated_sample; 12], 0x0025_4310);
         assert_eq!(series.iterations[0].gain_index, 0x1a);
         assert_eq!(series.iterations[11].gain_index, 0);
         assert_eq!(series.iterations[0].scale_i, -2560);
