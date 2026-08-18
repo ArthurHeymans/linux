@@ -17,7 +17,70 @@ const WSM_TX_CONTEXT_FREE_HEAD: usize = 0x0400_87b0;
 const TX_BUFFER_BASE: usize = 0x0901_4fa8;
 const TX_BUFFER_SIZE: usize = 0x400;
 const FRAME_NODE_OFFSET: u32 = 0x54;
-const COMPLETION_RING_STATE: usize = 0x0400_8f6c;
+// Allocation counters and probe sequence remain in the untranslated vendor
+// accounting record. Only its independently decoded completed-frame FIFO has
+// moved into linker-owned native DTCM.
+const COMPLETION_ACCOUNTING_STATE: usize = 0x0400_8f6c;
+const COMPLETION_RING_CAPACITY: usize = 64;
+
+#[repr(C)]
+struct CompletionRingState {
+    consumer: u32,
+    producer: u32,
+    frame_nodes: [u32; COMPLETION_RING_CAPACITY],
+}
+
+struct SharedCompletionRing(UnsafeCell<CompletionRingState>);
+
+unsafe impl Sync for SharedCompletionRing {}
+
+#[unsafe(link_section = ".dtcm.bss.completion_ring")]
+static COMPLETION_RING: SharedCompletionRing = SharedCompletionRing(UnsafeCell::new(
+    CompletionRingState {
+        consumer: 0,
+        producer: 0,
+        frame_nodes: [0; COMPLETION_RING_CAPACITY],
+    },
+));
+
+impl SharedCompletionRing {
+    unsafe fn cursors(&self) -> (u32, u32) {
+        let state = self.0.get();
+        unsafe {
+            (
+                (&raw const (*state).consumer).read_volatile(),
+                (&raw const (*state).producer).read_volatile(),
+            )
+        }
+    }
+
+    unsafe fn frame_node(&self, index: u32) -> u32 {
+        let state = self.0.get();
+        unsafe { (&raw const (*state).frame_nodes[index as usize]).read_volatile() }
+    }
+
+    unsafe fn enqueue(&self, frame_node: FrameNodeAddress) {
+        let state = self.0.get();
+        unsafe {
+            let producer = (&raw const (*state).producer).read_volatile();
+            (&raw mut (*state).frame_nodes[producer as usize]).write_volatile(frame_node.raw());
+            (&raw mut (*state).producer).write_volatile(producer.wrapping_add(1) & 0x3f);
+        }
+    }
+
+    unsafe fn pop(&self, consumer: u32) -> (FrameNodeAddress, u32) {
+        let state = self.0.get();
+        unsafe {
+            let slot = &raw mut (*state).frame_nodes[consumer as usize];
+            let frame_node = slot.read_volatile();
+            slot.write_volatile(0);
+            let next = consumer.wrapping_add(1) & 0x3f;
+            (&raw mut (*state).consumer).write_volatile(next);
+            (FrameNodeAddress::new(frame_node), next)
+        }
+    }
+}
+
 #[cfg(not(all(target_arch = "arm", target_feature = "thumb-mode")))]
 const SCHEDULER_PENDING: usize = 0x0400_1fd4;
 const PIPE_RECORDS: u32 = 0x0400_1680;
@@ -1158,6 +1221,7 @@ unsafe fn capture_status2_ownership(
             0
         }
     };
+    let (completion_consumer, completion_producer) = unsafe { COMPLETION_RING.cursors() };
     let words = [
         event.raw,
         saved_scheduler_word.raw(),
@@ -1183,8 +1247,8 @@ unsafe fn capture_status2_ownership(
         u32::from(unsafe { read_u8(PIPE_BUSY as usize) }),
         u32::from(unsafe { read_u8(0x0400_3a6c) }),
         u32::from(unsafe { read_u16(0x0400_8f76) }),
-        unsafe { read_u32(COMPLETION_RING_STATE + 0x0c) },
-        unsafe { read_u32(COMPLETION_RING_STATE + 0x10) },
+        completion_consumer,
+        completion_producer,
         unsafe { read_u32(PIPE_IRQ_PENDING as usize) },
         unsafe { read_u32(MAC_EVENT_READINESS as usize) },
     ];
@@ -3243,8 +3307,10 @@ pub unsafe fn service_single_probe_completion_drain_inactive(backend: &mut Singl
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_single_probe_scheduler_inactive(backend: &mut SingleProbeMacBackend) -> bool {
     let claimed = unsafe { claim_scheduler_mask_atomic(1 << 20) } != 0;
-    let queued =
-        unsafe { read_u32(COMPLETION_RING_STATE + 0x0c) != read_u32(COMPLETION_RING_STATE + 0x10) };
+    let queued = unsafe {
+        let (consumer, producer) = COMPLETION_RING.cursors();
+        consumer != producer
+    };
     // The vendor scheduler dispatches bit 20 to drain this ring. In the
     // cooperative runtime, also treat a visibly non-empty ring as sufficient:
     // a concurrently raised scheduler bit can otherwise be consumed by an
@@ -4002,10 +4068,7 @@ where
     unsafe {
         let node = frame_node.raw() as usize;
         let context = frame_node.context().raw() as usize;
-        let state = COMPLETION_RING_STATE as *mut u8;
-        let producer = (state.add(0x10) as *mut u32).read_volatile();
-        (state.add(0x14 + producer as usize * 4) as *mut u32).write_volatile(frame_node.raw());
-        (state.add(0x10) as *mut u32).write_volatile(producer.wrapping_add(1) & 0x3f);
+        COMPLETION_RING.enqueue(frame_node);
 
         let flags = (node + 0x2c) as *mut u32;
         flags.write_volatile(flags.read_volatile() | (1 << 14));
@@ -4069,11 +4132,8 @@ impl CompletionDrainCursor {
     /// completion consumer.
     pub unsafe fn begin() -> Self {
         unsafe {
-            let state = COMPLETION_RING_STATE as *const u8;
-            Self {
-                next: (state.add(0x0c) as *const u32).read_volatile(),
-                target: (state.add(0x10) as *const u32).read_volatile(),
-            }
+            let (next, target) = COMPLETION_RING.cursors();
+            Self { next, target }
         }
     }
 
@@ -4092,13 +4152,9 @@ impl CompletionDrainCursor {
             return None;
         }
         unsafe {
-            let state = COMPLETION_RING_STATE as *mut u8;
-            let slot = state.add(0x14 + self.next as usize * 4) as *mut u32;
-            let frame_node = slot.read_volatile();
-            slot.write_volatile(0);
-            self.next = self.next.wrapping_add(1) & 0x3f;
-            (state.add(0x0c) as *mut u32).write_volatile(self.next);
-            Some(FrameNodeAddress::new(frame_node))
+            let (frame_node, next) = COMPLETION_RING.pop(self.next);
+            self.next = next;
+            Some(frame_node)
         }
     }
 }
@@ -4886,7 +4942,7 @@ where
         if read_u32(0x0400_140c) != 0 {
             let mut index = cursor.next;
             while index != cursor.target {
-                let node = read_u32(COMPLETION_RING_STATE + 0x14 + index as usize * 4);
+                let node = COMPLETION_RING.frame_node(index);
                 if read_u8(node.wrapping_sub(1) as usize) == 0 {
                     zero_class_pending = zero_class_pending.wrapping_add(1);
                 }
@@ -5202,7 +5258,7 @@ where
         flags.write_volatile(flags.read_volatile() | (1 << 17));
         free_head.write_volatile(context.raw());
 
-        let accounting = COMPLETION_RING_STATE as *mut u8;
+        let accounting = COMPLETION_ACCOUNTING_STATE as *mut u8;
         let class = ((address + 0x53) as *const u8).read_volatile();
         let counter = accounting.add(completion_accounting_counter_offset(class));
         counter.write_volatile(counter.read_volatile().wrapping_sub(1));
@@ -6054,7 +6110,7 @@ pub unsafe fn prepare_probe_context(
         let context_address = context as usize;
         free_head.write_volatile(((context_address + 4) as *const u32).read_volatile());
 
-        let global = 0x0400_8f6c_usize;
+        let global = COMPLETION_ACCOUNTING_STATE;
         let allocated = (global + 4) as *mut u8;
         allocated.write_volatile(allocated.read_volatile().wrapping_add(1));
         ((context_address + 0x0d) as *mut u8).write_volatile(0);
@@ -7050,8 +7106,10 @@ pub fn probe_runtime_quiescent() -> bool {
         && runtime.host_published.is_none()
         && unsafe { read_u8(0x0400_8f70) } == 0
         && unsafe { read_u16(0x0400_8f76) } == 0
-        && unsafe { read_u8(COMPLETION_RING_STATE + 0x0c) }
-            == unsafe { read_u8(COMPLETION_RING_STATE + 0x10) }
+        && unsafe {
+            let (consumer, producer) = COMPLETION_RING.cursors();
+            consumer == producer
+        }
         && unsafe { read_u8(0x0400_3a6c) } == 0
 }
 
@@ -8630,6 +8688,14 @@ mod tests {
         assert_eq!(phy_dispatch_switch_target(2), 0x0001_6f92);
         assert_eq!(phy_dispatch_switch_target(3), 0x0001_6fa0);
         assert_eq!(phy_dispatch_switch_target(7), 0x0001_6fb6);
+    }
+
+    #[test]
+    fn native_completion_ring_contains_only_the_decoded_fifo() {
+        assert_eq!(core::mem::size_of::<CompletionRingState>(), 0x108);
+        assert_eq!(core::mem::offset_of!(CompletionRingState, consumer), 0);
+        assert_eq!(core::mem::offset_of!(CompletionRingState, producer), 4);
+        assert_eq!(core::mem::offset_of!(CompletionRingState, frame_nodes), 8);
     }
 
     #[test]
