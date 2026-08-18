@@ -9,6 +9,9 @@
 
 use core::cell::UnsafeCell;
 
+pub use crate::rx_model::RxToken;
+use crate::rx_model::{ReleaseAction, RxRing};
+
 const FIFO_BASE: usize = 0x0940_0000;
 const FIFO_SIZE: u32 = 0x7000;
 const FIFO_MASK: u32 = 0x0001_fffc;
@@ -29,16 +32,21 @@ const WSM_RX_HEADROOM: usize = 16;
 const MAX_WSM_RX_MESSAGE_LEN: usize = 0x1ffe;
 const MAX_FRAME_LEN: usize = MAX_WSM_RX_MESSAGE_LEN - WSM_RX_HEADROOM;
 
-// Vendor RX FIFO state keeps independent release (+0x10) and claim (+0x14)
-// cursors. A claimed slot may remain host-owned while later slots are queued.
-static mut RELEASE_OFFSET: u32 = 0;
-static mut CLAIM_OFFSET: u32 = 0;
-static mut HOST_TRANSFER_COUNT: u32 = 0;
 // A resync may move the parser past corrupt bytes while older zero-copy slots
-// remain host-owned. Defer the hardware consumer jump until the last such token
-// returns; otherwise packet DMA can overwrite a buffer still exposed to HIF.
-static mut RESYNC_RELEASE_DEFERRED: bool = false;
+// remain host-owned. One owner keeps release/claim cursors, live-token count,
+// and the deferred hardware-consumer update coherent.
+struct SharedRxRing(UnsafeCell<RxRing>);
+
+unsafe impl Sync for SharedRxRing {}
+
+static RX_RING: SharedRxRing = SharedRxRing(UnsafeCell::new(RxRing::new()));
 const MAX_HOST_TRANSFERS: u32 = 24;
+
+/// # Safety
+/// The cooperative firmware loop must be the sole RX-ring mutator.
+unsafe fn rx_ring() -> &'static mut RxRing {
+    unsafe { &mut *RX_RING.0.get() }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReceiveDiagnostics {
@@ -137,28 +145,23 @@ pub fn diagnostic_word() -> u16 {
 }
 
 pub fn host_transfer_outstanding() -> bool {
-    unsafe { HOST_TRANSFER_COUNT != 0 }
+    unsafe { rx_ring().host_transfer_count() != 0 }
 }
 
 pub fn fifo_quiescent() -> bool {
     unsafe {
-        HOST_TRANSFER_COUNT == 0
-            && RELEASE_OFFSET == CLAIM_OFFSET
-            && CLAIM_OFFSET == DMA_PRODUCER.read_volatile() & FIFO_MASK
+        let ring = rx_ring();
+        ring.host_transfer_count() == 0
+            && ring.release_offset() == ring.claim_offset()
+            && ring.claim_offset() == DMA_PRODUCER.read_volatile() & FIFO_MASK
     }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct ReleaseToken {
-    slot: u32,
-    next: u32,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct PendingIndication {
     pub address: u32,
     pub length: u16,
-    pub release: ReleaseToken,
+    pub release: RxToken,
 }
 
 /// Initializes the software side of the circular RX FIFO before RX is enabled.
@@ -169,7 +172,6 @@ pub unsafe fn initialize() {
     unsafe {
         ((VENDOR_FIFO_STATE + 0x18) as *mut u32).write_volatile(0);
         synchronize_after_wake(0);
-        RESYNC_RELEASE_DEFERRED = false;
         *DIAGNOSTICS.0.get() = ReceiveDiagnostics::default();
     }
 }
@@ -182,10 +184,7 @@ pub unsafe fn initialize() {
 pub unsafe fn synchronize_after_wake(producer: u32) {
     let producer = producer & FIFO_MASK;
     unsafe {
-        RELEASE_OFFSET = producer;
-        CLAIM_OFFSET = producer;
-        HOST_TRANSFER_COUNT = 0;
-        RESYNC_RELEASE_DEFERRED = false;
+        rx_ring().synchronize(producer);
         ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(producer);
         ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(producer);
         DMA_CONSUMER.write_volatile(producer);
@@ -273,17 +272,17 @@ const fn pending_release_state(value: u32) -> u32 {
     claimed_slot_state(value).wrapping_sub(0x100)
 }
 
-unsafe fn set_release_offset(next: u32) {
+unsafe fn set_release_offset(ring: &mut RxRing, next: u32) {
     unsafe {
-        RELEASE_OFFSET = next;
+        ring.set_release_offset(next);
         ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(next);
         DMA_CONSUMER.write_volatile(next);
     }
 }
 
-unsafe fn set_claim_offset(next: u32) {
+unsafe fn set_claim_offset(ring: &mut RxRing, next: u32) {
     unsafe {
-        CLAIM_OFFSET = next;
+        ring.set_claim_offset(next);
         ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(next);
     }
 }
@@ -308,27 +307,22 @@ unsafe fn set_claim_offset(next: u32) {
 /// `RX_RESYNC` now packs three fields, since resync counts are small:
 /// bits 0..9 accepted, bits 10..19 flushed, bits 20..31 candidates rejected by
 /// the lookahead.
-const fn resync_release_can_advance(
-    host_transfer_count: u32,
-    release_offset: u32,
-    previous_claim: u32,
-) -> bool {
-    host_transfer_count == 0 && release_offset == previous_claim
-}
-
-unsafe fn apply_resynchronized_offset(previous_claim: u32, target: u32) {
+unsafe fn apply_resynchronized_offset(ring: &mut RxRing, previous_claim: u32, target: u32) {
     unsafe {
-        set_claim_offset(target);
-        if resync_release_can_advance(HOST_TRANSFER_COUNT, RELEASE_OFFSET, previous_claim) {
-            set_release_offset(target);
-            RESYNC_RELEASE_DEFERRED = false;
-        } else {
-            RESYNC_RELEASE_DEFERRED = true;
+        let release = ring.resynchronize(previous_claim, target);
+        ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(target);
+        if let Some(target) = release {
+            set_release_offset(ring, target);
         }
     }
 }
 
-unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32) {
+unsafe fn resynchronize_consumer(
+    ring: &mut RxRing,
+    consumer: u32,
+    producer: u32,
+    raw_producer: u32,
+) {
     unsafe {
         let mut remaining = available_bytes(consumer, producer);
         let mut candidate = consumer;
@@ -337,8 +331,8 @@ unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32
             // that carries the magic, flushing if the span runs out.
             loop {
                 if remaining < 4 || candidate == producer {
-                    resync_report(raw_producer, consumer, producer, RESYNC_FLUSHED);
-                    apply_resynchronized_offset(consumer, producer);
+                    resync_report(ring, raw_producer, consumer, producer, RESYNC_FLUSHED);
+                    apply_resynchronized_offset(ring, consumer, producer);
                     return;
                 }
                 remaining -= 4;
@@ -354,8 +348,8 @@ unsafe fn resynchronize_consumer(consumer: u32, producer: u32, raw_producer: u32
                 && slot_length >= 4
                 && fifo_word(next) == FIFO_MAGIC
             {
-                resync_report(raw_producer, consumer, producer, RESYNC_ACCEPTED);
-                apply_resynchronized_offset(consumer, candidate);
+                resync_report(ring, raw_producer, consumer, producer, RESYNC_ACCEPTED);
+                apply_resynchronized_offset(ring, consumer, candidate);
                 return;
             }
             // Candidate carried the magic but failed vendor's validation: a
@@ -387,9 +381,15 @@ unsafe fn bump_resync_field(shift: u32) {
     }
 }
 
-unsafe fn resync_report(raw_producer: u32, consumer: u32, producer: u32, shift: u32) {
+unsafe fn resync_report(
+    ring: &RxRing,
+    raw_producer: u32,
+    consumer: u32,
+    producer: u32,
+    shift: u32,
+) {
     unsafe {
-        if HOST_TRANSFER_COUNT != 0 {
+        if ring.host_transfer_count() != 0 {
             {
                 let _ = (raw_producer, consumer, producer);
             }
@@ -676,8 +676,9 @@ pub unsafe fn fatal_command_snapshot() -> [u32; 11] {
         result[0] = start;
         result[1] = end;
         result[8] = DMA_CONSUMER.read_volatile();
-        result[9] = CLAIM_OFFSET;
-        result[10] = RELEASE_OFFSET;
+        let ring = rx_ring();
+        result[9] = ring.claim_offset();
+        result[10] = ring.release_offset();
         if watch[0] != 0
             && normalize_offset(start) != normalize_offset(end)
             && let Some((address, command_offset, matched_words, pointer, generation)) =
@@ -727,13 +728,14 @@ unsafe fn publish_owned_resynchronization(consumer: u32, producer: u32, raw_prod
                 ((hardware_ring + 0x20) as *const u32).read_volatile(),
             )
         };
+        let ring = rx_ring();
         crate::hif::publish_halting_exception(
             [
                 0x5258_5253,
                 raw_producer,
                 producer,
-                CLAIM_OFFSET,
-                RELEASE_OFFSET,
+                ring.claim_offset(),
+                ring.release_offset(),
                 DMA_CONSUMER.read_volatile(),
                 current as u32,
                 (current as *const u32).read_volatile(),
@@ -754,12 +756,12 @@ unsafe fn publish_owned_resynchronization(consumer: u32, producer: u32, raw_prod
     }
 }
 
-unsafe fn release_head_slot(slot: usize, next: u32, low_state: u32) {
+unsafe fn release_head_slot(ring: &mut RxRing, slot: usize, next: u32, low_state: u32) {
     unsafe {
         // Preserve vendor `rxfifo_release_slot()` ordering: advance the
         // software release cursor, mark and clear the slot, then expose the
         // new consumer pointer to packet DMA.
-        RELEASE_OFFSET = next;
+        ring.set_release_offset(next);
         ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(next);
         ((slot + 8) as *mut u32).write_volatile(FIFO_RELEASED | low_state);
         (slot as *mut u32).write_volatile(0);
@@ -776,19 +778,20 @@ unsafe fn release_head_slot(slot: usize, next: u32, low_state: u32) {
     }
 }
 
-unsafe fn release(token: ReleaseToken) {
+unsafe fn release(ring: &mut RxRing, token: RxToken) {
     unsafe {
-        let slot = token.slot as usize;
-        if !(FIFO_BASE..FIFO_BASE + FIFO_SIZE as usize).contains(&slot) {
+        let slot_offset = token.slot_offset();
+        let slot = FIFO_BASE + slot_offset as usize;
+        if slot_offset >= FIFO_SIZE {
             crate::hif::publish_halting_exception(
                 [
                     0x5258_524c,
-                    token.slot,
-                    token.next,
-                    RELEASE_OFFSET,
-                    CLAIM_OFFSET,
+                    slot as u32,
+                    token.next(),
+                    ring.release_offset(),
+                    ring.claim_offset(),
                     DMA_PRODUCER.read_volatile(),
-                    HOST_TRANSFER_COUNT,
+                    ring.host_transfer_count(),
                     0,
                     0,
                     0,
@@ -811,46 +814,54 @@ unsafe fn release(token: ReleaseToken) {
         }
         let state = (slot + 8) as *mut u32;
         let value = state.read_volatile();
-        let low = value & 0xff;
-        let ownership = value & 0xffff_ff00;
-
-        if ownership == FIFO_RELEASED {
-            return;
-        }
-        if ownership != 0 && ownership != 0xffff_ff00 {
-            // Report-only mode: a slot whose ownership word is TX command data
-            // is corrupt, but the release-head walk can still reclaim it. Treat
-            // it as an out-of-order release and keep going instead of halting,
-            // so a run can be measured through the corruption.
-            {
-                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RX_RESYNC);
+        let low = match ring.classify_release(&token, value) {
+            ReleaseAction::AlreadyReleased | ReleaseAction::Pending => return,
+            ReleaseAction::MarkPending { corrupt, .. } => {
+                if corrupt {
+                    crate::host_tx_diagnostics::bump(
+                        crate::host_tx_diagnostics::counter::RX_RESYNC,
+                    );
+                }
                 state.write_volatile(pending_release_state(value));
+                return;
             }
-        }
-        if ownership == 0 {
-            // Vendor marks an out-of-order release as 0xffffff00 and lets the
-            // release-head walk reclaim it when all preceding owners return.
-            state.write_volatile(pending_release_state(value));
-        }
+            ReleaseAction::ReleaseHead {
+                low_state,
+                normalize_first,
+                corrupt,
+            } => {
+                if corrupt {
+                    crate::host_tx_diagnostics::bump(
+                        crate::host_tx_diagnostics::counter::RX_RESYNC,
+                    );
+                }
+                if normalize_first {
+                    state.write_volatile(pending_release_state(value));
+                }
+                low_state
+            }
+        };
 
-        let slot_offset = normalize_offset((slot - FIFO_BASE) as u32);
-        if RELEASE_OFFSET != slot_offset {
-            return;
-        }
-
-        release_head_slot(slot, token.next, low);
-        while RELEASE_OFFSET != CLAIM_OFFSET {
-            let next_slot = FIFO_BASE + RELEASE_OFFSET as usize;
+        release_head_slot(ring, slot, token.next(), low);
+        while ring.release_offset() != ring.claim_offset() {
+            let next_slot = FIFO_BASE + ring.release_offset() as usize;
             let next_state = ((next_slot + 8) as *const u32).read_volatile();
             if next_state & 0xffff_ff00 != 0xffff_ff00 {
                 break;
             }
             let next = ((next_slot + 4) as *const u32).read_volatile();
-            release_head_slot(next_slot, normalize_offset(next), next_state & 0xff);
+            release_head_slot(
+                ring,
+                next_slot,
+                normalize_offset(next),
+                next_state & 0xff,
+            );
         }
-        if RESYNC_RELEASE_DEFERRED && HOST_TRANSFER_COUNT == 0 {
-            set_release_offset(CLAIM_OFFSET);
-            RESYNC_RELEASE_DEFERRED = false;
+        if let Some(target) = ring.finish_deferred_resync() {
+            // `finish_deferred_resync` already updates the software cursor;
+            // preserve the existing hardware write order here.
+            ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(target);
+            DMA_CONSUMER.write_volatile(target);
         }
     }
 }
@@ -888,14 +899,14 @@ pub unsafe fn rx_diagnostic_counters() -> (u32, u32, u32, u32) {
 /// # Safety
 /// Single-threaded firmware context.
 pub unsafe fn host_transfers_outstanding() -> u32 {
-    unsafe { HOST_TRANSFER_COUNT }
+    unsafe { rx_ring().host_transfer_count() }
 }
 
-pub unsafe fn complete_host_transfer(token: ReleaseToken) {
+pub unsafe fn complete_host_transfer(token: RxToken) {
     unsafe {
-        if HOST_TRANSFER_COUNT != 0 {
-            HOST_TRANSFER_COUNT -= 1;
-            release(token);
+        let ring = rx_ring();
+        if ring.complete_host_transfer() {
+            release(ring, token);
         }
     }
 }
@@ -939,8 +950,9 @@ unsafe fn poll_indication(
     scan_only: bool,
 ) -> Option<PendingIndication> {
     unsafe {
-        let consumer = unsafe { CLAIM_OFFSET };
-        let raw_producer = unsafe { DMA_PRODUCER.read_volatile() };
+        let ring = rx_ring();
+        let consumer = ring.claim_offset();
+        let raw_producer = DMA_PRODUCER.read_volatile();
         let producer = normalize_offset(raw_producer);
         if consumer == producer {
             return None;
@@ -969,7 +981,7 @@ unsafe fn poll_indication(
                     ((slot + 4) as *mut u32).write_volatile(next);
                     let state = (slot + 8) as *mut u32;
                     state.write_volatile(claimed_slot_state(state.read_volatile()));
-                    set_claim_offset(next);
+                    set_claim_offset(ring, next);
                     ((FIFO_BASE + next as usize) as *mut u32).write_volatile(FIFO_MAGIC);
                     bump_resync_field(RESYNC_ACCEPTED);
                 }
@@ -977,7 +989,7 @@ unsafe fn poll_indication(
                 unsafe {
                     let diagnostics = &mut *DIAGNOSTICS.0.get();
                     diagnostics.bad_magic = diagnostics.bad_magic.wrapping_add(1);
-                    resynchronize_consumer(consumer, producer, raw_producer);
+                    resynchronize_consumer(ring, consumer, producer, raw_producer);
                 }
                 return None;
             }
@@ -999,19 +1011,20 @@ unsafe fn poll_indication(
                 if usize::from(slot_length) > MAX_FRAME_LEN + 4 {
                     diagnostics.oversized_frames = diagnostics.oversized_frames.wrapping_add(1);
                 }
-                resynchronize_consumer(consumer, producer, raw_producer);
+                resynchronize_consumer(ring, consumer, producer, raw_producer);
             }
             return None;
         }
 
         let frame_len = usize::from(slot_length) - 4;
         let next = next_offset(consumer, slot_length);
-        unsafe {
+        let token = unsafe {
             ((slot + 4) as *mut u32).write_volatile(next);
             let state = (slot + 8) as *mut u32;
             let slot_state = claimed_slot_state(state.read_volatile());
             state.write_volatile(slot_state);
-            set_claim_offset(next);
+            let token = ring.claim(consumer, next);
+            ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(next);
             crate::host_tx_diagnostics::record(
                 crate::host_tx_diagnostics::EVENT_RX_CLAIM,
                 0,
@@ -1019,10 +1032,7 @@ unsafe fn poll_indication(
                 (u32::from(slot_length) << 16) | next,
                 slot_state,
             );
-        }
-        let token = ReleaseToken {
-            slot: slot as u32,
-            next,
+            token
         };
 
         let frame_address = slot + 0x20;
@@ -1034,7 +1044,7 @@ unsafe fn poll_indication(
                 // The valid slot header and bounded length provide a trustworthy
                 // vendor-format next pointer even though this implementation does
                 // not consume split frame/trailer data across the FIFO boundary.
-                release(token);
+                release(ring, token);
             }
             return None;
         }
@@ -1090,7 +1100,7 @@ unsafe fn poll_indication(
             unsafe {
                 let diagnostics = &mut *DIAGNOSTICS.0.get();
                 diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
-                release(token);
+                release(ring, token);
             }
             return None;
         }
@@ -1105,7 +1115,7 @@ unsafe fn poll_indication(
                     unsafe {
                         let diagnostics = &mut *DIAGNOSTICS.0.get();
                         diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
-                        release(token);
+                        release(ring, token);
                     }
                     return None;
                 }
@@ -1115,11 +1125,11 @@ unsafe fn poll_indication(
         // Vendor keeps draining and filtering RX FIFO slots while 24 receive
         // indications are host-owned; only an otherwise publishable frame is
         // dropped at this admission boundary.
-        if unsafe { HOST_TRANSFER_COUNT } >= MAX_HOST_TRANSFERS {
+        if ring.host_transfer_count() >= MAX_HOST_TRANSFERS {
             unsafe {
                 let diagnostics = &mut *DIAGNOSTICS.0.get();
                 diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
-                release(token);
+                release(ring, token);
             }
             return None;
         }
@@ -1137,7 +1147,8 @@ unsafe fn poll_indication(
             ((message_address + 10) as *mut u8).write_volatile(rx_rate);
             ((message_address + 11) as *mut u8).write_volatile(rcpi);
             write_u32(message_address + 12, indication_flags);
-            HOST_TRANSFER_COUNT += 1;
+            let published = ring.publish_host_transfer(MAX_HOST_TRANSFERS);
+            debug_assert!(published);
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.indications = diagnostics.indications.wrapping_add(1);
         }
@@ -1198,12 +1209,5 @@ mod tests {
         assert_eq!(claimed_slot_state(0x1234_56a5), 0x0000_00a5);
         assert_eq!(pending_release_state(0x1234_56a5), 0xffff_ffa5);
         assert_eq!(FIFO_RELEASED | claimed_slot_state(0x1234_56a5), 0xcccc_cca5);
-    }
-
-    #[test]
-    fn resync_never_releases_across_host_owned_slots() {
-        assert!(!resync_release_can_advance(1, 0x100, 0x100));
-        assert!(!resync_release_can_advance(0, 0x080, 0x100));
-        assert!(resync_release_can_advance(0, 0x100, 0x100));
     }
 }

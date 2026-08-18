@@ -42,6 +42,7 @@ pub mod phy;
 pub mod platform;
 pub mod radio;
 pub mod rate_policy;
+pub(crate) mod rx_model;
 pub mod scan;
 pub mod tcm;
 pub mod tx;

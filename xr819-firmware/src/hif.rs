@@ -10,7 +10,7 @@ use core::arch::global_asm;
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 use core::cell::UnsafeCell;
 
-use crate::radio::{self, PendingIndication, ReleaseToken};
+use crate::radio::{self, PendingIndication, RxToken};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
@@ -295,7 +295,7 @@ pub struct Transport {
     state: &'static HifState,
     software_state: &'static HifSoftwareState,
     shared: &'static HifShared,
-    output_releases: [Option<ReleaseToken>; 64],
+    output_releases: [Option<RxToken>; 64],
     output_shared_slots: [Option<u8>; 64],
     shared_slots_in_use: [bool; 4],
     prepared_shared_slot: Option<u8>,
@@ -1025,7 +1025,7 @@ impl Transport {
         &mut self,
         buffer_address: usize,
         length: u16,
-        release: Option<ReleaseToken>,
+        release: Option<RxToken>,
         shared_slot: Option<u8>,
     ) {
         let queued = self.state.tx_queued.get();
