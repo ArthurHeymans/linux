@@ -2,7 +2,8 @@
 #![no_main]
 
 use core::arch::{global_asm, naked_asm};
-use core::mem::size_of;
+use core::cell::UnsafeCell;
+use core::mem::{MaybeUninit, size_of};
 use core::panic::PanicInfo;
 use xr819_firmware::configuration;
 use xr819_firmware::crypto;
@@ -36,6 +37,30 @@ use xr819_firmware::wsm::{
     encode_xr819_tx_confirm_details, encode_xr819_tx_confirm_retry_details,
 };
 use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
+
+/// Const-initialized storage taken once by the single reset-time owner.
+///
+/// Unlike a general static cell this needs no atomics: the references never
+/// escape `rust_main`, and reset invokes `take()` exactly once before entering
+/// the cooperative loop.
+struct SingleBootCell<T>(UnsafeCell<MaybeUninit<T>>);
+
+unsafe impl<T> Sync for SingleBootCell<T> {}
+
+impl<T> SingleBootCell<T> {
+    const fn new() -> Self {
+        Self(UnsafeCell::new(MaybeUninit::uninit()))
+    }
+
+    /// # Safety
+    /// This may be called only once for each cell during one firmware boot.
+    unsafe fn init_with(&'static self, value: impl FnOnce() -> T) -> &'static mut T {
+        unsafe { (&mut *self.0.get()).write(value()) }
+    }
+}
+
+static RESPONSE_SCRATCH: SingleBootCell<[u8; SHARED_BUFFER_SIZE]> = SingleBootCell::new();
+static HOST_TX_DRIVER: SingleBootCell<HostTxDriver> = SingleBootCell::new();
 
 // The ARM9 exception vectors execute in ARM state even though the firmware
 // body is Thumb. Each terminal veneer saves the unmodified shared registers on
@@ -357,8 +382,8 @@ extern "C" fn rust_main() -> ! {
     // Command responses and retained class-0 confirmations are copied into
     // their original 1632-byte request buffers before publication. This buffer
     // is scratch only and is never exposed through a HIF descriptor.
-    let mut response_scratch = [0_u8; SHARED_BUFFER_SIZE];
-    let mut host_tx_driver = HostTxDriver::new();
+    let response_scratch = unsafe { RESPONSE_SCRATCH.init_with(|| [0; SHARED_BUFFER_SIZE]) };
+    let host_tx_driver = unsafe { HOST_TX_DRIVER.init_with(HostTxDriver::new) };
     // Main-loop rate. Admission -> publication is 37 ms under load with a
     // budget of 4 over 30 contexts, implying ~5 ms per pass, and raising the
     // budget made things worse, so the cost is per pass. An earlier attempt
@@ -481,7 +506,7 @@ extern "C" fn rust_main() -> ! {
                 confirmation.tx_rate,
                 confirmation.ack_failures,
                 confirmation.rate_try,
-                &mut response_scratch,
+                &mut *response_scratch,
             );
             if encoded.is_ok() {
                 unsafe {
@@ -636,7 +661,7 @@ extern "C" fn rust_main() -> ! {
             && host_lane_available
             && let Some(request) = transport.poll_request()
         {
-            let output = &mut response_scratch;
+            let output: &mut [u8] = &mut response_scratch[..];
             let mut publish_response = true;
             let request_id = request.id;
             let request_if_id = request.if_id;
