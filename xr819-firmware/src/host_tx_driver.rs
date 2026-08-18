@@ -170,6 +170,7 @@ impl HostTxDriver {
     pub unsafe fn service(
         &mut self,
         events: &mut tx::MacEventQueue,
+        mac_domain: &mut crate::mac_domain::MacDomain,
         allow_hardware_publication: bool,
         allow_debug_event: bool,
     ) -> Option<(u32, u32)> {
@@ -190,7 +191,13 @@ impl HostTxDriver {
 
         if let Some(index) = self.hardware_runtime_owner() {
             diagnostic = unsafe {
-                self.service_index(index, events, allow_hardware_publication, allow_debug_event)
+                self.service_index(
+                    index,
+                    events,
+                    mac_domain,
+                    allow_hardware_publication,
+                    allow_debug_event,
+                )
             };
             budget -= 1;
         }
@@ -203,6 +210,7 @@ impl HostTxDriver {
                 self.service_index(
                     index,
                     events,
+                    mac_domain,
                     allow_hardware_publication,
                     allow_debug_event && diagnostic.is_none(),
                 )
@@ -293,6 +301,7 @@ impl HostTxDriver {
         &mut self,
         index: usize,
         _events: &mut tx::MacEventQueue,
+        mac_domain: &mut crate::mac_domain::MacDomain,
         allow_hardware_publication: bool,
         allow_debug_event: bool,
     ) -> Option<(u32, u32)> {
@@ -317,7 +326,8 @@ impl HostTxDriver {
             } => {
                 let pipe = reservation.pipe();
                 let slot = reservation.slot();
-                match unsafe { reservation.publish(&mut retained) } {
+                let mut guard = mac_domain.enter();
+                match unsafe { reservation.publish(&mut guard, &mut retained) } {
                     Ok(()) => {
                         unsafe {
                             host_tx_diagnostics::trace(
@@ -427,18 +437,20 @@ impl HostTxDriver {
                     && allow_hardware_publication
                     && self.hardware_runtime_owner().is_none()
                 {
+                    let mut guard = mac_domain.enter();
                     if !self.scheduler_phy_started_this_pass {
                         // Vendor starts PHY command 1 once before each
                         // non-empty scheduler pass.
                         let _ = unsafe { tx::start_phy_operation_1() };
                         self.scheduler_phy_started_this_pass = true;
                     }
-                    match unsafe { vendor_host_tx::reserve_non_aggregate_scheduler(&mut retained) }
-                    {
+                    match unsafe {
+                        vendor_host_tx::reserve_non_aggregate_scheduler(&mut guard, &mut retained)
+                    } {
                         Ok(reservation) => {
                             let pipe = reservation.pipe();
                             let slot = reservation.slot();
-                            match unsafe { reservation.publish(&mut retained) } {
+                            match unsafe { reservation.publish(&mut guard, &mut retained) } {
                                 Ok(()) => {
                                     unsafe {
                                         host_tx_diagnostics::trace(

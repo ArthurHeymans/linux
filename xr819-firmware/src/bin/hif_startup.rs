@@ -9,6 +9,7 @@ use xr819_firmware::crypto;
 use xr819_firmware::hif::{SHARED_BUFFER_SIZE, Transport};
 use xr819_firmware::join;
 use xr819_firmware::mac;
+use xr819_firmware::mac_domain::MacDomain;
 use xr819_firmware::phy::{initialize_mac_core_mode0, initialize_mac_software_state};
 use xr819_firmware::platform::{
     enable_packet_controller, initialize_runtime_state, prepare_dma_and_clocks,
@@ -286,6 +287,7 @@ extern "C" fn rust_main() -> ! {
     xr819_firmware::crypto::run_hardware_ccmp_selftest();
     let mut transport = unsafe { Transport::initialize() };
     let mut mac_events = unsafe { tx::MacEventQueue::claim() };
+    let mut mac_domain = MacDomain::new();
     debug_stop(6, 0x5354_4706);
 
     // Vendor 0x9ac calls packet-DMA initialization immediately after 0x94c.
@@ -401,6 +403,7 @@ extern "C" fn rust_main() -> ! {
         if let Some(event) = unsafe {
             host_tx_driver.service(
                 &mut mac_events,
+                &mut mac_domain,
                 !tx::host_management_runtime_active(),
                 pending_tx_debug_event.is_none(),
             )

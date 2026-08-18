@@ -38,6 +38,7 @@ pub mod host_tx_policy;
 pub mod join;
 pub mod loader;
 pub mod mac;
+pub mod mac_domain;
 pub mod phy;
 pub mod platform;
 pub mod radio;

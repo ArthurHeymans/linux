@@ -3359,6 +3359,7 @@ pub unsafe fn service_single_probe_runtime_inactive(
 /// exclusively owned by the vendor-host runtime.
 #[cfg(target_arch = "arm")]
 pub unsafe fn publish_host_class0_slot(
+    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     context: u32,
     pipe: u8,
     slot: u8,
@@ -7089,6 +7090,14 @@ pub unsafe fn disable_irq_fiq_save() -> u32 {
 pub unsafe fn restore_irq_fiq_saved(previous: u32) {
     unsafe { restore_irq_fiq(previous) };
 }
+
+#[cfg(not(target_arch = "arm"))]
+pub unsafe fn disable_irq_fiq_save() -> u32 {
+    0
+}
+
+#[cfg(not(target_arch = "arm"))]
+pub unsafe fn restore_irq_fiq_saved(_previous: u32) {}
 
 #[cfg(target_arch = "arm")]
 pub fn probe_experiment_diagnostic_word() -> u16 {

@@ -1020,9 +1020,10 @@ impl HostSchedulerReservation {
     /// This reservation must exclusively own the pipe slot and retained frame.
     pub unsafe fn publish(
         self,
+        guard: &mut crate::mac_domain::MacDomainGuard<'_>,
         retained: &mut RetainedHostTx,
     ) -> Result<(), (Self, crate::tx::ProbeBuildError)> {
-        unsafe { self.publish_in_batch(retained, crate::tx::BatchPosition::Only) }
+        unsafe { self.publish_in_batch(guard, retained, crate::tx::BatchPosition::Only) }
     }
 
     /// Stage this reservation as part of a pipe batch. `Only` is the historic
@@ -1033,6 +1034,7 @@ impl HostSchedulerReservation {
     /// Same as `publish`.
     pub unsafe fn publish_in_batch(
         self,
+        guard: &mut crate::mac_domain::MacDomainGuard<'_>,
         retained: &mut RetainedHostTx,
         batch: crate::tx::BatchPosition,
     ) -> Result<(), (Self, crate::tx::ProbeBuildError)> {
@@ -1041,6 +1043,7 @@ impl HostSchedulerReservation {
         }
         if let Err(error) = unsafe {
             crate::tx::publish_host_class0_slot(
+                guard,
                 self.context.raw(),
                 self.pipe,
                 self.slot,
@@ -1101,6 +1104,7 @@ const fn scheduler_batch_flags(original: u32, staged: u8) -> u32 {
 
 #[cfg(target_arch = "arm")]
 pub unsafe fn reserve_non_aggregate_scheduler(
+    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     retained: &mut RetainedHostTx,
 ) -> Result<HostSchedulerReservation, SchedulerReserveError> {
     if retained.phase != HostTxPhase::PasQueued {
