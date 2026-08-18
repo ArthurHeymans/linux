@@ -81,9 +81,14 @@ impl RxRing {
         self.host_transfer_count
     }
 
-    pub(crate) fn claim(&mut self, slot_offset: u32, next: u32) -> RxToken {
+    /// Claims the current ring head and advances to `next`.
+    ///
+    /// The caller cannot choose the token identity independently of the ring's
+    /// current claim cursor.
+    pub(crate) fn claim(&mut self, next: u32) -> RxToken {
+        let token = RxToken::new(self.claim_offset, next);
         self.claim_offset = next;
-        RxToken::new(slot_offset, next)
+        token
     }
 
     pub(crate) fn publish_host_transfer(&mut self, limit: u32) -> bool {
@@ -169,10 +174,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claim_token_identity_comes_from_the_current_head() {
+        let mut ring = RxRing::new();
+        ring.synchronize(0x100);
+
+        let first = ring.claim(0x180);
+        let second = ring.claim(0x240);
+
+        assert_eq!(first.slot_offset(), 0x100);
+        assert_eq!(first.next(), 0x180);
+        assert_eq!(second.slot_offset(), 0x180);
+        assert_eq!(second.next(), 0x240);
+        assert_eq!(ring.claim_offset(), 0x240);
+    }
+
+    #[test]
     fn corrupt_release_head_is_reclaimed_in_the_same_call() {
         let mut ring = RxRing::new();
         ring.synchronize(0x100);
-        let token = ring.claim(0x100, 0x180);
+        let token = ring.claim(0x180);
 
         assert_eq!(
             ring.classify_release(&token, 0x1234_56a5),
@@ -188,7 +208,8 @@ mod tests {
     fn out_of_order_release_is_marked_pending() {
         let mut ring = RxRing::new();
         ring.synchronize(0x100);
-        let token = ring.claim(0x180, 0x200);
+        ring.set_claim_offset(0x180);
+        let token = ring.claim(0x200);
 
         assert_eq!(
             ring.classify_release(&token, 0x0000_00a5),

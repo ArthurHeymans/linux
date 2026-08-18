@@ -1023,7 +1023,7 @@ unsafe fn poll_indication(
             let state = (slot + 8) as *mut u32;
             let slot_state = claimed_slot_state(state.read_volatile());
             state.write_volatile(slot_state);
-            let token = ring.claim(consumer, next);
+            let token = ring.claim(next);
             ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(next);
             crate::host_tx_diagnostics::record(
                 crate::host_tx_diagnostics::EVENT_RX_CLAIM,

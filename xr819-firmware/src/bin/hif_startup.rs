@@ -157,9 +157,7 @@ xr819_exception_common:
     "#
 );
 
-// Explicit rollback boundary for scan-owned active probe TX. This feature is
-// enabled by default after repeated cross-scan hardware validation; building
-// with `--no-default-features` retains the passive fallback.
+// Scan-owned active probe TX is part of the qualified station behavior.
 const ENABLE_SINGLE_PROBE_EXPERIMENT: bool = true;
 
 unsafe extern "C" {
@@ -382,13 +380,11 @@ extern "C" fn rust_main() -> ! {
         #[cfg(target_arch = "arm")]
         {
             let now = unsafe { xr819_firmware::vendor_host_tx::vendor_timer_now() };
-            // Vendor ticks at 200 ms, so a wedged pipe costs a full second to
-            // recover. Vendor can afford that; we cannot. A pipe stays armed
-            // while stuck, which blocks every new reservation for that pipe, so
-            // frames queue behind it and admission-to-confirmation latency runs
-            // to hundreds of milliseconds until the host's TX-confirm timeout
-            // kills the link. Retirement cannot help either: it only runs from
-            // a delivered status, and a wedged pipe stops delivering them.
+            // The vendor-shaped five-tick expiry takes about one second. A
+            // stuck pipe remains armed during that window and blocks every new
+            // reservation for the pipe. Retirement cannot help because it only
+            // runs from a delivered status, and a wedged pipe stops delivering
+            // them.
             if now.wrapping_sub(last_watchdog_tick) >= 200_000 {
                 last_watchdog_tick = now;
                 unsafe {
