@@ -14,7 +14,8 @@ cd "$(dirname "$0")/.."
 
 cargo +nightly build --release --bin hif-startup --target thumbv5te-none-eabi \
   -Z build-std=core
-python3 tools/pack-sectioned-elf.py \
-  target/thumbv5te-none-eabi/release/hif-startup "$OUT"
+ELF=target/thumbv5te-none-eabi/release/hif-startup
+python3 tools/check-rust-main-stack.py "$ELF"
+python3 tools/pack-sectioned-elf.py "$ELF" "$OUT"
 
 echo "features=none"
