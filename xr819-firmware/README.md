@@ -388,11 +388,14 @@ native state from entering either the legacy window or stacks. The sectioned
 image packer emits the native `.dtcm.bss` as a DTCM fill record, and main entry
 also clears its linker-symbol range explicitly.
 
-CPU-only HIF queue/ring ownership, `Transport`, its response scratch, and the
-small shared HIF sequence state occupy 1,720 bytes of native DTCM. Hardware
-descriptors and packet-RAM addresses remain fixed. Further translations should
-move into this linker-owned region; as the contiguous legacy boundary is pushed
-down, `DTCM_NATIVE` can grow without changing Rust object identities.
+Native DTCM currently uses 1,996 bytes. It holds CPU-only HIF queue/ring
+ownership, `Transport`, its response scratch, HIF sequence state, the completed-
+frame FIFO, probe-context sequence, PAS active-context count, non-class-0
+internal-context count, and TX retry PRNG state. The uncertain class-0 counter
+at `0x04008f71` remains fixed. Hardware descriptors and packet-RAM addresses
+also remain fixed. Further translations should move into this linker-owned
+region; as the contiguous legacy boundary is pushed down, `DTCM_NATIVE` can
+grow without changing Rust object identities.
 
 An explicit `tcm-size-diagnostic` feature adds ARM interworking helpers for the
 CP15 TCM type and region registers. The registers are read only when the host

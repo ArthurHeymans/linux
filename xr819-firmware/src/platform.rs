@@ -234,7 +234,7 @@ pub fn initialize_runtime_state() {
         // observed by 0x164bc at 0x04001428. Our flat custom image omits that
         // segment, so reproduce its loader effect before entering startup.
         (0x0400_1428 as *mut u32).write_volatile(0);
-        (0x0400_142c as *mut u32).write_volatile(0x1234_5678);
+        crate::tx::initialize_retry_random_state();
         (0x0400_1430 as *mut u32).write_volatile(0);
 
     }

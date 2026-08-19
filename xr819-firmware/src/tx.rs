@@ -59,6 +59,18 @@ unsafe fn set_probe_context_sequence(value: u16) {
     unsafe { PROBE_CONTEXT_SEQUENCE.0.get().write_volatile(value) };
 }
 
+struct SharedRetryRandomState(UnsafeCell<u32>);
+
+unsafe impl Sync for SharedRetryRandomState {}
+
+#[unsafe(link_section = ".dtcm.bss.retry_random_state")]
+static RETRY_RANDOM_STATE: SharedRetryRandomState =
+    SharedRetryRandomState(UnsafeCell::new(0));
+
+pub(crate) unsafe fn initialize_retry_random_state() {
+    unsafe { RETRY_RANDOM_STATE.0.get().write_volatile(0x1234_5678) };
+}
+
 struct SharedInternalContextCount(UnsafeCell<u8>);
 
 unsafe impl Sync for SharedInternalContextCount {}
@@ -134,6 +146,8 @@ impl SharedCompletionRing {
 
 #[cfg(not(all(target_arch = "arm", target_feature = "thumb-mode")))]
 const SCHEDULER_PENDING: usize = 0x0400_1fd4;
+#[cfg(not(target_arch = "arm"))]
+const PIPE_RETRY_RANDOM_STATE: u32 = 0x0400_142c;
 const PIPE_RECORDS: u32 = 0x0400_1680;
 const CURRENT_PIPE: u32 = 0x0400_1f78;
 const CURRENT_PIPE_RECORD: u32 = CURRENT_PIPE + 0x0c;
@@ -152,7 +166,6 @@ const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
 const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
 const PIPE_RETRY_HARDWARE_STATE: u32 = 0x0400_1e6c;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
-const PIPE_RETRY_RANDOM_STATE: u32 = 0x0400_142c;
 const PIPE_RETRY_MASK_TABLE: u32 = 0x0400_3678;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const PIPE_RETRY_RATE_MAP: u32 = 0x0400_1aec;
@@ -2154,11 +2167,22 @@ pub enum SingleFrameRearmOutcome {
     HardwareSentinelAcknowledged,
 }
 
-fn next_retry_random24<M: MacPipeMmio>(mmio: &mut M) -> u32 {
-    let state = mmio.read_u32(PIPE_RETRY_RANDOM_STATE);
+fn next_retry_random24<M: MacPipeMmio>(_mmio: &mut M) -> u32 {
+    #[cfg(target_arch = "arm")]
+    let state = unsafe { RETRY_RANDOM_STATE.0.get().read_volatile() };
+    #[cfg(not(target_arch = "arm"))]
+    let state = _mmio.read_u32(PIPE_RETRY_RANDOM_STATE);
+
     let mixed = (state >> 4) ^ state;
     let next = (state << 27) | (mixed & 0x07ff_ffff);
-    mmio.write_u32(PIPE_RETRY_RANDOM_STATE, next);
+
+    #[cfg(target_arch = "arm")]
+    unsafe {
+        RETRY_RANDOM_STATE.0.get().write_volatile(next);
+    }
+    #[cfg(not(target_arch = "arm"))]
+    _mmio.write_u32(PIPE_RETRY_RANDOM_STATE, next);
+
     next & 0x00ff_ffff
 }
 
