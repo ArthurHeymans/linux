@@ -2190,3 +2190,19 @@ in [`xr819-aes-engine.md`](xr819-aes-engine.md). Hardware AES is currently an
 optimization/reference target rather than the first reliability fix: the
 immediate priority is reproducing the protected-frame MAC publication and
 completion semantics after ring activation.
+
+Native-DTCM migration now requires a complete vendor-reference audit before an
+address can move. A trial migration of retry/drain control `0x04001e6c` produced
+a Rust panic at `src/hif.rs:1130` (`response_available()` was false), with 11
+host TX buffers occupied and one TX pending. Ghidra then showed untranslated
+writers in `mac_irq_handler`, `txp_scheduler_run`,
+`txp_prepare_all_pipes_idle`, `txp_fn_4155`, `task_22bc`, and
+`txp_dequeue_pending`; splitting that shared state between fixed and native
+copies had stranded completion/response progress. The proposed scheduler/RX
+gate migration at `0x04003a6d` was also withdrawn before acceptance because
+`task_22bc`, `tx_flush_all_queues`, channel-switch tasks, and other retained
+paths still write it. Such fields remain fixed until every producer and
+consumer is translated or explicitly bridged. The next accepted candidates
+must have vendor references confined to the translated owner; the channel PLL
+cache tuple at `0x040099f8`, `0x040099fc`, and `0x04009a06` satisfies that
+criterion, while adjacent force flag `0x04009a08` does not.

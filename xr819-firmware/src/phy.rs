@@ -10,6 +10,54 @@ use core::mem::MaybeUninit;
 use zerocopy::byteorder::little_endian::U16;
 use zerocopy::{Immutable, IntoBytes};
 
+// Vendor references to 0x040099f8, 0x040099fc, and 0x04009a06 are confined
+// to `phy_apply_cfg_if_channel_match`, whose translated owner is
+// `program_channel_pll`. The adjacent force flag at 0x04009a08 has additional
+// calibration and RF consumers and deliberately remains fixed.
+#[repr(C)]
+struct ChannelPllCache {
+    integer: u32,
+    fractional: u32,
+    channel: u16,
+}
+
+struct SharedChannelPllCache(UnsafeCell<ChannelPllCache>);
+
+unsafe impl Sync for SharedChannelPllCache {}
+
+#[unsafe(link_section = ".dtcm.bss.channel_pll_cache")]
+static CHANNEL_PLL_CACHE: SharedChannelPllCache = SharedChannelPllCache(UnsafeCell::new(
+    ChannelPllCache {
+        integer: 0,
+        fractional: 0,
+        channel: 0,
+    },
+));
+
+unsafe fn cached_pll_channel() -> u16 {
+    let cache = CHANNEL_PLL_CACHE.0.get();
+    unsafe { (&raw const (*cache).channel).read_volatile() }
+}
+
+unsafe fn cached_pll_divider() -> (u32, u32) {
+    let cache = CHANNEL_PLL_CACHE.0.get();
+    unsafe {
+        (
+            (&raw const (*cache).integer).read_volatile(),
+            (&raw const (*cache).fractional).read_volatile(),
+        )
+    }
+}
+
+unsafe fn set_cached_pll_divider(integer: u32, fractional: u32, channel: u16) {
+    let cache = CHANNEL_PLL_CACHE.0.get();
+    unsafe {
+        (&raw mut (*cache).integer).write_volatile(integer);
+        (&raw mut (*cache).fractional).write_volatile(fractional);
+        (&raw mut (*cache).channel).write_volatile(channel);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IqHardwareDiagnostics {
     pub baseline_i: i32,
@@ -1033,11 +1081,10 @@ pub unsafe fn program_channel_pll(channel: u16) -> Result<PllDivider, ChannelPll
         if divisor <= 0 || divisor > i64::from(u32::MAX) {
             return Err(ChannelPllError::InvalidReference);
         }
-        let cached_channel = (0x0400_9a06 as *const u16).read_volatile();
+        let cached_channel = cached_pll_channel();
         let cache_forced = (0x0400_9a08 as *const u8).read_volatile() != 0;
         let divider = if cached_channel == channel && !cache_forced {
-            let integer = (0x0400_99f8 as *const u32).read_volatile();
-            let fractional = (0x0400_99fc as *const u32).read_volatile();
+            let (integer, fractional) = cached_pll_divider();
             PllDivider {
                 integer,
                 fractional,
@@ -1046,9 +1093,7 @@ pub unsafe fn program_channel_pll(channel: u16) -> Result<PllDivider, ChannelPll
         } else {
             let divider = pll_divider(frequency_khz, multiplier, divisor as u32)
                 .ok_or(ChannelPllError::InvalidReference)?;
-            write_u32(0x0400_99f8, divider.integer);
-            write_u32(0x0400_99fc, divider.fractional);
-            write_u16(0x0400_9a06, channel);
+            set_cached_pll_divider(divider.integer, divider.fractional, channel);
             divider
         };
         commit_channel_pll(divider.register, profile, cache_forced);
@@ -4550,6 +4595,14 @@ mod tests {
                 lower: -64,
             }
         );
+    }
+
+    #[test]
+    fn native_channel_pll_cache_has_only_the_translated_tuple() {
+        assert_eq!(core::mem::size_of::<ChannelPllCache>(), 12);
+        assert_eq!(core::mem::offset_of!(ChannelPllCache, integer), 0);
+        assert_eq!(core::mem::offset_of!(ChannelPllCache, fractional), 4);
+        assert_eq!(core::mem::offset_of!(ChannelPllCache, channel), 8);
     }
 
     #[test]
