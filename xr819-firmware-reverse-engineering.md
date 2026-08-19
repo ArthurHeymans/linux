@@ -2205,7 +2205,17 @@ paths still write it. Such fields remain fixed until every producer and
 consumer is translated or explicitly bridged. The next accepted candidates
 must have vendor references confined to the translated owner; the channel PLL
 cache tuple at `0x040099f8`, `0x040099fc`, and `0x04009a06` satisfies that
-criterion, while adjacent force flag `0x04009a08` does not.
+criterion, while adjacent force flag `0x04009a08` does not. A later workflow
+audit found one translated compatibility read left in
+`ChannelTransitionScheduler::start()`: its repeated-channel shortcut still
+copied the fixed divider pair into an otherwise informational result. It now
+uses the native cache. The linked change is localized to the two aligned loads;
+the shortcut performs no hardware writes and scan ignores the returned divider.
+After unstable earlier batches, a fresh historical control, exact parent, and
+three unchanged candidates all completed with zero TX failures, 20/20 ping,
+7.92-7.93 Mbit/s received UDP, and no exception diagnostics. Candidate TCP was
+3.70-4.00 Mbit/s against 3.47 Mbit/s for the exact parent and 3.90 Mbit/s for
+the historical control under the same conditions.
 
 The channel power-limit pair at `0x040099d4` and `0x040099d6` has likewise
 moved into native DTCM. Ghidra references are confined to the translated

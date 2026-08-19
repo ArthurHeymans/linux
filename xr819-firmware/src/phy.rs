@@ -2200,8 +2200,7 @@ impl ChannelTransitionScheduler {
                 && (0x0400_3a6e as *const u8).read_volatile() == 4
                 && (0x0400_994f as *const u8).read_volatile() == 2
         } {
-            let integer = unsafe { (0x0400_99f8 as *const u32).read_volatile() };
-            let fractional = unsafe { (0x0400_99fc as *const u32).read_volatile() };
+            let (integer, fractional) = unsafe { cached_pll_divider() };
             self.result.divider = PllDivider {
                 integer,
                 fractional,
