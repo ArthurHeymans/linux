@@ -197,7 +197,7 @@ pub unsafe fn apply_edca(
     if read_u16(0x0400_3a68) == 0 && read_u32(0x0400_1b04) != aifs {
         unsafe {
             write_u32(0x0400_1b04, aifs);
-            write_u32(0x09c0_0e64, aifs);
+            write_u32(crate::platform::mac_register(0x0e64), aifs);
             reset_pas_backoff(interface)?;
         }
     }

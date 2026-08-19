@@ -18,6 +18,8 @@ from pathlib import Path
 ELF_MAGIC = b"\x7fELF"
 XR819_MAGIC = b"XR01"
 PT_LOAD = 1
+SHT_NOBITS = 8
+SHF_ALLOC = 2
 EM_ARM = 40
 TYPE_COPY = 0
 TYPE_FILL = 1
@@ -36,6 +38,18 @@ class LoadSegment:
     file_size: int
     memory_size: int
     flags: int
+    alignment: int
+
+
+@dataclass(frozen=True)
+class Section:
+    index: int
+    name: str
+    section_type: int
+    flags: int
+    address: int
+    file_offset: int
+    size: int
     alignment: int
 
 
@@ -111,11 +125,96 @@ def parse_elf32_arm(data: bytes) -> tuple[int, list[LoadSegment]]:
     return entry, segments
 
 
+def parse_sections(data: bytes) -> list[Section]:
+    section_offset = struct.unpack_from("<I", data, 32)[0]
+    entry_size = struct.unpack_from("<H", data, 46)[0]
+    section_count = struct.unpack_from("<H", data, 48)[0]
+    names_index = struct.unpack_from("<H", data, 50)[0]
+    if section_count == 0 or entry_size < 40:
+        raise ValueError("ELF has no usable section-header table")
+    if section_offset + entry_size * section_count > len(data):
+        raise ValueError("ELF section-header table exceeds the file")
+    if names_index >= section_count:
+        raise ValueError("ELF section-name table index is invalid")
+
+    def raw_header(index: int) -> tuple[int, ...]:
+        return struct.unpack_from("<IIIIIIIIII", data, section_offset + index * entry_size)
+
+    names_header = raw_header(names_index)
+    names_offset = names_header[4]
+    names_size = names_header[5]
+    if names_offset + names_size > len(data):
+        raise ValueError("ELF section-name table exceeds the file")
+    names = data[names_offset : names_offset + names_size]
+
+    sections: list[Section] = []
+    for index in range(section_count):
+        (
+            name_offset,
+            section_type,
+            flags,
+            address,
+            file_offset,
+            size,
+            _link,
+            _info,
+            alignment,
+            _entry_size,
+        ) = raw_header(index)
+        if name_offset >= len(names):
+            raise ValueError(f"ELF section {index} has an invalid name offset")
+        name_end = names.find(b"\0", name_offset)
+        if name_end < 0:
+            raise ValueError(f"ELF section {index} has an unterminated name")
+        name = names[name_offset:name_end].decode("ascii", errors="strict")
+        sections.append(
+            Section(
+                index,
+                name,
+                section_type,
+                flags,
+                address,
+                file_offset,
+                size,
+                alignment,
+            )
+        )
+    return sections
+
+
+def validate_packet_sections(data: bytes, segments: list[LoadSegment]) -> list[Section]:
+    packet_sections = [
+        section for section in parse_sections(data) if section.name.startswith(".packet_ram.")
+    ]
+    for section in packet_sections:
+        if section.section_type != SHT_NOBITS:
+            raise ValueError(f"{section.name} is not SHT_NOBITS")
+        if section.flags & SHF_ALLOC == 0:
+            raise ValueError(f"{section.name} is not SHF_ALLOC")
+        section_end = section.address + section.size
+        checked_u32(f"{section.name} end", section_end)
+        for segment in segments:
+            segment_end = segment.destination + align_up(segment.memory_size, 4)
+            if section.address < segment_end and segment.destination < section_end:
+                raise ValueError(
+                    f"{section.name} [{section.address:#x}, {section_end:#x}) intersects "
+                    f"PT_LOAD {segment.index} [{segment.destination:#x}, {segment_end:#x})"
+                )
+    return packet_sections
+
+
 def validate_runtime_ranges(segments: list[LoadSegment]) -> None:
     ranges: list[tuple[int, int, int]] = []
+    forbidden_start = 0x0900_0000
+    forbidden_end = 0x0A00_0000
     for segment in segments:
         end = segment.destination + align_up(segment.memory_size, 4)
         checked_u32("segment end", end)
+        if segment.destination < forbidden_end and forbidden_start < end:
+            raise ValueError(
+                f"PT_LOAD {segment.index} destination [{segment.destination:#x}, {end:#x}) "
+                "intersects the forbidden 0x09 packet/MMIO window"
+            )
         ranges.append((segment.destination, end, segment.index))
     ranges.sort()
     for previous, current in zip(ranges, ranges[1:]):
@@ -129,6 +228,7 @@ def validate_runtime_ranges(segments: list[LoadSegment]) -> None:
 def pack_elf(data: bytes) -> tuple[bytes, int, list[LoadSegment]]:
     entry, segments = parse_elf32_arm(data)
     validate_runtime_ranges(segments)
+    validate_packet_sections(data, segments)
 
     output = bytearray(XR819_MAGIC)
     for segment in segments:

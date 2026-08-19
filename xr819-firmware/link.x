@@ -7,6 +7,9 @@ MEMORY
 
 SECTIONS
 {
+    __download_control_base = 0x0900ff80;
+    __download_trace_pc = 0x0900ff8c;
+
     .text ORIGIN(SRAM) : ALIGN(4)
     {
         KEEP(*(.text.entry))
@@ -29,6 +32,7 @@ SECTIONS
 
     /DISCARD/ :
     {
+        *(.packet_ram.*)
         *(.ARM.exidx*)
         *(.ARM.extab*)
         *(.comment*)

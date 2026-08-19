@@ -5,8 +5,21 @@ use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
-const MAILBOX: *mut u32 = 0x0900_ff98 as *mut u32;
-const HEARTBEAT: *mut u32 = 0x0900_ff9c as *mut u32;
+unsafe extern "C" {
+    static __diagnostic_main_mailbox: u8;
+    static __diagnostic_main_heartbeat: u8;
+}
+
+#[inline(always)]
+fn mailbox() -> *mut u32 {
+    (&raw const __diagnostic_main_mailbox).cast_mut().cast()
+}
+
+#[inline(always)]
+fn heartbeat() -> *mut u32 {
+    (&raw const __diagnostic_main_heartbeat).cast_mut().cast()
+}
+
 const MAIN_MAGIC: u32 = 0x5753_4d31; // "WSM1"
 
 #[unsafe(naked)]
@@ -23,13 +36,13 @@ pub unsafe extern "C" fn _start() -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn rust_main() -> ! {
     unsafe {
-        write_volatile(MAILBOX, MAIN_MAGIC);
-        write_volatile(HEARTBEAT, _start as *const () as usize as u32);
+        write_volatile(mailbox(), MAIN_MAGIC);
+        write_volatile(heartbeat(), _start as *const () as usize as u32);
     }
     loop {
         unsafe {
-            let value = read_volatile(HEARTBEAT);
-            write_volatile(HEARTBEAT, value.wrapping_add(1));
+            let value = read_volatile(heartbeat());
+            write_volatile(heartbeat(), value.wrapping_add(1));
         }
         core::hint::spin_loop();
     }

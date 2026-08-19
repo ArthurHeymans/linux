@@ -1877,7 +1877,7 @@ unsafe fn publish_completed_receive_state() {
 }
 
 unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
-    let control = 0x09c0_0600 as *mut u32;
+    let control = crate::platform::mac_register(0x0600) as *mut u32;
     unsafe {
         let value = control.read_volatile();
         if enabled {
@@ -1958,14 +1958,16 @@ pub unsafe fn start_scan_stop_calibration_state() {
 #[cfg(target_arch = "arm")]
 pub unsafe fn begin_scan_stop_rx_disable() {
     unsafe {
-        let control = (0x09c0_0600 as *mut u32).read_volatile();
-        (0x09c0_0600 as *mut u32).write_volatile(control & !1);
+        let control = (crate::platform::mac_register(0x0600) as *mut u32).read_volatile();
+        (crate::platform::mac_register(0x0600) as *mut u32).write_volatile(control & !1);
     }
 }
 
 #[cfg(target_arch = "arm")]
 pub unsafe fn scan_stop_rx_hardware_drained() -> bool {
-    let drained = unsafe { (0x09c0_0600 as *const u32).read_volatile() & (1 << 23) == 0 };
+    let drained = unsafe {
+        (crate::platform::mac_register(0x0600) as *const u32).read_volatile() & (1 << 23) == 0
+    };
     if drained {
         unsafe {
             let state = (0x0400_3a6d as *mut u8).read_volatile();

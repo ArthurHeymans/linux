@@ -7,6 +7,9 @@ MEMORY
 
 SECTIONS
 {
+    __diagnostic_output_base = 0x0900fc00;
+    __diagnostic_checkpoint_base = 0x0900fd00;
+
     .text ORIGIN(HIGH_EXTENSION) : ALIGN(4)
     {
         KEEP(*(.text.entry))
@@ -23,6 +26,7 @@ SECTIONS
 
     /DISCARD/ :
     {
+        *(.packet_ram.*)
         *(.ARM.exidx*)
         *(.ARM.extab*)
         *(.comment*)

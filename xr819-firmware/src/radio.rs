@@ -9,26 +9,26 @@
 
 use core::cell::UnsafeCell;
 
+use crate::packet_ram;
 pub use crate::rx_model::RxToken;
 use crate::rx_model::{ReleaseAction, RxRing};
 
-const FIFO_BASE: usize = 0x0940_0000;
-const FIFO_SIZE: u32 = 0x7000;
+const FIFO_SIZE: u32 = packet_ram::RX_FIFO_LOGICAL_SIZE as u32;
 // Vendor `rxfifo_off_to_addr()` wraps slot starts at 0x7000, but the current
 // slot remains linearly addressable in the following packet-RAM spill area.
 // The ring keeps 0x1000 bytes outside its logical cursor range for this.
-const FIFO_STORAGE_SIZE: usize = FIFO_SIZE as usize + 0x1000;
+const FIFO_STORAGE_SIZE: usize = packet_ram::RX_FIFO_STORAGE_SIZE;
 const FIFO_MASK: u32 = 0x0001_fffc;
 const FIFO_MAGIC: u32 = 0x00aa_55ff;
 const FIFO_RELEASED: u32 = 0xcccc_cc00;
-const DMA_PRODUCER: *const u32 = 0x09c0_0604 as *const u32;
-const DMA_CONSUMER: *mut u32 = 0x09c0_0608 as *mut u32;
+const DMA_PRODUCER: *const u32 = crate::platform::mac_register(0x0604) as *const u32;
+const DMA_CONSUMER: *mut u32 = crate::platform::mac_register(0x0608) as *mut u32;
 const VENDOR_FIFO_STATE: usize = 0x0400_1680;
-const TX_COMMAND_BASE: usize = 0x0900_7080;
-const TX_COMMAND_PIPE_STRIDE: usize = 0x150;
-const TX_COMMAND_SLOT_STRIDE: usize = 0x54;
-const TX_HARDWARE_RING_BASE: usize = 0x09c6_0000;
-const TX_HARDWARE_RING_STRIDE: usize = 0x80;
+
+#[inline(always)]
+fn fifo_base() -> usize {
+    packet_ram::rx_fifo_base()
+}
 const WSM_RX_HEADROOM: usize = 16;
 // The vendor accepts any complete FIFO slot whose length fits the HIF
 // descriptor. A 1600-byte cap incorrectly rejected valid 1840-byte slots and
@@ -192,8 +192,8 @@ pub unsafe fn synchronize_after_wake(producer: u32) {
         ((VENDOR_FIFO_STATE + 0x10) as *mut u32).write_volatile(producer);
         ((VENDOR_FIFO_STATE + 0x14) as *mut u32).write_volatile(producer);
         DMA_CONSUMER.write_volatile(producer);
-        let control = (0x09c0_0600 as *mut u32).read_volatile();
-        (0x09c0_0600 as *mut u32).write_volatile(control);
+        let control = (crate::platform::mac_register(0x0600) as *mut u32).read_volatile();
+        (crate::platform::mac_register(0x0600) as *mut u32).write_volatile(control);
     }
 }
 
@@ -346,7 +346,7 @@ unsafe fn resynchronize_consumer(
                 }
             }
             let slot_length =
-                ((FIFO_BASE + candidate as usize + 0x18) as *const u16).read_volatile();
+                ((fifo_base() + candidate as usize + 0x18) as *const u16).read_volatile();
             let next = next_offset(candidate, slot_length);
             if u32::from(slot_length) <= remaining
                 && slot_length >= 4
@@ -415,8 +415,7 @@ unsafe fn matching_tx_command(slot: usize) -> (usize, usize, u32) {
     let mut best_score = 0_u8;
     for pipe in 0..4 {
         for tx_slot in 0..4 {
-            let command =
-                TX_COMMAND_BASE + pipe * TX_COMMAND_PIPE_STRIDE + tx_slot * TX_COMMAND_SLOT_STRIDE;
+            let command = packet_ram::tx_command(pipe, tx_slot);
             let mut score = 0_u8;
             let mut first_match = 0_usize;
             for offset in (0x0c..=0x40).step_by(4) {
@@ -501,7 +500,7 @@ unsafe fn capture_final_tx_command_signature(command: u32) {
 
 // Used by the vendor-shaped resync scan in every build, not just diagnostics.
 unsafe fn fifo_word(offset: u32) -> u32 {
-    unsafe { ((FIFO_BASE + normalize_offset(offset) as usize) as *const u32).read_volatile() }
+    unsafe { ((fifo_base() + normalize_offset(offset) as usize) as *const u32).read_volatile() }
 }
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]
@@ -524,7 +523,7 @@ unsafe fn longest_signature_match_in_producer_delta(
                 matched += 1;
             }
             if matched >= 3 && best.is_none_or(|(_, _, best_words)| matched > best_words) {
-                best = Some((FIFO_BASE + candidate as usize, command_word * 4, matched));
+                best = Some((fifo_base() + candidate as usize, command_word * 4, matched));
             }
         }
         candidate = normalize_offset(candidate.wrapping_add(4));
@@ -579,9 +578,7 @@ unsafe fn locate_live_command_word(value: u32) -> (u32, u32, u32) {
     let mut count = 0_u32;
     for pipe in 0..4_u32 {
         for slot in 0..4_u32 {
-            let command = TX_COMMAND_BASE as u32
-                + pipe * TX_COMMAND_PIPE_STRIDE as u32
-                + slot * TX_COMMAND_SLOT_STRIDE as u32;
+            let command = packet_ram::tx_command(pipe as usize, slot as usize) as u32;
             for word in 0..21_u32 {
                 if unsafe { ((command + word * 4) as *const u32).read_volatile() } == value {
                     if count == 0 {
@@ -634,14 +631,14 @@ unsafe fn locate_class6_command_word(value: u32) -> u32 {
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 unsafe fn describe_matching_slot(start: u32, end: u32, address: usize) -> [u32; 6] {
-    let target = normalize_offset((address - FIFO_BASE) as u32);
+    let target = normalize_offset((address - fifo_base()) as u32);
     let end = normalize_offset(end);
     let mut cursor = normalize_offset(start);
     for _ in 0..16 {
         if cursor == end {
             break;
         }
-        let slot = FIFO_BASE + cursor as usize;
+        let slot = fifo_base() + cursor as usize;
         if unsafe { (slot as *const u32).read_volatile() } != FIFO_MAGIC {
             break;
         }
@@ -715,13 +712,13 @@ pub unsafe fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command:
 
 unsafe fn publish_owned_resynchronization(consumer: u32, producer: u32, raw_producer: u32) -> ! {
     unsafe {
-        let current = FIFO_BASE + consumer as usize;
+        let current = fifo_base() + consumer as usize;
         let (command, match_address, match_state) = matching_tx_command(current);
         let (match_words, ring_state) = if command == 0 {
             ([0; 4], 0)
         } else {
             let pipe = usize::try_from(match_state & 3).unwrap_or(0);
-            let hardware_ring = TX_HARDWARE_RING_BASE + pipe * TX_HARDWARE_RING_STRIDE;
+            let hardware_ring = crate::platform::tx_ring_register(pipe, 0);
             (
                 [
                     (match_address as *const u32).read_volatile(),
@@ -785,7 +782,7 @@ unsafe fn release_head_slot(ring: &mut RxRing, slot: usize, next: u32, low_state
 unsafe fn release(ring: &mut RxRing, token: RxToken) {
     unsafe {
         let slot_offset = token.slot_offset();
-        let slot = FIFO_BASE + slot_offset as usize;
+        let slot = fifo_base() + slot_offset as usize;
         if slot_offset >= FIFO_SIZE {
             crate::hif::publish_halting_exception(
                 [
@@ -805,7 +802,7 @@ unsafe fn release(ring: &mut RxRing, token: RxToken) {
                     0,
                     0,
                     0,
-                    FIFO_BASE as u32,
+                    fifo_base() as u32,
                     FIFO_SIZE,
                 ],
                 b"xr819-rx-release-address",
@@ -848,18 +845,13 @@ unsafe fn release(ring: &mut RxRing, token: RxToken) {
 
         release_head_slot(ring, slot, token.next(), low);
         while ring.release_offset() != ring.claim_offset() {
-            let next_slot = FIFO_BASE + ring.release_offset() as usize;
+            let next_slot = fifo_base() + ring.release_offset() as usize;
             let next_state = ((next_slot + 8) as *const u32).read_volatile();
             if next_state & 0xffff_ff00 != 0xffff_ff00 {
                 break;
             }
             let next = ((next_slot + 4) as *const u32).read_volatile();
-            release_head_slot(
-                ring,
-                next_slot,
-                normalize_offset(next),
-                next_state & 0xff,
-            );
+            release_head_slot(ring, next_slot, normalize_offset(next), next_state & 0xff);
         }
         if let Some(target) = ring.finish_deferred_resync() {
             // `finish_deferred_resync` already updates the software cursor;
@@ -969,7 +961,7 @@ unsafe fn poll_indication(
             }
         }
 
-        let slot = FIFO_BASE + consumer as usize;
+        let slot = fifo_base() + consumer as usize;
         let slot_length = unsafe { ((slot + 0x18) as *const u16).read_volatile() };
         if unsafe { (slot as *const u32).read_volatile() } != FIFO_MAGIC {
             let available = available_bytes(consumer, producer);
@@ -986,7 +978,7 @@ unsafe fn poll_indication(
                     let state = (slot + 8) as *mut u32;
                     state.write_volatile(claimed_slot_state(state.read_volatile()));
                     set_claim_offset(ring, next);
-                    ((FIFO_BASE + next as usize) as *mut u32).write_volatile(FIFO_MAGIC);
+                    ((fifo_base() + next as usize) as *mut u32).write_volatile(FIFO_MAGIC);
                     bump_resync_field(RESYNC_ACCEPTED);
                 }
             } else {

@@ -4,18 +4,30 @@
 use core::panic::PanicInfo;
 use core::ptr::write_volatile;
 
-// Retained packet-RAM TX tracing was removed because this address is exactly
-// host HIF request buffer 18. This extractor is intentionally inert.
-const DOWNLOAD_DEBUG: *mut u32 = 0x0900_ff80 as *mut u32;
-const CHECKPOINT_DEBUG: *mut u32 = 0x0900_fd00 as *mut u32;
+// Retained packet-RAM TX tracing was removed because this diagnostic overlay
+// aliases active HIF storage. This extractor is intentionally lifecycle-only.
+unsafe extern "C" {
+    static __diagnostic_download_control: u8;
+    static __diagnostic_checkpoint_base: u8;
+}
+
+#[inline(always)]
+fn download_debug() -> *mut u32 {
+    (&raw const __diagnostic_download_control).cast_mut().cast()
+}
+
+#[inline(always)]
+fn checkpoint_debug() -> *mut u32 {
+    (&raw const __diagnostic_checkpoint_base).cast_mut().cast()
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     unsafe {
         for index in 0..10 {
-            write_volatile(DOWNLOAD_DEBUG.add(index), 0);
+            write_volatile(download_debug().add(index), 0);
             if index < 4 {
-                write_volatile(CHECKPOINT_DEBUG.add(index), 0);
+                write_volatile(checkpoint_debug().add(index), 0);
             }
         }
     }

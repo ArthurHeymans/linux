@@ -338,7 +338,7 @@ static HARDWARE_SELFTEST: SharedHardwareSelftest = SharedHardwareSelftest(Unsafe
 
 #[cfg(target_arch = "arm")]
 fn aes_registers() -> &'static AesRegisters {
-    unsafe { &*(0x09c5_0000 as *const AesRegisters) }
+    unsafe { &*(crate::platform::aes_register_base() as *const AesRegisters) }
 }
 
 #[cfg(target_arch = "arm")]
@@ -612,15 +612,15 @@ pub fn run_hardware_ccmp_selftest() {
         HARDWARE_KAT_MATRIX_LENGTHS, HARDWARE_KAT_MATRIX_MICS, HARDWARE_KAT_PN,
     };
 
-    const SCRATCH: usize = crate::hif::SHARED_BUFFER_BASE;
+    let scratch = crate::packet_ram::hif_output(0);
     unsafe {
         let result = HARDWARE_SELFTEST.0.get().cast::<u32>();
         result.write_volatile(0x4857_434b); // "HWCK"
         result.add(1).write_volatile(0xffff_0000);
         for (index, byte) in HARDWARE_KAT_INPUT.iter().copied().enumerate() {
-            (SCRATCH as *mut u8).add(index).write_volatile(byte);
+            (scratch as *mut u8).add(index).write_volatile(byte);
         }
-        let frame = core::slice::from_raw_parts_mut(SCRATCH as *mut u8, HARDWARE_KAT_INPUT.len());
+        let frame = core::slice::from_raw_parts_mut(scratch as *mut u8, HARDWARE_KAT_INPUT.len());
         let control = u16::from_le_bytes([frame[0], frame[1]]);
         let header = header_length(control);
         let (aad, aad_length) = match build_aad(frame, control) {
@@ -698,7 +698,7 @@ pub fn run_hardware_ccmp_selftest() {
         if result.add(1).read_volatile() == 1 {
             for (case, payload_length) in HARDWARE_KAT_MATRIX_LENGTHS.iter().copied().enumerate() {
                 let frame_length = 26 + CCMP_HEADER_LEN + payload_length + CCMP_MIC_LEN;
-                let frame = core::slice::from_raw_parts_mut(SCRATCH as *mut u8, frame_length);
+                let frame = core::slice::from_raw_parts_mut(scratch as *mut u8, frame_length);
                 frame[..34].copy_from_slice(&HARDWARE_KAT_INPUT[..34]);
                 for (index, byte) in frame[34..34 + payload_length].iter_mut().enumerate() {
                     *byte = (index as u8).wrapping_mul(17).wrapping_add(3);
@@ -747,7 +747,7 @@ pub fn run_hardware_ccmp_selftest() {
         }
         if result.add(1).read_volatile() == 1 {
             let frame =
-                core::slice::from_raw_parts_mut(SCRATCH as *mut u8, HARDWARE_KAT_EXPECTED.len());
+                core::slice::from_raw_parts_mut(scratch as *mut u8, HARDWARE_KAT_EXPECTED.len());
             frame.copy_from_slice(&HARDWARE_KAT_EXPECTED);
             let control = u16::from_le_bytes([frame[0], frame[1]]);
             let header = header_length(control);
@@ -806,7 +806,7 @@ pub fn run_hardware_ccmp_selftest() {
             .add(4)
             .write_volatile(crate::vendor_host_tx::vendor_timer_now().wrapping_sub(started));
         for index in 0..(26 + CCMP_HEADER_LEN + 1506 + CCMP_MIC_LEN) {
-            (SCRATCH as *mut u8).add(index).write_volatile(0);
+            (scratch as *mut u8).add(index).write_volatile(0);
         }
     }
 }

@@ -363,6 +363,41 @@ The packaging tool verifies the stable image hash and original startup call
 before applying the four-byte call redirection. It must not be used with an
 arbitrary low image.
 
+### Packet-RAM ownership
+
+The production image owns qualified packet memory through independent
+`.packet_ram.*` NOBITS sections. Each section has one exact address and extent;
+unknown holes, the bootstrap FIFO/relocation overlay, diagnostic mailboxes, and
+unknown LMC extents are deliberately absent. The RX FIFO keeps a `0x7000`
+logical cursor over `0x8000` of linear hardware backing so crossing slots remain
+directly publishable without a copy buffer.
+
+`src/packet_ram.rs` is the sole Rust ownership map for runtime `0x090`/`0x094`
+storage. Consumers derive raw device addresses from its opaque aligned objects;
+LMC objects and the internal-TX end boundary remain linker anchors. Genuine
+packet-controller MMIO identities are centralized in `platform.rs`. The exact
+pre-transition control is clean b6 image
+`39b516dc65c1330ee67a12f8d17059e72aea7b07adf5aaac7043f080e0fdc47b`.
+
+The normal gate builds and packs a real production ELF, verifies every packet
+section is `SHT_NOBITS | SHF_ALLOC` and outside all `PT_LOAD` segments, rejects
+packed destinations anywhere in the `0x09` window, checks full and low-23-bit
+source-literal ownership, retains ordinary BSS fill records, and links the
+sectioned bootstrap with its relocated image and BSS bounded to the documented
+HIF-input overlay:
+
+```sh
+XR819_B6_ELF=/path/to/archived-b6-hif-startup.elf ./tools/check.sh
+```
+
+The baseline argument enables the normalized disassembly/MMIO-order gate. The
+standalone layout and packer regressions are:
+
+```sh
+python3 tools/check-packet-ram-layout.py target/thumbv5te-none-eabi/release/hif-startup
+python3 tools/test-pack-sectioned-elf.py
+```
+
 ### TCM layout checks
 
 The low Thumb image keeps `.text`, `.rodata`, ordinary `.data`, and ordinary
@@ -383,15 +418,26 @@ ownership to `0x0400a000` preserves a 956-byte research margin. This lower
 window is a quarantine for state that has not yet been decoded, not a permanent
 compatibility ABI.
 
+CP15 `c0,c0,2` reports `0x001c0200`, whose standard fields describe 128 KiB
+ITCM and 64 KiB DTCM. That physical-size report does not provide another
+independently addressable region here: a save/write/read/restore probe at
+`0x0400c000` read its pattern back but also changed `0x04000000`, proving that
+the address aliases live legacy DTCM. The stack top therefore remains the hard
+usable-DTCM boundary; linker or loader sections must not target
+`0x0400c000..0x04010000`.
+
 Rust-owned CPU state now uses ordinary writable ITCM `.data` and `.bss`. This
 includes HIF queue/ring ownership, `Transport`, response scratch, HIF sequence
 state, the completed-frame FIFO, probe-context sequence, PAS accounting,
 internal-context count, retry PRNG state, channel PLL cache, and channel power
 limits. There is no native `.dtcm.bss` section or main-image DTCM fill record.
 Hardware descriptors, packet buffers, and MMIO identities remain in shared
-packet RAM or MMIO rather than TCM.
+packet RAM or MMIO rather than TCM. The internal TX context pool is the explicit
+exception to ordinary ITCM placement: Rust owns its shape and linker section,
+but the section remains at qualified DTCM range `0x04009080..0x040094d4` while
+retained teardown and diagnostic code still addresses that identity.
 
-The current linked ITCM image ends at `0x00014278`, leaving about 31 KiB below
+The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state
 should use Rust globals in ITCM while the lower DTCM quarantine is reduced one
 coherent family at a time.

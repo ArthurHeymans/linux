@@ -39,6 +39,7 @@ pub mod join;
 pub mod loader;
 pub mod mac;
 pub mod mac_domain;
+pub mod packet_ram;
 pub mod phy;
 pub mod platform;
 pub mod radio;

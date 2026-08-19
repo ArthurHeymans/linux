@@ -1,11 +1,15 @@
 //! Vendor MAC wake restoration and post-channel reprogramming.
 
-use crate::{platform, radio};
+use crate::{packet_ram, platform, radio};
 
 const SHARED: usize = 0x0400_1680;
 const WAKE: usize = 0x0400_1ac0;
 const PAS_BASE: usize = 0x0400_3ae8;
-const RATE_RAM: usize = 0x0900_75c0;
+
+#[inline(always)]
+fn packet_offset(address: usize) -> u32 {
+    address as u32 & 0x007f_ffff
+}
 
 const RATE_ENCODING: [u8; 22] = [
     0, 0, 1, 1, 0, 0, 2, 3, 4, 5, 6, 7, 8, 9, 2, 4, 5, 6, 7, 8, 9, 10,
@@ -279,7 +283,7 @@ unsafe fn program_rate_tables(vif: usize) {
         }
         let entry = build_rate_entry(cfg, hardware_class, fallback);
         for (word, value) in entry.into_iter().enumerate() {
-            unsafe { write_u32(RATE_RAM + usize::from(index) * 0x10 + word * 4, value) };
+            unsafe { write_u32(packet_ram::rate_entry(usize::from(index)) + word * 4, value) };
         }
         if hardware_class >= 4 {
             let secondary = unsafe { read_u8(SHARED + 0x47a + usize::from(rate)) };
@@ -289,7 +293,7 @@ unsafe fn program_rate_tables(vif: usize) {
             for (word, value) in entry.into_iter().enumerate() {
                 unsafe {
                     write_u32(
-                        RATE_RAM + usize::from(secondary_index) * 0x10 + word * 4,
+                        packet_ram::rate_entry(usize::from(secondary_index)) + word * 4,
                         value,
                     )
                 };
@@ -301,7 +305,7 @@ unsafe fn program_rate_tables(vif: usize) {
 unsafe fn program_ifs_timing() {
     let cfg = unsafe { read_u16(SHARED + 2) };
     let index = if cfg & 0x11 == 0x11 { 4 } else { 11 };
-    let entry = unsafe { read_u32(RATE_RAM + index * 0x10) } & 0x00ff_ffff;
+    let entry = unsafe { read_u32(packet_ram::rate_entry(index)) } & 0x00ff_ffff;
     let base = unsafe { read_u32(SHARED + 0x1c) };
     unsafe {
         write_u32(
@@ -330,7 +334,7 @@ pub unsafe fn program_active_vif_rate_tables(interface: u8) -> bool {
 unsafe fn program_pipe_slot(pointer: usize, slot: u8) {
     unsafe {
         write_u32(
-            0x0900_7000 + usize::from(slot) * 4,
+            packet_ram::response_pointer(usize::from(slot)),
             (pointer as u32) & 0xf6ff_ffff,
         )
     };
@@ -342,12 +346,17 @@ unsafe fn program_pipe_slot(pointer: usize, slot: u8) {
         slot - 2
     };
     let register_bit = if logical == 30 { 31 } else { logical };
-    for address in [0x09c0_0a08, 0x09c0_0a0c] {
+    for address in [
+        crate::platform::mac_register(0x0a08),
+        crate::platform::mac_register(0x0a0c),
+    ] {
         let value = unsafe { read_u32(address) } | (1_u32 << register_bit);
         unsafe { write_u32(address, value) };
     }
-    let value = unsafe { read_u32(0x09c0_0a10) } & !(1_u32 << logical) & 0x00ff_ffff;
-    unsafe { write_u32(0x09c0_0a10, value) };
+    let value = unsafe { read_u32(crate::platform::mac_register(0x0a10)) }
+        & !(1_u32 << logical)
+        & 0x00ff_ffff;
+    unsafe { write_u32(crate::platform::mac_register(0x0a10), value) };
 }
 
 unsafe fn build_control_frame(if_id: u8, pointer: usize, ack: bool) {
@@ -392,21 +401,24 @@ unsafe fn build_control_frame(if_id: u8, pointer: usize, ack: bool) {
 /// Packet RAM and the MAC pipe-controller registers must be exclusively owned.
 pub unsafe fn program_immediate_response_descriptors() {
     unsafe {
-        build_control_frame(0, 0x0900_7d14, true);
-        build_control_frame(1, 0x0900_7d68, true);
-        build_control_frame(0, 0x0900_7dbc, false);
-        build_control_frame(1, 0x0900_7e10, false);
+        build_control_frame(0, packet_ram::response_command(4), true);
+        build_control_frame(1, packet_ram::response_command(5), true);
+        build_control_frame(0, packet_ram::response_command(6), false);
+        build_control_frame(1, packet_ram::response_command(7), false);
         install_response_descriptors();
     }
 }
 
 unsafe fn save_register_context() {
     unsafe {
-        write_u32(0x09c0_1404, read_u32(0x0400_2078));
-        write_u32(0x09c0_1408, read_u32(0x0400_207c));
-        write_u32(0x09c0_140c, u32::from(read_u16(0x0400_8606)));
-        write_u32(0x09c0_1410, read_u32(0x0400_2080));
-        write_u32(0x09c0_1400, read_u32(0x0400_2084));
+        write_u32(crate::platform::mac_register(0x1404), read_u32(0x0400_2078));
+        write_u32(crate::platform::mac_register(0x1408), read_u32(0x0400_207c));
+        write_u32(
+            crate::platform::mac_register(0x140c),
+            u32::from(read_u16(0x0400_8606)),
+        );
+        write_u32(crate::platform::mac_register(0x1410), read_u32(0x0400_2080));
+        write_u32(crate::platform::mac_register(0x1400), read_u32(0x0400_2084));
     }
 }
 
@@ -421,7 +433,7 @@ pub unsafe fn prepare_scan_context(channel: u16) {
         write_u16(0x0400_3e9a, channel);
         write_u8(0x0400_3e9c, 0);
 
-        write_u32(0x09c0_0200, 0);
+        write_u32(crate::platform::mac_register(0x0200), 0);
         write_u8(SHARED, 0);
         write_u16(SHARED + 2, rate_config);
         write_u8(SHARED + 5, 0);
@@ -446,7 +458,10 @@ pub unsafe fn prepare_scan_context(channel: u16) {
 /// scan path after `phy_do_channel_switch()` returns.
 pub unsafe fn program_before_scan_channel(channel: u16) {
     unsafe {
-        write_u32(0x09c0_0800, 0x0000_75c0);
+        write_u32(
+            crate::platform::mac_register(0x0800),
+            packet_offset(packet_ram::rate_ram().start),
+        );
         let scan_vif = PAS_BASE + 2 * 0x98;
         program_slot_timings(read_u16(SHARED + 2), read_u32(scan_vif + 0x88));
 
@@ -462,7 +477,7 @@ pub unsafe fn program_before_scan_channel(channel: u16) {
                 second_active = true;
                 write_u8(vif + 0x21, 1);
                 write_u32(
-                    0x09c0_0270,
+                    crate::platform::mac_register(0x0270),
                     if read_u8(vif + 3) == 0 {
                         0x0100_0000
                     } else {
@@ -474,7 +489,10 @@ pub unsafe fn program_before_scan_channel(channel: u16) {
             }
             program_rate_tables(vif);
         }
-        write_u32(0x09c0_0314, if second_active { 0x0100_0000 } else { 0 });
+        write_u32(
+            crate::platform::mac_register(0x0314),
+            if second_active { 0x0100_0000 } else { 0 },
+        );
         program_ifs_timing();
         write_u16(0x0400_3a68, channel);
     }
@@ -485,11 +503,11 @@ pub unsafe fn program_scan_station_mode() {
         // Final publication at 0xfa34 in `mac_apply_channel_and_vif_config`.
         write_u16(SHARED + 8, 0x1000);
         write_u32(0x0400_1ab4, 0x0018_0180);
-        write_u32(0x09c0_0a04, 0x0018_0180);
-        write_u32(0x09c0_0a1c, 0x827b_ffdf);
-        write_u32(0x09c0_0204, 0x0019_8000);
-        write_u32(0x09c0_0200, read_u32(0x0400_1ae4));
-        write_u32(0x09c0_0310, 0x7800_0000);
+        write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
+        write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
+        write_u32(crate::platform::mac_register(0x0204), 0x0019_8000);
+        write_u32(crate::platform::mac_register(0x0200), read_u32(0x0400_1ae4));
+        write_u32(crate::platform::mac_register(0x0310), 0x7800_0000);
     }
 }
 
@@ -522,11 +540,11 @@ pub unsafe fn program_joined_station_mode() {
         let mode = active_station_mode_word();
         write_u32(0x0400_1ae4, mode);
         write_u32(0x0400_1ab4, 0x0018_0180);
-        write_u32(0x09c0_0a04, 0x0018_0180);
-        write_u32(0x09c0_0a1c, 0x827b_ffdf);
-        write_u32(0x09c0_0204, 0x0019_8000);
-        write_u32(0x09c0_0200, mode);
-        write_u32(0x09c0_0310, 0x7800_0000);
+        write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
+        write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
+        write_u32(crate::platform::mac_register(0x0204), 0x0019_8000);
+        write_u32(crate::platform::mac_register(0x0200), mode);
+        write_u32(crate::platform::mac_register(0x0310), 0x7800_0000);
     }
 }
 
@@ -538,14 +556,14 @@ pub unsafe fn program_joined_station_mode() {
 pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
     unsafe {
         write_u32(
-            0x09c0_003c,
+            crate::platform::mac_register(0x003c),
             u32::from_le_bytes([bssid[0], bssid[1], bssid[2], bssid[3]]),
         );
         write_u32(
-            0x09c0_0040,
+            crate::platform::mac_register(0x0040),
             u32::from(u16::from_le_bytes([bssid[4], bssid[5]])),
         );
-        write_u32(0x09c0_0044, 0x101);
+        write_u32(crate::platform::mac_register(0x0044), 0x101);
         write_u16(0x0400_8ae0, 3);
     }
 }
@@ -553,7 +571,10 @@ pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
 pub unsafe fn reprogram_after_channel() {
     unsafe {
         write_u8(WAKE + 0x1d, 0);
-        write_u32(0x09c0_0800, 0x0000_75c0);
+        write_u32(
+            crate::platform::mac_register(0x0800),
+            packet_offset(packet_ram::rate_ram().start),
+        );
         for index in 0..3 {
             let vif = PAS_BASE + index * 0x98;
             if read_u8(vif) == 2 {
@@ -562,7 +583,7 @@ pub unsafe fn reprogram_after_channel() {
         }
         program_ifs_timing();
         program_immediate_response_descriptors();
-        write_u32(0x09c0_0200, read_u32(WAKE + 0x24));
+        write_u32(crate::platform::mac_register(0x0200), read_u32(WAKE + 0x24));
         save_register_context();
     }
 }
@@ -584,20 +605,22 @@ unsafe fn rebuild_pipe_state() {
     // register values are identical, so this only matters if any of it
     // disturbs fetch state.
     unsafe {
-        write_u32(0x09c0_0e8c, 0);
-        write_u32(0x09c0_0e60, 2);
-        write_u32(0x09c0_0e80, 0x100);
-        write_u32(0x09c0_0e88, 0xff);
+        write_u32(crate::platform::mac_register(0x0e8c), 0);
+        write_u32(crate::platform::mac_register(0x0e60), 2);
+        write_u32(crate::platform::mac_register(0x0e80), 0x100);
+        write_u32(crate::platform::mac_register(0x0e88), 0xff);
     }
-    let descriptors = [0x09c6_0000, 0x09c6_0080, 0x09c6_0100, 0x09c6_0180];
-    {
-        let addresses = [0x7080_u32, 0x71d0, 0x7320, 0x7470];
-        for (base, address) in descriptors.into_iter().zip(addresses) {
-            unsafe {
-                write_u32(base + 0x0c, address);
-                write_u32(base + 0x10, 0x54);
-                write_u32(base + 0x14, 1);
-            }
+    let descriptors = [
+        crate::platform::tx_ring_register_offset(0x0000),
+        crate::platform::tx_ring_register_offset(0x0080),
+        crate::platform::tx_ring_register_offset(0x0100),
+        crate::platform::tx_ring_register_offset(0x0180),
+    ];
+    for (pipe, base) in descriptors.into_iter().enumerate() {
+        unsafe {
+            write_u32(base + 0x0c, packet_offset(packet_ram::tx_command(pipe, 0)));
+            write_u32(base + 0x10, packet_ram::TX_COMMAND_SIZE as u32);
+            write_u32(base + 0x14, 1);
         }
     }
     for index in 0..4 {
@@ -615,18 +638,19 @@ unsafe fn rebuild_pipe_state() {
             unsafe {
                 write_u32(
                     record + 0xc0 + entry * 0x18,
-                    0x0900_7080 + index as u32 * 0x150 + entry as u32 * 0x54,
+                    packet_ram::tx_command(index, entry) as u32,
                 )
             };
         }
     }
-    unsafe { write_u32(0x09c0_0e8c, 0xbf) };
+    unsafe { write_u32(crate::platform::mac_register(0x0e8c), 0xbf) };
     unsafe {
-        write_u32(0x0901_6a28, 0x4e14_0000);
+        let list = packet_ram::automatic_response_list().start;
+        write_u32(list, 0x4e14_0000);
         for index in 0..33 {
-            write_u32(0x0901_6a2c + index * 4, 0x2201_6a28);
+            write_u32(list + 4 + index * 4, 0x2200_0000 | packet_offset(list));
         }
-        write_u32(0x0901_6ab0, 0xf000_0000);
+        write_u32(list + 4 + 33 * 4, 0xf000_0000);
     }
 }
 
@@ -652,12 +676,17 @@ pub unsafe fn initialize_tx_pipe_state() {
     // ORs that byte into the high frame-control octet. Vendor startup clears
     // the vector; leaving retained packet data here turned 0x00b0
     // authentication frames into protected/ToDS/more-data 0x61b0 frames.
-    unsafe { write_u32(0x0900_8008, 0) };
+    unsafe { write_u32(packet_ram::interface_metadata(), 0) };
     for (index, value) in TX_DURATION_TIMING.into_iter().enumerate() {
         unsafe { write_u16(0x0400_0138 + index * 2, value) };
     }
     for pipe in 0..4 {
-        unsafe { write_u32(0x0400_10d4 + pipe * 4, 0x09c0_0e70 + pipe as u32 * 4) };
+        unsafe {
+            write_u32(
+                0x0400_10d4 + pipe * 4,
+                crate::platform::mac_register(0x0e70) as u32 + pipe as u32 * 4,
+            )
+        };
     }
     for (base, values) in [
         (0x0400_0194, &RATE_ENCODING[..]),
@@ -692,11 +721,14 @@ pub unsafe fn begin_unjoined_scan_radio_stop() {
         write_u16(0x0400_1572, 0);
         write_u32(0x0400_1ab0, 0);
         write_u8(0x0400_1ab8, 4);
-        write_u32(0x09c0_0a28, 0);
-        write_u32(0x09c0_0a00, 0x1030_0000);
-        write_u32(0x09c0_0a04, read_u32(0x0400_1ab4));
+        write_u32(crate::platform::mac_register(0x0a28), 0);
+        write_u32(crate::platform::mac_register(0x0a00), 0x1030_0000);
+        write_u32(crate::platform::mac_register(0x0a04), read_u32(0x0400_1ab4));
         for index in 0..32 {
-            write_u32(0x0900_7000 + index * 4, 0x0000_7e64);
+            write_u32(
+                packet_ram::response_pointer(index),
+                packet_offset(packet_ram::response_command(8)),
+            );
         }
         crate::tx::restore_irq_fiq_saved(previous);
     }
@@ -744,11 +776,11 @@ extern "C" fn inactive_startup_task() {}
 pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacStartupError> {
     unsafe {
         // 0x14e -> 0x7e50: stop packet DMA and wait for bit 23 to clear.
-        let control = read_u32(0x09c0_0600);
+        let control = read_u32(crate::platform::mac_register(0x0600));
         if control & 1 != 0 {
-            write_u32(0x09c0_0600, control & !1);
+            write_u32(crate::platform::mac_register(0x0600), control & !1);
             let mut polls = 0;
-            while read_u32(0x09c0_0600) & (1 << 23) != 0 {
+            while read_u32(crate::platform::mac_register(0x0600)) & (1 << 23) != 0 {
                 if polls >= max_polls {
                     return Err(MacStartupError::PacketDmaStopTimeout);
                 }
@@ -764,19 +796,19 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u32(0x0400_1e6c, 0);
 
         // 0x152 -> 0x10024: collapse producer, consumer, scan, and release.
-        let producer = read_u32(0x09c0_0604);
+        let producer = read_u32(crate::platform::mac_register(0x0604));
         write_u32(SHARED + 0x10, producer);
         write_u32(SHARED + 0x14, producer);
-        write_u32(0x09c0_0608, producer);
-        let dma_control = read_u32(0x09c0_0600);
-        write_u32(0x09c0_0600, dma_control);
+        write_u32(crate::platform::mac_register(0x0608), producer);
+        let dma_control = read_u32(crate::platform::mac_register(0x0600));
+        write_u32(crate::platform::mac_register(0x0600), dma_control);
 
         // Normal startup clears these two descriptor-source halfwords here.
         // Unlike the wake path below, `fw_subsystem_init` never copies them
         // from PAS_BASE-8. Their retained DTCM counterparts at 0x04003670/72
         // are BSS and have no producer in the decompiled normal-start path.
-        write_u16(0x0900_7bc0, 0);
-        write_u16(0x0900_7bc2, 0);
+        write_u16(packet_ram::duration_word(0), 0);
+        write_u16(packet_ram::duration_word(1), 0);
         // Vendor initialized DTCM supplies zero for the EDCA hardware cache
         // and the optional contention-window override controls. Rebuilt code
         // consumes all three, so reconstruct them explicitly.
@@ -804,31 +836,37 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         }
 
         for pointer in [
-            0x0900_7e64,
-            0x0900_7bc4,
-            0x0900_7c18,
-            0x0900_7c6c,
-            0x0900_7cc0,
-            0x0900_7d14,
-            0x0900_7d68,
-            0x0900_7dbc,
-            0x0900_7e10,
-            0x0900_7f60,
-            0x0900_7fb4,
+            packet_ram::response_command(8),
+            packet_ram::response_command(0),
+            packet_ram::response_command(1),
+            packet_ram::response_command(2),
+            packet_ram::response_command(3),
+            packet_ram::response_command(4),
+            packet_ram::response_command(5),
+            packet_ram::response_command(6),
+            packet_ram::response_command(7),
+            packet_ram::response_command(11),
+            packet_ram::response_command(12),
         ] {
             build_tbtt(pointer);
         }
 
-        write_u32(0x09c0_0c00, 0x0000_7000);
+        write_u32(
+            crate::platform::mac_register(0x0c00),
+            packet_offset(packet_ram::response_pointers().start),
+        );
         for index in 0..32 {
-            write_u32(0x0900_7000 + index * 4, 0x0000_7e64);
+            write_u32(
+                packet_ram::response_pointer(index),
+                packet_offset(packet_ram::response_command(8)),
+            );
         }
         for index in 0..23 {
-            write_u32(0x09c0_0210 + index * 4, 0);
+            write_u32(crate::platform::mac_register(0x0210) + index * 4, 0);
         }
 
         let mut polls = 0;
-        while read_u32(0x09c0_0a20) & 0x8000_0000 == 0 {
+        while read_u32(crate::platform::mac_register(0x0a20)) & 0x8000_0000 == 0 {
             if polls >= max_polls {
                 return Err(MacStartupError::PipeControllerTimeout);
             }
@@ -874,7 +912,7 @@ unsafe fn reset_lmc_pool() {
         write_u32(0x0400_8620, 0);
         write_u32(0x0400_861c, 0);
         let mut head = 0_u32;
-        for block in [0x0901_6ab4_usize, 0x0901_7500] {
+        for block in [packet_ram::lmc_anchor(0), packet_ram::lmc_anchor(1)] {
             write_u32(block, 0);
             write_u32(block + 0x18, head);
             write_u32(block + 0xf4, block as u32 + 0x1c);
@@ -898,25 +936,28 @@ unsafe fn program_slot_timings(cfg: u16, base: u32) {
         let x24 = base.wrapping_mul(0x18).wrapping_add(2);
         write_u32(SHARED + 0x38, x16);
         write_u32(SHARED + 0x3c, x24);
-        write_u32(0x09c0_0e30, base.wrapping_mul(8).wrapping_sub(1));
-        write_u32(0x09c0_0e58, x16);
-        write_u32(0x09c0_0e5c, x24);
+        write_u32(
+            crate::platform::mac_register(0x0e30),
+            base.wrapping_mul(8).wrapping_sub(1),
+        );
+        write_u32(crate::platform::mac_register(0x0e58), x16);
+        write_u32(crate::platform::mac_register(0x0e5c), x24);
         for (address, value) in [
-            (0x09c0_0618, 0x0000_004d),
-            (0x09c0_0614, 0x0000_01cd),
-            (0x09c0_0428, 0x0000_049d),
-            (0x09c0_042c, 0x0000_049d),
-            (0x09c0_0444, 0x0000_0258),
-            (0x09c0_0434, 0x0000_003d),
-            (0x09c0_0438, 0x0000_003d),
-            (0x09c0_0448, 0x0000_0258),
-            (0x09c0_043c, 0x0000_0298),
-            (0x09c0_0440, 0x0000_0298),
-            (0x09c0_044c, 0x0000_0134),
+            (crate::platform::mac_register(0x0618), 0x0000_004d),
+            (crate::platform::mac_register(0x0614), 0x0000_01cd),
+            (crate::platform::mac_register(0x0428), 0x0000_049d),
+            (crate::platform::mac_register(0x042c), 0x0000_049d),
+            (crate::platform::mac_register(0x0444), 0x0000_0258),
+            (crate::platform::mac_register(0x0434), 0x0000_003d),
+            (crate::platform::mac_register(0x0438), 0x0000_003d),
+            (crate::platform::mac_register(0x0448), 0x0000_0258),
+            (crate::platform::mac_register(0x043c), 0x0000_0298),
+            (crate::platform::mac_register(0x0440), 0x0000_0298),
+            (crate::platform::mac_register(0x044c), 0x0000_0134),
         ] {
             write_u32(address, value);
         }
-        write_u32(0x09c0_0810, 0);
+        write_u32(crate::platform::mac_register(0x0810), 0);
     }
 }
 
@@ -945,16 +986,22 @@ unsafe fn build_ba_descriptor(if_id: u8, pointer: usize) {
 unsafe fn clear_pipe_slot_ex(slot: u8) {
     let bit = slot - 2;
     unsafe {
-        write_u32(0x09c0_0a08, read_u32(0x09c0_0a08) & !(1_u32 << bit));
-        write_u32(0x09c0_0a0c, read_u32(0x09c0_0a0c) & !(1_u32 << bit));
         write_u32(
-            0x09c0_0a10,
-            read_u32(0x09c0_0a10) & !(1_u32 << bit) & 0x00ff_ffff,
+            crate::platform::mac_register(0x0a08),
+            read_u32(crate::platform::mac_register(0x0a08)) & !(1_u32 << bit),
+        );
+        write_u32(
+            crate::platform::mac_register(0x0a0c),
+            read_u32(crate::platform::mac_register(0x0a0c)) & !(1_u32 << bit),
+        );
+        write_u32(
+            crate::platform::mac_register(0x0a10),
+            read_u32(crate::platform::mac_register(0x0a10)) & !(1_u32 << bit) & 0x00ff_ffff,
         );
         let field_register = if slot > 0x11 {
-            0x09c0_0a18
+            crate::platform::mac_register(0x0a18)
         } else {
-            0x09c0_0a14
+            crate::platform::mac_register(0x0a14)
         };
         write_u32(
             field_register,
@@ -965,7 +1012,12 @@ unsafe fn clear_pipe_slot_ex(slot: u8) {
 
 unsafe fn set_pipe_enabled(slot: u8) {
     let bit = slot - 2;
-    unsafe { write_u32(0x09c0_0a04, read_u32(0x09c0_0a04) | (1_u32 << bit)) };
+    unsafe {
+        write_u32(
+            crate::platform::mac_register(0x0a04),
+            read_u32(crate::platform::mac_register(0x0a04)) | (1_u32 << bit),
+        )
+    };
 }
 
 unsafe fn install_response_descriptors() {
@@ -973,7 +1025,10 @@ unsafe fn install_response_descriptors() {
         clear_pipe_slot_ex(2);
         clear_pipe_slot_ex(3);
     }
-    for (if_id, pointer) in [(0_u8, 0x0900_7f60_usize), (1, 0x0900_7fb4)] {
+    for (if_id, pointer) in [
+        (0_u8, packet_ram::response_command(11)),
+        (1, packet_ram::response_command(12)),
+    ] {
         unsafe {
             write_u32(
                 pointer,
@@ -999,17 +1054,19 @@ unsafe fn install_response_descriptors() {
         clear_pipe_slot_ex(0x0c);
         set_pipe_enabled(0x0b);
         set_pipe_enabled(0x0c);
-        write_u32(0x0400_1a88, 0x0000_7f60);
-        write_u32(0x0400_1a8c, 0x0000_7fb4);
-        write_u32(0x0400_1aac, 0x0000_7f60);
-        write_u32(0x0400_1ab0, 0x0000_7fb4);
+        let first = packet_offset(packet_ram::response_command(11));
+        let second = packet_offset(packet_ram::response_command(12));
+        write_u32(0x0400_1a88, first);
+        write_u32(0x0400_1a8c, second);
+        write_u32(0x0400_1aac, first);
+        write_u32(0x0400_1ab0, second);
     }
 }
 
 unsafe fn export_pipe_counters() {
     for index in 0..4 {
         let record = SHARED + index * 0x44;
-        let hardware = 0x09c0_0040 + index * 0x0c;
+        let hardware = crate::platform::mac_register(0x0040) + index * 0x0c;
         if unsafe { read_u32(record + 0x718) } == 0 {
             unsafe {
                 write_u32(hardware + 0x20, u32::MAX);
@@ -1018,7 +1075,7 @@ unsafe fn export_pipe_counters() {
             }
         } else {
             let source = record + 0x6dc;
-            let stats = 0x09c0_1200 + index * 0x20;
+            let stats = crate::platform::mac_register(0x1200) + index * 0x20;
             unsafe {
                 write_u32(hardware + 0x20, read_u32(source));
                 write_u32(hardware + 0x24, read_u32(source + 4) & 0xffff);
@@ -1032,7 +1089,12 @@ unsafe fn export_pipe_counters() {
             }
         }
     }
-    unsafe { write_u32(0x09c0_011c, read_u32(0x09c0_0114)) };
+    unsafe {
+        write_u32(
+            crate::platform::mac_register(0x011c),
+            read_u32(crate::platform::mac_register(0x0114)),
+        )
+    };
 }
 
 unsafe fn program_mode_registers() {
@@ -1041,14 +1103,14 @@ unsafe fn program_mode_registers() {
     let selector = if wide { 0x001c_0783 } else { 0x0018_0783 };
     unsafe {
         write_u32(0x0400_1ab4, selector);
-        write_u32(0x09c0_0a04, selector);
-        write_u32(0x09c0_0a1c, 0x827b_ffdf);
+        write_u32(crate::platform::mac_register(0x0a04), selector);
+        write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
         write_u32(
-            0x09c0_0204,
+            crate::platform::mac_register(0x0204),
             0x0279_fe00 | if wide { 0x0004_0000 } else { 0 },
         );
-        write_u32(0x09c0_0200, mode);
-        write_u32(0x09c0_0310, 0x7800_0000);
+        write_u32(crate::platform::mac_register(0x0200), mode);
+        write_u32(crate::platform::mac_register(0x0310), 0x7800_0000);
     }
 }
 
@@ -1068,49 +1130,59 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
     // can expose its reset/default routing state.
     platform::prepare_mac_receive_hardware();
     unsafe {
-        program_mac_address(0x0400_3acc, 0x09c0_0030, 0x101);
-        program_mac_address(0x0400_3ad2, 0x09c0_0048, 0x101);
+        program_mac_address(0x0400_3acc, crate::platform::mac_register(0x0030), 0x101);
+        program_mac_address(0x0400_3ad2, crate::platform::mac_register(0x0048), 0x101);
         rebuild_pipe_state();
-        let producer = read_u32(0x09c0_0604);
+        let producer = read_u32(crate::platform::mac_register(0x0604));
         radio::synchronize_after_wake(producer);
         // `mac_reinit_after_wake` restores these only after RX, pipe, and
         // register synchronization. This is wake-context restoration, not
         // VIF/JOIN programming.
-        write_u16(0x0900_7bc0, read_u16(0x0400_3670));
-        write_u16(0x0900_7bc2, read_u16(0x0400_3672));
+        write_u16(packet_ram::duration_word(0), read_u16(0x0400_3670));
+        write_u16(packet_ram::duration_word(1), read_u16(0x0400_3672));
 
         for vif in 0..2 {
             let state = 0x0400_3e98 + vif * 0x3b0;
             let mode = read_u8(state + 0x18);
             if (mode == 5 || mode == 6) && read_u8(state + 0x3c6) != 0 {
-                program_mac_address(0x0400_3ad8 + vif * 6, 0x09c0_003c, 0x101);
-                write_u32(0x09c0_0258, 0x0200_0000);
-                write_u32(0x09c0_0248, 0x0200_0001);
+                program_mac_address(
+                    0x0400_3ad8 + vif * 6,
+                    crate::platform::mac_register(0x003c),
+                    0x101,
+                );
+                write_u32(crate::platform::mac_register(0x0258), 0x0200_0000);
+                write_u32(crate::platform::mac_register(0x0248), 0x0200_0001);
                 break;
             }
         }
 
         for pointer in [
-            0x0900_7e64,
-            0x0900_7bc4,
-            0x0900_7c18,
-            0x0900_7c6c,
-            0x0900_7cc0,
-            0x0900_7d14,
-            0x0900_7d68,
-            0x0900_7dbc,
-            0x0900_7e10,
-            0x0900_7f60,
-            0x0900_7fb4,
+            packet_ram::response_command(8),
+            packet_ram::response_command(0),
+            packet_ram::response_command(1),
+            packet_ram::response_command(2),
+            packet_ram::response_command(3),
+            packet_ram::response_command(4),
+            packet_ram::response_command(5),
+            packet_ram::response_command(6),
+            packet_ram::response_command(7),
+            packet_ram::response_command(11),
+            packet_ram::response_command(12),
         ] {
             build_tbtt(pointer);
         }
         for index in 0..32 {
-            write_u32(0x0900_7000 + index * 4, read_u32(0x0400_35f0 + index * 4));
+            write_u32(
+                packet_ram::response_pointer(index),
+                read_u32(0x0400_35f0 + index * 4),
+            );
         }
-        write_u32(0x09c0_0c00, 0x0000_7000);
+        write_u32(
+            crate::platform::mac_register(0x0c00),
+            packet_offset(packet_ram::response_pointers().start),
+        );
         let mut polls = 0;
-        while read_u32(0x09c0_0a20) & 0x8000_0000 == 0 {
+        while read_u32(crate::platform::mac_register(0x0a20)) & 0x8000_0000 == 0 {
             if polls >= max_polls {
                 // Retry the complete wake restoration on the next cooperative
                 // service call rather than continuing from a partial reset.
@@ -1120,10 +1192,10 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
             polls += 1;
             core::hint::spin_loop();
         }
-        write_u32(0x09c0_1300, 0x0100_0000);
-        write_u32(0x09c0_0090, 5);
-        write_u32(0x09c0_0094, 0x23);
-        write_u32(0x09c0_0098, 0x30);
+        write_u32(crate::platform::mac_register(0x1300), 0x0100_0000);
+        write_u32(crate::platform::mac_register(0x0090), 5);
+        write_u32(crate::platform::mac_register(0x0094), 0x23);
+        write_u32(crate::platform::mac_register(0x0098), 0x30);
         reset_lmc_pool();
 
         if read_u16(0x0400_3a68) != 0 {
@@ -1132,11 +1204,15 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
             install_response_descriptors();
             export_pipe_counters();
             if read_u32(WAKE + 0x28) != 0 {
-                program_mac_address(read_u32(WAKE + 0x28) as usize, 0x09c0_003c, 0x301);
+                program_mac_address(
+                    read_u32(WAKE + 0x28) as usize,
+                    crate::platform::mac_register(0x003c),
+                    0x301,
+                );
             }
             program_mode_registers();
-            write_u32(WAKE + 0x24, read_u32(0x09c0_0200));
-            write_u32(0x09c0_0200, 0x00c0_8018);
+            write_u32(WAKE + 0x24, read_u32(crate::platform::mac_register(0x0200)));
+            write_u32(crate::platform::mac_register(0x0200), 0x00c0_8018);
         }
     }
     Ok(())

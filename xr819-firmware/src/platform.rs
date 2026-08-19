@@ -5,6 +5,7 @@
 //! callback registration is kept separate because the Rust handlers do not
 //! exist yet.
 
+use crate::packet_ram;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_structs;
 use tock_registers::registers::ReadWrite;
@@ -128,6 +129,44 @@ const IRQ_CALLBACK_TABLE: usize = 0x0400_11bc;
 const VENDOR_BSS_START: usize = 0x0400_2078;
 const VENDOR_BSS_END: usize = 0x0400_9c44;
 
+const MAC_REGISTER_BASE: usize = 0x09c0_0000;
+const PACKET_CONTROLLER_REGISTER_BASE: usize = 0x09c1_0000;
+const MIC_REGISTER_BASE: usize = 0x09c4_0000;
+const AES_REGISTER_BASE: usize = 0x09c5_0000;
+const TX_RING_REGISTER_BASE: usize = 0x09c6_0000;
+const TX_RING_STRIDE: usize = 0x80;
+
+/// Address one register in the sparse MAC/packet-DMA register aperture.
+pub const fn mac_register(offset: usize) -> usize {
+    MAC_REGISTER_BASE + offset
+}
+
+/// Address the unresolved single-word packet-controller aperture.
+pub const fn packet_controller_register(offset: usize) -> usize {
+    PACKET_CONTROLLER_REGISTER_BASE + offset
+}
+
+/// Address the quarantined MIC register aperture without inferring its extent.
+pub const fn mic_register(offset: usize) -> usize {
+    MIC_REGISTER_BASE + offset
+}
+
+/// Base of the decoded AES register block.
+pub const fn aes_register_base() -> usize {
+    AES_REGISTER_BASE
+}
+
+/// Address a register in one of the four hardware TX rings.
+pub const fn tx_ring_register(pipe: usize, offset: usize) -> usize {
+    debug_assert!(pipe < 4);
+    TX_RING_REGISTER_BASE + pipe * TX_RING_STRIDE + offset
+}
+
+/// Address a register by its offset in the complete hardware TX-ring aperture.
+pub const fn tx_ring_register_offset(offset: usize) -> usize {
+    TX_RING_REGISTER_BASE + offset
+}
+
 #[unsafe(no_mangle)]
 #[used]
 pub static REMAP_DEBUG_INDEX: u32 = 0;
@@ -236,7 +275,6 @@ pub fn initialize_runtime_state() {
         (0x0400_1428 as *mut u32).write_volatile(0);
         crate::tx::initialize_retry_random_state();
         (0x0400_1430 as *mut u32).write_volatile(0);
-
     }
 }
 
@@ -654,16 +692,15 @@ pub fn prepare_packet_dma() {
     register32(0x09c0_0e88).set(0xff);
     post_code(0x5044_4d21);
 
-    for (base, first, second) in [
-        (0x09c6_0000, 0x0000_7080, 0x0000_71d0),
-        (0x09c6_0100, 0x0000_7320, 0x0000_7470),
-    ] {
-        register32(base + 0x0c).set(first);
-        register32(base + 0x10).set(0x54);
-        register32(base + 0x14).set(1);
-        register32(base + 0x8c).set(second);
-        register32(base + 0x90).set(0x54);
-        register32(base + 0x94).set(1);
+    for (first_pipe, second_pipe) in [(0, 1), (2, 3)] {
+        register32(tx_ring_register(first_pipe, 0x0c))
+            .set(packet_ram::tx_command(first_pipe, 0) as u32 & 0x007f_ffff);
+        register32(tx_ring_register(first_pipe, 0x10)).set(packet_ram::TX_COMMAND_SIZE as u32);
+        register32(tx_ring_register(first_pipe, 0x14)).set(1);
+        register32(tx_ring_register(second_pipe, 0x0c))
+            .set(packet_ram::tx_command(second_pipe, 0) as u32 & 0x007f_ffff);
+        register32(tx_ring_register(second_pipe, 0x10)).set(packet_ram::TX_COMMAND_SIZE as u32);
+        register32(tx_ring_register(second_pipe, 0x14)).set(1);
     }
     post_code(0x5044_4d22);
 
@@ -676,10 +713,10 @@ pub fn prepare_packet_dma() {
     // interpretation across the transition.
     register32(0x09c0_0e8c).set(0xbf);
     post_code(0x5044_4d03);
-    let list_base = 0x0901_6a28;
+    let list_base = packet_ram::automatic_response_list().start;
     register32(list_base).set(0x4e14_0000);
     for index in 0..33 {
-        register32(list_base + 4 + index * 4).set(0x2201_6a28);
+        register32(list_base + 4 + index * 4).set(0x2200_0000 | (list_base as u32 & 0x007f_ffff));
     }
     register32(list_base + 4 + 33 * 4).set(0xf000_0000);
     post_code(0x5044_4d23);
@@ -715,7 +752,7 @@ pub fn prepare_packet_dma() {
         } else {
             (record + 0x0c) as u32
         });
-        register32(record + 8).set((0x0901_5fa8 + index * 0x2a0) as u32);
+        register32(record + 8).set(packet_ram::software_record(index) as u32);
     }
     post_code(0x5044_4d06);
 }

@@ -3,9 +3,22 @@
 use core::hint::spin_loop;
 use core::ptr::{read_volatile, write_volatile};
 
-pub const FIFO_BASE: usize = 0x0900_4000;
 pub const FIFO_SIZE: u32 = 0x8000;
-pub const CONTROL_BASE: usize = 0x0900_ff80;
+
+unsafe extern "C" {
+    static __download_fifo_base: u8;
+    static __download_control_base: u8;
+}
+
+#[inline(always)]
+fn fifo_base() -> usize {
+    (&raw const __download_fifo_base) as usize
+}
+
+#[inline(always)]
+fn control_base() -> usize {
+    (&raw const __download_control_base) as usize
+}
 pub const MAIN_IMAGE_BASE: usize = 0xfff0_0000;
 
 pub fn split_destination(
@@ -89,7 +102,7 @@ impl DownloadStream<'_> {
             spin_loop();
         }
         let fifo_offset = self.position & (FIFO_SIZE - 1);
-        let source = (FIFO_BASE + fifo_offset as usize) as *const u32;
+        let source = (fifo_base() + fifo_offset as usize) as *const u32;
         let word = unsafe { read_volatile(source) };
         self.position += 4;
         unsafe {
@@ -114,7 +127,7 @@ impl Control {
     ///
     /// The XR819 shared-memory window must be enabled and mapped normally.
     pub unsafe fn get() -> &'static mut Self {
-        unsafe { &mut *(CONTROL_BASE as *mut Self) }
+        unsafe { &mut *(control_base() as *mut Self) }
     }
 
     pub fn advertise(&mut self) {
@@ -159,7 +172,7 @@ impl Control {
 
             while copied < put && copied < size {
                 let fifo_offset = copied & (FIFO_SIZE - 1);
-                let source = (FIFO_BASE + fifo_offset as usize) as *const u32;
+                let source = (fifo_base() + fifo_offset as usize) as *const u32;
                 let destination = (destination_base + copied as usize) as *mut u32;
                 let word = unsafe { read_volatile(source) };
                 unsafe {
@@ -262,7 +275,7 @@ impl Control {
 
             while copied < put && copied < size {
                 let fifo_offset = copied & (FIFO_SIZE - 1);
-                let source = (FIFO_BASE + fifo_offset as usize) as *const u32;
+                let source = (fifo_base() + fifo_offset as usize) as *const u32;
                 let destination =
                     split_destination(copied, first_size, first_base, second_base) as *mut u32;
                 let word = unsafe { read_volatile(source) };

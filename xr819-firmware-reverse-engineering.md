@@ -2262,6 +2262,82 @@ RX-fix parent also completed cleanly with 20/20 ping and nine UDP datagrams
 lost, so the state placement did not reintroduce the eliminated deterministic
 wrap loss.
 
+A direct ARM TCM-size `MRC p15, 0, r0, c0, c0, 2` probe returned `0x001c0200`
+in both pre- and post-traffic snapshots. The standard size fields report
+128 KiB ITCM and 64 KiB DTCM, with neither absent bit set. Probe image
+`112e8c80874c0f8bcc0a36b02bbdd404538ebfccdd2083779bc3bae1eca68699`
+completed the controlled ath9k workload with 7.32 Mbit/s TCP, zero of 21,402
+UDP loss, 20/20 ping, and no exception.
+
+The physical-size report does not describe a uniquely addressable 64 KiB DTCM
+window on this integration. A second baseline probe saved and restored words at
+`0x04000000`, `0x04004000`, `0x04008000`, and `0x0400c000`, then wrote
+`0xc0dec000` at `0x0400c000`. The target read back correctly, but
+`0x04000000` changed with it; the other candidates did not. Both CP15 c9 region
+reads returned zero. Thus `0x0400c000` aliases the start of legacy DTCM, and
+using it for native state corrupts live vendor tables. The qualified stack top
+remains the usable DTCM boundary. The high-DTCM linker experiment and its
+loader extension were removed; native CPU state remains in ITCM.
+
+The TALA accounting family at `0x04008f48..0x04008f6b` is not yet accepted for
+migration. Static references appeared confined to translated
+`tx_complete_tala_adapt`, so a first trial replaced the fixed streak, success,
+failure, try, and weighted-penalty words with a two-interface Rust structure.
+Candidate
+`93849f863bfb9e09b25d5b8fde1cc25e2647fbfae63a2f02bef2394ada9dc65b`
+associated in two seconds, but throughput collapsed when the TALA evaluation
+window became active: TCP fell from 8.18 to 0 Mbit/s, UDP delivered only
+449 Kbit/s, ath9k accumulated 1,354 TX failures, and final ping was 0/20. No
+panic or exception occurred.
+
+A fixed-address diagnostic control then completed a router workload normally.
+Its live snapshot showed only interface 0 active: success, cumulative-tries,
+and weighted-penalty words reached 8,342, 246, and 978 respectively, while all
+interface-1 words remained zero. A second migration preserved the exact
+qualified raw pointer arithmetic and the complete `0x24`-byte layout, changing
+only the backing address to Rust-owned ITCM. Candidate
+`f83471c9273de183260eb5ab890310234e12222c3363664276c246ec2238b363`
+was healthy on the router workload with 6.27 Mbit/s TCP, zero of 21,402 UDP
+loss, 20/20 ping, and no pending buffers. It nevertheless reproduced the
+controlled-ath9k collapse: no complete TCP or UDP report, 1,384 ath9k TX
+failures, and 0/20 final ping without an exception. This rules out the assumed
+interface count and Rust field-access rewrite as the primary causes. Fixed
+storage identity, an unresolved indirect consumer, or TCM data-access timing in
+the high-rate completion path remains significant. The rejected patches are
+retained at `/tmp/xr819-native-tala-rejected.patch` and
+`/tmp/xr819-native-tala-exact-layout-rejected.patch`; production keeps this
+family fixed until that dependency is decoded.
+
+The three-record internal TX context pool at `0x04009080..0x040094d3` is now a
+typed, linker-checked Rust object while retaining its qualified DTCM identity.
+The state contains the free-list head followed by three aligned `0x170`-byte
+records; runtime addresses derive from `INTERNAL_CONTEXT_POOL`, and linker
+assertions fix the complete `0x454`-byte range at `0x04009080..0x040094d4`.
+This keeps retained `tx_abort_frames_for_vif` and diagnostic high-SRAM
+`mib_read_dispatch` consumers compatible without scattering the vendor base
+through translated Rust.
+
+Two address-changing experiments remain rejected. Placing the pool at
+`0x0400c000` stalled scan because that apparent high-DTCM window aliases live
+legacy state at `0x04000000`; the patch remains at
+`/tmp/xr819-native-internal-context-pool-rejected.patch`. An ordinary ITCM BSS
+placement produced one healthy channel-11 run and one later datapath stall, but
+interleaved exact-parent controls produced the same one-clean/one-stalled
+distribution. It therefore did not prove an address dependency. Keeping the
+pool at its original DTCM location isolates the ownership and type improvement
+from unresolved channel-11 reliability behavior.
+
+The accepted fixed-DTCM image is
+`ad1eb1972ec1418718c54894e7602d4d5ac88a2535b752cfd0998570c941eae8`.
+Its clean sample associated in 19 seconds, delivered 6.29 Mbit/s TCP and
+8.39 Mbit/s UDP with zero of 21,402 datagrams lost, completed 20/20 ping, and
+reported no TX failure or exception. Its other sample reproduced the same
+post-traffic stall seen in the exact parent. Experimental firmware-side MMIO
+snapshots, delayed FIFO release, and an unqualified packet-RAM copy pool changed
+layout or scan behavior and were removed rather than treated as evidence about
+the clean image. Further stall work must use external driver/monitor evidence
+first and requalify a diagnostics-free build.
+
 The adjacent PHY rate-table family is not a safe native-DTCM candidate. The
 pointer and scale fields at `0x040099d8`, `0x040099ec`, `0x040099f0`, and
 `0x040099f4` are written by retained `phy_select_rate_tables`; the first pointer

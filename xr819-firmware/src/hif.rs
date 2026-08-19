@@ -11,6 +11,7 @@ use core::arch::global_asm;
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 use core::cell::UnsafeCell;
 
+use crate::packet_ram;
 use crate::radio::{self, PendingIndication, RxToken};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
@@ -63,19 +64,8 @@ register_structs! {
 const INTERRUPT_CONTROLLER_BASE: usize = 0x0a88_0000;
 const RX_DESCRIPTOR_BASE: usize = 0x0ab0_0000;
 const TX_DESCRIPTOR_BASE: usize = 0x0ab0_0100;
-const RX_BUFFER_BASE: usize = 0x0900_8a68;
-const RX_BUFFER_SIZE: usize = 1632;
-const RX_BUFFER_COUNT: usize = 30;
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-const TX_COMMAND_BASE: usize = 0x0900_7080;
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-const TX_COMMAND_PIPE_STRIDE: usize = 0x150;
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-const TX_COMMAND_SLOT_STRIDE: usize = 0x54;
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-const TX_HARDWARE_RING_BASE: usize = 0x09c6_0000;
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-const TX_HARDWARE_RING_STRIDE: usize = 0x80;
+const RX_BUFFER_SIZE: usize = packet_ram::HIF_INPUT_SIZE;
+const RX_BUFFER_COUNT: usize = packet_ram::HIF_INPUT_COUNT;
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 struct SharedOutputHeaders(UnsafeCell<[u32; 64]>);
@@ -95,10 +85,9 @@ unsafe impl Sync for SharedOutputHashes {}
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 static OUTPUT_HASHES: SharedOutputHashes = SharedOutputHashes(UnsafeCell::new([0; 64]));
 
-/// First of the four vendor TX buffers allocated by `0x0000094c`. The exact
-/// pre-HIF clock transition makes this packet-memory bank CPU-accessible.
-pub const SHARED_BUFFER_BASE: usize = 0x0901_49a8;
-pub const SHARED_BUFFER_SIZE: usize = 384;
+/// Size of each of the four linker-owned HIF output buffers. The exact pre-HIF
+/// clock transition makes this packet-memory bank CPU-accessible.
+pub const SHARED_BUFFER_SIZE: usize = packet_ram::HIF_OUTPUT_SIZE;
 const REQUEST_PAYLOAD_CAPACITY: usize = RX_BUFFER_SIZE - 4;
 
 const fn owned_descriptor_length(length: u16) -> u32 {
@@ -135,8 +124,7 @@ unsafe fn matching_tx_command(words: [u32; 4]) -> (u32, u32, u32) {
     let mut best_score = 0_u8;
     for pipe in 0..4 {
         for slot in 0..4 {
-            let command =
-                TX_COMMAND_BASE + pipe * TX_COMMAND_PIPE_STRIDE + slot * TX_COMMAND_SLOT_STRIDE;
+            let command = packet_ram::tx_command(pipe, slot);
             let mut score = 0_u8;
             let mut first_match = 0_usize;
             for offset in (0x0c..=0x40).step_by(4) {
@@ -166,10 +154,7 @@ unsafe fn matching_tx_command(words: [u32; 4]) -> (u32, u32, u32) {
         0
     } else {
         let pipe = usize::try_from(best_state & 3).unwrap_or(0);
-        unsafe {
-            ((TX_HARDWARE_RING_BASE + pipe * TX_HARDWARE_RING_STRIDE + 0x20) as *const u32)
-                .read_volatile()
-        }
+        unsafe { (crate::platform::tx_ring_register(pipe, 0x20) as *const u32).read_volatile() }
     };
     (best_command, best_state, ring_state)
 }
@@ -383,12 +368,11 @@ struct SharedHifSequence(core::cell::UnsafeCell<HifSequenceCounters>);
 
 unsafe impl Sync for SharedHifSequence {}
 
-static HIF_SEQUENCE: SharedHifSequence = SharedHifSequence(core::cell::UnsafeCell::new(
-    HifSequenceCounters {
+static HIF_SEQUENCE: SharedHifSequence =
+    SharedHifSequence(core::cell::UnsafeCell::new(HifSequenceCounters {
         tx_producer: 0,
         emergency_skew: 0,
-    },
-));
+    }));
 
 fn tx_producer() -> u32 {
     unsafe { (&raw const (*HIF_SEQUENCE.0.get()).tx_producer).read_volatile() }
@@ -433,7 +417,7 @@ unsafe fn next_emergency_sequence() -> u16 {
 fn publish_emergency_descriptor(shared: &HifShared, length: u16) {
     shared
         .emergency_address
-        .set((SHARED_BUFFER_BASE as u32) & 0xf6ff_ffff);
+        .set((packet_ram::hif_output(0) as u32) & 0xf6ff_ffff);
     shared
         .emergency_control
         .set(u32::from(length).wrapping_add(1).wrapping_rem(1 << 13) | 1);
@@ -451,7 +435,7 @@ const EXCEPTION_REGISTERS: usize = 22;
 /// Writes the exception record to the shared buffer and rings the host.
 unsafe fn publish_exception_now<const N: usize>(registers: [u32; N], name: &[u8]) {
     const MESSAGE_LENGTH: u16 = 4 + 4 + 18 * 4 + 48;
-    let buffer = SHARED_BUFFER_BASE as *mut u8;
+    let buffer = packet_ram::hif_output(0) as *mut u8;
     // The host counts every message it receives, including this one, against a
     // single WSM sequence and treats a mismatch as fatal:
     //   BH RX diag ... id=0800 seq=0/2 ... result=-5  ->  [BH] Fatal error
@@ -552,7 +536,7 @@ impl Transport {
         for (index, descriptor) in rx_shared.descriptors.iter().enumerate() {
             postcode(0x4849_5100 | index as u32);
             if index < RX_BUFFER_COUNT {
-                let address = RX_BUFFER_BASE + index * RX_BUFFER_SIZE;
+                let address = packet_ram::hif_input(index);
                 queues.rx_buffers[index] = address as u32;
                 descriptor.address.set((address as u32) & 0xf6ff_ffff);
                 descriptor
@@ -837,7 +821,7 @@ impl Transport {
         self.prepared_shared_slot = Some(slot as u8);
         unsafe {
             core::slice::from_raw_parts_mut(
-                (SHARED_BUFFER_BASE + slot * SHARED_BUFFER_SIZE) as *mut u8,
+                packet_ram::hif_output(slot) as *mut u8,
                 SHARED_BUFFER_SIZE,
             )
         }
@@ -1062,10 +1046,7 @@ impl Transport {
         shared_slot: Option<u8>,
     ) {
         let queued = self.state.tx_queued;
-        assert!(output_queue_has_capacity(
-            queued,
-            self.state.tx_reclaimed
-        ));
+        assert!(output_queue_has_capacity(queued, self.state.tx_reclaimed));
         let queue_slot = (queued & 63) as usize;
         self.queues.tx_buffers[queue_slot] = buffer_address as u32;
         debug_assert_eq!(
@@ -1107,7 +1088,7 @@ impl Transport {
             .take()
             .expect("publish requires a prepared output buffer");
         self.shared_slots_in_use[usize::from(shared_slot)] = true;
-        let buffer_address = SHARED_BUFFER_BASE + usize::from(shared_slot) * SHARED_BUFFER_SIZE;
+        let buffer_address = packet_ram::hif_output(usize::from(shared_slot));
         self.enqueue_output(buffer_address, length, None, Some(shared_slot));
     }
 
@@ -1133,7 +1114,7 @@ impl Transport {
                 .position(|used| !*used)
                 .expect("response availability guarantees a shared slot") as u8;
         self.shared_slots_in_use[usize::from(shared_slot)] = true;
-        let buffer_address = SHARED_BUFFER_BASE + usize::from(shared_slot) * SHARED_BUFFER_SIZE;
+        let buffer_address = packet_ram::hif_output(usize::from(shared_slot));
         let count = usize::from(length)
             .min(source.len())
             .min(SHARED_BUFFER_SIZE);

@@ -11,9 +11,10 @@ use xr819_firmware::hif::{HifQueues, HifRingState, SHARED_BUFFER_SIZE, Transport
 use xr819_firmware::join;
 use xr819_firmware::mac;
 use xr819_firmware::mac_domain::MacDomain;
+use xr819_firmware::packet_ram;
 use xr819_firmware::phy::{initialize_mac_core_mode0, initialize_mac_software_state};
 use xr819_firmware::platform::{
-    enable_packet_controller, initialize_runtime_state, prepare_dma_and_clocks,
+    self, enable_packet_controller, initialize_runtime_state, prepare_dma_and_clocks,
     prepare_high_platform_support, prepare_mac_receive_hardware, prepare_main_control,
     prepare_memory_and_interrupts, prepare_packet_dma, program_station_address,
     register_packet_dma_interrupts, register_post_activation_interrupts,
@@ -33,8 +34,8 @@ use xr819_firmware::wsm::{
     TxRequest, WRITE_MIB_REQ_ID, WriteMibRequest, encode_configuration_response,
     encode_join_complete_indication, encode_join_response, encode_read_mib_data_response,
     encode_read_mib_response, encode_scan_complete_indication, encode_status_response,
-    encode_tx_confirm, encode_xr819_tx_confirm,
-    encode_xr819_tx_confirm_details, encode_xr819_tx_confirm_retry_details,
+    encode_tx_confirm, encode_xr819_tx_confirm, encode_xr819_tx_confirm_details,
+    encode_xr819_tx_confirm_retry_details,
 };
 use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
 
@@ -251,11 +252,16 @@ unsafe fn service_management_request(
             if bisect_stage != 0 {
                 encode_xr819_tx_confirm_details(packet_id, STATUS_FAILURE, 0, bisect_stage, output)
             } else {
-                let edca = unsafe { (0x09c0_0e64 as *const u32).read_volatile() };
-                let quantum0 = unsafe { (0x09c0_0e70 as *const u32).read_volatile() };
-                let quantum1 = unsafe { (0x09c0_0e74 as *const u32).read_volatile() };
-                let metadata = unsafe { (0x0900_8008 as *const u8).read_volatile() };
-                let secondary = unsafe { (0x0900_7bc0 as *const u8).read_volatile() };
+                let edca =
+                    unsafe { (platform::mac_register(0x0e64) as *const u32).read_volatile() };
+                let quantum0 =
+                    unsafe { (platform::mac_register(0x0e70) as *const u32).read_volatile() };
+                let quantum1 =
+                    unsafe { (platform::mac_register(0x0e74) as *const u32).read_volatile() };
+                let metadata =
+                    unsafe { (packet_ram::interface_metadata() as *const u8).read_volatile() };
+                let secondary =
+                    unsafe { (packet_ram::duration_word(0) as *const u8).read_volatile() };
                 let event_id = 0x5852_0000 | (edca & 0xffff);
                 let data = (quantum0 & 0xff)
                     | ((quantum1 & 0xff) << 8)
@@ -322,9 +328,8 @@ extern "C" fn rust_main() -> ! {
     xr819_firmware::crypto::run_hardware_ccmp_selftest();
     let hif_ring_state = unsafe { HIF_RING_STATE.init_with(HifRingState::new) };
     let hif_queues = unsafe { HIF_QUEUES.init_with(HifQueues::new) };
-    let transport = unsafe {
-        TRANSPORT.init_with(|| Transport::initialize(hif_ring_state, hif_queues))
-    };
+    let transport =
+        unsafe { TRANSPORT.init_with(|| Transport::initialize(hif_ring_state, hif_queues)) };
     let mut mac_events = unsafe { tx::MacEventQueue::claim() };
     let mut mac_domain = MacDomain::new();
     debug_stop(6, 0x5354_4706);
@@ -811,13 +816,13 @@ extern "C" fn rust_main() -> ! {
                                 | (u32::from((0x0400_998c as *const u8).read_volatile()) << 24)
                         },
                         scan_error,
-                        unsafe { (0x09c0_0600 as *const u32).read_volatile() },
-                        unsafe { (0x09c0_0604 as *const u32).read_volatile() },
-                        unsafe { (0x09c0_0608 as *const u32).read_volatile() },
+                        unsafe { (platform::mac_register(0x0600) as *const u32).read_volatile() },
+                        unsafe { (platform::mac_register(0x0604) as *const u32).read_volatile() },
+                        unsafe { (platform::mac_register(0x0608) as *const u32).read_volatile() },
                         if ENABLE_SINGLE_PROBE_EXPERIMENT {
                             tx::probe_experiment_diagnostic_value()
                         } else {
-                            unsafe { (0x0940_0000 as *const u32).read_volatile() }
+                            unsafe { (packet_ram::rx_fifo_base() as *const u32).read_volatile() }
                         },
                     ];
                     host_tx_diagnostics::populate_counters(&mut values, &*transport);

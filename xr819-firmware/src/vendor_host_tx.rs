@@ -4,13 +4,14 @@
 //! path. Hardware-facing code can apply these plans without borrowing the
 //! internal class-6 probe/template initializer.
 
+use crate::packet_ram;
+
 pub const HOST_CONTEXT_SIZE: usize = 0x170;
 pub const HOST_CONTEXT_BASE: u32 = 0x0400_5a24;
 pub const HOST_CONTEXT_COUNT: usize = 30;
 pub const HOST_FREE_HEAD: u32 = 0x0400_87b0;
 pub const HOST_IN_FLIGHT: u32 = 0x0400_3e9e;
-pub const HOST_FRAME_STATE_BASE: u32 = 0x0900_3678;
-pub const HOST_FRAME_STATE_SIZE: u32 = 0x54;
+pub const HOST_FRAME_STATE_SIZE: u32 = packet_ram::HOST_FRAME_STATE_SIZE as u32;
 pub const PAS_OFFSET: usize = 0x54;
 pub const PAS_RING_CAPACITY: usize = 64;
 
@@ -48,8 +49,8 @@ impl HostContextAddress {
         ((self.0 - HOST_CONTEXT_BASE) / HOST_CONTEXT_SIZE as u32) as usize
     }
 
-    pub const fn frame_state(self) -> u32 {
-        HOST_FRAME_STATE_BASE + self.index() as u32 * HOST_FRAME_STATE_SIZE
+    pub fn frame_state(self) -> u32 {
+        packet_ram::host_frame_state(self.index()) as u32
     }
 }
 
@@ -529,8 +530,10 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
     } else if unsafe { read_live_u8(pas_state + 0x493) } == 0 {
         vif_flags & (1 << 29) != 0 && vif_flags & 3 == 3
     } else {
-        let tsf =
-            unsafe { read_live_u32(0x09c0_0e38).wrapping_add(read_live_u32(pas_state + 0x488)) };
+        let tsf = unsafe {
+            read_live_u32(crate::platform::mac_register(0x0e38) as u32)
+                .wrapping_add(read_live_u32(pas_state + 0x488))
+        };
         let until_tbtt = unsafe { read_live_u32(pas_state + 0x474) }.wrapping_sub(tsf) as i32;
         let duration = u32::from(unsafe { read_live_u16(pas + 0x30) })
             + u32::from(unsafe { read_live_u16(pas + 0x34) })
@@ -1792,9 +1795,9 @@ mod tests {
             Some(last)
         );
         assert_eq!(first.raw(), HOST_CONTEXT_BASE);
-        assert_eq!(first.frame_state(), HOST_FRAME_STATE_BASE);
+        assert_eq!(first.frame_state(), packet_ram::host_frame_state(0) as u32);
         assert_eq!(last.raw(), HOST_CONTEXT_BASE + 29 * 0x170);
-        assert_eq!(last.frame_state(), HOST_FRAME_STATE_BASE + 29 * 0x54);
+        assert_eq!(last.frame_state(), packet_ram::host_frame_state(29) as u32);
         assert_eq!(HostContextAddress::from_raw(last.raw()), Some(last));
         assert_eq!(HostContextAddress::from_raw(last.raw() + 4), None);
         assert_eq!(HostContextAddress::from_index(HOST_CONTEXT_COUNT), None);

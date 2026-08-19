@@ -7,21 +7,61 @@
 use core::cell::UnsafeCell;
 
 use crate::configuration::MAX_TEMPLATE_FRAME_LEN;
+use crate::packet_ram;
 
-const TX_CONTEXT_BASE: usize = 0x0400_9084;
 const TX_CONTEXT_SIZE: usize = 0x170;
 const TX_CONTEXT_COUNT: usize = 3;
 const WSM_TX_CONTEXT_BASE: usize = 0x0400_5a24;
 const WSM_TX_CONTEXT_COUNT: usize = 30;
 const WSM_TX_CONTEXT_FREE_HEAD: usize = 0x0400_87b0;
-const TX_BUFFER_BASE: usize = 0x0901_4fa8;
-const TX_BUFFER_SIZE: usize = 0x400;
+const TX_BUFFER_SIZE: usize = packet_ram::INTERNAL_TX_BUFFER_SIZE;
 const FRAME_NODE_OFFSET: u32 = 0x54;
 // The class-0 allocation counter remains in the untranslated vendor
 // accounting record. Its independently decoded non-class-0 counter, probe
-// sequence, PAS accounting, and completed-frame FIFO are native DTCM state.
+// sequence, PAS accounting, and completed-frame FIFO are native Rust state.
 const CLASS0_INTERNAL_CONTEXTS: usize = 0x0400_8f71;
 const COMPLETION_RING_CAPACITY: usize = 64;
+
+#[derive(Clone, Copy)]
+#[repr(C, align(4))]
+struct InternalTxContext([u8; TX_CONTEXT_SIZE]);
+
+#[repr(C)]
+struct InternalContextPoolState {
+    free_head: u32,
+    contexts: [InternalTxContext; TX_CONTEXT_COUNT],
+}
+
+struct SharedInternalContextPool(UnsafeCell<InternalContextPoolState>);
+
+unsafe impl Sync for SharedInternalContextPool {}
+
+// Keep the qualified DTCM identity while making the pool's ownership, shape,
+// and placement linker-checked Rust state. Retained teardown and diagnostic
+// code still addresses this exact range.
+#[unsafe(link_section = ".dtcm.context_pool")]
+static INTERNAL_CONTEXT_POOL: SharedInternalContextPool =
+    SharedInternalContextPool(UnsafeCell::new(InternalContextPoolState {
+        free_head: 0,
+        contexts: [InternalTxContext([0; TX_CONTEXT_SIZE]); TX_CONTEXT_COUNT],
+    }));
+
+#[inline(always)]
+fn internal_context_free_head() -> *mut u32 {
+    let state = INTERNAL_CONTEXT_POOL.0.get();
+    unsafe { &raw mut (*state).free_head }
+}
+
+#[inline(always)]
+fn internal_context_base() -> usize {
+    let state = INTERNAL_CONTEXT_POOL.0.get();
+    unsafe { (&raw mut (*state).contexts).cast::<InternalTxContext>() as usize }
+}
+
+#[inline(always)]
+fn internal_context_address(index: usize) -> usize {
+    internal_context_base() + index * TX_CONTEXT_SIZE
+}
 
 #[repr(C)]
 struct CompletionRingState {
@@ -34,13 +74,12 @@ struct SharedCompletionRing(UnsafeCell<CompletionRingState>);
 
 unsafe impl Sync for SharedCompletionRing {}
 
-static COMPLETION_RING: SharedCompletionRing = SharedCompletionRing(UnsafeCell::new(
-    CompletionRingState {
+static COMPLETION_RING: SharedCompletionRing =
+    SharedCompletionRing(UnsafeCell::new(CompletionRingState {
         consumer: 0,
         producer: 0,
         frame_nodes: [0; COMPLETION_RING_CAPACITY],
-    },
-));
+    }));
 
 struct SharedProbeContextSequence(UnsafeCell<u16>);
 
@@ -61,8 +100,7 @@ struct SharedRetryRandomState(UnsafeCell<u32>);
 
 unsafe impl Sync for SharedRetryRandomState {}
 
-static RETRY_RANDOM_STATE: SharedRetryRandomState =
-    SharedRetryRandomState(UnsafeCell::new(0));
+static RETRY_RANDOM_STATE: SharedRetryRandomState = SharedRetryRandomState(UnsafeCell::new(0));
 
 pub(crate) unsafe fn initialize_retry_random_state() {
     unsafe { RETRY_RANDOM_STATE.0.get().write_volatile(0x1234_5678) };
@@ -147,8 +185,8 @@ const PIPE_RECORDS: u32 = 0x0400_1680;
 const CURRENT_PIPE: u32 = 0x0400_1f78;
 const CURRENT_PIPE_RECORD: u32 = CURRENT_PIPE + 0x0c;
 const CURRENT_SLOT: u32 = CURRENT_PIPE + 0x10;
-const PIPE_IRQ_PENDING: u32 = 0x09c0_0e84;
-const PIPE_IRQ_TRIGGER: u32 = 0x09c0_0e98;
+const PIPE_IRQ_PENDING: u32 = crate::platform::mac_register(0x0e84) as u32;
+const PIPE_IRQ_TRIGGER: u32 = crate::platform::mac_register(0x0e98) as u32;
 const PIPE_QUANTUM_POINTERS: u32 = 0x0400_10d4;
 const PIPE_QUANTUM: u32 = 0x0000_0fff;
 const PIPE_BUSY: u32 = PIPE_RECORDS + 7;
@@ -168,7 +206,7 @@ const PIPE_RETRY_TIMING_TABLE: u32 = 0x0400_0138;
 const PAS_VIF_STATE: usize = 0x0400_3678;
 const PAS_RATE_MAP_OFFSET: usize = 0x494;
 const PAS_ACK_TIMING_TABLE: usize = 0x0400_16c8;
-const MAC_EVENT_READINESS: u32 = 0x09c0_0a24;
+const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
 #[cfg(target_arch = "arm")]
 const INTERRUPT_PENDING: usize = 0x0a88_0020;
 // `tsf_timer_reload` writes interrupt-controller configuration 0x1600a037.
@@ -243,7 +281,7 @@ fn publication_bisect_reached(reached: u8) -> bool {
 }
 const MAC_BEACON_STATE: u32 = 0x0400_1a80;
 const MAC_BEACON_CONFIG: u32 = 0x0400_3a58;
-const MAC_BEACON_TIMER: u32 = 0x09c0_0e00;
+const MAC_BEACON_TIMER: u32 = crate::platform::mac_register(0x0e00) as u32;
 
 unsafe fn read_u8(address: usize) -> u8 {
     unsafe { (address as *const u8).read_volatile() }
@@ -435,7 +473,7 @@ unsafe fn release_context_address(context: u32) {
         ((address + 0x70) as *mut u16).write_volatile(0x00ff);
         let flags = (address + 0x80) as *mut u32;
         flags.write_volatile(flags.read_volatile() | 0x0002_0000);
-        let free_head = 0x0400_9080 as *mut u32;
+        let free_head = internal_context_free_head();
         let old_head = free_head.read_volatile();
         ((address + 4) as *mut u32).write_volatile(old_head);
         free_head.write_volatile(context);
@@ -448,7 +486,7 @@ unsafe fn release_wsm_context_address(context: u32) {
         let address = context as usize;
         let header = ((address + 0x1c) as *const u32).read_volatile();
         let backing = (0..TX_CONTEXT_COUNT)
-            .map(|index| (TX_CONTEXT_BASE + index * TX_CONTEXT_SIZE) as u32)
+            .map(|index| internal_context_address(index) as u32)
             .find(|candidate| expected_header_address(*candidate) == Some(header));
         ((address + 0x20) as *mut u32).write_volatile(0xff);
         ((address + 0x70) as *mut u16).write_volatile(0x00ff);
@@ -468,12 +506,12 @@ unsafe fn release_wsm_context_address(context: u32) {
 fn expected_header_address(context: u32) -> Option<u32> {
     let offset = usize::try_from(context)
         .ok()?
-        .checked_sub(TX_CONTEXT_BASE)?;
+        .checked_sub(internal_context_base())?;
     if offset % TX_CONTEXT_SIZE != 0 {
         return None;
     }
     let index = offset / TX_CONTEXT_SIZE;
-    (index < TX_CONTEXT_COUNT).then_some((TX_BUFFER_BASE + index * TX_BUFFER_SIZE + 0x40) as u32)
+    (index < TX_CONTEXT_COUNT).then_some((packet_ram::internal_tx_buffer(index) + 0x40) as u32)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -604,9 +642,9 @@ fn finalize_phy_control(phy: PhyRateWords, rate_index: u8, frame_length: u16) ->
     }
 }
 
-const fn single_frame_secondary_command(tx_flags: u32, header_duration: u16, vif_slot: u8) -> u32 {
+fn single_frame_secondary_command(tx_flags: u32, header_duration: u16, vif_slot: u8) -> u32 {
     if tx_flags & 1 == 0 {
-        0x2100_0000 | (0x0900_7bc0_u32.wrapping_add((vif_slot as u32) * 2) & 0x007f_ffff)
+        0x2100_0000 | (packet_ram::duration_word(usize::from(vif_slot)) as u32 & 0x007f_ffff)
     } else {
         0x3200_0000 | header_duration as u32
     }
@@ -1273,7 +1311,7 @@ unsafe fn capture_status2_ownership(
     let command = slot_word(0x14) as usize;
     let hardware_ring = unsafe { read_u32(pipe_state + 8) } as usize;
     let diagnostic_pointer_word = |address: usize, offset: usize| {
-        if (0x0900_0000..0x0b00_0000).contains(&address) {
+        if packet_ram::contains_owned_storage(address) {
             unsafe { read_u32(address + offset) }
         } else {
             0
@@ -1559,8 +1597,7 @@ pub unsafe fn enter_mac_fatal_quiescence(
         // The slot the MAC itself is pointing at, which is not necessarily the
         // one we think is current.
         let cursor_slot = ((read_u32(hardware_ring.wrapping_add(0x20)) >> 27) & 3) as usize;
-        let cursor_command =
-            0x0900_7080 + postmortem.current_pipe as usize * 0x150 + cursor_slot * 0x54;
+        let cursor_command = packet_ram::tx_command(postmortem.current_pipe as usize, cursor_slot);
         let trace_count = read_u32(0xfff0_3794);
         let prior_event = |back: u32| {
             let index = trace_count.wrapping_sub(back) & 0x1f;
@@ -2060,7 +2097,7 @@ pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, 
             if read_u32(0x0400_1ae8) != 0 {
                 let control = read_u32(0x0400_1ab0) & !1;
                 write_u32(0x0400_1ab0, control);
-                write_u32(0x09c0_0a00, control);
+                write_u32(crate::platform::mac_register(0x0a00), control);
                 write_u32(0x0400_1aa8, 1);
             }
         }
@@ -2651,7 +2688,7 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
                 }
                 if read_u8(PIPE_RECORDS as usize + 6) != 0 {
                     let index = usize::from(read_u8(PIPE_RECORDS as usize + 0x0c));
-                    let duration = 0x0900_7bc0_usize + index * 2;
+                    let duration = packet_ram::duration_word(index);
                     write_u16(duration, read_u16(duration).wrapping_add(0x10) & !0x0f);
                 }
                 if event_type == 0x37 {
@@ -3321,7 +3358,7 @@ pub unsafe fn service_single_probe_mac_fifo_inactive(
     }
 
     let mut processed = 0_u32;
-    let mut raw = unsafe { read_u32(0x09c0_0a20) } as i32;
+    let mut raw = unsafe { read_u32(crate::platform::mac_register(0x0a20)) } as i32;
     unsafe {
         trace_tx_value(0x0c, raw as u32);
         trace_tx_stage(TX_TRACE_POP);
@@ -3353,7 +3390,7 @@ pub unsafe fn service_single_probe_mac_fifo_inactive(
                 reschedule_required: false,
             };
         }
-        raw = unsafe { read_u32(0x09c0_0a20) } as i32;
+        raw = unsafe { read_u32(crate::platform::mac_register(0x0a20)) } as i32;
     }
 }
 
@@ -3530,7 +3567,7 @@ pub unsafe fn publish_host_class0_slot(
     let pipe_state = pipe_state_address(pipe);
     let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
     let live_command = unsafe { read_u32(slot_record as usize + 0x14) };
-    if command != live_command || !(0x0900_0000..0x0940_0000).contains(&command) {
+    if command != live_command || !packet_ram::tx_commands().contains(&(command as usize)) {
         unsafe {
             crate::hif::publish_halting_exception(
                 [
@@ -4632,7 +4669,10 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         trace_tx_stage(TX_TRACE_START);
         trace_tx_value(0x24, u32::from(pipe));
         let global = 0x0400_1680_usize;
-        write_u32(global + 0x40, read_u32(0x09c0_0604));
+        write_u32(
+            global + 0x40,
+            read_u32(crate::platform::mac_register(0x0604)),
+        );
         let pipe_state = global + usize::from(pipe) * 0x6c + 0xa0;
         let current = read_u8(pipe_state + 2);
         let slot = pipe_state + usize::from(current) * 0x18 + 0x0c;
@@ -4660,7 +4700,7 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
             && read_u32(frame_node + 4) & 1 == 0
         {
             let rate = read_u8(frame_node + 0x6a);
-            let duration = read_u16(0x0900_7bc0 + usize::from(rate) * 2);
+            let duration = read_u16(packet_ram::duration_word(usize::from(rate)));
             let header = read_u32(frame_node) as usize;
             write_u16(header + 0x16, duration);
             write_u16(frame_node + 0x54, duration);
@@ -5316,7 +5356,7 @@ where
 {
     unsafe {
         let address = context.raw() as usize;
-        let free_head = 0x0400_9080 as *mut u32;
+        let free_head = internal_context_free_head();
         ((address + 4) as *mut u32).write_volatile(free_head.read_volatile());
         ((address + 0x70) as *mut u16).write_volatile(0x00ff);
         let flags = (address + 0x80) as *mut u32;
@@ -5494,9 +5534,11 @@ pub unsafe fn archive_mac_event(raw: u32) {
 /// MAC MMIO must be mapped.
 pub unsafe fn mac_hardware_idle() -> bool {
     unsafe {
-        ((0x09c0_0a28 as *const u32).read_volatile() >> 8) & 0x1f != 0x12
-            && ((0x09c0_0e90 as *const u32).read_volatile() >> 4) & 0xff == 0
-            && ((0x09c0_0ea0 as *const u32).read_volatile() >> 24) & 0x1f == 0
+        ((crate::platform::mac_register(0x0a28) as *const u32).read_volatile() >> 8) & 0x1f != 0x12
+            && ((crate::platform::mac_register(0x0e90) as *const u32).read_volatile() >> 4) & 0xff
+                == 0
+            && ((crate::platform::mac_register(0x0ea0) as *const u32).read_volatile() >> 24) & 0x1f
+                == 0
     }
 }
 
@@ -5568,7 +5610,8 @@ pub unsafe fn service_probe_mac_events(
 ) -> Result<MacEventServiceReport, ProbeTxTransitionError> {
     let mut report = MacEventServiceReport::default();
     if max_events != 0 {
-        let readiness = unsafe { (0x09c0_0a24 as *const i32).read_volatile() };
+        let readiness =
+            unsafe { (crate::platform::mac_register(0x0a24) as *const i32).read_volatile() };
         if readiness >= 0 {
             report.blocked = Some(readiness as u32);
         }
@@ -5818,7 +5861,10 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let vif = 0x0400_3678_u32 + interface * 0x98;
     let edca_slot_timing = mmio.read_u32(vif + 0x4fc);
     if mmio.read_u32(0x0400_1b04) != edca_slot_timing {
-        mmio.write_u32(0x09c0_0e64, edca_slot_timing);
+        mmio.write_u32(
+            crate::platform::mac_register(0x0e64) as u32,
+            edca_slot_timing,
+        );
         mmio.write_u32(0x0400_1b04, edca_slot_timing);
     }
     if publication_bisect_reached(6) {
@@ -6004,7 +6050,9 @@ impl PreparedProbePublication {
             let pipe_state = pipe_state_address(self.pipe);
             let hardware_ring = read_u32(pipe_state as usize + 8);
             let live_command = read_u32(slot_record + 0x14);
-            if self.command != live_command || !(0x0900_0000..0x0940_0000).contains(&self.command) {
+            if self.command != live_command
+                || !packet_ram::tx_commands().contains(&(self.command as usize))
+            {
                 crate::hif::publish_halting_exception(
                     [
                         0x5458_4341,
@@ -6170,7 +6218,7 @@ pub unsafe fn prepare_probe_context(
         return Err(ProbeBuildError::FrameTooLarge);
     }
     unsafe {
-        let free_head = 0x0400_9080 as *mut u32;
+        let free_head = internal_context_free_head();
         let context = free_head.read_volatile();
         if context == 0 {
             return Err(ProbeBuildError::ContextPoolEmpty);
@@ -6306,7 +6354,7 @@ unsafe fn move_to_wsm_class0_context(
 
         let destination_request = (destination_address as *const u32).read_volatile();
         let destination_frame_state = ((destination_address + 0xa0) as *const u32).read_volatile();
-        if !(0x0900_3678..0x0900_4048).contains(&destination_frame_state) {
+        if packet_ram::host_frame_state_index(destination_frame_state as usize).is_none() {
             release_context_address(source.context);
             release_wsm_context_address(destination);
             return Err(ProbeBuildError::InvalidContextPointer);
@@ -6380,12 +6428,12 @@ pub unsafe fn build_prepared_probe_descriptor(
             rate_attribute,
         );
         let if_id = ((address + 0xbd) as *const u8).read_volatile();
-        let metadata_address = 0x0900_8008_u32.wrapping_add(u32::from(if_id));
+        let metadata_address = packet_ram::interface_metadata_byte(usize::from(if_id)) as u32;
         let vif_slot = ((address + 0xbe) as *const u8).read_volatile();
         // `txp_submit_to_pipe` uses PAS `bVifSlot` (`ctx+0xbe`) here when
         // flags bit 0 is clear. Both internal and host contexts use this
         // selector; the TX rate indexes different PHY tables.
-        let secondary_address = 0x0900_7bc0_u32.wrapping_add(u32::from(vif_slot) * 2);
+        let secondary_address = packet_ram::duration_word(usize::from(vif_slot)) as u32;
         build_single_frame_pipe_descriptor(SingleFramePipeInput {
             phy_rate_word: phy.rate,
             phy_control_word: finalize_phy_control(phy, rate, context.length),
@@ -6447,7 +6495,8 @@ unsafe fn emit_prepared_probe_descriptor(
         add(0x5200_0000 | (u32::from(hardware_rate) << 16) | u32::from(context.length + 4));
         add(0x3100_0000 + frame_control);
         add(0x4700_0000 + (frame_control >> 8));
-        add(0x2080_0000 | (0x0900_8008_u32.wrapping_add(u32::from(if_id)) & 0x007f_ffff));
+        add(0x2080_0000
+            | (packet_ram::interface_metadata_byte(usize::from(if_id)) as u32 & 0x007f_ffff));
         add(0x3200_0000 | u32::from(((address + 0x8a) as *const u16).read_volatile()));
         add(0x2900_0000 | (context.header.wrapping_add(4) & 0x007f_ffff));
         add(single_frame_secondary_command(
@@ -6512,7 +6561,7 @@ pub unsafe fn emit_host_frame_descriptor_at(
 pub unsafe fn build_host_frame_descriptor(context: u32) -> Result<u32, ProbeBuildError> {
     let address = context as usize;
     let destination = unsafe { ((address + 0xa0) as *const u32).read_volatile() };
-    if !(0x0900_3678..0x0900_4048).contains(&destination) {
+    if packet_ram::host_frame_state_index(destination as usize).is_none() {
         return Err(ProbeBuildError::InvalidContextPointer);
     }
     unsafe { emit_host_frame_descriptor_at(context, destination) }
@@ -7285,20 +7334,21 @@ pub unsafe fn validate_probe_preparation(
 /// DTCM and packet RAM must be mapped and no internal TX context may be owned.
 pub unsafe fn initialize_internal_pool() {
     unsafe {
-        (0x0400_3688 as *mut u32).write_volatile(0x0901_5ba8);
-        (0x0400_36f8 as *mut u32).write_volatile(0x0901_5ba8);
+        let boundary = packet_ram::internal_tx_buffers_end() as u32;
+        (0x0400_3688 as *mut u32).write_volatile(boundary);
+        (0x0400_36f8 as *mut u32).write_volatile(boundary);
 
         let mut previous = 0_u32;
         for index in 0..TX_CONTEXT_COUNT {
-            let context = TX_CONTEXT_BASE + index * TX_CONTEXT_SIZE;
-            let buffer = TX_BUFFER_BASE + index * TX_BUFFER_SIZE;
+            let context = internal_context_address(index);
+            let buffer = packet_ram::internal_tx_buffer(index);
             ((context + 0x1c) as *mut u32).write_volatile((buffer + 0x40) as u32);
             ((context + 0xc4) as *mut u32).write_volatile((buffer + 0x20) as u32);
             ((context + 0x70) as *mut u16).write_volatile(0x00ff);
             ((context + 0x04) as *mut u32).write_volatile(previous);
             previous = context as u32;
         }
-        (0x0400_9080 as *mut u32).write_volatile(previous);
+        internal_context_free_head().write_volatile(previous);
     }
 }
 
@@ -8267,7 +8317,10 @@ mod tests {
         mmio.set(0x0400_1b04, 0x44);
         mmio.set(0x0400_02dc, 1);
         mmio.set(0x0400_3678 + 0x4e2, 64);
-        mmio.set(PIPE_QUANTUM_POINTERS, 0x09c0_0e70);
+        mmio.set(
+            PIPE_QUANTUM_POINTERS,
+            crate::platform::mac_register(0x0e70) as u32,
+        );
         mmio.set(pipe_state + 4, 8);
         mmio.set(0x0400_3a6c, 2);
 
@@ -8291,8 +8344,8 @@ mod tests {
         assert_eq!(mmio.get(frame.raw() + 0x18), 0x1234);
         assert_eq!(mmio.get(frame.raw() + 0x3c), 0);
         assert_eq!(mmio.get(command + 8), 0xdc00_0000);
-        assert_eq!(mmio.get(0x09c0_0e64), 0x55);
-        assert_eq!(mmio.get(0x09c0_0e70), 2);
+        assert_eq!(mmio.get(crate::platform::mac_register(0x0e64) as u32), 0x55);
+        assert_eq!(mmio.get(crate::platform::mac_register(0x0e70) as u32), 2);
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
         assert_eq!(mmio.get(0x0400_3a6c), 3);
         assert_eq!(mmio.get(slot + 3), 1);
@@ -8757,6 +8810,15 @@ mod tests {
     }
 
     #[test]
+    fn native_internal_context_pool_preserves_context_stride() {
+        assert_eq!(core::mem::size_of::<InternalTxContext>(), TX_CONTEXT_SIZE);
+        assert_eq!(core::mem::align_of::<InternalTxContext>(), 4);
+        assert_eq!(core::mem::offset_of!(InternalContextPoolState, free_head), 0);
+        assert_eq!(core::mem::offset_of!(InternalContextPoolState, contexts), 4);
+        assert_eq!(core::mem::size_of::<InternalContextPoolState>(), 0x454);
+    }
+
+    #[test]
     fn native_completion_ring_contains_only_the_decoded_fifo() {
         assert_eq!(core::mem::size_of::<CompletionRingState>(), 0x108);
         assert_eq!(core::mem::offset_of!(CompletionRingState, consumer), 0);
@@ -8985,8 +9047,14 @@ mod tests {
 
     #[test]
     fn single_frame_secondary_command_matches_vendor_qos_branch() {
-        assert_eq!(single_frame_secondary_command(0, 0x50, 0), 0x2100_7bc0);
-        assert_eq!(single_frame_secondary_command(0, 0x50, 1), 0x2100_7bc2);
+        assert_eq!(
+            single_frame_secondary_command(0, 0x50, 0),
+            0x2100_0000 | (packet_ram::duration_word(0) as u32 & 0x007f_ffff)
+        );
+        assert_eq!(
+            single_frame_secondary_command(0, 0x50, 1),
+            0x2100_0000 | (packet_ram::duration_word(1) as u32 & 0x007f_ffff)
+        );
         assert_eq!(single_frame_secondary_command(1, 0x50, 0), 0x3200_0050);
     }
 

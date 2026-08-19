@@ -10,6 +10,21 @@ const LOW_SDD_DATA: usize = 0x0000_7500;
 const LOW_SDD_LENGTH: usize = 0x0000_8464;
 const LOW_CONFIGURATION_VALID: usize = 0x0000_847e;
 
+unsafe extern "C" {
+    static __diagnostic_output_base: u8;
+    static __diagnostic_checkpoint_base: u8;
+}
+
+#[inline(always)]
+fn diagnostic_output() -> *mut u32 {
+    (&raw const __diagnostic_output_base).cast_mut().cast()
+}
+
+#[inline(always)]
+fn diagnostic_checkpoint() -> *mut u32 {
+    (&raw const __diagnostic_checkpoint_base).cast_mut().cast()
+}
+
 unsafe fn low_sdd_element(id: u8) -> Option<&'static [u8]> {
     unsafe {
         if (LOW_CONFIGURATION_VALID as *const u8).read_volatile() != 1 {
@@ -69,7 +84,7 @@ unsafe fn populate_extension_gain_sdd_state() {
 
 unsafe fn snapshot_gain_state() {
     unsafe {
-        let output = 0x0900_fc00 as *mut u32;
+        let output = diagnostic_output();
         output.add(0).write_volatile(0x4753_4e50);
         output
             .add(1)
@@ -124,10 +139,10 @@ unsafe fn snapshot_gain_state() {
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn xr819_hif_extension_probe(transport: *mut u8, length: u16) {
-    unsafe { (0x0900_fd00 as *mut u32).write_volatile(0x4558_5431) };
+    unsafe { diagnostic_checkpoint().write_volatile(0x4558_5431) };
     let stable_publish: StablePublish = unsafe { core::mem::transmute(0x0000_162d_usize) };
     unsafe { stable_publish(transport, length) };
-    unsafe { (0x0900_fd04 as *mut u32).write_volatile(0x4558_5432) };
+    unsafe { diagnostic_checkpoint().add(1).write_volatile(0x4558_5432) };
 }
 
 /// Preserve the stable channel-frequency division call while inserting the
@@ -144,8 +159,10 @@ pub unsafe extern "C" fn xr819_gain_extension(dividend: u32, divisor: u32) -> u3
         Err(_) => 0x4741_4946,
     };
     unsafe {
-        (0x0900_fd08 as *mut u32).write_volatile(status);
-        (0x0900_fd0c as *mut u32).write_volatile((0x0abb_801c as *const u32).read_volatile());
+        diagnostic_checkpoint().add(2).write_volatile(status);
+        diagnostic_checkpoint()
+            .add(3)
+            .write_volatile((0x0abb_801c as *const u32).read_volatile());
         snapshot_gain_state();
     }
     quotient

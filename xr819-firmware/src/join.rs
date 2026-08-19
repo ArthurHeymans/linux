@@ -72,7 +72,7 @@ pub unsafe fn reset(interface: u8) -> bool {
     // full vendor stop depends on ordinary-TX scheduler drain work that is not
     // represented yet; forcing it here made the post-auth scan lose completion.
     unsafe {
-        (0x09c0_0044 as *mut u32).write_volatile(0);
+        (crate::platform::mac_register(0x0044) as *mut u32).write_volatile(0);
         crate::mac::program_scan_station_mode();
     }
     true
