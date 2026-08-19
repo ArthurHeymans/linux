@@ -2232,3 +2232,14 @@ reachable recursion, or unresolved indirect calls. Reducing this existing debt
 requires a separately hardware-qualified calibration-stack change; the earlier
 static dynamic-IQ sample experiment remains rejected and must not be restored
 mechanically.
+
+The adjacent PHY rate-table family is not a safe native-DTCM candidate. The
+pointer and scale fields at `0x040099d8`, `0x040099ec`, `0x040099f0`, and
+`0x040099f4` are written by retained `phy_select_rate_tables`; the first pointer
+is also read by retained RSSI and TX-power helpers, while the scale is consumed
+by retained RSSI and frequency-offset paths. Caller tracing reaches retained
+channel-switch, scan-restore, wake, temperature-compensation, configuration,
+and `task_11ecc` paths. Moving only the translated Rust users would therefore
+split live shared state just like the rejected retry/drain and scheduler-gate
+experiments. These fields remain fixed until those retained PHY paths are
+translated or explicitly bridged.
