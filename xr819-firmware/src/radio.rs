@@ -14,6 +14,10 @@ use crate::rx_model::{ReleaseAction, RxRing};
 
 const FIFO_BASE: usize = 0x0940_0000;
 const FIFO_SIZE: u32 = 0x7000;
+// Vendor `rxfifo_off_to_addr()` wraps slot starts at 0x7000, but the current
+// slot remains linearly addressable in the following packet-RAM spill area.
+// The ring keeps 0x1000 bytes outside its logical cursor range for this.
+const FIFO_STORAGE_SIZE: usize = FIFO_SIZE as usize + 0x1000;
 const FIFO_MASK: u32 = 0x0001_fffc;
 const FIFO_MAGIC: u32 = 0x00aa_55ff;
 const FIFO_RELEASED: u32 = 0xcccc_cc00;
@@ -258,10 +262,10 @@ fn repairable_tail_slot(
     u32::from(slot_length) <= available && next == producer && !next_has_magic
 }
 
-fn slot_data_fits_fifo(offset: u32, slot_length: u16) -> bool {
+fn slot_data_fits_packet_ram(offset: u32, slot_length: u16) -> bool {
     let frame_end = offset as usize + 0x20 + usize::from(slot_length);
     let trailer = (frame_end + 3) & !3;
-    trailer + 8 <= FIFO_SIZE as usize
+    trailer + 8 <= FIFO_STORAGE_SIZE
 }
 
 const fn claimed_slot_state(value: u32) -> u32 {
@@ -1037,13 +1041,10 @@ unsafe fn poll_indication(
 
         let frame_address = slot + 0x20;
         let trailer = (frame_address + usize::from(slot_length) + 3) & !3;
-        if !slot_data_fits_fifo(consumer, slot_length) {
+        if !slot_data_fits_packet_ram(consumer, slot_length) {
             unsafe {
                 let diagnostics = &mut *DIAGNOSTICS.0.get();
                 diagnostics.malformed_slots = diagnostics.malformed_slots.wrapping_add(1);
-                // The valid slot header and bounded length provide a trustworthy
-                // vendor-format next pointer even though this implementation does
-                // not consume split frame/trailer data across the FIFO boundary.
                 release(ring, token);
             }
             return None;
@@ -1171,8 +1172,10 @@ mod tests {
         assert_eq!(next_offset(0x6fc0, 64), 0x2c);
         assert_eq!(normalize_offset(0x7000), 0);
         assert_eq!(available_bytes(0x6ff0, 0x20), 0x30);
-        assert!(slot_data_fits_fifo(0x6f00, 100));
-        assert!(!slot_data_fits_fifo(0x6fc0, 64));
+        assert!(slot_data_fits_packet_ram(0x6f00, 100));
+        assert!(slot_data_fits_packet_ram(0x6fc0, 64));
+        assert!(slot_data_fits_packet_ram(0x6a00, 1552));
+        assert!(!slot_data_fits_packet_ram(0x6fc0, 0x1100));
     }
 
     #[test]
