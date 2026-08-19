@@ -18,8 +18,9 @@ BUILD_STD=(-Z build-std=core)
 echo "== host tests =="
 cargo +nightly test --features vendor-host-tx-diagnostics
 
-echo "== arm check: feature-free firmware =="
-cargo +nightly check --release --bin hif-startup --target "$TARGET" "${BUILD_STD[@]}"
+echo "== arm build and stack check: feature-free firmware =="
+cargo +nightly build --release --bin hif-startup --target "$TARGET" "${BUILD_STD[@]}"
+tools/check-rust-main-stack.py "target/$TARGET/release/hif-startup"
 
 echo "== arm check: sectioned-image bootstrap =="
 cargo +nightly check --release --bin download-boot-sectioned \

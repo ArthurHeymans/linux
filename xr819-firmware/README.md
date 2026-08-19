@@ -299,23 +299,19 @@ Not yet implemented or production-complete:
 5. Implement channel setup and read-only RX.
 6. Implement TX and confirmations.
 
-Run host-side protocol tests with:
+Run the host tests, ARM build, call-chain stack check, and sectioned-bootstrap
+check with:
 
 ```sh
-cargo test
+./tools/check.sh
 ```
 
-Active probe scanning is enabled by the default Cargo feature set. Build with
-`--no-default-features` for the retained passive rollback image.
-
-Build the hardware mailbox payload with:
+Operational station behavior is feature-free; Cargo features are reserved for
+diagnostics. Build the packed production image with:
 
 ```sh
-cargo +nightly build --release --bin mailbox \
-    --target armv5te-none-eabi -Z build-std=core
+./tools/build-ota-image.sh firmware.bin
 ```
-
-The raw payload is produced from the ELF with `arm-none-eabi-objcopy -O binary`.
 
 ### Vendor-style sectioned images
 
@@ -388,14 +384,25 @@ native state from entering either the legacy window or stacks. The sectioned
 image packer emits the native `.dtcm.bss` as a DTCM fill record, and main entry
 also clears its linker-symbol range explicitly.
 
-Native DTCM currently uses 1,996 bytes. It holds CPU-only HIF queue/ring
+Native DTCM currently uses 2,012 bytes. It holds CPU-only HIF queue/ring
 ownership, `Transport`, its response scratch, HIF sequence state, the completed-
 frame FIFO, probe-context sequence, PAS active-context count, non-class-0
-internal-context count, and TX retry PRNG state. The uncertain class-0 counter
-at `0x04008f71` remains fixed. Hardware descriptors and packet-RAM addresses
-also remain fixed. Further translations should move into this linker-owned
-region; as the contiguous legacy boundary is pushed down, `DTCM_NATIVE` can
-grow without changing Rust object identities.
+internal-context count, TX retry PRNG state, the channel PLL cache, and channel
+power limits. The uncertain class-0 counter at `0x04008f71` remains fixed.
+Hardware descriptors and packet-RAM addresses also remain fixed. Further
+translations should move into this linker-owned region; as the contiguous
+legacy boundary is pushed down, `DTCM_NATIVE` can grow without changing Rust
+object identities.
+
+ARM builds emit LLVM stack-size metadata. `tools/check-rust-main-stack.py`
+combines it with direct-call edges from the linked disassembly and rejects any
+normal `rust_main` call chain deeper than the qualified 2,892-byte baseline.
+The deepest current path runs through channel activation and dynamic IQ
+calibration. It is 76 bytes larger than the nominal 2,816-byte system-stack
+partition, so the checker reports that debt on every build while preventing it
+from growing. Handwritten assembly helpers use a reported disassembly-prologue
+fallback; reachable recursion or indirect calls fail analysis rather than being
+silently ignored.
 
 An explicit `tcm-size-diagnostic` feature adds ARM interworking helpers for the
 CP15 TCM type and region registers. The registers are read only when the host

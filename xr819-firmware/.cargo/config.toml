@@ -1,0 +1,6 @@
+[target.thumbv5te-none-eabi]
+rustflags = [
+  "-C", "target-feature=+strict-align",
+  "-C", "link-arg=-Tlink-main-low.x",
+  "-Z", "emit-stack-sizes",
+]

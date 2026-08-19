@@ -2219,3 +2219,16 @@ BSSID `ea:67:1f:a2:08:0a` at approximately -30 dBm produced one clean exact-pare
 control and three clean unchanged candidates. Each candidate had zero TX
 failures, 20/20 final ping, 7.92-7.93 Mbit/s received UDP, and no exception or
 fatal diagnostics.
+
+Linked LLVM stack-size metadata plus direct-call analysis now exposes the full
+normal call-chain depth rooted at `rust_main`. The deepest qualified path is
+`rust_main` -> station activation -> channel transition -> vendor mode
+calibration -> dynamic IQ calibration -> integer division helpers. Its frames
+total 2,892 bytes: 76 bytes beyond the nominal 2,816-byte system-stack
+partition. This explains why checking only the 1,552-byte `rust_main` frame was
+insufficient. The build gate records 2,892 bytes as the qualified no-regression
+limit, reports the physical overrun on every build, and rejects deeper paths,
+reachable recursion, or unresolved indirect calls. Reducing this existing debt
+requires a separately hardware-qualified calibration-stack change; the earlier
+static dynamic-IQ sample experiment remains rejected and must not be restored
+mechanically.
