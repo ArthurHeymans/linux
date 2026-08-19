@@ -17,10 +17,10 @@ const WSM_TX_CONTEXT_FREE_HEAD: usize = 0x0400_87b0;
 const TX_BUFFER_BASE: usize = 0x0901_4fa8;
 const TX_BUFFER_SIZE: usize = 0x400;
 const FRAME_NODE_OFFSET: u32 = 0x54;
-// Allocation counters remain in the untranslated vendor accounting record.
-// Its independently decoded probe sequence and completed-frame FIFO are
-// linker-owned native DTCM state.
-const COMPLETION_ACCOUNTING_STATE: usize = 0x0400_8f6c;
+// The class-0 allocation counter remains in the untranslated vendor
+// accounting record. Its independently decoded non-class-0 counter, probe
+// sequence, PAS accounting, and completed-frame FIFO are native DTCM state.
+const CLASS0_INTERNAL_CONTEXTS: usize = 0x0400_8f71;
 const COMPLETION_RING_CAPACITY: usize = 64;
 
 #[repr(C)]
@@ -57,6 +57,24 @@ unsafe fn probe_context_sequence() -> u16 {
 
 unsafe fn set_probe_context_sequence(value: u16) {
     unsafe { PROBE_CONTEXT_SEQUENCE.0.get().write_volatile(value) };
+}
+
+struct SharedInternalContextCount(UnsafeCell<u8>);
+
+unsafe impl Sync for SharedInternalContextCount {}
+
+#[unsafe(link_section = ".dtcm.bss.internal_context_count")]
+static INTERNAL_CONTEXT_COUNT: SharedInternalContextCount =
+    SharedInternalContextCount(UnsafeCell::new(0));
+
+#[inline(always)]
+unsafe fn active_internal_contexts() -> u8 {
+    unsafe { INTERNAL_CONTEXT_COUNT.0.get().read_volatile() }
+}
+
+#[inline(always)]
+unsafe fn set_active_internal_contexts(value: u8) {
+    unsafe { INTERNAL_CONTEXT_COUNT.0.get().write_volatile(value) };
 }
 
 struct SharedPasAccounting(UnsafeCell<u16>);
@@ -413,8 +431,7 @@ unsafe fn release_context_address(context: u32) {
         let old_head = free_head.read_volatile();
         ((address + 4) as *mut u32).write_volatile(old_head);
         free_head.write_volatile(context);
-        let allocated = 0x0400_8f70 as *mut u8;
-        allocated.write_volatile(allocated.read_volatile().wrapping_sub(1));
+        set_active_internal_contexts(active_internal_contexts().wrapping_sub(1));
     }
 }
 
@@ -4004,10 +4021,6 @@ fn completion_retry_limit_offset(alternate: bool) -> usize {
     if alternate { 0x115 } else { 0x114 }
 }
 
-fn completion_accounting_counter_offset(completion_class: u8) -> usize {
-    if completion_class == 0 { 5 } else { 4 }
-}
-
 fn completion_drain_required(
     context_completion_class: u8,
     frame_control: u16,
@@ -5291,10 +5304,13 @@ where
         flags.write_volatile(flags.read_volatile() | (1 << 17));
         free_head.write_volatile(context.raw());
 
-        let accounting = COMPLETION_ACCOUNTING_STATE as *mut u8;
         let class = ((address + 0x53) as *const u8).read_volatile();
-        let counter = accounting.add(completion_accounting_counter_offset(class));
-        counter.write_volatile(counter.read_volatile().wrapping_sub(1));
+        if class == 0 {
+            let counter = CLASS0_INTERNAL_CONTEXTS as *mut u8;
+            counter.write_volatile(counter.read_volatile().wrapping_sub(1));
+        } else {
+            set_active_internal_contexts(active_internal_contexts().wrapping_sub(1));
+        }
 
         let pending_queue = 0x0400_8ad8 as *mut u8;
         if pending_queue.add(0x0b).read_volatile() != 0 {
@@ -6143,9 +6159,7 @@ pub unsafe fn prepare_probe_context(
         let context_address = context as usize;
         free_head.write_volatile(((context_address + 4) as *const u32).read_volatile());
 
-        let global = COMPLETION_ACCOUNTING_STATE;
-        let allocated = (global + 4) as *mut u8;
-        allocated.write_volatile(allocated.read_volatile().wrapping_add(1));
+        set_active_internal_contexts(active_internal_contexts().wrapping_add(1));
         ((context_address + 0x0d) as *mut u8).write_volatile(0);
         ((context_address + 0x4c) as *mut u32).write_volatile(0);
         ((context_address + 0x53) as *mut u8).write_volatile(6);
@@ -7137,7 +7151,7 @@ pub fn probe_runtime_quiescent() -> bool {
     let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
     runtime.published.is_none()
         && runtime.host_published.is_none()
-        && unsafe { read_u8(0x0400_8f70) } == 0
+        && unsafe { active_internal_contexts() } == 0
         && unsafe { active_pas_contexts() } == 0
         && unsafe {
             let (consumer, producer) = COMPLETION_RING.cursors();
@@ -8732,10 +8746,8 @@ mod tests {
     }
 
     #[test]
-    fn completion_accounting_uses_vendor_class_counters() {
-        assert_eq!(completion_accounting_counter_offset(0), 5);
-        assert_eq!(completion_accounting_counter_offset(1), 4);
-        assert_eq!(completion_accounting_counter_offset(6), 4);
+    fn only_class_zero_keeps_its_vendor_allocation_counter() {
+        assert_eq!(CLASS0_INTERNAL_CONTEXTS, 0x0400_8f71);
     }
 
     #[test]
