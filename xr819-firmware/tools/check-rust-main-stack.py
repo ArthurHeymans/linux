@@ -9,11 +9,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-SYSTEM_STACK_BYTES = 0x0400_C000 - 0x0400_B500
-# The qualified image already exceeds the nominal system-stack partition on its
-# deepest statically visible calibration path. Keep that debt visible while
-# preventing further growth until the path is reduced below SYSTEM_STACK_BYTES.
-QUALIFIED_CALL_CHAIN_BYTES = 2892
+SYSTEM_STACK_BYTES = 0x0400_C000 - 0x0400_A500
+QUALIFIED_CALL_CHAIN_BYTES = SYSTEM_STACK_BYTES
+EXCEPTION_STACK_BYTES = 0x100
+EXCEPTION_VENEER_BYTES = 14 * 4
 
 
 @dataclass(frozen=True)
@@ -167,6 +166,9 @@ def main() -> int:
         metadata = stack_sizes(elf)
         functions = disassembly_functions(elf, metadata)
         chain, path, fallback = maximum_call_chain(functions, "rust_main")
+        exception_chain, exception_path, exception_fallback = maximum_call_chain(
+            functions, "xr819_exception_terminal"
+        )
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"stack check failed: {error}", file=sys.stderr)
         return 1
@@ -181,6 +183,29 @@ def main() -> int:
         source = "assembly-prologue" if name in fallback else "llvm"
         print(f"  {functions[name].frame:4d} {source:17s} {demangled[name]}")
 
+    exception_total = EXCEPTION_VENEER_BYTES + exception_chain
+    print(f"exception_stack_usage={exception_total}")
+    print(f"exception_stack_capacity={EXCEPTION_STACK_BYTES}")
+    print("deepest_exception_call_chain:")
+    exception_demangled = dict(
+        zip(
+            exception_path,
+            run_tool("llvm-cxxfilt", *exception_path).splitlines(),
+            strict=True,
+        )
+    )
+    print(f"  {EXCEPTION_VENEER_BYTES:4d} assembly-veneer   register save")
+    for name in exception_path:
+        source = "assembly-prologue" if name in exception_fallback else "llvm"
+        print(f"  {functions[name].frame:4d} {source:17s} {exception_demangled[name]}")
+
+    if exception_total > EXCEPTION_STACK_BYTES:
+        print(
+            "exception call chain exceeds its mode stack by "
+            f"{exception_total - EXCEPTION_STACK_BYTES} bytes",
+            file=sys.stderr,
+        )
+        return 1
     if chain > QUALIFIED_CALL_CHAIN_BYTES:
         print(
             "rust_main call chain exceeds the qualified baseline by "

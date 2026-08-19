@@ -337,10 +337,10 @@ bootstrap with:
 ```
 
 The bootstrap starts at `0x08000000`, relocates its body to `0x09010000`, and
-uses the reserved DTCM stack at `0x0400c000`. Linker-owned native DTCM sections
-are bounded below `0x0400b000`, so their copy/fill records cannot overlap active
-bootstrap frames. Moving this stack into staging SRAM was tested separately and
-rejected after repeated TX failures and a lost final ping.
+uses the reserved DTCM stack at `0x0400c000`. The main image contains no native
+DTCM payload, so section loading cannot overlap active bootstrap frames. Moving
+this stack into staging SRAM was tested separately and rejected after repeated
+TX failures and a lost final ping.
 
 ### Split high-SRAM extensions
 
@@ -373,34 +373,35 @@ ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 `link-main-low.x` now divides observed DTCM ownership explicitly:
 
 ```text
-0x04000000..0x0400a000  untranslated vendor-compatible state
-0x0400a000..0x0400b000  linker-owned native Rust DTCM
-0x0400b000..0x0400c000  exception and system stacks
+0x04000000..0x0400a000  temporary untranslated vendor-compatible state
+0x0400a000..0x0400a500  five 256-byte exception-mode stacks
+0x0400a500..0x0400c000  6,912-byte system stack
 ```
 
-The vendor image initializes through `0x04009c44`; rounding legacy ownership to
-`0x0400a000` preserves a 956-byte research margin. Linker assertions prevent
-native state from entering either the legacy window or stacks. The sectioned
-image packer emits the native `.dtcm.bss` as a DTCM fill record, and main entry
-also clears its linker-symbol range explicitly.
+The vendor image initializes through `0x04009c44`; rounding untranslated
+ownership to `0x0400a000` preserves a 956-byte research margin. This lower
+window is a quarantine for state that has not yet been decoded, not a permanent
+compatibility ABI.
 
-Native DTCM currently uses 2,012 bytes. It holds CPU-only HIF queue/ring
-ownership, `Transport`, its response scratch, HIF sequence state, the completed-
-frame FIFO, probe-context sequence, PAS active-context count, non-class-0
-internal-context count, TX retry PRNG state, the channel PLL cache, and channel
-power limits. The uncertain class-0 counter at `0x04008f71` remains fixed.
-Hardware descriptors and packet-RAM addresses also remain fixed. Further
-translations should move into this linker-owned region; as the contiguous
-legacy boundary is pushed down, `DTCM_NATIVE` can grow without changing Rust
-object identities.
+Rust-owned CPU state now uses ordinary writable ITCM `.data` and `.bss`. This
+includes HIF queue/ring ownership, `Transport`, response scratch, HIF sequence
+state, the completed-frame FIFO, probe-context sequence, PAS accounting,
+internal-context count, retry PRNG state, channel PLL cache, and channel power
+limits. There is no native `.dtcm.bss` section or main-image DTCM fill record.
+Hardware descriptors, packet buffers, and MMIO identities remain in shared
+packet RAM or MMIO rather than TCM.
+
+The current linked ITCM image ends at `0x00014278`, leaving about 31 KiB below
+the conservative `0x0001c000` observed envelope. Further decoded CPU-only state
+should use Rust globals in ITCM while the lower DTCM quarantine is reduced one
+coherent family at a time.
 
 ARM builds emit LLVM stack-size metadata. `tools/check-rust-main-stack.py`
-combines it with direct-call edges from the linked disassembly and rejects any
-normal `rust_main` call chain deeper than the qualified 2,892-byte baseline.
-The deepest current path runs through channel activation and dynamic IQ
-calibration. It is 76 bytes larger than the nominal 2,816-byte system-stack
-partition, so the checker reports that debt on every build while preventing it
-from growing. Handwritten assembly helpers use a reported disassembly-prologue
+combines it with direct-call edges from the linked disassembly. The deepest
+normal chain runs through channel activation and dynamic IQ calibration and
+uses 2,892 of 6,912 bytes. The checker also includes the 56-byte exception
+veneer and validates the terminal exception chain at 224 of each 256-byte mode
+stack. Handwritten assembly helpers use a reported disassembly-prologue
 fallback; reachable recursion or indirect calls fail analysis rather than being
 silently ignored.
 

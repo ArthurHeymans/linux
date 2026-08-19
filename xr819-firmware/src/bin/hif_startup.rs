@@ -59,13 +59,9 @@ impl<T> SingleBootCell<T> {
     }
 }
 
-#[unsafe(link_section = ".dtcm.bss.hif_ring_state")]
 static HIF_RING_STATE: SingleBootCell<HifRingState> = SingleBootCell::new();
-#[unsafe(link_section = ".dtcm.bss.hif_queues")]
 static HIF_QUEUES: SingleBootCell<HifQueues> = SingleBootCell::new();
-#[unsafe(link_section = ".dtcm.bss.transport")]
 static TRANSPORT: SingleBootCell<Transport> = SingleBootCell::new();
-#[unsafe(link_section = ".dtcm.bss.response_scratch")]
 static RESPONSE_SCRATCH: SingleBootCell<[u8; SHARED_BUFFER_SIZE]> = SingleBootCell::new();
 static HOST_TX_DRIVER: SingleBootCell<HostTxDriver> = SingleBootCell::new();
 
@@ -106,19 +102,19 @@ xr819_reset_entry:
 
     orr r1, r0, #27
     msr cpsr_c, r1
-    ldr sp, =0x0400b100
+    ldr sp, =0x0400a100
     orr r1, r0, #23
     msr cpsr_c, r1
-    ldr sp, =0x0400b200
+    ldr sp, =0x0400a200
     orr r1, r0, #19
     msr cpsr_c, r1
-    ldr sp, =0x0400b300
+    ldr sp, =0x0400a300
     orr r1, r0, #18
     msr cpsr_c, r1
-    ldr sp, =0x0400b400
+    ldr sp, =0x0400a400
     orr r1, r0, #17
     msr cpsr_c, r1
-    ldr sp, =0x0400b500
+    ldr sp, =0x0400a500
     orr r1, r0, #31
     msr cpsr_c, r1
     ldr sp, =0x0400c000
@@ -196,8 +192,6 @@ const ENABLE_SINGLE_PROBE_EXPERIMENT: bool = true;
 unsafe extern "C" {
     static mut __bss_start: u32;
     static mut __bss_end: u32;
-    static mut __dtcm_bss_start: u32;
-    static mut __dtcm_bss_end: u32;
 }
 
 #[unsafe(no_mangle)]
@@ -216,10 +210,6 @@ unsafe fn clear_rust_bss() {
         clear_words(
             (&raw mut __bss_start) as usize,
             (&raw mut __bss_end) as usize,
-        );
-        clear_words(
-            (&raw mut __dtcm_bss_start) as usize,
-            (&raw mut __dtcm_bss_end) as usize,
         );
     }
 }

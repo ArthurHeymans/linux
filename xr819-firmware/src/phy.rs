@@ -25,7 +25,6 @@ struct SharedChannelPllCache(UnsafeCell<ChannelPllCache>);
 
 unsafe impl Sync for SharedChannelPllCache {}
 
-#[unsafe(link_section = ".dtcm.bss.channel_pll_cache")]
 static CHANNEL_PLL_CACHE: SharedChannelPllCache = SharedChannelPllCache(UnsafeCell::new(
     ChannelPllCache {
         integer: 0,
@@ -71,7 +70,6 @@ struct SharedChannelPowerLimits(UnsafeCell<ChannelPowerLimits>);
 
 unsafe impl Sync for SharedChannelPowerLimits {}
 
-#[unsafe(link_section = ".dtcm.bss.channel_power_limits")]
 static CHANNEL_POWER_LIMITS: SharedChannelPowerLimits =
     SharedChannelPowerLimits(UnsafeCell::new(ChannelPowerLimits {
         low_rate: 0,

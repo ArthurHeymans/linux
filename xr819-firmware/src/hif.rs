@@ -383,7 +383,6 @@ struct SharedHifSequence(core::cell::UnsafeCell<HifSequenceCounters>);
 
 unsafe impl Sync for SharedHifSequence {}
 
-#[unsafe(link_section = ".dtcm.bss.hif_sequence")]
 static HIF_SEQUENCE: SharedHifSequence = SharedHifSequence(core::cell::UnsafeCell::new(
     HifSequenceCounters {
         tx_producer: 0,

@@ -34,7 +34,6 @@ struct SharedCompletionRing(UnsafeCell<CompletionRingState>);
 
 unsafe impl Sync for SharedCompletionRing {}
 
-#[unsafe(link_section = ".dtcm.bss.completion_ring")]
 static COMPLETION_RING: SharedCompletionRing = SharedCompletionRing(UnsafeCell::new(
     CompletionRingState {
         consumer: 0,
@@ -47,7 +46,6 @@ struct SharedProbeContextSequence(UnsafeCell<u16>);
 
 unsafe impl Sync for SharedProbeContextSequence {}
 
-#[unsafe(link_section = ".dtcm.bss.probe_context_sequence")]
 static PROBE_CONTEXT_SEQUENCE: SharedProbeContextSequence =
     SharedProbeContextSequence(UnsafeCell::new(0));
 
@@ -63,7 +61,6 @@ struct SharedRetryRandomState(UnsafeCell<u32>);
 
 unsafe impl Sync for SharedRetryRandomState {}
 
-#[unsafe(link_section = ".dtcm.bss.retry_random_state")]
 static RETRY_RANDOM_STATE: SharedRetryRandomState =
     SharedRetryRandomState(UnsafeCell::new(0));
 
@@ -75,7 +72,6 @@ struct SharedInternalContextCount(UnsafeCell<u8>);
 
 unsafe impl Sync for SharedInternalContextCount {}
 
-#[unsafe(link_section = ".dtcm.bss.internal_context_count")]
 static INTERNAL_CONTEXT_COUNT: SharedInternalContextCount =
     SharedInternalContextCount(UnsafeCell::new(0));
 
@@ -93,7 +89,6 @@ struct SharedPasAccounting(UnsafeCell<u16>);
 
 unsafe impl Sync for SharedPasAccounting {}
 
-#[unsafe(link_section = ".dtcm.bss.pas_accounting")]
 static PAS_ACCOUNTING: SharedPasAccounting = SharedPasAccounting(UnsafeCell::new(0));
 
 #[inline(always)]

@@ -2230,18 +2230,37 @@ control and three clean unchanged candidates. Each candidate had zero TX
 failures, 20/20 final ping, 7.92-7.93 Mbit/s received UDP, and no exception or
 fatal diagnostics.
 
-Linked LLVM stack-size metadata plus direct-call analysis now exposes the full
+Rust-owned CPU state has moved from the linker-owned native-DTCM page into
+ordinary writable ITCM `.data` and `.bss`. The main image now has no
+`.dtcm.bss` payload or DTCM fill record. DTCM is divided into the temporary
+untranslated-state quarantine `0x04000000..0x0400a000`, five 256-byte exception
+stacks at `0x0400a000..0x0400a500`, and a 6,912-byte system stack at
+`0x0400a500..0x0400c000`. The lower window remains scheduled for elimination;
+it is not a compatibility ABI for newly translated state. The linked image ends
+at `0x00014278`, leaving about 31 KiB under the conservative observed ITCM limit
+`0x0001c000`.
+
+Linked LLVM stack-size metadata plus direct-call analysis validates the full
 normal call-chain depth rooted at `rust_main`. The deepest qualified path is
 `rust_main` -> station activation -> channel transition -> vendor mode
 calibration -> dynamic IQ calibration -> integer division helpers. Its frames
-total 2,892 bytes: 76 bytes beyond the nominal 2,816-byte system-stack
-partition. This explains why checking only the 1,552-byte `rust_main` frame was
-insufficient. The build gate records 2,892 bytes as the qualified no-regression
-limit, reports the physical overrun on every build, and rejects deeper paths,
-reachable recursion, or unresolved indirect calls. Reducing this existing debt
-requires a separately hardware-qualified calibration-stack change; the earlier
+total 2,892 of 6,912 bytes. The build gate also checks terminal exception paths:
+the 56-byte assembly veneer plus Rust chain uses 224 of each 256-byte mode
+stack. Reachable recursion, unresolved indirect calls, normal-stack growth past
+the physical partition, or exception-stack overflow are rejected. The earlier
 static dynamic-IQ sample experiment remains rejected and must not be restored
 mechanically.
+
+The ITCM-state candidate and its immediate DTCM-state parent had matching
+three-run ath9k distributions before the RX-wrap correction: each had two
+2-second associations and one 18-23-second scan outlier, comparable throughput,
+and no fatal diagnostics. Rebasing the state move onto the RX-wrap fix produced
+`39b516dc65c1330ee67a12f8d17059e72aea7b07adf5aaac7043f080e0fdc47b`.
+Its hardware smoke completed with 20/20 ping, zero of 21,402 UDP datagrams lost,
+6.54 Mbit/s TCP, no pending buffers, and no exception. The exact standalone
+RX-fix parent also completed cleanly with 20/20 ping and nine UDP datagrams
+lost, so the state placement did not reintroduce the eliminated deterministic
+wrap loss.
 
 The adjacent PHY rate-table family is not a safe native-DTCM candidate. The
 pointer and scale fields at `0x040099d8`, `0x040099ec`, `0x040099f0`, and

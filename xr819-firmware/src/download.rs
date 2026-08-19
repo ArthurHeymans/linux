@@ -34,7 +34,7 @@ const SECTION_FILL: u32 = 1;
 const SECTION_ENTRY: u32 = 4;
 const ITCM_LIMIT: usize = 0x0001_c000;
 const DTCM_BASE: usize = 0x0400_0000;
-const DTCM_LIMIT: usize = 0x0400_b000;
+const DTCM_LIMIT: usize = 0x0400_a000;
 const HIGH_BASE: usize = 0xfff0_0000;
 const HIGH_LIMIT: usize = 0xfff1_4000;
 
@@ -302,10 +302,10 @@ mod tests {
     #[test]
     fn section_ranges_match_observed_tcm_windows() {
         assert!(section_destination_allowed(0, 0x1c000));
-        assert!(section_destination_allowed(0x0400_0000, 0xb000));
+        assert!(section_destination_allowed(0x0400_0000, 0xa000));
         assert!(section_destination_allowed(0xfff0_0000, 0x14000));
         assert!(!section_destination_allowed(0x0001_bffc, 8));
-        assert!(!section_destination_allowed(0x0400_affc, 8));
+        assert!(!section_destination_allowed(0x0400_9ffc, 8));
         assert!(!section_destination_allowed(0x0901_0000, 4));
         assert!(!section_destination_allowed(1, 4));
     }
