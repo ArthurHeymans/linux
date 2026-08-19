@@ -58,6 +58,45 @@ unsafe fn set_cached_pll_divider(integer: u32, fractional: u32, channel: u16) {
     }
 }
 
+// Vendor references to 0x040099d4 and 0x040099d6 are confined to the
+// translated channel-power publisher and TX-gain programmer. The adjacent
+// threshold at 0x04009a04 has additional consumers and remains fixed.
+#[repr(C)]
+struct ChannelPowerLimits {
+    low_rate: i16,
+    high_rate: i16,
+}
+
+struct SharedChannelPowerLimits(UnsafeCell<ChannelPowerLimits>);
+
+unsafe impl Sync for SharedChannelPowerLimits {}
+
+#[unsafe(link_section = ".dtcm.bss.channel_power_limits")]
+static CHANNEL_POWER_LIMITS: SharedChannelPowerLimits =
+    SharedChannelPowerLimits(UnsafeCell::new(ChannelPowerLimits {
+        low_rate: 0,
+        high_rate: 0,
+    }));
+
+unsafe fn set_channel_power_limits(low_rate: i16, high_rate: i16) {
+    let limits = CHANNEL_POWER_LIMITS.0.get();
+    unsafe {
+        (&raw mut (*limits).low_rate).write_volatile(low_rate);
+        (&raw mut (*limits).high_rate).write_volatile(high_rate);
+    }
+}
+
+unsafe fn channel_power_limit(high_rate: bool) -> i16 {
+    let limits = CHANNEL_POWER_LIMITS.0.get();
+    unsafe {
+        if high_rate {
+            (&raw const (*limits).high_rate).read_volatile()
+        } else {
+            (&raw const (*limits).low_rate).read_volatile()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IqHardwareDiagnostics {
     pub baseline_i: i32,
@@ -1257,8 +1296,7 @@ pub unsafe fn publish_channel_power(channel: u8) -> Result<(i16, i16, i16), Chan
         write_u16(0x0400_9a04, threshold as u16);
         let first = channel_tx_power_from_rate_table(channel, false)?;
         let second = channel_tx_power_from_rate_table(channel, true)?;
-        write_u16(0x0400_99d4, first as u16);
-        write_u16(0x0400_99d6, second as u16);
+        set_channel_power_limits(first, second);
         Ok((threshold, first, second))
     }
 }
@@ -1500,10 +1538,7 @@ pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), Gai
             let rate_limit =
                 i32::from(((first_table + usize::from(rate) * 2) as *const i16).read_volatile())
                     .wrapping_add(requested_offset);
-            let second_limit_address = 0x0400_99d4 + usize::from(rate > 1) * 2;
-            let second_limit = rate_limit.min(i32::from(
-                (second_limit_address as *const i16).read_volatile(),
-            ));
+            let second_limit = rate_limit.min(i32::from(channel_power_limit(rate > 1)));
             let result = compute_gain_entry(gain_computation_input(
                 profile,
                 rate,
@@ -4603,6 +4638,13 @@ mod tests {
         assert_eq!(core::mem::offset_of!(ChannelPllCache, integer), 0);
         assert_eq!(core::mem::offset_of!(ChannelPllCache, fractional), 4);
         assert_eq!(core::mem::offset_of!(ChannelPllCache, channel), 8);
+    }
+
+    #[test]
+    fn native_channel_power_limits_match_the_vendor_pair() {
+        assert_eq!(core::mem::size_of::<ChannelPowerLimits>(), 4);
+        assert_eq!(core::mem::offset_of!(ChannelPowerLimits, low_rate), 0);
+        assert_eq!(core::mem::offset_of!(ChannelPowerLimits, high_rate), 2);
     }
 
     #[test]

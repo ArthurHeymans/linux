@@ -2206,3 +2206,16 @@ consumer is translated or explicitly bridged. The next accepted candidates
 must have vendor references confined to the translated owner; the channel PLL
 cache tuple at `0x040099f8`, `0x040099fc`, and `0x04009a06` satisfies that
 criterion, while adjacent force flag `0x04009a08` does not.
+
+The channel power-limit pair at `0x040099d4` and `0x040099d6` has likewise
+moved into native DTCM. Ghidra references are confined to the translated
+channel-power publisher and TX-gain programmer; adjacent threshold
+`0x04009a04` remains fixed because it has additional consumers. Generated ARM
+code writes two aligned halfwords before gain programming, selects the expected
+halfword by rate class, and sign-extends it exactly as the fixed-address code
+did. Initial qualification on the distant AP was obscured by intermittent scan
+stalls and degraded controls. Pinning the harness to the alternate channel-11
+BSSID `ea:67:1f:a2:08:0a` at approximately -30 dBm produced one clean exact-parent
+control and three clean unchanged candidates. Each candidate had zero TX
+failures, 20/20 final ping, 7.92-7.93 Mbit/s received UDP, and no exception or
+fatal diagnostics.
