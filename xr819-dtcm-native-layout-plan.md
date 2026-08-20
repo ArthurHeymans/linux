@@ -1464,9 +1464,18 @@ and changes 127 of 195 common sized text-symbol byte streams under size-LTO;
 `vif::teardown` 52 -> 56, `vif::snapshot` 44 -> 59,
 `join::activate_sta` 142 -> 123, `mac::reinitialize_after_wake` 338 -> 382,
 `prepare_probe_context` 296 -> 373, and `release_wsm_context_address` 72 -> 77.
-Consequently the existing clean-b6 normalized disassembly gate fails at the
-non-packet-MMIO literal-order comparison. This is recorded as a residual
-code-generation difference, not hidden by weakening that unrelated gate.
+The original clean-b6 gate compared literal-pool byte order, so unrelated
+size-LTO changes caused a false failure even though the exact MMIO literal
+multiset retained only the qualified additions and removals. A follow-up gate
+compared that exact multiset while retaining source hashes for qualified
+packet/HIF routines; all deterministic checks then passed. The broad VIF
+code-generation changes above remain explicit.
 
-No hardware test was run, and this uncommitted candidate does not supersede the
-previous hardware-qualified fixed-layout image.
+Hardware qualification did not match the exact parent distribution. Candidate
+runs 1 and 2 associated in 14 seconds and completed at 13.1 and 13.0 Mbit/s TCP,
+8.39 Mbit/s UDP with zero of 21,402 datagrams lost, 20/20 ping, and no failures.
+Run 3 remained scanning for the full 35-second association window. The exact
+fixed-layout parent then associated in 19 seconds and completed at 13.5 Mbit/s
+TCP, 8.39 Mbit/s UDP with zero loss, and 20/20 ping. The observed distribution
+was therefore candidate 2/3 versus exact parent 4/4. The typed-VIF conversion is
+rejected and does not supersede the hardware-qualified fixed-layout image.
