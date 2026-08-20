@@ -50,6 +50,10 @@ impl DtcmAddress {
 
     pub const fn from_offset(offset: usize) -> Self {
         assert!(offset < DTCM_STATE_SIZE);
+        Self::from_offset_unchecked(offset)
+    }
+
+    const fn from_offset_unchecked(offset: usize) -> Self {
         Self((DTCM_STATE_BASE + offset) as u32)
     }
 
@@ -172,12 +176,135 @@ opaque_family!(
     PreLowMacWord,
     0x4
 );
-opaque_family!(
-    /// Shared low-MAC, PAS, rate, link, pipe, queue, and retry family. The
-    /// `0x800` family extent is known, but internal overlays are not.
-    LowMacPasFamily,
-    0x800
-);
+/// One packed host TX retry policy as consumed by the retained PAS retry
+/// algorithm. Rust has a separate native policy table for translated class-0
+/// retry decisions, so these bytes remain volatile shared ABI state.
+#[repr(C)]
+struct PasRatePolicy {
+    policy_index: SharedU8,
+    short_retry_limit: SharedU8,
+    long_retry_limit: SharedU8,
+    control_byte_03: SharedU8,
+    counter_byte_04: SharedU8,
+    reserved_05: OpaqueBytes<3>,
+    packed_rate_retries: [SharedU8; 12],
+}
+
+/// Four bytes addressed as one cached retry-walk entry. The retained code
+/// proves the `0x04` stride, but the complete value domains are not decoded.
+#[repr(C)]
+struct PasRateWalkState {
+    byte_00: SharedU8,
+    byte_01: SharedU8,
+    byte_02: SharedU8,
+    byte_03: SharedU8,
+}
+
+/// Shared MAC runtime bytes rooted at family offset `0x3e0`. These are split
+/// into scalar fields only where current Rust and raw vendor instructions agree
+/// on width and role. The opaque bytes include timer/beacon state whose exact
+/// overlays remain unresolved.
+#[repr(C)]
+struct LowMacRuntimeState {
+    opaque_00: OpaqueBytes<0x10>,
+    current_channel: SharedU16,
+    optional_pipe_object_word: SharedU16,
+    active_tx_count: SharedU8,
+    receive_gate_bits: SharedU8,
+    receive_state_byte: SharedU8,
+    opaque_17: OpaqueBytes<1>,
+    response_control_byte: SharedU8,
+    opaque_19: OpaqueBytes<7>,
+}
+
+/// Exact 12-byte WSM SET_TX_QUEUE_PARAMS payload retained per access category.
+/// It is distinct from the per-PAS EDCA arrays below.
+#[repr(C)]
+struct TxQueueParameters {
+    storage: OpaqueBytes<0x0c>,
+}
+
+/// Layout template for fields observed relative to each of three `0x98`-spaced
+/// PAS view starts. This type is not embedded three times in the family: the
+/// alternate root at family `+0x620` starts inside the third view and accesses
+/// `+0x19`/`+0x1a` beyond that view's nominal `0x98` extent. It is therefore a
+/// field-offset schema only, not proof of three independent records.
+#[repr(C)]
+struct PasStrideLayout {
+    activity_state: SharedU8,
+    slot_bits: SharedU8,
+    mode_byte: SharedU8,
+    path_selector_byte: SharedU8,
+    next_tbtt_low: SharedU32,
+    basic_rate_bits: SharedU32,
+    own_mac: [SharedU8; 6],
+    bssid: [SharedU8; 6],
+    tsf_adjust_low: SharedU32,
+    tsf_adjust_high: SharedU32,
+    rate_class_byte: SharedU8,
+    rate_table_column: SharedU8,
+    nonzero_block_byte: SharedU8,
+    tbtt_window_control_byte: SharedU8,
+    rate_map: [SharedU8; 22],
+    opaque_3a: OpaqueBytes<2>,
+    retry_counts: [SharedU32; 4],
+    contention_windows: [SharedU32; 4],
+    cw_min: [SharedU16; 4],
+    cw_max: [SharedU16; 4],
+    aifs: [SharedU8; 4],
+    txop_limits: [SharedU16; 4],
+    max_rx_lifetimes: [SharedU32; 4],
+    slot_timing_word: SharedU32,
+    packed_aifs: SharedU32,
+    duration_extension_bits: SharedU32,
+    opaque_94: OpaqueBytes<4>,
+}
+
+/// Offset schema for the alternate raw root at family `+0x620`
+/// (`0x04003c98`). Its start overlaps the final `0x18` bytes of the third PAS
+/// stride view; `byte_19` and `byte_1a` lie immediately beyond that view's
+/// nominal end. The complete extent and semantics remain unresolved.
+#[repr(C)]
+struct AlternatePasRootLayout {
+    byte_00: SharedU8,
+    opaque_01: OpaqueBytes<0x18>,
+    byte_19: SharedU8,
+    byte_1a: SharedU8,
+}
+
+/// Shared low-MAC/PAS family at `0x04003678..0x04003e78`.
+///
+/// The prefix contains two packet-buffer boundary publications, eight raw
+/// retry policies, eight cached retry-walk states, MAC runtime controls, queue
+/// parameters, two six-byte address vectors, and four response-enable bytes.
+/// Three observed PAS view starts occur at `+0x470 + n*0x98`. They are not
+/// represented as three fields: the alternate raw root at `+0x620` overlaps
+/// the third view, and its `+0x19`/`+0x1a` accesses cross that view's nominal
+/// end. The complete `+0x470..+0x800` region is one private overlapping raw
+/// view that also contains link timers and the BA root at `+0x648`; the latter
+/// has computed extents crossing into the following pre-VIF header.
+#[repr(C, align(4))]
+struct LowMacPasFamily {
+    opaque_000: OpaqueBytes<0x08>,
+    beacon_interval_ticks: SharedU32,
+    active_band_mask: SharedU32,
+    internal_buffer_end_primary: SharedU32,
+    opaque_014: OpaqueBytes<0x6c>,
+    internal_buffer_end_mirror: SharedU32,
+    opaque_084: OpaqueBytes<0x6c>,
+    rate_policies: [PasRatePolicy; 8],
+    opaque_190: OpaqueBytes<0x1e0>,
+    rate_walks: [PasRateWalkState; 8],
+    opaque_390: OpaqueBytes<0x50>,
+    runtime: LowMacRuntimeState,
+    queue_parameters: [TxQueueParameters; 4],
+    txop_budgets: [SharedU32; 4],
+    opaque_440: OpaqueBytes<0x14>,
+    own_mac_addresses: [[SharedU8; 6]; 2],
+    peer_addresses: [[SharedU8; 6]; 2],
+    response_enabled: [SharedU8; 4],
+    overlapping_pas_link_ba_views: OpaqueBytes<0x390>,
+}
 opaque_family!(
     /// Link/aggregation header immediately preceding the VIF array.
     PreVifHeader,
@@ -497,7 +624,327 @@ pub(crate) fn internal_context_ptr(index: usize) -> Option<*mut InternalTxContex
     Some(unsafe { contexts.add(index) })
 }
 
-const LOW_MAC_PAS_OFFSET: usize = 0x3600 + 0x78;
+const LOW_MAC_PAS_OFFSET: usize = core::mem::offset_of!(DtcmLayout, low_mac_pas);
+pub const LOW_MAC_PAS_SIZE: usize = core::mem::size_of::<LowMacPasFamily>();
+pub const PAS_VIEW_COUNT: usize = 3;
+pub const PAS_VIEW_STRIDE: usize = core::mem::size_of::<PasStrideLayout>();
+const PAS_VIEWS_OFFSET: usize =
+    core::mem::offset_of!(LowMacPasFamily, overlapping_pas_link_ba_views);
+const ALTERNATE_PAS_ROOT_OFFSET: usize = PAS_VIEWS_OFFSET + 0x1b0;
+
+/// Address of one of three observed `0x98`-spaced PAS raw views. The type uses
+/// `PasStrideLayout` only to derive proven relative offsets; it does not imply
+/// that the views are disjoint records or yield any reference.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PasStrideViewAddress(DtcmAddress);
+
+impl PasStrideViewAddress {
+    const fn field_unchecked(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+
+    pub(crate) const fn activity_state(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, activity_state))
+    }
+    pub(crate) const fn slot_bits(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, slot_bits))
+    }
+    pub(crate) const fn mode_byte(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, mode_byte))
+    }
+    pub(crate) const fn path_selector_byte(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, path_selector_byte))
+    }
+    pub(crate) const fn next_tbtt_low(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, next_tbtt_low))
+    }
+    pub(crate) const fn basic_rate_bits(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, basic_rate_bits))
+    }
+    pub(crate) const fn own_mac_byte(self, index: usize) -> Option<DtcmAddress> {
+        if index < 6 { Some(self.own_mac_byte_unchecked(index)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-index arithmetic.
+    pub(crate) const fn own_mac_byte_unchecked(self, index: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, own_mac) + index)
+    }
+    pub(crate) const fn bssid_byte(self, index: usize) -> Option<DtcmAddress> {
+        if index < 6 { Some(self.bssid_byte_unchecked(index)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-index arithmetic.
+    pub(crate) const fn bssid_byte_unchecked(self, index: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, bssid) + index)
+    }
+    pub(crate) const fn tsf_adjust_low(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, tsf_adjust_low))
+    }
+    pub(crate) const fn tsf_adjust_high(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, tsf_adjust_high))
+    }
+    pub(crate) const fn rate_table_column(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, rate_table_column))
+    }
+    pub(crate) const fn nonzero_block_byte(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, nonzero_block_byte))
+    }
+    pub(crate) const fn tbtt_window_control_byte(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, tbtt_window_control_byte))
+    }
+    pub(crate) const fn rate_map(self, rate: usize) -> Option<DtcmAddress> {
+        if rate < 22 { Some(self.rate_map_unchecked(rate)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-rate arithmetic.
+    pub(crate) const fn rate_map_unchecked(self, rate: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, rate_map) + rate)
+    }
+    pub(crate) const fn retry_count(self, queue: usize) -> Option<DtcmAddress> {
+        if queue < 4 { Some(self.retry_count_unchecked(queue)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-queue arithmetic.
+    pub(crate) const fn retry_count_unchecked(self, queue: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, retry_counts) + queue * 4)
+    }
+    pub(crate) const fn contention_window(self, queue: usize) -> Option<DtcmAddress> {
+        if queue < 4 { Some(self.contention_window_unchecked(queue)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-queue arithmetic.
+    pub(crate) const fn contention_window_unchecked(self, queue: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, contention_windows) + queue * 4)
+    }
+    pub(crate) const fn cw_min(self, queue: usize) -> Option<DtcmAddress> {
+        if queue < 4 { Some(self.cw_min_unchecked(queue)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-queue arithmetic.
+    pub(crate) const fn cw_min_unchecked(self, queue: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, cw_min) + queue * 2)
+    }
+    pub(crate) const fn cw_max(self, queue: usize) -> Option<DtcmAddress> {
+        if queue < 4 { Some(self.cw_max_unchecked(queue)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-queue arithmetic.
+    pub(crate) const fn cw_max_unchecked(self, queue: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, cw_max) + queue * 2)
+    }
+    pub(crate) const fn aifs(self, queue: usize) -> Option<DtcmAddress> {
+        if queue < 4 { Some(self.aifs_unchecked(queue)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-queue arithmetic.
+    pub(crate) const fn aifs_unchecked(self, queue: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, aifs) + queue)
+    }
+    pub(crate) const fn txop_limit(self, queue: usize) -> Option<DtcmAddress> {
+        if queue < 4 { Some(self.txop_limit_unchecked(queue)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-queue arithmetic.
+    pub(crate) const fn txop_limit_unchecked(self, queue: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, txop_limits) + queue * 2)
+    }
+    pub(crate) const fn max_rx_lifetime(self, queue: usize) -> Option<DtcmAddress> {
+        if queue < 4 { Some(self.max_rx_lifetime_unchecked(queue)) } else { None }
+    }
+    /// Intentionally preserves unbounded vendor base-plus-queue arithmetic.
+    pub(crate) const fn max_rx_lifetime_unchecked(self, queue: usize) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, max_rx_lifetimes) + queue * 4)
+    }
+    pub(crate) const fn slot_timing_word(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, slot_timing_word))
+    }
+    pub(crate) const fn packed_aifs(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, packed_aifs))
+    }
+    pub(crate) const fn duration_extension_bits(self) -> DtcmAddress {
+        self.field_unchecked(core::mem::offset_of!(PasStrideLayout, duration_extension_bits))
+    }
+}
+
+pub(crate) const fn pas_stride_view(interface: usize) -> Option<PasStrideViewAddress> {
+    if interface < PAS_VIEW_COUNT { Some(pas_stride_view_unchecked(interface)) } else { None }
+}
+
+/// Compatibility accessor that intentionally preserves unbounded vendor
+/// `base + interface*0x98` arithmetic. Callers with production interface
+/// semantics should reject values outside `0..3` before using it.
+pub(crate) const fn pas_stride_view_unchecked(interface: usize) -> PasStrideViewAddress {
+    PasStrideViewAddress(DtcmAddress::from_offset_unchecked(
+        LOW_MAC_PAS_OFFSET + PAS_VIEWS_OFFSET + interface * PAS_VIEW_STRIDE,
+    ))
+}
+
+/// Explicit overlapping raw view rooted at family `+0x620` (`0x04003c98`).
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AlternatePasRootAddress(DtcmAddress);
+
+impl AlternatePasRootAddress {
+    pub(crate) const fn byte_00(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(
+            self.0.offset() + core::mem::offset_of!(AlternatePasRootLayout, byte_00),
+        )
+    }
+    pub(crate) const fn byte_19(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(
+            self.0.offset() + core::mem::offset_of!(AlternatePasRootLayout, byte_19),
+        )
+    }
+    pub(crate) const fn byte_1a(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(
+            self.0.offset() + core::mem::offset_of!(AlternatePasRootLayout, byte_1a),
+        )
+    }
+}
+
+pub(crate) const ALTERNATE_PAS_ROOT: AlternatePasRootAddress = AlternatePasRootAddress(
+    DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET + ALTERNATE_PAS_ROOT_OFFSET),
+);
+
+const fn low_mac_pas_field(offset: usize) -> DtcmAddress {
+    assert!(offset < LOW_MAC_PAS_SIZE);
+    DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET + offset)
+}
+
+pub(crate) const LOW_MAC_BEACON_INTERVAL: DtcmAddress = low_mac_pas_field(
+    core::mem::offset_of!(LowMacPasFamily, beacon_interval_ticks),
+);
+pub(crate) const LOW_MAC_BAND_BITS: DtcmAddress = low_mac_pas_field(
+    core::mem::offset_of!(LowMacPasFamily, active_band_mask),
+);
+pub(crate) const INTERNAL_BUFFER_END_PRIMARY: DtcmAddress = low_mac_pas_field(
+    core::mem::offset_of!(LowMacPasFamily, internal_buffer_end_primary),
+);
+pub(crate) const INTERNAL_BUFFER_END_MIRROR: DtcmAddress = low_mac_pas_field(
+    core::mem::offset_of!(LowMacPasFamily, internal_buffer_end_mirror),
+);
+pub(crate) const LOW_MAC_RUNTIME_ROOT: DtcmAddress = low_mac_pas_field(
+    core::mem::offset_of!(LowMacPasFamily, runtime),
+);
+const LOW_MAC_RUNTIME_OFFSET: usize = core::mem::offset_of!(LowMacPasFamily, runtime);
+pub const LOW_MAC_CURRENT_CHANNEL: DtcmAddress = low_mac_pas_field(
+    LOW_MAC_RUNTIME_OFFSET + core::mem::offset_of!(LowMacRuntimeState, current_channel),
+);
+pub(crate) const LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD: DtcmAddress = low_mac_pas_field(
+    LOW_MAC_RUNTIME_OFFSET + core::mem::offset_of!(LowMacRuntimeState, optional_pipe_object_word),
+);
+pub(crate) const LOW_MAC_ACTIVE_TX_COUNT: DtcmAddress = low_mac_pas_field(
+    LOW_MAC_RUNTIME_OFFSET + core::mem::offset_of!(LowMacRuntimeState, active_tx_count),
+);
+pub(crate) const LOW_MAC_RECEIVE_GATE_BITS: DtcmAddress = low_mac_pas_field(
+    LOW_MAC_RUNTIME_OFFSET + core::mem::offset_of!(LowMacRuntimeState, receive_gate_bits),
+);
+pub(crate) const LOW_MAC_RECEIVE_STATE_BYTE: DtcmAddress = low_mac_pas_field(
+    LOW_MAC_RUNTIME_OFFSET + core::mem::offset_of!(LowMacRuntimeState, receive_state_byte),
+);
+pub(crate) const LOW_MAC_RESPONSE_CONTROL_BYTE: DtcmAddress = low_mac_pas_field(
+    LOW_MAC_RUNTIME_OFFSET + core::mem::offset_of!(LowMacRuntimeState, response_control_byte),
+);
+
+pub(crate) const fn low_mac_own_mac_byte(interface: usize, index: usize) -> Option<DtcmAddress> {
+    if interface < 2 && index < 6 {
+        Some(low_mac_own_mac_byte_unchecked(interface, index))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves unbounded vendor base-plus-interface/index arithmetic.
+pub(crate) const fn low_mac_own_mac_byte_unchecked(interface: usize, index: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        LOW_MAC_PAS_OFFSET
+            + core::mem::offset_of!(LowMacPasFamily, own_mac_addresses)
+            + interface * 6
+            + index,
+    )
+}
+
+pub(crate) const fn low_mac_peer_address_byte(
+    interface: usize,
+    index: usize,
+) -> Option<DtcmAddress> {
+    if interface < 2 && index < 6 {
+        Some(low_mac_peer_address_byte_unchecked(interface, index))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves unbounded vendor base-plus-interface/index arithmetic.
+pub(crate) const fn low_mac_peer_address_byte_unchecked(
+    interface: usize,
+    index: usize,
+) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        LOW_MAC_PAS_OFFSET
+            + core::mem::offset_of!(LowMacPasFamily, peer_addresses)
+            + interface * 6
+            + index,
+    )
+}
+
+pub(crate) const fn low_mac_response_enabled(interface: usize) -> Option<DtcmAddress> {
+    if interface < 4 {
+        Some(low_mac_response_enabled_unchecked(interface))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves unbounded vendor base-plus-interface arithmetic.
+pub(crate) const fn low_mac_response_enabled_unchecked(interface: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        LOW_MAC_PAS_OFFSET
+            + core::mem::offset_of!(LowMacPasFamily, response_enabled)
+            + interface,
+    )
+}
+
+/// Compatibility address used by completion accounting. The frame policy byte
+/// can be the vendor sentinel `0x0f`, whose historical read lands beyond the
+/// eight typed host policies in unresolved prefix storage. Keeping this
+/// address-only view preserves that branch without falsely typing 16 entries.
+pub(crate) const fn rate_policy_short_retry_limit_compat(policy: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        LOW_MAC_PAS_OFFSET
+            + core::mem::offset_of!(LowMacPasFamily, rate_policies)
+            + core::mem::offset_of!(PasRatePolicy, short_retry_limit)
+            + policy * core::mem::size_of::<PasRatePolicy>(),
+    )
+}
+
+pub(crate) const fn rate_policy_word(policy: usize, word: usize) -> Option<DtcmAddress> {
+    if policy < 8 && word < 5 {
+        Some(rate_policy_word_unchecked(policy, word))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves unbounded vendor policy/word arithmetic.
+pub(crate) const fn rate_policy_word_unchecked(policy: usize, word: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        LOW_MAC_PAS_OFFSET
+            + core::mem::offset_of!(LowMacPasFamily, rate_policies)
+            + policy * core::mem::size_of::<PasRatePolicy>()
+            + word * 4,
+    )
+}
+
+/// Root of an unresolved `0x38`-stride BA overlay. Entry seven crosses the
+/// `0x3e78` family boundary, so this is an address-only compatibility view.
+pub(crate) const fn ba_pipe_record_address(pipe: usize) -> Option<DtcmAddress> {
+    if pipe < 8 {
+        Some(ba_pipe_record_address_unchecked(pipe))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves the unbounded vendor BA base-plus-pipe arithmetic,
+/// including the historically observed crossing into the pre-VIF header.
+pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        LOW_MAC_PAS_OFFSET + PAS_VIEWS_OFFSET + 0x1d8 + pipe * 0x38,
+    )
+}
 
 pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000);
 pub const SCHEDULER_EVENT_ROOT: DtcmAddress = DtcmAddress::from_offset(0x1fd4);
@@ -545,7 +992,15 @@ const _: () = {
     assert_type_layout!(WakeContextState, 0x90, 4);
     assert_type_layout!(DurationSources, 0x4, 4);
     assert_type_layout!(PreLowMacWord, 0x4, 4);
-    assert_type_layout!(LowMacPasFamily, 0x800, 4);
+    assert_type_layout!(PasRatePolicy, 0x14, 1);
+    assert_type_layout!(PasRateWalkState, 0x4, 1);
+    assert_type_layout!(LowMacRuntimeState, 0x20, 2);
+    assert_type_layout!(TxQueueParameters, 0x0c, 1);
+    assert_type_layout!(PasStrideLayout, PAS_VIEW_STRIDE, 4);
+    assert_type_layout!(AlternatePasRootLayout, 0x1b, 1);
+    assert_type_layout!(PasStrideViewAddress, 4, 4);
+    assert_type_layout!(AlternatePasRootAddress, 4, 4);
+    assert_type_layout!(LowMacPasFamily, LOW_MAC_PAS_SIZE, 4);
     assert_type_layout!(PreVifHeader, 0x20, 4);
     assert_type_layout!(VifRecord, VIF_RECORD_SIZE, 4);
     assert_type_layout!(VifRecords, 0xb10, 4);
@@ -613,6 +1068,70 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedVendorImage, scheduler_event_island) == 0x1fd4);
     assert!(core::mem::offset_of!(InitializedVendorImage, initialized_tail) == 0x2018);
 
+    assert!(core::mem::offset_of!(PasRatePolicy, policy_index) == 0x00);
+    assert!(core::mem::offset_of!(PasRatePolicy, short_retry_limit) == 0x01);
+    assert!(core::mem::offset_of!(PasRatePolicy, long_retry_limit) == 0x02);
+    assert!(core::mem::offset_of!(PasRatePolicy, control_byte_03) == 0x03);
+    assert!(core::mem::offset_of!(PasRatePolicy, counter_byte_04) == 0x04);
+    assert!(core::mem::offset_of!(PasRatePolicy, reserved_05) == 0x05);
+    assert!(core::mem::offset_of!(PasRatePolicy, packed_rate_retries) == 0x08);
+    assert!(core::mem::offset_of!(PasRateWalkState, byte_00) == 0x00);
+    assert!(core::mem::offset_of!(PasRateWalkState, byte_01) == 0x01);
+    assert!(core::mem::offset_of!(PasRateWalkState, byte_02) == 0x02);
+    assert!(core::mem::offset_of!(PasRateWalkState, byte_03) == 0x03);
+    assert!(core::mem::offset_of!(LowMacRuntimeState, current_channel) == 0x10);
+    assert!(core::mem::offset_of!(LowMacRuntimeState, optional_pipe_object_word) == 0x12);
+    assert!(core::mem::offset_of!(LowMacRuntimeState, active_tx_count) == 0x14);
+    assert!(core::mem::offset_of!(LowMacRuntimeState, receive_gate_bits) == 0x15);
+    assert!(core::mem::offset_of!(LowMacRuntimeState, receive_state_byte) == 0x16);
+    assert!(core::mem::offset_of!(LowMacRuntimeState, response_control_byte) == 0x18);
+    assert!(core::mem::offset_of!(PasStrideLayout, activity_state) == 0x00);
+    assert!(core::mem::offset_of!(PasStrideLayout, slot_bits) == 0x01);
+    assert!(core::mem::offset_of!(PasStrideLayout, mode_byte) == 0x02);
+    assert!(core::mem::offset_of!(PasStrideLayout, path_selector_byte) == 0x03);
+    assert!(core::mem::offset_of!(PasStrideLayout, next_tbtt_low) == 0x04);
+    assert!(core::mem::offset_of!(PasStrideLayout, basic_rate_bits) == 0x08);
+    assert!(core::mem::offset_of!(PasStrideLayout, own_mac) == 0x0c);
+    assert!(core::mem::offset_of!(PasStrideLayout, bssid) == 0x12);
+    assert!(core::mem::offset_of!(PasStrideLayout, tsf_adjust_low) == 0x18);
+    assert!(core::mem::offset_of!(PasStrideLayout, tsf_adjust_high) == 0x1c);
+    assert!(core::mem::offset_of!(PasStrideLayout, rate_class_byte) == 0x20);
+    assert!(core::mem::offset_of!(PasStrideLayout, rate_table_column) == 0x21);
+    assert!(core::mem::offset_of!(PasStrideLayout, nonzero_block_byte) == 0x22);
+    assert!(core::mem::offset_of!(PasStrideLayout, tbtt_window_control_byte) == 0x23);
+    assert!(core::mem::offset_of!(PasStrideLayout, rate_map) == 0x24);
+    assert!(core::mem::offset_of!(PasStrideLayout, retry_counts) == 0x3c);
+    assert!(core::mem::offset_of!(PasStrideLayout, contention_windows) == 0x4c);
+    assert!(core::mem::offset_of!(PasStrideLayout, cw_min) == 0x5c);
+    assert!(core::mem::offset_of!(PasStrideLayout, cw_max) == 0x64);
+    assert!(core::mem::offset_of!(PasStrideLayout, aifs) == 0x6c);
+    assert!(core::mem::offset_of!(PasStrideLayout, txop_limits) == 0x70);
+    assert!(core::mem::offset_of!(PasStrideLayout, max_rx_lifetimes) == 0x78);
+    assert!(core::mem::offset_of!(PasStrideLayout, slot_timing_word) == 0x88);
+    assert!(core::mem::offset_of!(PasStrideLayout, packed_aifs) == 0x8c);
+    assert!(core::mem::offset_of!(PasStrideLayout, duration_extension_bits) == 0x90);
+    assert!(core::mem::offset_of!(PasStrideLayout, opaque_94) == 0x94);
+    assert!(core::mem::offset_of!(AlternatePasRootLayout, byte_00) == 0x00);
+    assert!(core::mem::offset_of!(AlternatePasRootLayout, byte_19) == 0x19);
+    assert!(core::mem::offset_of!(AlternatePasRootLayout, byte_1a) == 0x1a);
+    assert!(core::mem::offset_of!(LowMacPasFamily, beacon_interval_ticks) == 0x008);
+    assert!(core::mem::offset_of!(LowMacPasFamily, active_band_mask) == 0x00c);
+    assert!(core::mem::offset_of!(LowMacPasFamily, internal_buffer_end_primary) == 0x010);
+    assert!(core::mem::offset_of!(LowMacPasFamily, internal_buffer_end_mirror) == 0x080);
+    assert!(core::mem::offset_of!(LowMacPasFamily, rate_policies) == 0x0f0);
+    assert!(core::mem::offset_of!(LowMacPasFamily, rate_walks) == 0x370);
+    assert!(core::mem::offset_of!(LowMacPasFamily, runtime) == 0x3e0);
+    assert!(core::mem::offset_of!(LowMacPasFamily, queue_parameters) == 0x400);
+    assert!(core::mem::offset_of!(LowMacPasFamily, txop_budgets) == 0x430);
+    assert!(core::mem::offset_of!(LowMacPasFamily, own_mac_addresses) == 0x454);
+    assert!(core::mem::offset_of!(LowMacPasFamily, peer_addresses) == 0x460);
+    assert!(core::mem::offset_of!(LowMacPasFamily, response_enabled) == 0x46c);
+    assert!(
+        core::mem::offset_of!(LowMacPasFamily, overlapping_pas_link_ba_views) == PAS_VIEWS_OFFSET
+    );
+    assert!(PAS_VIEWS_OFFSET == 0x470);
+    assert!(ALTERNATE_PAS_ROOT_OFFSET == 0x620);
+
     assert!(core::mem::offset_of!(TalaAccounting, growth_streaks) == 0x00);
     assert!(core::mem::offset_of!(TalaAccounting, successes) == 0x04);
     assert!(core::mem::offset_of!(TalaAccounting, failures) == 0x0c);
@@ -679,6 +1198,41 @@ mod tests {
         );
         assert!(DtcmAddress::new(DTCM_STATE_BASE - 1).is_none());
         assert!(DtcmAddress::new(DTCM_STATE_END).is_none());
+    }
+
+    #[test]
+    fn low_mac_pas_stride_views_match_declared_field_offsets_and_bounds() {
+        let first = pas_stride_view(0).unwrap();
+        let last = pas_stride_view(2).unwrap();
+        assert_eq!(first.activity_state().offset(), 0x3ae8);
+        assert_eq!(last.activity_state().offset(), 0x3c18);
+        assert_eq!(first.rate_map(21).unwrap().offset(), 0x3b21);
+        assert_eq!(first.retry_count(3).unwrap().offset(), 0x3b30);
+        assert_eq!(first.contention_window(3).unwrap().offset(), 0x3b40);
+        assert_eq!(first.cw_min(3).unwrap().offset(), 0x3b4a);
+        assert_eq!(first.cw_max(3).unwrap().offset(), 0x3b52);
+        assert_eq!(first.aifs(3).unwrap().offset(), 0x3b57);
+        assert_eq!(first.txop_limit(3).unwrap().offset(), 0x3b5e);
+        assert_eq!(first.max_rx_lifetime(3).unwrap().offset(), 0x3b6c);
+        assert_eq!(first.duration_extension_bits().offset(), 0x3b78);
+        assert!(pas_stride_view(3).is_none());
+        assert!(first.rate_map(22).is_none());
+        assert!(first.contention_window(4).is_none());
+    }
+
+    #[test]
+    fn alternate_pas_root_and_ba_views_make_crossing_overlays_explicit() {
+        let third = pas_stride_view(2).unwrap();
+        assert_eq!(third.activity_state().offset(), 0x3c18);
+        assert_eq!(third.field_unchecked(PAS_VIEW_STRIDE).offset(), 0x3cb0);
+        assert_eq!(ALTERNATE_PAS_ROOT.byte_00().offset(), 0x3c98);
+        assert_eq!(ALTERNATE_PAS_ROOT.byte_19().offset(), 0x3cb1);
+        assert_eq!(ALTERNATE_PAS_ROOT.byte_1a().offset(), 0x3cb2);
+        assert!(ALTERNATE_PAS_ROOT.byte_00().offset() < 0x3cb0);
+        assert!(ALTERNATE_PAS_ROOT.byte_19().offset() >= 0x3cb0);
+        assert_eq!(ba_pipe_record_address(0).unwrap().offset(), 0x3cc0);
+        assert_eq!(ba_pipe_record_address(7).unwrap().offset(), 0x3e48);
+        assert!(ba_pipe_record_address(7).unwrap().get() + 0x38 > DTCM_STATE_BASE + 0x3e78);
     }
 
     #[test]

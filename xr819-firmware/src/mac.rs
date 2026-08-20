@@ -4,7 +4,6 @@ use crate::{packet_ram, platform, radio};
 
 const SHARED: usize = 0x0400_1680;
 const WAKE: usize = 0x0400_1ac0;
-const PAS_BASE: usize = 0x0400_3ae8;
 
 #[inline(always)]
 fn packet_offset(address: usize) -> u32 {
@@ -327,7 +326,13 @@ pub unsafe fn program_active_vif_rate_tables(interface: u8) -> bool {
     if interface >= 3 {
         return false;
     }
-    unsafe { program_rate_tables(PAS_BASE + usize::from(interface) * 0x98) };
+    unsafe {
+        program_rate_tables(
+            crate::dtcm::pas_stride_view_unchecked(usize::from(interface))
+                .activity_state()
+                .get(),
+        )
+    };
     true
 }
 
@@ -360,7 +365,7 @@ unsafe fn program_pipe_slot(pointer: usize, slot: u8) {
 }
 
 unsafe fn build_control_frame(if_id: u8, pointer: usize, ack: bool) {
-    let control = unsafe { read_u8(0x0400_3a70) };
+    let control = unsafe { read_u8(crate::dtcm::LOW_MAC_RESPONSE_CONTROL_BYTE.get()) };
     unsafe {
         write_u32(
             pointer,
@@ -387,7 +392,11 @@ unsafe fn build_control_frame(if_id: u8, pointer: usize, ack: bool) {
     }
     let slot = if ack { 0x15 + if_id } else { 9 + if_id };
     unsafe { program_pipe_slot(pointer, slot) };
-    if ack && unsafe { read_u8(0x0400_3ae4 + usize::from(if_id)) } != 0 {
+    if ack
+        && unsafe {
+            read_u8(crate::dtcm::low_mac_response_enabled_unchecked(usize::from(if_id)).get())
+        } != 0
+    {
         unsafe { program_pipe_slot(pointer, 0x14) };
     }
 }
@@ -445,9 +454,10 @@ pub unsafe fn prepare_scan_context(channel: u16) {
 
         // Synthetic scan record 2 (`0x04003678 + 2 * 0x98`) is marked as
         // scan-active by `phy_set_band_reg`/`mac_apply_channel_and_vif_config`.
-        write_u8(0x0400_3c18, 2);
-        write_u8(0x0400_3c1a, 0x0f);
-        write_u32(0x0400_3c20, 1);
+        let scan_pas = crate::dtcm::pas_stride_view_unchecked(2);
+        write_u8(scan_pas.activity_state().get(), 2);
+        write_u8(scan_pas.mode_byte().get(), 0x0f);
+        write_u32(scan_pas.basic_rate_bits().get(), 1);
         // Base 0x07e3b85c plus the non-matching temporary-record mask
         // 0x00100502 from the vendor scan path.
         write_u32(0x0400_1ae4, 0x07f3_bd5e);
@@ -462,23 +472,26 @@ pub unsafe fn program_before_scan_channel(channel: u16) {
             crate::platform::mac_register(0x0800),
             packet_offset(packet_ram::rate_ram().start),
         );
-        let scan_vif = PAS_BASE + 2 * 0x98;
-        program_slot_timings(read_u16(SHARED + 2), read_u32(scan_vif + 0x88));
+        let scan_vif = crate::dtcm::pas_stride_view_unchecked(2);
+        program_slot_timings(
+            read_u16(SHARED + 2),
+            read_u32(scan_vif.slot_timing_word().get()),
+        );
 
         let mut first_active = false;
         let mut second_active = false;
         for index in 0..3 {
-            let vif = PAS_BASE + index * 0x98;
-            if read_u8(vif) != 2 {
+            let vif = crate::dtcm::pas_stride_view_unchecked(index);
+            if read_u8(vif.activity_state().get()) != 2 {
                 continue;
             }
-            write_u8(vif + 0x21, 0);
+            write_u8(vif.rate_table_column().get(), 0);
             if first_active && !second_active {
                 second_active = true;
-                write_u8(vif + 0x21, 1);
+                write_u8(vif.rate_table_column().get(), 1);
                 write_u32(
                     crate::platform::mac_register(0x0270),
-                    if read_u8(vif + 3) == 0 {
+                    if read_u8(vif.path_selector_byte().get()) == 0 {
                         0x0100_0000
                     } else {
                         0x0400_0000
@@ -487,14 +500,14 @@ pub unsafe fn program_before_scan_channel(channel: u16) {
             } else {
                 first_active = true;
             }
-            program_rate_tables(vif);
+            program_rate_tables(vif.activity_state().get());
         }
         write_u32(
             crate::platform::mac_register(0x0314),
             if second_active { 0x0100_0000 } else { 0 },
         );
         program_ifs_timing();
-        write_u16(0x0400_3a68, channel);
+        write_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get(), channel);
     }
 }
 
@@ -518,18 +531,23 @@ pub unsafe fn program_scan_station_mode() {
 #[cfg(target_arch = "arm")]
 unsafe fn active_station_mode_word() -> u32 {
     unsafe {
-        let reference_path = read_u8(PAS_BASE - 0x17);
+        let reference_path = read_u8(crate::dtcm::low_mac_own_mac_byte_unchecked(0, 5).get());
         (0..3).fold(0x07e3_b85c_u32, |mode, index| {
-            let record = PAS_BASE + index * 0x98;
-            if read_u8(record) != 2 {
+            let record = crate::dtcm::pas_stride_view_unchecked(index);
+            if read_u8(record.activity_state().get()) != 2 {
                 return mode;
             }
-            let path_mask = if read_u8(record + 0x11) == reference_path {
+            let path_mask = if read_u8(record.own_mac_byte_unchecked(5).get()) == reference_path {
                 0x0008_0281
             } else {
                 0x0010_0502
             };
-            mode | path_mask | if read_u8(record + 2) == 2 { 0x4000 } else { 0 }
+            mode | path_mask
+                | if read_u8(record.mode_byte().get()) == 2 {
+                    0x4000
+                } else {
+                    0
+                }
         })
     }
 }
@@ -576,9 +594,9 @@ pub unsafe fn reprogram_after_channel() {
             packet_offset(packet_ram::rate_ram().start),
         );
         for index in 0..3 {
-            let vif = PAS_BASE + index * 0x98;
-            if read_u8(vif) == 2 {
-                program_rate_tables(vif);
+            let vif = crate::dtcm::pas_stride_view_unchecked(index);
+            if read_u8(vif.activity_state().get()) == 2 {
+                program_rate_tables(vif.activity_state().get());
             }
         }
         program_ifs_timing();
@@ -739,14 +757,19 @@ pub unsafe fn begin_unjoined_scan_radio_stop() {
 #[cfg(target_arch = "arm")]
 pub unsafe fn finish_unjoined_scan_radio_stop() {
     unsafe {
-        write_u16(0x0400_3a68, 0);
-        write_u8(0x0400_3a6e, 0);
+        write_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get(), 0);
+        write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
         write_u8(0x0400_1adc, 2);
         write_u8(SHARED + 0x0a, 0);
         write_u8(SHARED + 0x0b, 0);
         write_u8(0x0400_1d12, 0);
         for vif in 0..3 {
-            write_u8(0x0400_3ae8 + vif * 0x98, 1);
+            write_u8(
+                crate::dtcm::pas_stride_view_unchecked(vif)
+                    .activity_state()
+                    .get(),
+                1,
+            );
         }
     }
     unsafe { crate::tx::clear_scheduler_bits(1 << 18) };
@@ -788,7 +811,10 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
                 core::hint::spin_loop();
             }
         }
-        write_u8(0x0400_3a6d, read_u8(0x0400_3a6d) | 1);
+        write_u8(
+            crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get(),
+            read_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get()) | 1,
+        );
         // `mac_hw_reset_regs` (`0x000000bc`) clears the complete scheduler
         // retry/drain control word before any PAS work can become runnable.
         // DTCM is retained across firmware downloads, so relying on BSS-style
@@ -815,14 +841,20 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u32(0x0400_1b04, 0);
         write_u32(0x0400_2088, 0);
         write_u32(0x0400_208c, 0);
-        for offset in (0..0x14).step_by(4) {
-            write_u32(0x0400_3768 + offset, read_u32(0x0400_0200 + offset));
+        for word in 0..5 {
+            write_u32(
+                crate::dtcm::rate_policy_word_unchecked(0, word).get(),
+                read_u32(0x0400_0200 + word * 4),
+            );
         }
-        for offset in (0..0x14).step_by(4) {
-            write_u32(0x0400_377c + offset, read_u32(0x0400_0214 + offset));
+        for word in 0..5 {
+            write_u32(
+                crate::dtcm::rate_policy_word_unchecked(1, word).get(),
+                read_u32(0x0400_0214 + word * 4),
+            );
         }
 
-        write_u8(0x0400_3a70, 0);
+        write_u8(crate::dtcm::LOW_MAC_RESPONSE_CONTROL_BYTE.get(), 0);
         write_u8(SHARED + 4, 0);
         write_u16(SHARED + 2, 0x13);
         write_u8(SHARED + 5, 0);
@@ -894,7 +926,7 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
             write_u32(object + 0x10, 0);
             write_u32(object + 4, 0);
         }
-        write_u8(0x0400_3a6e, 0);
+        write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
         write_u8(0x0400_1adc, 2);
 
         for pipe in 0..4 {
@@ -962,7 +994,7 @@ unsafe fn program_slot_timings(cfg: u16, base: u32) {
 }
 
 unsafe fn build_ba_descriptor(if_id: u8, pointer: usize) {
-    let control = unsafe { read_u8(0x0400_3a70) };
+    let control = unsafe { read_u8(crate::dtcm::LOW_MAC_RESPONSE_CONTROL_BYTE.get()) };
     let words = [
         0x5900_0000 + u32::from(control) * 0x2000,
         0x5800_0003,
@@ -1130,8 +1162,16 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
     // can expose its reset/default routing state.
     platform::prepare_mac_receive_hardware();
     unsafe {
-        program_mac_address(0x0400_3acc, crate::platform::mac_register(0x0030), 0x101);
-        program_mac_address(0x0400_3ad2, crate::platform::mac_register(0x0048), 0x101);
+        program_mac_address(
+            crate::dtcm::low_mac_own_mac_byte_unchecked(0, 0).get(),
+            crate::platform::mac_register(0x0030),
+            0x101,
+        );
+        program_mac_address(
+            crate::dtcm::low_mac_own_mac_byte_unchecked(1, 0).get(),
+            crate::platform::mac_register(0x0048),
+            0x101,
+        );
         rebuild_pipe_state();
         let producer = read_u32(crate::platform::mac_register(0x0604));
         radio::synchronize_after_wake(producer);
@@ -1146,7 +1186,7 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
             let mode = read_u8(state + 0x18);
             if (mode == 5 || mode == 6) && read_u8(state + 0x3c6) != 0 {
                 program_mac_address(
-                    0x0400_3ad8 + vif * 6,
+                    crate::dtcm::low_mac_peer_address_byte_unchecked(vif, 0).get(),
                     crate::platform::mac_register(0x003c),
                     0x101,
                 );
@@ -1198,7 +1238,7 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
         write_u32(crate::platform::mac_register(0x0098), 0x30);
         reset_lmc_pool();
 
-        if read_u16(0x0400_3a68) != 0 {
+        if read_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get()) != 0 {
             write_u8(WAKE + 0x1d, 1);
             program_slot_timings(read_u16(SHARED + 2), read_u32(SHARED + 0x1c));
             install_response_descriptors();

@@ -1479,3 +1479,166 @@ fixed-layout parent then associated in 19 seconds and completed at 13.5 Mbit/s
 TCP, 8.39 Mbit/s UDP with zero loss, and 20/20 ping. The observed distribution
 was therefore candidate 2/3 versus exact parent 4/4. The typed-VIF conversion is
 rejected and does not supersede the hardware-qualified fixed-layout image.
+
+### A.11 Low-MAC/PAS semantic-layout candidate
+
+This candidate decodes the fixed family at `0x04003678..0x04003e78` without
+moving it and without converting VIF records. It remains a **shared ABI and raw
+address view**, not exclusive Rust ownership: translated foreground code,
+cooperative MAC service, and retained IRQ/FIQ-shaped code can still mutate the
+same bytes.
+
+#### Corrected overlap and semantic confidence
+
+`LowMacPasFamily` remains an exact `#[repr(C, align(4))]` `0x800`-byte type, but
+it no longer embeds three independent `PasRecord` fields. The complete
+`+0x470..+0x800` tail is one opaque overlapping region. `PasStrideLayout` is
+only an offset schema for three observed starts at `+0x470 + n*0x98`; the
+`0x98` stride is qualified, but three disjoint semantic records are not.
+
+The alternate raw root at family `+0x620` (`0x04003c98`) is explicit as
+`AlternatePasRootAddress`. Its root begins inside the final `0x18` bytes of the
+third PAS stride view. Its observed `+0x19` and `+0x1a` byte accesses land at
+`0x04003cb1` and `0x04003cb2`, immediately beyond that view's nominal end
+`0x04003cb0`. The same opaque tail also contains the BA root at `+0x648`, whose
+`0x38`-stride view crosses the family boundary for pipe seven. No ordinary
+field, shared reference, or non-overlapping ownership claim is made for these
+overlays.
+
+Names were weakened to match the evidence. Examples include `slot_bits`,
+`mode_byte`, `path_selector_byte`, `nonzero_block_byte`,
+`tbtt_window_control_byte`, `receive_gate_bits`, `receive_state_byte`,
+`optional_pipe_object_word`, `control_bits`, and `vif_mode_byte`. Documentation
+only names values or bits exercised by translated/vendor paths: PAS activity
+values 1/2, observed mode bytes 0/1/2/5/6/`0x0f`, slot bit 0 plus the JOIN write
+of 4, receive-gate bits 0/1, receive-state values 0/1/4, JOIN VIF control bit 0
+plus bit 10 or bit 11, and the individually tested VIF control bits 29/30/26.
+Unknown values remain representable.
+
+#### Layout-derived address APIs and production helpers
+
+Production family constants and PAS field accessors derive offsets from
+`offset_of!`, `size_of!`, and the declared `repr(C)` layouts. Checked APIs bound
+interfaces, queues, rates, address bytes, policies, and BA pipes where the
+production caller has those semantics. Compatibility `*_unchecked` accessors
+state explicitly that they preserve unbounded vendor base-plus-index arithmetic;
+the policy-sentinel and crossing BA views remain intentionally address-only.
+No API returns a complete family snapshot or a safe shared reference.
+
+JOIN and teardown now use operation-specific PAS helpers in production. The
+JOIN helper preserves the synthetic-view clear, selected-view control writes,
+copied path-byte read/write, no-inline backoff reset, own/BSSID copies, and
+family publications in their original order. Teardown preserves its three PAS
+control writes before the last-active band clear. The no-inline backoff helper
+was retained because inlining it grew both `apply_edca` and `activate_sta`.
+
+The disconnected `PasJoinPublication`, process-local re-entry boolean, and
+test-only band-mask branch were removed. Host tests run the same operation
+helpers through a recorder that captures operation kind, address, width, value,
+branch, and order. Coverage now includes the complete JOIN control prefix,
+backoff reads/writes, address-copy phase, family publications, and both teardown
+last-active branches. Layout tests separately cover checked bounds, every named
+PAS field offset, the `+0x620` crossing, and the BA cross-family extent. Default
+host tests pass 153/153; diagnostic-feature host tests pass 154/154.
+
+#### Drift gates and their limits
+
+`tools/check-low-mac-pas-layout.py` is deliberately described as a drift and
+known-access manifest, not complete computed-reference proof.
+
+* The lexical source gate scans 65 project source files across Rust, Python,
+  shell, C/C++, assembly, linker-script, and TOML extensions. Outside `dtcm.rs`
+  it rejects in-family literals and known synthesized legacy forms after
+  removing comments and strings.
+* The linked gate pins the exact 47-word aligned in-family literal multiset.
+* It also decodes PC-relative literal loads and pins 60 xrefs across 42
+  `(symbol, value)` keys, so literal-pool reuse and containing-symbol drift are
+  reviewed rather than inferred from raw word presence alone.
+
+These checks do not recover register-computed addresses that have no literal,
+prove indirect vendor consumers complete, or prove semantic ownership.
+
+The clean-b6 transition gate no longer scans every aligned `.text` word or
+special-cases individual literal counts. That approach confused Thumb
+instruction bytes and linker literal-pool reuse with changed MMIO operations.
+The revised gate combines hashes of qualified packet-transition source bodies
+with decoded PC-relative literal-value sets for `0x09c...` packet-controller
+and `0x0a8...0x0ac...` shared/MMIO ranges. It detects a real new or removed
+MMIO value and is insensitive to duplicate pool words. It does not claim to
+count repeated operations outside the source-hashed functions.
+
+#### Generated code and residuals
+
+The final feature-free `.text` is `0x106c0`: `0x88` above clean b6 and four
+bytes below the exact `aebbc728` parent (`0x106c4`). The prior review candidate
+was `0x1073c`, so the review fixes remove `0x7c` bytes. VIF activation returns
+from stack `120` to `96`, its exact b6/parent frame, and shrinks below both
+reference bodies. `apply_edca`, probe publication, duration building, and the
+large probe service body return exactly to parent size/instruction/stack shape.
+Startup retains the only notable family-adjacent growth versus the parent:
+`+0x0c` bytes, six instructions, and stack `80 -> 88`; its source-level
+volatile/MMIO ordering is unchanged. Further reduction would require reverting
+layout-derived address materialization or otherwise changing qualified source,
+so it remains an explicit residual rather than being hidden.
+
+Sizes below are `b6 -> exact parent -> final candidate`; instruction counts
+exclude literal `.word` entries.
+
+| Function | Size | Instructions | Stack | Load/store mnemonic order vs parent |
+| --- | --- | --- | --- | --- |
+| `HostTxDriver::admit` | `0x5b4 -> 0x5dc -> 0x5dc` | `665 -> 679 -> 679` | `160 -> 160 -> 160` | preserved |
+| `ChannelTransitionScheduler::start` | `0x120 -> 0x120 -> 0x120` | `128 -> 128 -> 128` | `112 -> 112 -> 112` | preserved |
+| `HostSchedulerReservation::publish_in_batch` | `0x1e8 -> 0x1f0 -> 0x1f0` | `222 -> 224 -> 224` | `136 -> 144 -> 144` | preserved |
+| `join::activate_sta` | `0x154 -> 0x154 -> 0x154` | `142 -> 142 -> 142` | `80 -> 80 -> 80` | preserved |
+| `mac::initialize_vendor_startup_state` | `0x258 -> 0x268 -> 0x274` | `241 -> 253 -> 259` | `88 -> 80 -> 88` | changed address materialization |
+| `mac::program_rate_tables` | `0x2d8 -> 0x2cc -> 0x2cc` | `329 -> 323 -> 323` | `200 -> 200 -> 200` | preserved |
+| `mac::reinitialize_after_wake` | `0x34c -> 0x364 -> 0x364` | `338 -> 352 -> 352` | `88 -> 88 -> 88` | preserved |
+| `phy::begin_channel_transition` | `0x77c -> 0x790 -> 0x790` | `809 -> 819 -> 819` | `160 -> 160 -> 160` | preserved |
+| `platform::program_station_address` | `0x80 -> 0x80 -> 0x80` | `57 -> 57 -> 57` | `48 -> 48 -> 48` | preserved |
+| `tx::build_single_frame_duration` | `0xe4 -> 0xe4 -> 0xe4` | `96 -> 96 -> 96` | `24 -> 24 -> 24` | preserved |
+| `tx::complete_tx_pipe_slot` | `0x15c -> 0x15c -> 0x15c` | `155 -> 155 -> 155` | `56 -> 56 -> 56` | preserved |
+| `tx::execute_single_probe_publication` | `0x144 -> 0x144 -> 0x144` | `145 -> 145 -> 145` | `56 -> 56 -> 56` | preserved |
+| `tx::prepare_context_publication` | `0x180 -> 0x180 -> 0x180` | `183 -> 183 -> 183` | `216 -> 216 -> 216` | preserved |
+| `tx::prepare_probe_context` | `0x284 -> 0x290 -> 0x290` | `296 -> 304 -> 304` | `80 -> 80 -> 80` | preserved |
+| `tx::prepare_single_frame_pas_timing` | `0x12c -> 0x12c -> 0x12c` | `143 -> 143 -> 143` | `48 -> 48 -> 48` | preserved |
+| `tx::service_single_probe_runtime_inactive` | `0x1648 -> 0x1654 -> 0x1654` | `2521 -> 2528 -> 2528` | `208 -> 208 -> 208` | preserved |
+| `vendor_host_tx::release_pending_to_pas` | `0x170 -> 0x170 -> 0x170` | `165 -> 165 -> 165` | `48 -> 48 -> 48` | preserved |
+| `vif::activate_sta` | `0x2c4 -> 0x2c4 -> 0x2b8` | `315 -> 315 -> 309` | `96 -> 96 -> 96` | changed, same volatile order |
+| `vif::apply_edca` | `0x10c -> 0x10c -> 0x10c` | `123 -> 123 -> 123` | `112 -> 112 -> 112` | preserved |
+| `vif::teardown` | `0x7c -> 0x7c -> 0x78` | `52 -> 52 -> 50` | `24 -> 24 -> 20` | changed, same volatile order |
+
+The deepest normal stack chain remains 2892 bytes. Exception use remains
+224/256 bytes.
+
+#### Final deterministic qualification
+
+LSP reports no errors on the modified Rust/Python files; host-target inactive
+`cfg` hints remain expected. Default and diagnostic host tests pass. The full
+`XR819_B6_ELF=/tmp/xr819-b6-hif-startup.elf ./tools/check.sh` run passes source,
+packer, ARM build, stack, packet-RAM, DTCM, low-MAC literal/xref, revised
+clean-b6 MMIO, and sectioned-bootstrap checks.
+
+Fresh review artifacts:
+
+```text
+ELF       /tmp/xr819-low-mac-pas-review-20260820T114759Z.elf
+          438fc7b0037995396740c09a85ca51685f43ff1d09cf6f9bc4c0ec9387b0f048
+.text     size 0x106c0
+          c85183891b68dfbf558eb565912884e37c33971096c4ab507333018a3a8db389
+packed    /tmp/xr819-low-mac-pas-review-20260820T114759Z.bin
+          da7dae3888ef170b15336c7a065935ff08b8dcfb49b66f21858e6c6e066bcb5c
+bootstrap /tmp/xr819-low-mac-pas-bootstrap-20260820T114759Z.bin
+          48d858b8785220aa7c9a9c0898164da1ecc71b4b6218283b2687b3d2f821d197
+```
+
+Hardware qualification completed cleanly in three channel-11 runs. Association
+completed in 14, 14, and 3 seconds. TCP measured 15.4, 13.9, and 16.4 Mbit/s.
+Every UDP run transferred 30 MiB at 8.39 Mbit/s with zero, one, and zero of
+21,402 datagrams lost; every final ping was 20/20; and TX failures were zero in
+all runs. No malformed WSM message, handler failure, exception, or fatal
+diagnostic occurred.
+
+The candidate is therefore qualified as a fixed-address semantic layout and
+known-access conversion. It still claims neither exclusive movable ownership
+nor complete computed-reference closure; the unresolved VIF/link/BA/power-save
+and retained-vendor cycles remain migration blockers.

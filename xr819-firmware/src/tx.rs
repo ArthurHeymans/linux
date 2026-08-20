@@ -174,12 +174,9 @@ const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
 const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
 const PIPE_RETRY_HARDWARE_STATE: u32 = 0x0400_1e6c;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
-const PIPE_RETRY_MASK_TABLE: u32 = crate::dtcm::LOW_MAC_PAS_ROOT.get() as u32;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const PIPE_RETRY_RATE_MAP: u32 = 0x0400_1aec;
 const PIPE_RETRY_TIMING_TABLE: u32 = 0x0400_0138;
-const PAS_VIF_STATE: usize = crate::dtcm::LOW_MAC_PAS_ROOT.get();
-const PAS_RATE_MAP_OFFSET: usize = 0x494;
 const PAS_ACK_TIMING_TABLE: usize = 0x0400_16c8;
 const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
 #[cfg(target_arch = "arm")]
@@ -255,7 +252,7 @@ fn publication_bisect_reached(reached: u8) -> bool {
     publication_bisect_matches(configured, reached)
 }
 const MAC_BEACON_STATE: u32 = 0x0400_1a80;
-const MAC_BEACON_CONFIG: u32 = 0x0400_3a58;
+const MAC_BEACON_CONFIG: u32 = crate::dtcm::LOW_MAC_RUNTIME_ROOT.get() as u32;
 const MAC_BEACON_TIMER: u32 = crate::platform::mac_register(0x0e00) as u32;
 
 unsafe fn read_u8(address: usize) -> u8 {
@@ -617,9 +614,9 @@ fn finalize_phy_control(phy: PhyRateWords, rate_index: u8, frame_length: u16) ->
     }
 }
 
-fn single_frame_secondary_command(tx_flags: u32, header_duration: u16, vif_slot: u8) -> u32 {
+fn single_frame_secondary_command(tx_flags: u32, header_duration: u16, duration_slot: u8) -> u32 {
     if tx_flags & 1 == 0 {
-        0x2100_0000 | (packet_ram::duration_word(usize::from(vif_slot)) as u32 & 0x007f_ffff)
+        0x2100_0000 | (packet_ram::duration_word(usize::from(duration_slot)) as u32 & 0x007f_ffff)
     } else {
         0x3200_0000 | header_duration as u32
     }
@@ -1316,7 +1313,7 @@ unsafe fn capture_status2_ownership(
         diagnostic_pointer_word(command, 0x18),
         diagnostic_pointer_word(command, 0x1c),
         u32::from(unsafe { read_u8(PIPE_BUSY as usize) }),
-        u32::from(unsafe { read_u8(0x0400_3a6c) }),
+        u32::from(unsafe { read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()) }),
         u32::from(unsafe { active_pas_contexts() }),
         completion_consumer,
         completion_producer,
@@ -2204,8 +2201,11 @@ fn build_single_frame_duration<M: MacPipeMmio>(
 
     let interface = u32::from(mmio.read_u8(frame + 0x69));
     let selector = u32::from(mmio.read_u8(frame + 0x0c));
-    let random_mask =
-        mmio.read_u16(PIPE_RETRY_MASK_TABLE + interface * 0x98 + selector * 4 + 0x4bc);
+    let random_mask = mmio.read_u16(
+        crate::dtcm::pas_stride_view_unchecked(interface as usize)
+            .contention_window_unchecked(selector as usize)
+            .get() as u32,
+    );
     let random = (next_retry_random24(mmio) as u16) & random_mask;
 
     let maximum = mmio.read_u32(PIPE_RETRY_RANDOM_STATS);
@@ -2992,7 +2992,11 @@ impl TxPolicy for SingleProbeMacBackend {
         let mut mmio = VolatileMacPipeMmio;
         let interface = u32::from(mmio.read_u8(frame_node + 0x69));
         let selector = u32::from(mmio.read_u8(frame_node + 0x0c));
-        let mask = mmio.read_u16(PIPE_RETRY_MASK_TABLE + interface * 0x98 + selector * 4 + 0x4bc);
+        let mask = mmio.read_u16(
+            crate::dtcm::pas_stride_view_unchecked(interface as usize)
+                .contention_window_unchecked(selector as usize)
+                .get() as u32,
+        );
         let random = (next_retry_random24(&mut mmio) as u16) & mask;
         let current = mmio.read_u32(descriptor + 4);
         mmio.write_u32(
@@ -4295,7 +4299,7 @@ where
     F: FnOnce(u32) -> Option<u32>,
 {
     unsafe {
-        if read_u16(0x0400_3a6a) == 0 {
+        if read_u16(crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get()) == 0 {
             return;
         }
         let header = read_u32(context.raw() as usize + 0x54);
@@ -4443,7 +4447,10 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
 
         if slot_kind != 0 {
             if slot_kind != 1 {
-                write_u8(0x0400_3a6c, read_u8(0x0400_3a6c).wrapping_sub(1));
+                write_u8(
+                    crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
+                    read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
+                );
                 return;
             }
             if link < 8 {
@@ -4494,15 +4501,19 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 backend.link_set_state(link, final_link_state);
             }
             if final_link_state != 0x0b {
-                let ba_table = 0x0400_3cc0_usize;
+                let ba_table = crate::dtcm::ba_pipe_record_address_unchecked(0).get();
                 if let Some(frame) = backend.find_rx_frame_by_subtype(0x94) {
                     let frame = frame as usize;
                     let mut selected_pipe = 8_u8;
                     for interface in 0..2_u8 {
-                        let record = 0x0400_3678_usize + usize::from(interface) * 0x98;
-                        if read_u16(frame + 4) == read_u16(record + 0x47c)
-                            && read_u16(frame + 6) == read_u16(record + 0x47e)
-                            && read_u16(frame + 8) == read_u16(record + 0x480)
+                        let record = unsafe {
+                            crate::dtcm::pas_stride_view_unchecked(usize::from(interface))
+                        };
+                        if read_u16(frame + 4) == read_u16(record.own_mac_byte_unchecked(0).get())
+                            && read_u16(frame + 6)
+                                == read_u16(record.own_mac_byte_unchecked(2).get())
+                            && read_u16(frame + 8)
+                                == read_u16(record.own_mac_byte_unchecked(4).get())
                         {
                             let device = lmc_vif_address(usize::from(interface));
                             let mac = if read_u32(device + 0x1c) & 4 != 0 {
@@ -4527,7 +4538,10 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                             write_u16(entry + 0x16, read_u16(frame + 0x12) >> 4);
                             backend.process_ba_bitmap(selected_pipe);
                         }
-                        write_u8(0x0400_3a6c, read_u8(0x0400_3a6c).wrapping_sub(1));
+                        write_u8(
+                            crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
+                            read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
+                        );
                         return;
                     }
                     if link > 7 {
@@ -4540,7 +4554,10 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                         write_u32(entry + 0x18, 0);
                         write_u32(entry + 0x1c, 0);
                     } else {
-                        write_u8(0x0400_3a6c, read_u8(0x0400_3a6c).wrapping_sub(1));
+                        write_u8(
+                            crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
+                            read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
+                        );
                         return;
                     }
                 }
@@ -4549,7 +4566,10 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
             raise_scheduler_bits(1 << 21);
         }
 
-        write_u8(0x0400_3a6c, read_u8(0x0400_3a6c).wrapping_sub(1));
+        write_u8(
+            crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
+            read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
+        );
     }
 }
 
@@ -4709,7 +4729,10 @@ pub unsafe fn release_lmc_radio_scheduler<B: RadioCompletionEffects>(owner: u32,
 
         write_u32(0x0400_8b20, 0);
         write_u8(owner_address + 0x22, 0);
-        write_u8(0x0400_3a6d, read_u8(0x0400_3a6d) & 0xfd);
+        write_u8(
+            crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get(),
+            read_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get()) & 0xfd,
+        );
         raise_scheduler_bits(1 << 21);
         write_u16(released_vif + 0x2e, 0);
 
@@ -4909,7 +4932,9 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
 
         let completed = read_u32(success).wrapping_add(read_u32(failure));
         let policy = usize::from(read_u8(node + 0x0e));
-        let short_retries = u32::from(read_u8(0x0400_3678 + policy * 0x14 + 0xf1));
+        let short_retries = u32::from(read_u8(
+            crate::dtcm::rate_policy_short_retry_limit_compat(policy).get(),
+        ));
         let expected = short_retries.wrapping_mul(15).wrapping_add(99) / 100;
         let tries = u32::from(read_u16(node + 0x1e));
         write_u32(tries_total, read_u32(tries_total).wrapping_add(tries));
@@ -5078,7 +5103,13 @@ where
                 }
             }
 
-            if status == 0x0b && read_u8(0x0400_3678 + interface * 0x98 + 0x472) == 2 {
+            if status == 0x0b
+                && read_u8(
+                    crate::dtcm::pas_stride_view_unchecked(interface)
+                        .mode_byte()
+                        .get(),
+                ) == 2
+            {
                 mark_ba_session_state_5(context, |mac_upper| {
                     backend.find_pipe_by_mac_upper(mac_upper)
                 });
@@ -5442,13 +5473,17 @@ pub unsafe fn service_mac_irq_count_status(event_type: u8) {
             return;
         }
         if read_u32(0x0400_1ae8) != 0 {
-            write_u32(0x0400_3684, 1);
+            write_u32(crate::dtcm::LOW_MAC_BAND_BITS.get(), 1);
         }
         write_u8(PIPE_RECORDS as usize + 6, 1);
         let interface = usize::from(read_u8(0x0400_1d58));
         write_u8(
             PIPE_RECORDS as usize + 0x0c,
-            read_u8(0x0400_3678 + interface * 0x98 + 0x473),
+            read_u8(
+                crate::dtcm::pas_stride_view_unchecked(interface)
+                    .path_selector_byte()
+                    .get(),
+            ),
         );
     }
 }
@@ -5834,8 +5869,8 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     }
 
     let interface = u32::from(mmio.read_u8(frame + 0x69));
-    let vif = 0x0400_3678_u32 + interface * 0x98;
-    let edca_slot_timing = mmio.read_u32(vif + 0x4fc);
+    let pas = crate::dtcm::pas_stride_view_unchecked(interface as usize);
+    let edca_slot_timing = mmio.read_u32(pas.packed_aifs().get() as u32);
     if mmio.read_u32(0x0400_1b04) != edca_slot_timing {
         mmio.write_u32(
             crate::platform::mac_register(0x0e64) as u32,
@@ -5848,7 +5883,8 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     }
 
     let queue = u32::from(mmio.read_u8(0x0400_02dc + u32::from(pipe)));
-    let mut quantum = u32::from(mmio.read_u16(vif + 0x4e0 + queue * 2));
+    let mut quantum =
+        u32::from(mmio.read_u16(pas.txop_limit_unchecked(queue as usize).get() as u32));
     let airtime = mmio.read_u32(frame + 0x48) & 0xffff;
     if quantum == 0 {
         if (mmio.read_u32(frame + 4) & 0x0fff) >> 10 != 0 {
@@ -5887,8 +5923,13 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         return 8;
     }
 
-    let active_count = mmio.read_u8(0x0400_3a6c).wrapping_add(1);
-    mmio.write_u8(0x0400_3a6c, active_count);
+    let active_count = mmio
+        .read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32)
+        .wrapping_add(1);
+    mmio.write_u8(
+        crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32,
+        active_count,
+    );
     // Vendor's publish loop body: mark the slot published and push its duration
     // into the ring, once per slot from producer to `last`.
     mmio.write_u8(input.slot_record + 3, 1);
@@ -6138,8 +6179,9 @@ unsafe fn prepare_single_frame_pas_timing(
         }
         let flags = read_u32(frame + 4);
         let rate = read_u8(frame + 0x0f);
-        let rate_map = PAS_VIF_STATE + interface * 0x98 + PAS_RATE_MAP_OFFSET + usize::from(rate);
-        let timing_index = usize::from(read_u8(rate_map));
+        let pas = crate::dtcm::pas_stride_view_unchecked(interface);
+        let rate_map = pas.rate_map_unchecked(usize::from(rate));
+        let timing_index = usize::from(read_u8(rate_map.get()));
         // Preserve frame+0x0d exactly as initialized by the vendor HIF path
         // from `(wsm_tx_flags & 0x0f) >> 1`. `txp_submit_to_pipe()` passes this
         // rate attribute directly to `pas_build_phy_rate_words()`. The rate
@@ -6151,11 +6193,14 @@ unsafe fn prepare_single_frame_pas_timing(
             PAS_ACK_TIMING_TABLE
         };
         let ack_duration = read_u16(ack_table + timing_index * 2);
-        let mode = read_u8(PAS_VIF_STATE + interface * 0x98 + 0x472);
+        let mode = read_u8(pas.mode_byte().get());
         let header = read_u32(frame) as usize;
         let special_peer = (mode == 5 || mode == 6)
             && (0..6).all(|offset| {
-                read_u8(header + 10 + offset) == read_u8(0x0400_3ad8 + interface * 6 + offset)
+                read_u8(header + 10 + offset)
+                    == read_u8(
+                        crate::dtcm::low_mac_peer_address_byte_unchecked(interface, offset).get(),
+                    )
             });
         let timing = compute_single_frame_pas_timing(
             read_u16(PIPE_RECORDS as usize + 2),
@@ -6284,8 +6329,12 @@ pub unsafe fn prepare_probe_context(
         ((context_address + 0x44) as *mut u32).write_volatile(24);
         ((context_address + 0x48) as *mut u32)
             .write_volatile((probe.length as u32).saturating_sub(24));
-        let vif_slot = ((0x0400_3ae9 + usize::from(if_id) * 0x98) as *const u8).read_volatile() & 1;
-        ((context_address + 0xbe) as *mut u8).write_volatile(vif_slot);
+        let duration_slot = (crate::dtcm::pas_stride_view_unchecked(usize::from(if_id))
+            .slot_bits()
+            .get() as *const u8)
+            .read_volatile()
+            & 1;
+        ((context_address + 0xbe) as *mut u8).write_volatile(duration_slot);
         ((context_address + 0xaa) as *mut u8).write_volatile(0xff);
         ((context_address + 0xc8) as *mut u16).write_volatile(0);
         ((context_address + 0xca) as *mut u8).write_volatile(9);
@@ -6405,11 +6454,11 @@ pub unsafe fn build_prepared_probe_descriptor(
         );
         let if_id = ((address + 0xbd) as *const u8).read_volatile();
         let metadata_address = packet_ram::interface_metadata_byte(usize::from(if_id)) as u32;
-        let vif_slot = ((address + 0xbe) as *const u8).read_volatile();
+        let duration_slot = ((address + 0xbe) as *const u8).read_volatile();
         // `txp_submit_to_pipe` uses PAS `bVifSlot` (`ctx+0xbe`) here when
         // flags bit 0 is clear. Both internal and host contexts use this
         // selector; the TX rate indexes different PHY tables.
-        let secondary_address = packet_ram::duration_word(usize::from(vif_slot)) as u32;
+        let secondary_address = packet_ram::duration_word(usize::from(duration_slot)) as u32;
         build_single_frame_pipe_descriptor(SingleFramePipeInput {
             phy_rate_word: phy.rate,
             phy_control_word: finalize_phy_control(phy, rate, context.length),
@@ -6449,7 +6498,7 @@ unsafe fn emit_prepared_probe_descriptor(
             rate_attribute,
         );
         let if_id = ((address + 0xbd) as *const u8).read_volatile();
-        let vif_slot = ((address + 0xbe) as *const u8).read_volatile();
+        let duration_slot = ((address + 0xbe) as *const u8).read_volatile();
         let frame_control = u32::from(((address + 0x5e) as *const u16).read_volatile())
             | if ((address + 0x58) as *const u32).read_volatile() & 0x10 != 0 {
                 0x0800
@@ -6478,7 +6527,7 @@ unsafe fn emit_prepared_probe_descriptor(
         add(single_frame_secondary_command(
             tx_flags,
             (context.header.wrapping_add(0x16) as *const u16).read_volatile(),
-            vif_slot,
+            duration_slot,
         ));
         if context.length > 24 {
             let payload = context.header.wrapping_add(24);
@@ -7201,7 +7250,7 @@ pub fn probe_runtime_quiescent() -> bool {
             let (consumer, producer) = COMPLETION_RING.cursors();
             consumer == producer
         }
-        && unsafe { read_u8(0x0400_3a6c) } == 0
+        && unsafe { read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()) } == 0
 }
 
 /// Exact `pac_phy_stop_op`: enter command 7, arm its vendor timer, then cancel
@@ -7311,8 +7360,8 @@ pub unsafe fn validate_probe_preparation(
 pub unsafe fn initialize_internal_pool() {
     unsafe {
         let boundary = packet_ram::internal_tx_buffers_end() as u32;
-        (0x0400_3688 as *mut u32).write_volatile(boundary);
-        (0x0400_36f8 as *mut u32).write_volatile(boundary);
+        (crate::dtcm::INTERNAL_BUFFER_END_PRIMARY.get() as *mut u32).write_volatile(boundary);
+        (crate::dtcm::INTERNAL_BUFFER_END_MIRROR.get() as *mut u32).write_volatile(boundary);
 
         let mut previous = 0_u32;
         for index in 0..TX_CONTEXT_COUNT {
@@ -8098,7 +8147,14 @@ mod tests {
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0xff);
         mmio.set(PIPE_RETRY_RANDOM_STATE, 0x0012_3456);
-        mmio.set(PIPE_RETRY_MASK_TABLE + 0x4bc, 0x001f);
+        mmio.set(
+            crate::dtcm::pas_stride_view(0)
+                .unwrap()
+                .contention_window(0)
+                .unwrap()
+                .get() as u32,
+            0x001f,
+        );
         mmio.set(PIPE_RETRY_RATE_MAP + 2, 3);
         mmio.set(PIPE_RETRY_TIMING_TABLE + 6, 0x20);
         mmio.set(PIPE_RECORDS + 0x1c, 2);
@@ -8166,7 +8222,14 @@ mod tests {
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0x11);
         mmio.set(PIPE_RETRY_RANDOM_STATE, 0x0012_3456);
-        mmio.set(PIPE_RETRY_MASK_TABLE + 0x4bc, 0x001f);
+        mmio.set(
+            crate::dtcm::pas_stride_view(0)
+                .unwrap()
+                .contention_window(0)
+                .unwrap()
+                .get() as u32,
+            0x001f,
+        );
         mmio.set(PIPE_RETRY_RATE_MAP + 2, 3);
         mmio.set(PIPE_RETRY_TIMING_TABLE + 6, 0x20);
         mmio.set(PIPE_RECORDS + 0x1c, 2);
@@ -8212,7 +8275,14 @@ mod tests {
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0xff);
         mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
-        mmio.set(PIPE_RETRY_MASK_TABLE + 0x4bc, 0);
+        mmio.set(
+            crate::dtcm::pas_stride_view(0)
+                .unwrap()
+                .contention_window(0)
+                .unwrap()
+                .get() as u32,
+            0,
+        );
         mmio.set(PIPE_RETRY_RATE_MAP + 2, 0);
         mmio.set(PIPE_RETRY_TIMING_TABLE, 0);
         mmio.set(PIPE_RETRY_HARDWARE_STATE, 0);
@@ -8250,7 +8320,14 @@ mod tests {
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0xff);
         mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
-        mmio.set(PIPE_RETRY_MASK_TABLE + 0x4bc, 0);
+        mmio.set(
+            crate::dtcm::pas_stride_view(0)
+                .unwrap()
+                .contention_window(0)
+                .unwrap()
+                .get() as u32,
+            0,
+        );
         mmio.set(PIPE_RETRY_RATE_MAP + 1, 0);
         mmio.set(PIPE_RETRY_TIMING_TABLE, 0);
         mmio.set(PIPE_RETRY_HARDWARE_STATE, 2);
@@ -8288,17 +8365,37 @@ mod tests {
         mmio.set(frame.raw() + 0x0c, 0);
         mmio.set(0x0ac0_0004, 0x1234);
         mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
-        mmio.set(PIPE_RETRY_MASK_TABLE + 0x4bc, 0);
-        mmio.set(0x0400_3678 + 0x4fc, 0x55);
+        mmio.set(
+            crate::dtcm::pas_stride_view(0)
+                .unwrap()
+                .contention_window(0)
+                .unwrap()
+                .get() as u32,
+            0,
+        );
+        mmio.set(
+            crate::dtcm::pas_stride_view(0)
+                .unwrap()
+                .packed_aifs()
+                .get() as u32,
+            0x55,
+        );
         mmio.set(0x0400_1b04, 0x44);
         mmio.set(0x0400_02dc, 1);
-        mmio.set(0x0400_3678 + 0x4e2, 64);
+        mmio.set(
+            crate::dtcm::pas_stride_view(0)
+                .unwrap()
+                .txop_limit(1)
+                .unwrap()
+                .get() as u32,
+            64,
+        );
         mmio.set(
             PIPE_QUANTUM_POINTERS,
             crate::platform::mac_register(0x0e70) as u32,
         );
         mmio.set(pipe_state + 4, 8);
-        mmio.set(0x0400_3a6c, 2);
+        mmio.set(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32, 2);
 
         let bisect_stage = execute_single_probe_publication(
             &mut mmio,
@@ -8323,7 +8420,10 @@ mod tests {
         assert_eq!(mmio.get(crate::platform::mac_register(0x0e64) as u32), 0x55);
         assert_eq!(mmio.get(crate::platform::mac_register(0x0e70) as u32), 2);
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
-        assert_eq!(mmio.get(0x0400_3a6c), 3);
+        assert_eq!(
+            mmio.get(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32),
+            3
+        );
         assert_eq!(mmio.get(slot + 3), 1);
         assert_eq!(mmio.get(slot + 8), 0x0010_0000);
         assert_eq!(mmio.get(hardware_ring), 0x0010_0000);

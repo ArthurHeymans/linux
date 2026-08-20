@@ -654,7 +654,10 @@ extern "C" fn rust_main() -> ! {
                 // Vendor RX processing never stops between scans. Recycle one
                 // slot per cooperative pass so a later dwell cannot consume
                 // idle-era beacons as if they had just arrived.
-                let channel = unsafe { (0x0400_3a68 as *const u16).read_volatile() };
+                let channel = unsafe {
+                    (xr819_firmware::dtcm::LOW_MAC_CURRENT_CHANNEL.get() as *const u16)
+                        .read_volatile()
+                };
                 unsafe { radio::discard_one_idle(channel) };
             }
         }

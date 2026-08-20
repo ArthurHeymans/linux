@@ -414,7 +414,7 @@ impl HostTxDriver {
                                     unsafe { vendor_host_tx::pending_live_diagnostic(&retained) };
                                 event = Some((
                                     0x4854_6000
-                                        | u32::from(diagnostic.vif_state)
+                                        | u32::from(diagnostic.vif_mode_byte)
                                         | (u32::from(diagnostic.pipe_allowed) << 8)
                                         | ((diagnostic.global & 0xff) << 16),
                                     u32::from(diagnostic.active_mask)

@@ -46,13 +46,34 @@ def text_bytes(path: Path, packer) -> bytes:
     return data[section.file_offset : section.file_offset + section.size]
 
 
-def aligned_literal_sequence(data: bytes, start: int, end: int, excluded: set[int] = set()) -> list[int]:
-    words = struct.iter_unpack("<I", data[: len(data) & ~3])
-    return [
-        word
-        for (word,) in words
-        if word % 4 == 0 and start <= word < end and word not in excluded
-    ]
+def decoded_literal_values(path: Path, start: int, end: int) -> set[int]:
+    """Values reached by decoded PC-relative literal loads.
+
+    A set is intentional here: literal-pool duplication/reuse is a linker
+    layout choice, not an MMIO operation count. Qualified source-body hashes
+    below protect the operation-specific code; this comparison detects a real
+    new or removed MMIO value without interpreting instruction bytes as data.
+    """
+    disassembly = run("llvm-objdump", "-d", "--print-imm-hex", str(path))
+    words = {
+        int(address, 16): int(value, 16)
+        for address, value in re.findall(
+            r"^\s*([0-9a-fA-F]+):.*?\.word\s+0x([0-9a-fA-F]+)\s*$",
+            disassembly,
+            flags=re.MULTILINE,
+        )
+    }
+    values: set[int] = set()
+    for line in disassembly.splitlines():
+        if ".word" in line:
+            continue
+        reference = re.search(r"@\s+0x([0-9a-fA-F]+)(?:\s|<|$)", line)
+        if reference is None:
+            continue
+        value = words.get(int(reference.group(1), 16))
+        if value is not None and start <= value < end:
+            values.add(value)
+    return values
 
 
 def extract_function(source: str, needle: str) -> str:
@@ -121,30 +142,24 @@ def main() -> None:
     args = parser.parse_args()
 
     packer = load_packer()
-    baseline = text_bytes(args.baseline, packer)
     candidate = text_bytes(args.candidate, packer)
 
-    # The non-packet MMIO literal ordering is identical to b6. Two 0x09c values
-    # are normalized out because central address helpers fold the second TX-ring
-    # base into arithmetic and share one extra packet-DMA control literal.
-    for start, end in ((0x0A800000, 0x0AD00000),):
-        if aligned_literal_sequence(baseline, start, end) != aligned_literal_sequence(candidate, start, end):
-            raise RuntimeError("non-packet MMIO literal ordering differs from b6")
-    excluded = {0x09C00600, 0x09C60100}
-    if aligned_literal_sequence(baseline, 0x09C00000, 0x09D00000, excluded) != aligned_literal_sequence(
-        candidate, 0x09C00000, 0x09D00000, excluded
+    # Compare decoded literal-load values, not every aligned instruction word
+    # and not literal-pool multiplicity. Source hashes protect the qualified
+    # packet transition functions; these sets independently catch real new or
+    # removed controller/MMIO values while tolerating pool reuse and layout.
+    for start, end, label in (
+        (0x09C00000, 0x09D00000, "packet-controller"),
+        (0x0A800000, 0x0AD00000, "shared/MMIO"),
     ):
-        raise RuntimeError("normalized packet-controller MMIO ordering differs from b6")
-    baseline_counts = collections.Counter(
-        aligned_literal_sequence(baseline, 0x09C00000, 0x09D00000)
-    )
-    candidate_counts = collections.Counter(
-        aligned_literal_sequence(candidate, 0x09C00000, 0x09D00000)
-    )
-    if candidate_counts[0x09C00600] != baseline_counts[0x09C00600] + 1:
-        raise RuntimeError("unexpected packet-DMA control literal normalization")
-    if candidate_counts[0x09C60100] + 1 != baseline_counts[0x09C60100]:
-        raise RuntimeError("unexpected TX-ring base literal normalization")
+        baseline_values = decoded_literal_values(args.baseline, start, end)
+        candidate_values = decoded_literal_values(args.candidate, start, end)
+        if baseline_values != candidate_values:
+            raise RuntimeError(
+                f"decoded {label} literal values changed: "
+                f"missing={sorted(baseline_values - candidate_values)!r} "
+                f"extra={sorted(candidate_values - baseline_values)!r}"
+            )
 
     for pointer in MAC_POINTERS:
         if struct.pack("<I", pointer) not in candidate:

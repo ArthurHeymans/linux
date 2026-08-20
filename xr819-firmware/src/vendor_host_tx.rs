@@ -363,8 +363,12 @@ pub unsafe fn classify_and_encrypt(retained: &mut RetainedHostTx) -> Result<(), 
         write_live_u16(context.raw() + 0xc8, classification.qos_control);
         write_live_u8(context.raw() + 0xa6, classification.tid);
         write_live_u8(context.raw() + 0xaa, 0xff);
-        let vif_slot = read_live_u8(0x0400_3ae9 + u32::from(interface) * 0x98) & 1;
-        write_live_u8(context.raw() + 0xbe, vif_slot);
+        let duration_slot = read_live_u8(
+            crate::dtcm::pas_stride_view_unchecked(usize::from(interface))
+                .slot_bits()
+                .get() as u32,
+        ) & 1;
+        write_live_u8(context.raw() + 0xbe, duration_slot);
         crate::host_tx_diagnostics::capture_submission_identity(
             retained.packet_id,
             context.raw(),
@@ -402,7 +406,9 @@ pub unsafe fn enqueue_post_crypto(retained: &mut RetainedHostTx) -> Result<(), P
     // disabled. Do not silently skip its allocation for multicast or when the
     // vendor global enables the alternate object class.
     let flags = unsafe { read_live_u32(context + 0x58) };
-    let alternate_enabled = unsafe { (0x0400_3a6a as *const u16).read_volatile() != 0 };
+    let alternate_enabled = unsafe {
+        (crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get() as *const u16).read_volatile() != 0
+    };
     if flags & 0x100 != 0 || alternate_enabled {
         return Err(PostCryptoError::OptionalPipeObjectRequired);
     }
@@ -513,7 +519,6 @@ unsafe fn vendor_timer() -> u32 {
 /// release the frame toward PAS scheduling.
 #[cfg(target_arch = "arm")]
 unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
-    const PAS_STATE_BASE: u32 = 0x0400_3678;
     const VIF_BASE: u32 = 0x0400_3e98;
     const LINK_STATE: u32 = 0x0400_87b8;
     let pas = context.raw() + PAS_OFFSET as u32;
@@ -521,20 +526,21 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
     if interface > 2 {
         return true;
     }
-    let pas_state = PAS_STATE_BASE + u32::from(interface) * 0x98;
+    let pas_state = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
     let vif = VIF_BASE + u32::from(interface) * 0x3b0;
-    let vif_flags = unsafe { read_live_u32(vif + 0x1c) };
+    let vif_control_bits = unsafe { read_live_u32(vif + 0x1c) };
 
-    let blocked = if unsafe { read_live_u8(pas_state + 0x492) } != 0 {
+    let blocked = if unsafe { read_live_u8(pas_state.nonzero_block_byte().get() as u32) } != 0 {
         true
-    } else if unsafe { read_live_u8(pas_state + 0x493) } == 0 {
-        vif_flags & (1 << 29) != 0 && vif_flags & 3 == 3
+    } else if unsafe { read_live_u8(pas_state.tbtt_window_control_byte().get() as u32) } == 0 {
+        vif_control_bits & (1 << 29) != 0 && vif_control_bits & 3 == 3
     } else {
         let tsf = unsafe {
             read_live_u32(crate::platform::mac_register(0x0e38) as u32)
-                .wrapping_add(read_live_u32(pas_state + 0x488))
+                .wrapping_add(read_live_u32(pas_state.tsf_adjust_low().get() as u32))
         };
-        let until_tbtt = unsafe { read_live_u32(pas_state + 0x474) }.wrapping_sub(tsf) as i32;
+        let until_tbtt =
+            unsafe { read_live_u32(pas_state.next_tbtt_low().get() as u32) }.wrapping_sub(tsf) as i32;
         let duration = u32::from(unsafe { read_live_u16(pas + 0x30) })
             + u32::from(unsafe { read_live_u16(pas + 0x34) })
             + u32::from(unsafe { read_live_u16(pas + 0x38) })
@@ -546,7 +552,7 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
     if (policy != 0x0f || global & 0x80 == 0) && blocked {
         return false;
     }
-    if vif_flags & 4 == 0 {
+    if vif_control_bits & 4 == 0 {
         return true;
     }
 
@@ -559,7 +565,7 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
         || frame_kind == 0x50
         || (frame_kind == 0xd0 && policy == 0x0f))
         && ((link_bit & 1 == 0) || sleeping == 0 || unsafe { read_live_u8(vif + 0x164) } == 0)
-        && vif_flags & (1 << 29) == 0;
+        && vif_control_bits & (1 << 29) == 0;
     if normal_release {
         return true;
     }
@@ -749,8 +755,8 @@ pub struct PendingLiveDiagnostic {
     pub global: u32,
     pub active_mask: u16,
     pub effective_mask: u16,
-    pub vif_flags: u32,
-    pub vif_state: u8,
+    pub vif_control_bits: u32,
+    pub vif_mode_byte: u8,
     pub interface: u8,
     pub link: u8,
     pub pipe_allowed: bool,
@@ -770,8 +776,8 @@ pub unsafe fn pending_live_diagnostic(retained: &RetainedHostTx) -> PendingLiveD
         global: unsafe { read_live_u32(0x0400_1fcc) },
         active_mask: unsafe { read_live_u16(vif + 0x2c) },
         effective_mask: unsafe { read_live_u16(vif + 0x2e) },
-        vif_flags: unsafe { read_live_u32(vif + 0x1c) },
-        vif_state: unsafe { read_live_u8(vif + 0x18) },
+        vif_control_bits: unsafe { read_live_u32(vif + 0x1c) },
+        vif_mode_byte: unsafe { read_live_u8(vif + 0x18) },
         interface,
         link,
         pipe_allowed: unsafe { program_pipe_eligible(context) },
@@ -827,10 +833,10 @@ pub unsafe fn service_pending(
         let mut effective_mask = unsafe { read_live_u16(vif + 0x2e) };
         let mut effective_link = effective_mask & link_bit != 0;
         let frame_kind = unsafe { read_live_u16(context.raw() + 0x5e) } & 0xff;
-        let vif_flags = unsafe { read_live_u32(vif + 0x1c) };
+        let vif_control_bits = unsafe { read_live_u32(vif + 0x1c) };
         if !effective_link && frame_kind != 0xd0 && effective_mask == 0 {
-            if vif_flags & (1 << 30) != 0 {
-                unsafe { write_live_u32(vif + 0x1c, vif_flags | 0x0400_0000) };
+            if vif_control_bits & (1 << 30) != 0 {
+                unsafe { write_live_u32(vif + 0x1c, vif_control_bits | 0x0400_0000) };
             } else {
                 // `vif_resume_tx_after_radio`: the joined runtime already owns
                 // the radio, so reproduce its effective-link publication.
@@ -849,9 +855,9 @@ pub unsafe fn service_pending(
             }
         }
         let link_gate_requests_removal =
-            (effective_link || frame_kind == 0xd0) && vif_flags & (1 << 29) == 0;
-        if (effective_link || frame_kind == 0xd0) && vif_flags & (1 << 29) != 0 {
-            unsafe { write_live_u32(vif + 0x1c, vif_flags | 0x0400_0000) };
+            (effective_link || frame_kind == 0xd0) && vif_control_bits & (1 << 29) == 0;
+        if (effective_link || frame_kind == 0xd0) && vif_control_bits & (1 << 29) != 0 {
+            unsafe { write_live_u32(vif + 0x1c, vif_control_bits | 0x0400_0000) };
         }
         let state = unsafe { read_live_u8(vif + 0x18) };
         decision_input = PendingTaskInput {
@@ -988,7 +994,9 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
         ring_contains_frame: slot != ring_tail,
         pipe_allowed: unsafe { program_pipe_eligible(context) },
         retry_gate: unsafe { read_live_u8(0x0400_1e6c) },
-        receive_gate: unsafe { read_live_u8(0x0400_3a6d) },
+        receive_gate: unsafe {
+            read_live_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as u32)
+        },
     }
 }
 
@@ -1024,7 +1032,7 @@ pub struct HostSchedulerReservation {
     original_ring_head: u8,
     slot_record: u32,
     command: u32,
-    original_flags: u32,
+    original_control_bits: u32,
     original_slot_header: u32,
     original_slot_frame: u32,
     original_slot_auxiliary: u32,
@@ -1101,7 +1109,7 @@ impl HostSchedulerReservation {
             return false;
         }
         unsafe {
-            write_live_u32(self.context.raw() + 0x58, self.original_flags);
+            write_live_u32(self.context.raw() + 0x58, self.original_control_bits);
             write_live_u32(self.slot_record, self.original_slot_header);
             write_live_u32(self.slot_record + 0x0c, self.original_slot_frame);
             write_live_u32(self.slot_record + 0x10, self.original_slot_auxiliary);
@@ -1124,7 +1132,7 @@ impl HostSchedulerReservation {
 ///
 /// # Safety
 /// Global PAS and pipe state must be exclusively runtime-owned.
-const fn scheduler_batch_flags(original: u32, staged: u8) -> u32 {
+const fn scheduler_batch_control_bits(original: u32, staged: u8) -> u32 {
     original
         | if staged == 0 {
             0x0400_0000
@@ -1141,7 +1149,9 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     if retained.phase != HostTxPhase::PasQueued {
         return Err(SchedulerReserveError::WrongPhase);
     }
-    if unsafe { read_live_u8(0x0400_1e6c) } != 0 || unsafe { read_live_u8(0x0400_3a6d) } != 0 {
+    if unsafe { read_live_u8(0x0400_1e6c) } != 0
+        || unsafe { read_live_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as u32) } != 0
+    {
         return Err(SchedulerReserveError::SchedulerBlocked);
     }
 
@@ -1197,7 +1207,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     unsafe {
         crate::hif::validate_tx_boundary(0x10, pipe, slot, command, hardware_ring);
     }
-    let original_flags = unsafe { read_live_u32(context.raw() + 0x58) };
+    let original_control_bits = unsafe { read_live_u32(context.raw() + 0x58) };
     let original_slot_header = unsafe { read_live_u32(slot_record) };
     let original_slot_frame = unsafe { read_live_u32(slot_record + 0x0c) };
     let original_slot_auxiliary = unsafe { read_live_u32(slot_record + 0x10) };
@@ -1218,7 +1228,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         // `txp_build_pipe_descriptor(..., 0)`.
         write_live_u32(
             context.raw() + 0x58,
-            scheduler_batch_flags(original_flags, 0),
+            scheduler_batch_control_bits(original_control_bits, 0),
         );
         write_live_u32(
             context.raw() + 0x80,
@@ -1242,7 +1252,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         {
             write_live_u32(0x0400_1580 + u32::from(ring_slot) * 4, pas);
             write_live_u32(0x0400_1578, u32::from(head));
-            write_live_u32(context.raw() + 0x58, original_flags);
+            write_live_u32(context.raw() + 0x58, original_control_bits);
             write_live_u32(slot_record, original_slot_header);
             write_live_u32(slot_record + 0x0c, original_slot_frame);
             write_live_u32(slot_record + 0x10, original_slot_auxiliary);
@@ -1263,7 +1273,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         original_ring_head: head,
         slot_record,
         command,
-        original_flags,
+        original_control_bits,
         original_slot_header,
         original_slot_frame,
         original_slot_auxiliary,
@@ -1999,9 +2009,9 @@ mod tests {
     #[test]
     fn ordinary_batch_marks_first_and_later_descriptors_differently() {
         let original = 0x0000_1234;
-        assert_eq!(scheduler_batch_flags(original, 0), original | 0x0400_0000);
-        assert_eq!(scheduler_batch_flags(original, 1), original | 0x0800_0000);
-        assert_eq!(scheduler_batch_flags(original, 3), original | 0x0800_0000);
+        assert_eq!(scheduler_batch_control_bits(original, 0), original | 0x0400_0000);
+        assert_eq!(scheduler_batch_control_bits(original, 1), original | 0x0800_0000);
+        assert_eq!(scheduler_batch_control_bits(original, 3), original | 0x0800_0000);
     }
 
     #[test]

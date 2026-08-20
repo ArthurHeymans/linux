@@ -612,8 +612,10 @@ pub fn prepare_mac_receive_hardware() {
 pub fn program_station_address(address: [u8; 6]) {
     for (index, value) in address.into_iter().enumerate() {
         unsafe {
-            (0x0400_3acc_usize.wrapping_add(index) as *mut u8).write_volatile(value);
-            (0x0400_3ad2_usize.wrapping_add(index) as *mut u8).write_volatile(value);
+            (crate::dtcm::low_mac_own_mac_byte_unchecked(0, index).get() as *mut u8)
+                .write_volatile(value);
+            (crate::dtcm::low_mac_own_mac_byte_unchecked(1, index).get() as *mut u8)
+                .write_volatile(value);
             for interface in 0..3_usize {
                 (0x0400_3ecc_usize
                     .wrapping_add(interface * 0x3b0)

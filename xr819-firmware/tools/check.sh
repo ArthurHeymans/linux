@@ -20,6 +20,7 @@ cargo +nightly test --features vendor-host-tx-diagnostics
 
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
+python3 tools/check-low-mac-pas-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
 echo "== arm build and stack check: feature-free firmware =="
@@ -28,12 +29,13 @@ python3 tools/check-rust-main-stack.py "$ELF"
 python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/pack-sectioned-elf.py "$ELF" "$PACKED"
 python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
+python3 tools/check-low-mac-pas-layout.py "$ELF"
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
-  echo "== normalized disassembly gate against clean b6 =="
+  echo "== qualified source and decoded-MMIO drift gate against clean b6 =="
   python3 tools/check-packet-ram-transition.py "$XR819_B6_ELF" "$ELF"
 else
-  echo "== normalized disassembly gate skipped: set XR819_B6_ELF to archived clean-b6 ELF =="
+  echo "== clean-b6 source/MMIO drift gate skipped: set XR819_B6_ELF to archived clean-b6 ELF =="
 fi
 
 echo "== arm build: sectioned-image bootstrap =="

@@ -10,7 +10,7 @@ pub const VIF_STRIDE: usize = 0x3b0;
 
 pub const MODE_OFFSET: usize = 0x18;
 pub const ACTIVE_OFFSET: usize = 0x19;
-pub const FLAGS_OFFSET: usize = 0x1c;
+pub const CONTROL_BITS_OFFSET: usize = 0x1c;
 pub const RATE_CONFIG_OFFSET: usize = 0x20;
 pub const BASIC_RATES_OFFSET: usize = 0x28;
 pub const TX_BUSY_OFFSET: usize = 0x30;
@@ -23,20 +23,13 @@ pub const DTIM_OFFSET: usize = 0x110;
 pub const ATIM_OFFSET: usize = 0x116;
 pub const BEACON_INTERVAL_OFFSET: usize = 0x118;
 
-#[cfg(target_arch = "arm")]
-const PAS_BASE: usize = 0x0400_3678;
-#[cfg(target_arch = "arm")]
-const PAS_STRIDE: usize = 0x98;
-#[cfg(target_arch = "arm")]
-const PAS_ACTIVE_OFFSET: usize = 0x470;
-
 static mut ACTIVE_MASK: u8 = 0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VifState {
     pub mode: u8,
     pub active: bool,
-    pub flags: u32,
+    pub control_bits: u32,
     pub basic_rates: u32,
     pub bssid: [u8; 6],
     pub channel: u16,
@@ -134,24 +127,199 @@ unsafe fn copy_bytes(address: usize, bytes: &[u8]) {
     }
 }
 
+#[cfg(any(target_arch = "arm", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PasOperationBranch {
+    JoinControl,
+    #[cfg(test)]
+    BackoffReset,
+    JoinAddresses,
+    JoinFamilyPublication,
+    TeardownControl,
+    TeardownLastActive,
+}
+
+#[cfg(any(target_arch = "arm", test))]
+trait PasOperationIo {
+    fn read_u8(&mut self, address: usize, branch: PasOperationBranch) -> u8;
+    #[cfg(test)]
+    fn read_u16(&mut self, address: usize, branch: PasOperationBranch) -> u16;
+    #[cfg(test)]
+    fn read_u32(&mut self, address: usize, branch: PasOperationBranch) -> u32;
+    fn write_u8(&mut self, address: usize, value: u8, branch: PasOperationBranch);
+    fn write_u32(&mut self, address: usize, value: u32, branch: PasOperationBranch);
+    fn reset_backoff(&mut self, interface: u8);
+}
+
 #[cfg(target_arch = "arm")]
+struct VolatilePasOperationIo;
+
+#[cfg(target_arch = "arm")]
+impl PasOperationIo for VolatilePasOperationIo {
+    #[inline(always)]
+    fn read_u8(&mut self, address: usize, _branch: PasOperationBranch) -> u8 {
+        read_u8(address)
+    }
+    #[inline(always)]
+    fn write_u8(&mut self, address: usize, value: u8, _branch: PasOperationBranch) {
+        unsafe { write_u8(address, value) };
+    }
+    #[inline(always)]
+    fn write_u32(&mut self, address: usize, value: u32, _branch: PasOperationBranch) {
+        unsafe { write_u32(address, value) };
+    }
+    #[inline(always)]
+    fn reset_backoff(&mut self, interface: u8) {
+        let _ = unsafe { reset_pas_backoff(interface) };
+    }
+}
+
+#[cfg(test)]
+fn reset_pas_backoff_with_io<I: PasOperationIo>(interface: u8, io: &mut I) {
+    let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
+    let override_enabled = io.read_u32(0x0400_2088, PasOperationBranch::BackoffReset) != 0;
+    let override_window = io.read_u32(0x0400_208c, PasOperationBranch::BackoffReset);
+    for queue in 0..4 {
+        io.write_u32(
+            pas.retry_count_unchecked(queue).get(),
+            0,
+            PasOperationBranch::BackoffReset,
+        );
+        let window = if override_enabled {
+            override_window
+        } else {
+            u32::from(io.read_u16(
+                pas.cw_min_unchecked(queue).get(),
+                PasOperationBranch::BackoffReset,
+            ))
+        };
+        io.write_u32(
+            pas.contention_window_unchecked(queue).get(),
+            window,
+            PasOperationBranch::BackoffReset,
+        );
+    }
+}
+
+#[cfg(target_arch = "arm")]
+#[inline(never)]
 unsafe fn reset_pas_backoff(interface: u8) -> Result<(), JoinStateError> {
     if interface >= VIF_COUNT as u8 {
         return Err(JoinStateError::InvalidInterface);
     }
-    let pas = PAS_BASE + usize::from(interface) * PAS_STRIDE;
+    let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
     let override_enabled = read_u32(0x0400_2088) != 0;
     let override_window = read_u32(0x0400_208c);
     for queue in 0..4 {
-        unsafe { write_u32(pas + 0x4ac + queue * 4, 0) };
+        unsafe { write_u32(pas.retry_count_unchecked(queue).get(), 0) };
         let window = if override_enabled {
             override_window
         } else {
-            u32::from(read_u16(pas + 0x4cc + queue * 2))
+            u32::from(read_u16(pas.cw_min_unchecked(queue).get()))
         };
-        unsafe { write_u32(pas + 0x4bc + queue * 4, window) };
+        unsafe { write_u32(pas.contention_window_unchecked(queue).get(), window) };
     }
     Ok(())
+}
+
+#[cfg(any(target_arch = "arm", test))]
+#[inline(always)]
+fn publish_join_pas_with_io<I: PasOperationIo>(
+    interface: u8,
+    basic_rate_bits: u32,
+    band: u8,
+    beacon_interval: u32,
+    own_mac: &[u8; 6],
+    bssid: &[u8; 6],
+    io: &mut I,
+) {
+    let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
+    io.write_u8(
+        crate::dtcm::pas_stride_view_unchecked(2).activity_state().get(),
+        0,
+        PasOperationBranch::JoinControl,
+    );
+    io.write_u8(pas.activity_state().get(), 2, PasOperationBranch::JoinControl);
+    io.write_u8(pas.slot_bits().get(), 4, PasOperationBranch::JoinControl);
+    io.write_u8(pas.mode_byte().get(), 1, PasOperationBranch::JoinControl);
+    let copied_path_byte = io.read_u8(
+        crate::dtcm::low_mac_own_mac_byte_unchecked(0, 5).get(),
+        PasOperationBranch::JoinControl,
+    );
+    io.write_u8(
+        pas.own_mac_byte_unchecked(5).get(),
+        copied_path_byte,
+        PasOperationBranch::JoinControl,
+    );
+    io.write_u8(
+        pas.path_selector_byte().get(),
+        0,
+        PasOperationBranch::JoinControl,
+    );
+    io.write_u32(
+        pas.basic_rate_bits().get(),
+        basic_rate_bits,
+        PasOperationBranch::JoinControl,
+    );
+    io.write_u32(pas.tsf_adjust_low().get(), 0, PasOperationBranch::JoinControl);
+    io.write_u32(pas.tsf_adjust_high().get(), 0, PasOperationBranch::JoinControl);
+    io.write_u8(
+        pas.nonzero_block_byte().get(),
+        0,
+        PasOperationBranch::JoinControl,
+    );
+    io.write_u8(
+        pas.tbtt_window_control_byte().get(),
+        0,
+        PasOperationBranch::JoinControl,
+    );
+
+    io.reset_backoff(interface);
+
+    for (index, value) in own_mac.iter().copied().enumerate() {
+        io.write_u8(
+            pas.own_mac_byte_unchecked(index).get(),
+            value,
+            PasOperationBranch::JoinAddresses,
+        );
+    }
+    for (index, value) in bssid.iter().copied().enumerate() {
+        io.write_u8(
+            pas.bssid_byte_unchecked(index).get(),
+            value,
+            PasOperationBranch::JoinAddresses,
+        );
+    }
+    io.write_u32(
+        crate::dtcm::LOW_MAC_BEACON_INTERVAL.get(),
+        beacon_interval.wrapping_shl(10),
+        PasOperationBranch::JoinFamilyPublication,
+    );
+    io.write_u32(
+        crate::dtcm::LOW_MAC_BAND_BITS.get(),
+        1 << band,
+        PasOperationBranch::JoinFamilyPublication,
+    );
+}
+
+#[cfg(any(target_arch = "arm", test))]
+#[inline(always)]
+fn publish_teardown_pas_with_io<I: PasOperationIo>(interface: u8, last_active: bool, io: &mut I) {
+    let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
+    io.write_u8(pas.activity_state().get(), 1, PasOperationBranch::TeardownControl);
+    io.write_u8(pas.mode_byte().get(), 0, PasOperationBranch::TeardownControl);
+    io.write_u8(
+        pas.path_selector_byte().get(),
+        0,
+        PasOperationBranch::TeardownControl,
+    );
+    if last_active {
+        io.write_u32(
+            crate::dtcm::LOW_MAC_BAND_BITS.get(),
+            0,
+            PasOperationBranch::TeardownLastActive,
+        );
+    }
 }
 
 /// Apply WSM EDCA through vendor `edca_apply_params` (`0x136a6`).
@@ -166,7 +334,7 @@ pub unsafe fn apply_edca(
     if interface >= VIF_COUNT as u8 {
         return Err(JoinStateError::InvalidInterface);
     }
-    let pas = PAS_BASE + usize::from(interface) * PAS_STRIDE;
+    let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
     let wire = [
         parameters.queues[3],
         parameters.queues[2],
@@ -175,11 +343,14 @@ pub unsafe fn apply_edca(
     ];
     for (queue, entry) in wire.into_iter().enumerate() {
         unsafe {
-            write_u16(pas + 0x4cc + queue * 2, entry.cwmin);
-            write_u16(pas + 0x4d4 + queue * 2, entry.cwmax);
-            write_u8(pas + 0x4dc + queue, entry.aifns);
-            write_u16(pas + 0x4e0 + queue * 2, entry.txop_limit);
-            write_u32(pas + 0x4e8 + queue * 4, entry.max_rx_lifetime);
+            write_u16(pas.cw_min_unchecked(queue).get(), entry.cwmin);
+            write_u16(pas.cw_max_unchecked(queue).get(), entry.cwmax);
+            write_u8(pas.aifs_unchecked(queue).get(), entry.aifns);
+            write_u16(pas.txop_limit_unchecked(queue).get(), entry.txop_limit);
+            write_u32(
+                pas.max_rx_lifetime_unchecked(queue).get(),
+                entry.max_rx_lifetime,
+            );
         }
     }
     // Vendor copies the WSM payload verbatim into PAS +0x4cc. The host wire
@@ -192,9 +363,9 @@ pub unsafe fn apply_edca(
         .wrapping_add(u32::from(wire[2].aifns) << 8)
         .wrapping_add(u32::from(wire[0].aifns) << 4)
         .wrapping_sub(0x111);
-    unsafe { write_u32(pas + 0x4fc, aifs) };
+    unsafe { write_u32(pas.packed_aifs().get(), aifs) };
 
-    if read_u16(0x0400_3a68) == 0 && read_u32(0x0400_1b04) != aifs {
+    if read_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get()) == 0 && read_u32(0x0400_1b04) != aifs {
         unsafe {
             write_u32(0x0400_1b04, aifs);
             write_u32(crate::platform::mac_register(0x0e64), aifs);
@@ -233,20 +404,20 @@ pub unsafe fn activate_sta(
     own_mac: [u8; 6],
 ) -> Result<(), JoinStateError> {
     let base = record_address(interface).ok_or(JoinStateError::InvalidInterface)?;
-    let pas = PAS_BASE + usize::from(interface) * PAS_STRIDE;
     let basic_rates = if request.basic_rate_set == 0 {
         7
     } else {
         request.basic_rate_set
     };
     let lowest_rate = basic_rates.trailing_zeros().min(6) as u8;
-    let flags = 1_u32 | if request.probe_for_join { 0x400 } else { 0x800 };
+    // Proven JOIN publications: bit 0 plus exactly one of bit 10/bit 11.
+    let join_control_bits = 1_u32 | if request.probe_for_join { 0x400 } else { 0x800 };
 
     unsafe {
         write_u8(base + MODE_OFFSET, 1);
         write_u8(base + 0x1a, interface);
         write_u8(base + 0x1b, 4);
-        write_u32(base + FLAGS_OFFSET, flags);
+        write_u32(base + CONTROL_BITS_OFFSET, join_control_bits);
         write_u32(base + RATE_CONFIG_OFFSET, 0x117);
         write_u8(base + 0x22, request.band);
         write_u8(base + 0x23, request.preamble_type);
@@ -285,28 +456,18 @@ pub unsafe fn activate_sta(
         write_u32(base + 0x54, u32::MAX);
         write_u32(base + 0x5c, 0);
 
-        // The synthetic scan record occupies PAS slot 2 only while channel
-        // programming runs. Vendor JOIN recomputes the MAC mode word from the
-        // actual active VIF set, so it must not remain active beside the STA.
-        write_u8(PAS_BASE + 2 * PAS_STRIDE + PAS_ACTIVE_OFFSET, 0);
-        write_u8(pas + PAS_ACTIVE_OFFSET, 2);
-        write_u8(pas + 0x471, 4);
-        write_u8(pas + 0x472, 1);
-        write_u8(pas + 0x481, read_u8(PAS_BASE + 0x459));
-        write_u8(pas + 0x473, 0);
-        write_u32(pas + 0x478, basic_rates);
-        write_u32(pas + 0x488, 0);
-        write_u32(pas + 0x48c, 0);
-        write_u8(pas + 0x492, 0);
-        write_u8(pas + 0x493, 0);
-
-        // `mac_apply_channel_and_vif_config` resets all four contention
-        // windows after activating the selected PAS interface.
-        reset_pas_backoff(interface)?;
-        copy_bytes(pas + 0x47c, &own_mac);
-        copy_bytes(pas + 0x482, &request.bssid);
-        write_u32(0x0400_3680, request.beacon_interval.wrapping_shl(10));
-        write_u32(0x0400_3684, 1 << request.band);
+        // Publish the actual JOIN PAS sequence, including the synthetic-view
+        // clear, copied path byte, backoff reset, address copies, and family
+        // words. The helper keeps every volatile access in vendor order.
+        publish_join_pas_with_io(
+            interface,
+            basic_rates,
+            request.band,
+            request.beacon_interval,
+            &own_mac,
+            &request.bssid,
+            &mut VolatilePasOperationIo,
+        );
         let _ = set_active(interface, true);
         // Vendor JOIN activates the VIF before channel programming. The
         // channel-program tail then marks activity state 2 and derives the
@@ -348,11 +509,10 @@ pub unsafe fn teardown(interface: u8) -> bool {
     let Some(base) = record_address(interface) else {
         return false;
     };
-    let pas = PAS_BASE + usize::from(interface) * PAS_STRIDE;
     unsafe {
         let _ = set_active(interface, false);
         write_u8(base + MODE_OFFSET, 0);
-        write_u32(base + FLAGS_OFFSET, 0);
+        write_u32(base + CONTROL_BITS_OFFSET, 0);
         write_u16(base + 0x2c, 0);
         write_u16(base + 0x2e, 0);
         let owner = (base + 0x44) as u32;
@@ -363,12 +523,7 @@ pub unsafe fn teardown(interface: u8) -> bool {
             write_u32(0x0400_8b2c, 0);
         }
         write_u8(base + 0x66, 0);
-        write_u8(pas + PAS_ACTIVE_OFFSET, 1);
-        write_u8(pas + 0x472, 0);
-        write_u8(pas + 0x473, 0);
-        if !any_active() {
-            write_u32(0x0400_3684, 0);
-        }
+        publish_teardown_pas_with_io(interface, !any_active(), &mut VolatilePasOperationIo);
     }
     true
 }
@@ -387,7 +542,7 @@ pub unsafe fn snapshot(interface: u8) -> Option<VifState> {
     Some(VifState {
         mode: unsafe { ((base + MODE_OFFSET) as *const u8).read_volatile() },
         active: unsafe { ((base + ACTIVE_OFFSET) as *const u8).read_volatile() } != 0,
-        flags: unsafe { ((base + FLAGS_OFFSET) as *const u32).read_volatile() },
+        control_bits: unsafe { ((base + CONTROL_BITS_OFFSET) as *const u32).read_volatile() },
         basic_rates: unsafe { ((base + BASIC_RATES_OFFSET) as *const u32).read_volatile() },
         bssid,
         channel: unsafe { ((base + CHANNEL_OFFSET) as *const u16).read_volatile() },
@@ -396,6 +551,8 @@ pub unsafe fn snapshot(interface: u8) -> Option<VifState> {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
 
     #[test]
@@ -409,8 +566,138 @@ mod tests {
     #[test]
     fn scan_restore_fields_match_vendor_offsets() {
         assert_eq!(ACTIVE_OFFSET, 0x19);
+        assert_eq!(CONTROL_BITS_OFFSET, 0x1c);
         assert_eq!(BASIC_RATES_OFFSET, 0x28);
         assert_eq!(BSSID_OFFSET, 0x3c);
         assert_eq!(CHANNEL_OFFSET, 0x42);
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum AccessKind {
+        Read,
+        Write,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct Access {
+        kind: AccessKind,
+        width: u8,
+        address: usize,
+        value: u32,
+        branch: PasOperationBranch,
+    }
+
+    #[derive(Default)]
+    struct RecordingPasIo {
+        accesses: std::vec::Vec<Access>,
+    }
+
+    impl RecordingPasIo {
+        fn record(
+            &mut self,
+            kind: AccessKind,
+            width: u8,
+            address: usize,
+            value: u32,
+            branch: PasOperationBranch,
+        ) {
+            self.accesses.push(Access { kind, width, address, value, branch });
+        }
+    }
+
+    impl PasOperationIo for RecordingPasIo {
+        fn read_u8(&mut self, address: usize, branch: PasOperationBranch) -> u8 {
+            let value = if address == crate::dtcm::low_mac_own_mac_byte_unchecked(0, 5).get() {
+                0xa5
+            } else {
+                0
+            };
+            self.record(AccessKind::Read, 1, address, u32::from(value), branch);
+            value
+        }
+
+        fn read_u16(&mut self, address: usize, branch: PasOperationBranch) -> u16 {
+            let first = crate::dtcm::pas_stride_view(1).unwrap();
+            let value = (0..4)
+                .find(|&queue| first.cw_min(queue).unwrap().get() == address)
+                .map_or(0, |queue| 0x10 + queue as u16);
+            self.record(AccessKind::Read, 2, address, u32::from(value), branch);
+            value
+        }
+
+        fn read_u32(&mut self, address: usize, branch: PasOperationBranch) -> u32 {
+            let value = if address == 0x0400_208c { 0x55aa } else { 0 };
+            self.record(AccessKind::Read, 4, address, value, branch);
+            value
+        }
+
+        fn write_u8(&mut self, address: usize, value: u8, branch: PasOperationBranch) {
+            self.record(AccessKind::Write, 1, address, u32::from(value), branch);
+        }
+
+        fn write_u32(&mut self, address: usize, value: u32, branch: PasOperationBranch) {
+            self.record(AccessKind::Write, 4, address, value, branch);
+        }
+
+        fn reset_backoff(&mut self, interface: u8) {
+            reset_pas_backoff_with_io(interface, self);
+        }
+    }
+
+    #[test]
+    fn join_pas_helper_records_actual_access_width_value_branch_and_order() {
+        let mut io = RecordingPasIo::default();
+        publish_join_pas_with_io(
+            1,
+            0x1234,
+            1,
+            100,
+            &[1, 2, 3, 4, 5, 6],
+            &[7, 8, 9, 10, 11, 12],
+            &mut io,
+        );
+
+        let pas = crate::dtcm::pas_stride_view(1).unwrap();
+        let expected_prefix = [
+            Access { kind: AccessKind::Write, width: 1, address: crate::dtcm::pas_stride_view(2).unwrap().activity_state().get(), value: 0, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.activity_state().get(), value: 2, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.slot_bits().get(), value: 4, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.mode_byte().get(), value: 1, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Read, width: 1, address: crate::dtcm::low_mac_own_mac_byte(0, 5).unwrap().get(), value: 0xa5, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.own_mac_byte(5).unwrap().get(), value: 0xa5, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.path_selector_byte().get(), value: 0, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 4, address: pas.basic_rate_bits().get(), value: 0x1234, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 4, address: pas.tsf_adjust_low().get(), value: 0, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 4, address: pas.tsf_adjust_high().get(), value: 0, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.nonzero_block_byte().get(), value: 0, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.tbtt_window_control_byte().get(), value: 0, branch: PasOperationBranch::JoinControl },
+        ];
+        assert_eq!(&io.accesses[..expected_prefix.len()], &expected_prefix);
+        assert_eq!(io.accesses[12], Access { kind: AccessKind::Read, width: 4, address: 0x0400_2088, value: 0, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[13], Access { kind: AccessKind::Read, width: 4, address: 0x0400_208c, value: 0x55aa, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[14], Access { kind: AccessKind::Write, width: 4, address: pas.retry_count(0).unwrap().get(), value: 0, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[15], Access { kind: AccessKind::Read, width: 2, address: pas.cw_min(0).unwrap().get(), value: 0x10, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[16], Access { kind: AccessKind::Write, width: 4, address: pas.contention_window(0).unwrap().get(), value: 0x10, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses.len(), 40);
+        assert_eq!(io.accesses[38], Access { kind: AccessKind::Write, width: 4, address: crate::dtcm::LOW_MAC_BEACON_INTERVAL.get(), value: 100 << 10, branch: PasOperationBranch::JoinFamilyPublication });
+        assert_eq!(io.accesses[39], Access { kind: AccessKind::Write, width: 4, address: crate::dtcm::LOW_MAC_BAND_BITS.get(), value: 2, branch: PasOperationBranch::JoinFamilyPublication });
+        assert!(io.accesses[26..38].iter().all(|access| access.branch == PasOperationBranch::JoinAddresses));
+    }
+
+    #[test]
+    fn teardown_pas_helper_records_last_active_branch_after_control_writes() {
+        let mut io = RecordingPasIo::default();
+        publish_teardown_pas_with_io(0, true, &mut io);
+        let pas = crate::dtcm::pas_stride_view(0).unwrap();
+        assert_eq!(io.accesses, [
+            Access { kind: AccessKind::Write, width: 1, address: pas.activity_state().get(), value: 1, branch: PasOperationBranch::TeardownControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.mode_byte().get(), value: 0, branch: PasOperationBranch::TeardownControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.path_selector_byte().get(), value: 0, branch: PasOperationBranch::TeardownControl },
+            Access { kind: AccessKind::Write, width: 4, address: crate::dtcm::LOW_MAC_BAND_BITS.get(), value: 0, branch: PasOperationBranch::TeardownLastActive },
+        ]);
+
+        let mut still_active = RecordingPasIo::default();
+        publish_teardown_pas_with_io(0, false, &mut still_active);
+        assert_eq!(still_active.accesses, io.accesses[..3]);
     }
 }

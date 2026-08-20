@@ -1882,11 +1882,11 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
         let value = control.read_volatile();
         if enabled {
             control.write_volatile(value | 1);
-            let state = 0x0400_3a6d as *mut u8;
+            let state = crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as *mut u8;
             state.write_volatile(state.read_volatile() & !1);
             // Tail of `phy_resume_state4` (`0x2864`). The TX scheduler call is
             // intentionally omitted until its queues are translated.
-            (0x0400_3a6e as *mut u8).write_volatile(4);
+            (crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get() as *mut u8).write_volatile(4);
             true
         } else {
             control.write_volatile(value & !1);
@@ -1898,7 +1898,7 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
                 polls += 1;
                 core::hint::spin_loop();
             }
-            let state = 0x0400_3a6d as *mut u8;
+            let state = crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as *mut u8;
             state.write_volatile(state.read_volatile() | 1);
             true
         }
@@ -1916,7 +1916,7 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
 pub unsafe fn advance_awake_station_tx() -> bool {
     unsafe {
         write_u8(0x0400_994f, 0);
-        let state = (0x0400_3a6e as *const u8).read_volatile();
+        let state = (crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get() as *const u8).read_volatile();
         if state == 1 {
             return false;
         }
@@ -1970,8 +1970,10 @@ pub unsafe fn scan_stop_rx_hardware_drained() -> bool {
     };
     if drained {
         unsafe {
-            let state = (0x0400_3a6d as *mut u8).read_volatile();
-            (0x0400_3a6d as *mut u8).write_volatile(state | 1);
+            let state =
+                (crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as *mut u8).read_volatile();
+            (crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as *mut u8)
+                .write_volatile(state | 1);
         }
     }
     drained
@@ -2044,7 +2046,7 @@ unsafe fn begin_channel_transition(
         unsafe {
             // First channel-switch path `thunk_16c92`: initialize the detector and
             // expanded AGC table before the requested channel operation.
-            if (0x0400_3a6e as *const u8).read_volatile() != 4 {
+            if (crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get() as *const u8).read_volatile() != 4 {
                 apply_first_channel_detector_state();
             }
             // `phy_cal_advance_stage` (0x16bfa) reapplies these four initialized
@@ -2196,8 +2198,8 @@ impl ChannelTransitionScheduler {
         // channel is already active. Preserve RX/FIFO state instead of cycling
         // the analogue front end for every repeated single-channel scan.
         if unsafe {
-            (0x0400_3a68 as *const u16).read_volatile() == channel
-                && (0x0400_3a6e as *const u8).read_volatile() == 4
+            (crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get() as *const u16).read_volatile() == channel
+                && (crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get() as *const u8).read_volatile() == 4
                 && (0x0400_994f as *const u8).read_volatile() == 2
         } {
             let (integer, fractional) = unsafe { cached_pll_divider() };
