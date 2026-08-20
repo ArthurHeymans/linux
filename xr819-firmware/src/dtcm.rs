@@ -311,11 +311,76 @@ opaque_family!(
     0x20
 );
 
+/// One physical VIF ABI record.
+///
+/// This is a layout description, not an ownership declaration. Retained vendor
+/// routines and IRQ/FIQ code remain production-reachable writers, so decoded
+/// scalars deliberately use shared wrappers and are accessed only through
+/// volatile, field-derived addresses. In particular, no `&VifRecord` or
+/// `&mut VifRecord` is ever created on target.
+///
+/// The byte at `+0x16` is also reached by vendor wake code as `+0x3c6` from the
+/// preceding record. Keeping it as `wake_reinit_flag` makes that cross-record
+/// overlay explicit. `rate_configuration` is an eight-byte overlay: its low
+/// word is written as a unit while bytes `+2..+7` are independently consumed.
 #[repr(C, align(4))]
 struct VifRecord {
-    /// Exact `0x3b0` stride; embedded timers and vendor writers prohibit safe
-    /// field references even for decoded offsets.
-    storage: OpaqueBytes<VIF_RECORD_SIZE>,
+    scan_rate_config: SharedU16,
+    scan_channel: SharedU16,
+    scan_flags: SharedU8,
+    reserved_05: OpaqueBytes<0x1>,
+    host_contexts_in_flight: SharedU8,
+    reserved_07: OpaqueBytes<0x0f>,
+    wake_reinit_flag: SharedU8,
+    reserved_17: OpaqueBytes<0x1>,
+    mode: SharedU8,
+    active: SharedU8,
+    interface: SharedU8,
+    role: SharedU8,
+    flags: SharedU32,
+    rate_configuration: OpaqueBytes<0x8>,
+    basic_rates: SharedU32,
+    allowed_links: SharedU16,
+    effective_links: SharedU16,
+    tx_busy: SharedU16,
+    reserved_32: OpaqueBytes<0x2>,
+    own_mac: [SharedU8; 0x6],
+    reserved_3a: OpaqueBytes<0x2>,
+    bssid: [SharedU8; 0x6],
+    channel: SharedU16,
+    radio_owner_overlay: OpaqueBytes<0x0c>,
+    operating_state: SharedU8,
+    owner_interface: SharedU8,
+    owner_channel: SharedU16,
+    owner_deadline: SharedU32,
+    reserved_58: OpaqueBytes<0x4>,
+    owner_flags: SharedU32,
+    reserved_60: OpaqueBytes<0x6>,
+    activity_state: SharedU8,
+    timer_and_join_state: OpaqueBytes<0x85>,
+    ssid_length: SharedU32,
+    ssid: [SharedU8; 0x20],
+    dtim_period: SharedU8,
+    reserved_111: OpaqueBytes<0x5>,
+    atim_window: SharedU16,
+    beacon_interval: SharedU32,
+    reserved_11c: OpaqueBytes<0x8>,
+    rts_threshold: SharedU32,
+    ampdu_length: SharedU16,
+    internal_link: SharedU16,
+    default_rates: [SharedU8; 0x2],
+    reserved_12e: OpaqueBytes<0x0e>,
+    link_object_flags: SharedU32,
+    link_own_mac_0: [SharedU8; 0x6],
+    link_own_mac_1: [SharedU8; 0x6],
+    link_bssid: [SharedU8; 0x6],
+    reserved_152: OpaqueBytes<0x0a>,
+    sleeping_links: SharedU16,
+    awake_links: SharedU16,
+    buffered_links: SharedU16,
+    reserved_162: OpaqueBytes<0x2>,
+    link_gate: SharedU8,
+    opaque_tail: OpaqueBytes<0x24b>,
 }
 
 #[repr(C, align(4))]
@@ -569,7 +634,13 @@ unsafe impl Sync for SharedDtcmState {}
 #[unsafe(no_mangle)]
 #[used]
 #[unsafe(link_section = ".dtcm.state")]
+#[cfg(target_arch = "arm")]
 static DTCM_STATE: SharedDtcmState = SharedDtcmState(UnsafeCell::new(MaybeUninit::uninit()));
+
+// Host tests must never manufacture pointers into target DTCM. The complete
+// process-local backing also makes offset and access-order tests deterministic.
+#[cfg(not(target_arch = "arm"))]
+static DTCM_STATE: SharedDtcmState = SharedDtcmState(UnsafeCell::new(MaybeUninit::zeroed()));
 
 #[cfg(any(test, not(target_arch = "arm")))]
 #[inline(always)]
@@ -952,6 +1023,7 @@ pub const CLOCK_PARAMETERS: DtcmAddress = DtcmAddress::from_offset(0x218c);
 pub const SCHEDULER_HANDLER_TABLE: DtcmAddress = DtcmAddress::from_offset(0x21b4);
 pub const LOW_MAC_PAS_ROOT: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET);
 pub const VIF_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x3e98);
+pub const VIF_RECORD_END: usize = VIF_RECORDS.get() + VIF_RECORD_COUNT * VIF_RECORD_SIZE;
 pub const HOST_TX_CONTEXTS: DtcmAddress = DtcmAddress::from_offset(0x5a24);
 pub const COMMAND_CHANNEL_SWITCH_OVERLAY: DtcmAddress = DtcmAddress::from_offset(0x8594);
 pub const HOST_TX_CONTEXT_FREE_HEAD: DtcmAddress = DtcmAddress::from_offset(0x87b0);
@@ -973,6 +1045,100 @@ pub const MIC_COMPLETION_STATE: DtcmAddress = DtcmAddress::from_offset(0x9928);
 pub const PHY_STATE: DtcmAddress = DtcmAddress::from_offset(0x993c);
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
+
+/// Field-derived address of one physical VIF record. This carries no reference
+/// and therefore makes no exclusive ownership claim over vendor-shared bytes.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VifRecordAddress(DtcmAddress);
+
+impl VifRecordAddress {
+    const fn field(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+
+    pub(crate) const fn scan_rate_config(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, scan_rate_config)) }
+    pub(crate) const fn scan_channel(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, scan_channel)) }
+    pub(crate) const fn scan_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, scan_flags)) }
+    pub(crate) const fn host_contexts_in_flight(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, host_contexts_in_flight)) }
+    pub(crate) const fn wake_reinit_flag(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, wake_reinit_flag)) }
+    pub(crate) const fn mode(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, mode)) }
+    pub(crate) const fn active(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, active)) }
+    pub(crate) const fn interface(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, interface)) }
+    pub(crate) const fn role(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, role)) }
+    pub(crate) const fn flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, flags)) }
+    pub(crate) const fn rate_configuration(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, rate_configuration)) }
+    pub(crate) const fn rate_byte(self, index: usize) -> Option<DtcmAddress> { if index < 8 { Some(self.field(core::mem::offset_of!(VifRecord, rate_configuration) + index)) } else { None } }
+    pub(crate) const fn basic_rates(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, basic_rates)) }
+    pub(crate) const fn allowed_links(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, allowed_links)) }
+    pub(crate) const fn effective_links(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, effective_links)) }
+    pub(crate) const fn tx_busy(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, tx_busy)) }
+    pub(crate) const fn own_mac_byte(self, index: usize) -> Option<DtcmAddress> { if index < 6 { Some(self.field(core::mem::offset_of!(VifRecord, own_mac) + index)) } else { None } }
+    pub(crate) const fn bssid_byte(self, index: usize) -> Option<DtcmAddress> { if index < 6 { Some(self.field(core::mem::offset_of!(VifRecord, bssid) + index)) } else { None } }
+    pub(crate) const fn channel(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, channel)) }
+    pub(crate) const fn radio_owner(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, radio_owner_overlay)) }
+    pub(crate) const fn operating_state(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, operating_state)) }
+    pub(crate) const fn owner_interface(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, owner_interface)) }
+    pub(crate) const fn owner_channel(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, owner_channel)) }
+    pub(crate) const fn owner_deadline(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, owner_deadline)) }
+    pub(crate) const fn owner_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, owner_flags)) }
+    pub(crate) const fn activity_state(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, activity_state)) }
+    pub(crate) const fn ssid_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, ssid_length)) }
+    pub(crate) const fn ssid_byte(self, index: usize) -> Option<DtcmAddress> { if index < 32 { Some(self.field(core::mem::offset_of!(VifRecord, ssid) + index)) } else { None } }
+    pub(crate) const fn dtim_period(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, dtim_period)) }
+    pub(crate) const fn atim_window(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, atim_window)) }
+    pub(crate) const fn beacon_interval(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, beacon_interval)) }
+    pub(crate) const fn rts_threshold(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, rts_threshold)) }
+    pub(crate) const fn ampdu_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, ampdu_length)) }
+    pub(crate) const fn internal_link(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, internal_link)) }
+    pub(crate) const fn default_rate(self, index: usize) -> Option<DtcmAddress> { if index < 2 { Some(self.field(core::mem::offset_of!(VifRecord, default_rates) + index)) } else { None } }
+    pub(crate) const fn link_object_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, link_object_flags)) }
+    pub(crate) const fn link_own_mac_0_byte(self, index: usize) -> Option<DtcmAddress> { if index < 6 { Some(self.field(core::mem::offset_of!(VifRecord, link_own_mac_0) + index)) } else { None } }
+    pub(crate) const fn link_own_mac_1_byte(self, index: usize) -> Option<DtcmAddress> { if index < 6 { Some(self.field(core::mem::offset_of!(VifRecord, link_own_mac_1) + index)) } else { None } }
+    pub(crate) const fn link_bssid_byte(self, index: usize) -> Option<DtcmAddress> { if index < 6 { Some(self.field(core::mem::offset_of!(VifRecord, link_bssid) + index)) } else { None } }
+    pub(crate) const fn sleeping_links(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, sleeping_links)) }
+    pub(crate) const fn awake_links(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, awake_links)) }
+    pub(crate) const fn buffered_links(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, buffered_links)) }
+    pub(crate) const fn link_gate(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, link_gate)) }
+}
+
+pub(crate) const fn vif_record(interface: usize) -> Option<VifRecordAddress> {
+    if interface < VIF_RECORD_COUNT {
+        Some(vif_record_unchecked(interface))
+    } else {
+        None
+    }
+}
+
+/// Preserve parent-shaped base-plus-stride access where the caller has already
+/// obtained a vendor-owned interface byte and the original code did not bound it.
+#[inline(always)]
+pub(crate) const fn vif_record_unchecked(interface: usize) -> VifRecordAddress {
+    VifRecordAddress(DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, vifs) + interface * VIF_RECORD_SIZE,
+    ))
+}
+
+pub const fn vif_record_address(interface: u8) -> Option<usize> {
+    match vif_record(interface as usize) {
+        Some(record) => Some(record.0.get()),
+        None => None,
+    }
+}
+
+/// Translate a typed DTCM address to its target pointer or process-local host
+/// backing. The returned raw pointer confers no reference or ownership.
+#[inline(always)]
+pub(crate) fn shared_ptr<T>(address: DtcmAddress) -> *mut T {
+    #[cfg(target_arch = "arm")]
+    {
+        address.cast_mut::<T>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    {
+        unsafe { layout_ptr().cast::<u8>().add(address.offset()).cast::<T>() }
+    }
+}
 
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
@@ -1003,6 +1169,63 @@ const _: () = {
     assert_type_layout!(LowMacPasFamily, LOW_MAC_PAS_SIZE, 4);
     assert_type_layout!(PreVifHeader, 0x20, 4);
     assert_type_layout!(VifRecord, VIF_RECORD_SIZE, 4);
+    assert_type_layout!(VifRecordAddress, 4, 4);
+    assert!(core::mem::offset_of!(VifRecord, scan_rate_config) == 0x000);
+    assert!(core::mem::offset_of!(VifRecord, scan_channel) == 0x002);
+    assert!(core::mem::offset_of!(VifRecord, scan_flags) == 0x004);
+    assert!(core::mem::offset_of!(VifRecord, reserved_05) == 0x005);
+    assert!(core::mem::offset_of!(VifRecord, host_contexts_in_flight) == 0x006);
+    assert!(core::mem::offset_of!(VifRecord, reserved_07) == 0x007);
+    assert!(core::mem::offset_of!(VifRecord, wake_reinit_flag) == 0x016);
+    assert!(core::mem::offset_of!(VifRecord, reserved_17) == 0x017);
+    assert!(core::mem::offset_of!(VifRecord, mode) == 0x018);
+    assert!(core::mem::offset_of!(VifRecord, active) == 0x019);
+    assert!(core::mem::offset_of!(VifRecord, interface) == 0x01a);
+    assert!(core::mem::offset_of!(VifRecord, role) == 0x01b);
+    assert!(core::mem::offset_of!(VifRecord, flags) == 0x01c);
+    assert!(core::mem::offset_of!(VifRecord, rate_configuration) == 0x020);
+    assert!(core::mem::offset_of!(VifRecord, basic_rates) == 0x028);
+    assert!(core::mem::offset_of!(VifRecord, allowed_links) == 0x02c);
+    assert!(core::mem::offset_of!(VifRecord, effective_links) == 0x02e);
+    assert!(core::mem::offset_of!(VifRecord, tx_busy) == 0x030);
+    assert!(core::mem::offset_of!(VifRecord, reserved_32) == 0x032);
+    assert!(core::mem::offset_of!(VifRecord, own_mac) == 0x034);
+    assert!(core::mem::offset_of!(VifRecord, reserved_3a) == 0x03a);
+    assert!(core::mem::offset_of!(VifRecord, bssid) == 0x03c);
+    assert!(core::mem::offset_of!(VifRecord, channel) == 0x042);
+    assert!(core::mem::offset_of!(VifRecord, radio_owner_overlay) == 0x044);
+    assert!(core::mem::offset_of!(VifRecord, operating_state) == 0x050);
+    assert!(core::mem::offset_of!(VifRecord, owner_interface) == 0x051);
+    assert!(core::mem::offset_of!(VifRecord, owner_channel) == 0x052);
+    assert!(core::mem::offset_of!(VifRecord, owner_deadline) == 0x054);
+    assert!(core::mem::offset_of!(VifRecord, reserved_58) == 0x058);
+    assert!(core::mem::offset_of!(VifRecord, owner_flags) == 0x05c);
+    assert!(core::mem::offset_of!(VifRecord, reserved_60) == 0x060);
+    assert!(core::mem::offset_of!(VifRecord, activity_state) == 0x066);
+    assert!(core::mem::offset_of!(VifRecord, timer_and_join_state) == 0x067);
+    assert!(core::mem::offset_of!(VifRecord, ssid_length) == 0x0ec);
+    assert!(core::mem::offset_of!(VifRecord, ssid) == 0x0f0);
+    assert!(core::mem::offset_of!(VifRecord, dtim_period) == 0x110);
+    assert!(core::mem::offset_of!(VifRecord, reserved_111) == 0x111);
+    assert!(core::mem::offset_of!(VifRecord, atim_window) == 0x116);
+    assert!(core::mem::offset_of!(VifRecord, beacon_interval) == 0x118);
+    assert!(core::mem::offset_of!(VifRecord, reserved_11c) == 0x11c);
+    assert!(core::mem::offset_of!(VifRecord, rts_threshold) == 0x124);
+    assert!(core::mem::offset_of!(VifRecord, ampdu_length) == 0x128);
+    assert!(core::mem::offset_of!(VifRecord, internal_link) == 0x12a);
+    assert!(core::mem::offset_of!(VifRecord, default_rates) == 0x12c);
+    assert!(core::mem::offset_of!(VifRecord, reserved_12e) == 0x12e);
+    assert!(core::mem::offset_of!(VifRecord, link_object_flags) == 0x13c);
+    assert!(core::mem::offset_of!(VifRecord, link_own_mac_0) == 0x140);
+    assert!(core::mem::offset_of!(VifRecord, link_own_mac_1) == 0x146);
+    assert!(core::mem::offset_of!(VifRecord, link_bssid) == 0x14c);
+    assert!(core::mem::offset_of!(VifRecord, reserved_152) == 0x152);
+    assert!(core::mem::offset_of!(VifRecord, sleeping_links) == 0x15c);
+    assert!(core::mem::offset_of!(VifRecord, awake_links) == 0x15e);
+    assert!(core::mem::offset_of!(VifRecord, buffered_links) == 0x160);
+    assert!(core::mem::offset_of!(VifRecord, reserved_162) == 0x162);
+    assert!(core::mem::offset_of!(VifRecord, link_gate) == 0x164);
+    assert!(core::mem::offset_of!(VifRecord, opaque_tail) == 0x165);
     assert_type_layout!(VifRecords, 0xb10, 4);
     assert_type_layout!(PostVifQuarantine, 0x107c, 4);
     assert_type_layout!(HostTxContext, HOST_TX_CONTEXT_SIZE, 4);
@@ -1233,6 +1456,25 @@ mod tests {
         assert_eq!(ba_pipe_record_address(0).unwrap().offset(), 0x3cc0);
         assert_eq!(ba_pipe_record_address(7).unwrap().offset(), 0x3e48);
         assert!(ba_pipe_record_address(7).unwrap().get() + 0x38 > DTCM_STATE_BASE + 0x3e78);
+    }
+
+    #[test]
+    fn vif_addresses_are_typed_bounded_and_cross_record_wake_is_explicit() {
+        let first = vif_record(0).unwrap();
+        let second = vif_record(1).unwrap();
+        let third = vif_record(2).unwrap();
+        assert_eq!(first.scan_rate_config().get(), 0x0400_3e98);
+        assert_eq!(second.scan_rate_config().get(), 0x0400_4248);
+        assert_eq!(third.scan_rate_config().get(), 0x0400_45f8);
+        assert_eq!(first.radio_owner().get(), 0x0400_3edc);
+        assert_eq!(first.rate_byte(7).unwrap().get(), 0x0400_3ebf);
+        assert_eq!(first.wake_reinit_flag().get() + 0x3b0, second.wake_reinit_flag().get());
+        assert_eq!(first.scan_rate_config().get() + 0x3c6, second.wake_reinit_flag().get());
+        assert_eq!(third.link_gate().get(), 0x0400_475c);
+        assert!(vif_record(3).is_none());
+        assert!(first.rate_byte(8).is_none());
+        assert!(first.own_mac_byte(6).is_none());
+        assert!(first.ssid_byte(32).is_none());
     }
 
     #[test]

@@ -15,12 +15,16 @@ PACKED=$(mktemp)
 BOOTSTRAP=$(mktemp)
 trap 'rm -f "$PACKED" "$BOOTSTRAP"' EXIT
 
-echo "== host tests =="
+echo "== default host tests =="
+cargo +nightly test
+
+echo "== diagnostic host tests =="
 cargo +nightly test --features vendor-host-tx-diagnostics
 
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-low-mac-pas-layout.py
+python3 tools/check-vif-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
 echo "== arm build and stack check: feature-free firmware =="
@@ -30,6 +34,14 @@ python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/pack-sectioned-elf.py "$ELF" "$PACKED"
 python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
+python3 tools/check-vif-layout.py "$ELF"
+
+if [[ -n "${XR819_PARENT_ELF:-}" ]]; then
+  echo "== focused exact-parent hot-code gate =="
+  python3 tools/check-hot-codegen.py "$XR819_PARENT_ELF" "$ELF"
+else
+  echo "== exact-parent hot-code gate skipped: set XR819_PARENT_ELF to the fixed-layout parent ELF =="
+fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
   echo "== qualified source and decoded-MMIO drift gate against clean b6 =="

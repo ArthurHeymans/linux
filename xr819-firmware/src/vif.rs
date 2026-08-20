@@ -1,12 +1,16 @@
-//! XR819 VIF record layout used by JOIN and scan restoration.
+//! Typed, volatile access to the three physical XR819 VIF records.
 //!
-//! Vendor firmware keeps three `0x3b0`-byte records rooted at `0x04003e98`.
-//! `syn_scan_finish_and_confirm` selects channel restoration instead of
-//! `mac_radio_stop` when byte `+0x19` of any record is nonzero.
+//! The complete ABI shape lives in [`crate::dtcm`]. Production-reachable vendor
+//! and interrupt writers prevent exclusive Rust ownership, so this module never
+//! creates safe references to those records. Operation-specific helpers derive
+//! addresses from the typed layout and preserve the parent's volatile widths and
+//! ordering. Because retained writers remain reachable, target access stays raw
+//! and volatile rather than claiming an IRQ-guarded ordinary-reference owner.
+//! Host backing uses an explicit re-entry-rejecting owner for test isolation.
 
-pub const VIF_COUNT: usize = 3;
-pub const VIF_BASE: usize = 0x0400_3e98;
-pub const VIF_STRIDE: usize = 0x3b0;
+pub const VIF_COUNT: usize = crate::dtcm::VIF_RECORD_COUNT;
+pub const VIF_BASE: usize = crate::dtcm::VIF_RECORDS.get();
+pub const VIF_STRIDE: usize = crate::dtcm::VIF_RECORD_SIZE;
 
 pub const MODE_OFFSET: usize = 0x18;
 pub const ACTIVE_OFFSET: usize = 0x19;
@@ -22,8 +26,6 @@ pub const SSID_OFFSET: usize = 0xf0;
 pub const DTIM_OFFSET: usize = 0x110;
 pub const ATIM_OFFSET: usize = 0x116;
 pub const BEACON_INTERVAL_OFFSET: usize = 0x118;
-
-static mut ACTIVE_MASK: u8 = 0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VifState {
@@ -42,90 +44,288 @@ pub enum JoinStateError {
     ChannelConflict,
 }
 
-pub const fn record_address(interface: u8) -> Option<usize> {
-    if interface < VIF_COUNT as u8 {
-        Some(VIF_BASE + interface as usize * VIF_STRIDE)
-    } else {
-        None
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VifAccessError {
+    InvalidInterface,
+    Reentered,
+}
+
+#[cfg(all(not(target_arch = "arm"), test))]
+static HOST_VIF_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(not(target_arch = "arm"), test))]
+std::thread_local! {
+    static HOST_VIF_BORROWED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+#[cfg(all(not(target_arch = "arm"), test))]
+struct HostVifMutationGuard;
+
+#[cfg(all(not(target_arch = "arm"), test))]
+impl Drop for HostVifMutationGuard {
+    fn drop(&mut self) {
+        HOST_VIF_BORROWED.with(|borrowed| borrowed.set(false));
     }
 }
 
+#[inline(always)]
+pub(crate) fn vif_read_u8(address: crate::dtcm::DtcmAddress) -> u8 {
+    unsafe { crate::dtcm::shared_ptr::<u8>(address).read_volatile() }
+}
+
+#[inline(always)]
+pub(crate) fn vif_read_u16(address: crate::dtcm::DtcmAddress) -> u16 {
+    unsafe { crate::dtcm::shared_ptr::<u16>(address).read_volatile() }
+}
+
+#[inline(always)]
+pub(crate) fn vif_read_u32(address: crate::dtcm::DtcmAddress) -> u32 {
+    unsafe { crate::dtcm::shared_ptr::<u32>(address).read_volatile() }
+}
+
+#[inline(always)]
+fn vif_write_u8(address: crate::dtcm::DtcmAddress, value: u8) {
+    unsafe { crate::dtcm::shared_ptr::<u8>(address).write_volatile(value) };
+}
+
+#[inline(always)]
+pub(crate) fn vif_write_u16(address: crate::dtcm::DtcmAddress, value: u16) {
+    unsafe { crate::dtcm::shared_ptr::<u16>(address).write_volatile(value) };
+}
+
+#[inline(always)]
+pub(crate) fn vif_write_u32(address: crate::dtcm::DtcmAddress, value: u32) {
+    unsafe { crate::dtcm::shared_ptr::<u32>(address).write_volatile(value) };
+}
+
+#[inline(always)]
+fn with_vif_mutation<R>(operation: impl FnOnce() -> R) -> Result<R, VifAccessError> {
+    // Production fields remain volatile because retained vendor writers are
+    // reachable. There is no ordinary-reference owner to guard on target; the
+    // qualified parent ordering is preserved exactly. Host tests still use an
+    // explicit process-local owner to prove nested entry fails rather than
+    // silently aliasing the backing store.
+    #[cfg(test)]
+    {
+        if HOST_VIF_BORROWED.with(core::cell::Cell::get) {
+            return Err(VifAccessError::Reentered);
+        }
+        HOST_VIF_BORROWED.with(|borrowed| borrowed.set(true));
+        let _borrow_guard = HostVifMutationGuard;
+        let _mutex_guard = HOST_VIF_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        Ok(operation())
+    }
+    #[cfg(not(test))]
+    {
+        Ok(operation())
+    }
+}
+
+pub const fn record_address(interface: u8) -> Option<usize> {
+    crate::dtcm::vif_record_address(interface)
+}
+
+pub const fn is_operating_interface(interface: u8) -> bool { interface < 2 }
+pub const fn is_synthetic_scan_record(interface: u8) -> bool { interface == 2 }
+
 pub fn any_active() -> bool {
-    unsafe { (&raw const ACTIVE_MASK).read_volatile() != 0 }
+    let first = crate::dtcm::vif_record(0).unwrap();
+    if vif_read_u8(first.active()) != 0 {
+        return true;
+    }
+    let second = crate::dtcm::vif_record(1).unwrap();
+    vif_read_u8(second.active()) != 0
 }
 
 pub fn active_interface() -> Option<u8> {
-    let mask = unsafe { (&raw const ACTIVE_MASK).read_volatile() };
-    if mask & 1 != 0 {
-        Some(0)
-    } else if mask & 2 != 0 {
-        Some(1)
-    } else {
-        None
+    let first = crate::dtcm::vif_record(0).unwrap();
+    if vif_read_u8(first.active()) != 0 {
+        return Some(0);
     }
+    let second = crate::dtcm::vif_record(1).unwrap();
+    if vif_read_u8(second.active()) != 0 {
+        return Some(1);
+    }
+    None
 }
 
 pub fn is_active(interface: u8) -> bool {
-    interface < VIF_COUNT as u8
-        && unsafe { (&raw const ACTIVE_MASK).read_volatile() & (1 << interface) != 0 }
-}
-
-/// Publish the firmware-owned activity byte used by scan finish selection.
-/// JOIN/RESET will become the only callers; synthetic scan context writes must
-/// not accidentally activate this branch.
-///
-/// # Safety
-/// The selected VIF record and retained state must be exclusively owned.
-pub unsafe fn set_active(interface: u8, active: bool) -> bool {
-    let Some(_base) = record_address(interface) else {
+    if !is_operating_interface(interface) {
         return false;
-    };
-    let bit = 1_u8 << interface;
-    unsafe {
-        let mask = (&raw const ACTIVE_MASK).read_volatile();
-        (&raw mut ACTIVE_MASK).write_volatile(if active { mask | bit } else { mask & !bit });
-        #[cfg(target_arch = "arm")]
-        ((_base + ACTIVE_OFFSET) as *mut u8).write_volatile(u8::from(active));
     }
-    true
+    let record = crate::dtcm::vif_record(usize::from(interface)).unwrap();
+    vif_read_u8(record.active()) != 0
 }
 
-#[cfg(target_arch = "arm")]
-fn read_u8(address: usize) -> u8 {
-    unsafe { (address as *const u8).read_volatile() }
+#[inline(always)]
+pub(crate) fn flags(interface: u8) -> Option<u32> {
+    let record = crate::dtcm::vif_record(usize::from(interface))?;
+    Some(vif_read_u32(record.flags()))
 }
 
-#[cfg(target_arch = "arm")]
-fn read_u16(address: usize) -> u16 {
-    unsafe { (address as *const u16).read_volatile() }
+#[inline(always)]
+pub(crate) fn sleeping_links(record: crate::dtcm::VifRecordAddress) -> u16 {
+    vif_read_u16(record.sleeping_links())
 }
 
-#[cfg(target_arch = "arm")]
-fn read_u32(address: usize) -> u32 {
-    unsafe { (address as *const u32).read_volatile() }
+#[inline(always)]
+pub(crate) fn link_gate(record: crate::dtcm::VifRecordAddress) -> u8 {
+    vif_read_u8(record.link_gate())
 }
 
-#[cfg(target_arch = "arm")]
-unsafe fn write_u8(address: usize, value: u8) {
-    unsafe { (address as *mut u8).write_volatile(value) };
+#[derive(Clone, Copy)]
+pub(crate) struct PowerSaveMasks { pub awake_links: u16, pub buffered_links: u16 }
+
+#[inline(always)]
+pub(crate) fn power_save_masks(interface: u8) -> Option<PowerSaveMasks> {
+    crate::dtcm::vif_record(usize::from(interface)).map(|record| PowerSaveMasks {
+        awake_links: vif_read_u16(record.awake_links()),
+        buffered_links: vif_read_u16(record.buffered_links()),
+    })
 }
 
-#[cfg(target_arch = "arm")]
-unsafe fn write_u16(address: usize, value: u16) {
-    unsafe { (address as *mut u16).write_volatile(value) };
+#[inline(always)]
+pub(crate) fn allowed_links(interface: u8) -> Option<u16> { crate::dtcm::vif_record(usize::from(interface)).map(|record| vif_read_u16(record.allowed_links())) }
+#[inline(always)]
+pub(crate) fn internal_link(interface: u8) -> Option<u16> { crate::dtcm::vif_record(usize::from(interface)).map(|record| vif_read_u16(record.internal_link())) }
+#[inline(always)]
+pub(crate) fn rts_threshold(interface: u8) -> Option<u32> { crate::dtcm::vif_record(usize::from(interface)).map(|record| vif_read_u32(record.rts_threshold())) }
+#[inline(always)]
+pub(crate) fn ampdu_length(interface: u8) -> Option<u16> { crate::dtcm::vif_record(usize::from(interface)).map(|record| vif_read_u16(record.ampdu_length())) }
+
+#[inline(always)]
+pub(crate) fn set_ampdu_length(interface: u8, value: u16) -> Result<(), VifAccessError> {
+    let record = crate::dtcm::vif_record(usize::from(interface)).ok_or(VifAccessError::InvalidInterface)?;
+    with_vif_mutation(|| vif_write_u16(record.ampdu_length(), value))
 }
 
-#[cfg(target_arch = "arm")]
-unsafe fn write_u32(address: usize, value: u32) {
-    unsafe { (address as *mut u32).write_volatile(value) };
+#[inline(always)]
+pub(crate) fn adjust_tx_busy(interface: u8, delta: i16) -> Result<(), VifAccessError> {
+    let record = crate::dtcm::vif_record(usize::from(interface)).ok_or(VifAccessError::InvalidInterface)?;
+    with_vif_mutation(|| {
+        let old = vif_read_u16(record.tx_busy());
+        vif_write_u16(record.tx_busy(), if delta >= 0 { old.wrapping_add(delta as u16) } else { old.wrapping_sub(delta.unsigned_abs()) });
+    })
 }
 
-#[cfg(target_arch = "arm")]
-unsafe fn copy_bytes(address: usize, bytes: &[u8]) {
-    for (offset, value) in bytes.iter().copied().enumerate() {
-        unsafe { write_u8(address + offset, value) };
-    }
+#[inline(always)]
+pub(crate) fn clear_buffered_link(
+    interface: u8,
+    buffered_observed: u16,
+    link_bit: u16,
+) -> Result<(), VifAccessError> {
+    let record = crate::dtcm::vif_record(usize::from(interface))
+        .ok_or(VifAccessError::InvalidInterface)?;
+    with_vif_mutation(|| {
+        vif_write_u16(record.buffered_links(), buffered_observed & !link_bit)
+    })
 }
+
+#[inline(always)]
+pub(crate) fn clear_awake_link_and_maybe_recompute(
+    interface: u8,
+    sleeping_observed: u16,
+    awake_observed: u16,
+    link_bit: u16,
+) -> Result<(), VifAccessError> {
+    let record = crate::dtcm::vif_record(usize::from(interface))
+        .ok_or(VifAccessError::InvalidInterface)?;
+    with_vif_mutation(|| {
+        let new_awake = awake_observed & !link_bit;
+        vif_write_u16(record.awake_links(), new_awake);
+        if vif_read_u16(record.effective_links()) != 0 {
+            let effective = (!sleeping_observed | vif_read_u16(record.buffered_links()) | new_awake) & vif_read_u16(record.allowed_links());
+            vif_write_u16(record.effective_links(), effective);
+        }
+    })
+}
+
+#[inline(always)]
+pub(crate) fn own_mac_word(interface: u8, word: usize) -> Option<u16> {
+    let record = crate::dtcm::vif_record(usize::from(interface))?;
+    if word >= 3 { return None; }
+    Some(vif_read_u16(record.own_mac_byte(word * 2)?))
+}
+
+#[inline(always)]
+pub(crate) fn rate_byte(interface: u8, index: usize) -> Option<u8> {
+    crate::dtcm::vif_record(usize::from(interface))
+        .and_then(|record| record.rate_byte(index))
+        .map(vif_read_u8)
+}
+
+#[inline(always)]
+pub(crate) fn default_rate(interface: u8, index: usize) -> Option<u8> {
+    crate::dtcm::vif_record(usize::from(interface))
+        .and_then(|record| record.default_rate(index))
+        .map(vif_read_u8)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DiagnosticVifSnapshot { pub allowed_links: u16, pub effective_links: u16, pub flags: u32, pub mode: u8 }
+
+#[inline(always)]
+pub(crate) fn diagnostic_snapshot(interface: u8) -> Option<DiagnosticVifSnapshot> {
+    let record = crate::dtcm::vif_record(usize::from(interface))?;
+    Some(DiagnosticVifSnapshot { allowed_links: vif_read_u16(record.allowed_links()), effective_links: vif_read_u16(record.effective_links()), flags: vif_read_u32(record.flags()), mode: vif_read_u8(record.mode()) })
+}
+
+#[inline(always)]
+pub(crate) fn set_scan_context(channel: u16) -> Result<(), VifAccessError> {
+    let record = crate::dtcm::vif_record(0).unwrap();
+    with_vif_mutation(|| { vif_write_u16(record.scan_rate_config(), 0x117); vif_write_u16(record.scan_channel(), channel); vif_write_u8(record.scan_flags(), 0); })
+}
+
+#[inline(always)]
+pub(crate) fn clear_scan_channel() -> Result<(), VifAccessError> {
+    let record = crate::dtcm::vif_record(0).unwrap();
+    with_vif_mutation(|| vif_write_u16(record.scan_channel(), 0))
+}
+
+#[inline(always)]
+pub(crate) fn publish_synthetic_scan_record() -> Result<(), VifAccessError> {
+    let record = crate::dtcm::vif_record(2).unwrap();
+    with_vif_mutation(|| { vif_write_u8(record.active(), 2); vif_write_u32(record.flags(), 0x4000); })
+}
+
+#[inline(always)]
+pub(crate) fn set_all_own_mac_byte(index: usize, value: u8) {
+    let first = crate::dtcm::vif_record_unchecked(0);
+    let second = crate::dtcm::vif_record_unchecked(1);
+    let third = crate::dtcm::vif_record_unchecked(2);
+    vif_write_u8(first.own_mac_byte(index).unwrap(), value);
+    vif_write_u8(second.own_mac_byte(index).unwrap(), value);
+    vif_write_u8(third.own_mac_byte(index).unwrap(), value);
+}
+
+#[inline(always)]
+pub(crate) fn host_contexts_in_flight() -> Result<u8, VifAccessError> { Ok(vif_read_u8(crate::dtcm::vif_record(0).unwrap().host_contexts_in_flight())) }
+#[inline(always)]
+pub(crate) fn set_host_contexts_in_flight(value: u8) -> Result<(), VifAccessError> { with_vif_mutation(|| vif_write_u8(crate::dtcm::vif_record(0).unwrap().host_contexts_in_flight(), value)) }
+#[inline(always)]
+pub(crate) fn adjust_host_contexts_in_flight(delta: i8) -> Result<(), VifAccessError> { with_vif_mutation(|| { let address = crate::dtcm::vif_record(0).unwrap().host_contexts_in_flight(); let old = vif_read_u8(address); vif_write_u8(address, if delta >= 0 { old.wrapping_add(delta as u8) } else { old.wrapping_sub(delta.unsigned_abs()) }); }) }
+
+#[inline(always)]
+pub(crate) fn wake_reinit_candidate() -> Option<usize> {
+    (0..2).find(|&interface| { let record = crate::dtcm::vif_record(interface).unwrap(); let next = crate::dtcm::vif_record(interface + 1).unwrap(); matches!(vif_read_u8(record.mode()), 5 | 6) && vif_read_u8(next.wake_reinit_flag()) != 0 })
+}
+
+#[inline(always)]
+pub(crate) fn mode_address(interface: u8) -> Option<usize> { crate::dtcm::vif_record(usize::from(interface)).map(|record| record.mode().get()) }
+
+
+#[cfg(target_arch = "arm")]
+fn read_u8(address: usize) -> u8 { unsafe { (address as *const u8).read_volatile() } }
+#[cfg(target_arch = "arm")]
+fn read_u16(address: usize) -> u16 { unsafe { (address as *const u16).read_volatile() } }
+#[cfg(target_arch = "arm")]
+fn read_u32(address: usize) -> u32 { unsafe { (address as *const u32).read_volatile() } }
+#[cfg(target_arch = "arm")]
+unsafe fn write_u8(address: usize, value: u8) { unsafe { (address as *mut u8).write_volatile(value) }; }
+#[cfg(target_arch = "arm")]
+unsafe fn write_u16(address: usize, value: u16) { unsafe { (address as *mut u16).write_volatile(value) }; }
+#[cfg(target_arch = "arm")]
+unsafe fn write_u32(address: usize, value: u32) { unsafe { (address as *mut u32).write_volatile(value) }; }
 
 #[cfg(any(target_arch = "arm", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -375,17 +575,128 @@ pub unsafe fn apply_edca(
     Ok(())
 }
 
+#[inline(always)]
+fn prepare_sta_record(
+    record: crate::dtcm::VifRecordAddress,
+    interface: u8,
+    request: &crate::wsm::JoinRequest<'_>,
+    own_mac: [u8; 6],
+    basic_rates: u32,
+    lowest_rate: u8,
+    join_control_bits: u32,
+) -> Result<(), VifAccessError> {
+    with_vif_mutation(|| {
+        vif_write_u8(record.mode(), 1);
+        vif_write_u8(record.interface(), interface);
+        vif_write_u8(record.role(), 4);
+        vif_write_u32(record.flags(), join_control_bits);
+        vif_write_u32(record.rate_configuration(), 0x117);
+        vif_write_u8(record.rate_byte(2).unwrap(), request.band);
+        vif_write_u8(record.rate_byte(3).unwrap(), request.preamble_type);
+        vif_write_u8(record.rate_byte(4).unwrap(), lowest_rate);
+        vif_write_u8(record.rate_byte(5).unwrap(), lowest_rate);
+        vif_write_u8(record.rate_byte(7).unwrap(), 3);
+        vif_write_u32(record.basic_rates(), basic_rates);
+        vif_write_u16(record.allowed_links(), 0x8001);
+        vif_write_u16(record.sleeping_links(), 0);
+        vif_write_u16(record.awake_links(), 0);
+        for (index, value) in own_mac.into_iter().enumerate() { vif_write_u8(record.own_mac_byte(index).unwrap(), value); }
+        for (index, value) in request.bssid.into_iter().enumerate() { vif_write_u8(record.bssid_byte(index).unwrap(), value); }
+        vif_write_u16(record.channel(), request.channel_number);
+        vif_write_u32(record.ssid_length(), request.ssid.len() as u32);
+        for index in 0..32 { vif_write_u8(record.ssid_byte(index).unwrap(), request.ssid.get(index).copied().unwrap_or(0)); }
+        vif_write_u8(record.dtim_period(), request.dtim_period.max(1));
+        vif_write_u16(record.atim_window(), request.atim_window);
+        vif_write_u32(record.beacon_interval(), request.beacon_interval.wrapping_shl(10));
+        vif_write_u16(record.internal_link(), 9);
+        vif_write_u32(record.link_object_flags(), 0x100);
+        for (index, value) in own_mac.into_iter().enumerate() {
+            vif_write_u8(record.link_own_mac_0_byte(index).unwrap(), value);
+            vif_write_u8(record.link_own_mac_1_byte(index).unwrap(), value);
+        }
+        for (index, value) in request.bssid.into_iter().enumerate() { vif_write_u8(record.link_bssid_byte(index).unwrap(), value); }
+        vif_write_u8(record.operating_state(), 0x23);
+        vif_write_u8(record.owner_interface(), interface);
+        vif_write_u16(record.owner_channel(), request.channel_number);
+        vif_write_u32(record.owner_deadline(), u32::MAX);
+        vif_write_u32(record.owner_flags(), 0);
+    })
+}
+
+#[cfg(any(target_arch = "arm", test))]
+trait RadioOwnerIo {
+    fn read_owner(&mut self) -> u32;
+    fn write_owner(&mut self, address: usize, value: u32);
+}
+
+#[cfg(target_arch = "arm")]
+struct VolatileRadioOwnerIo;
+
+#[cfg(target_arch = "arm")]
+impl RadioOwnerIo for VolatileRadioOwnerIo {
+    #[inline(always)]
+    fn read_owner(&mut self) -> u32 { read_u32(0x0400_8b20) }
+
+    #[inline(always)]
+    fn write_owner(&mut self, address: usize, value: u32) {
+        unsafe { write_u32(address, value) };
+    }
+}
+
+#[cfg(any(target_arch = "arm", test))]
+#[inline(always)]
+fn publish_radio_owner_with_io<I: RadioOwnerIo>(owner: u32, io: &mut I) -> bool {
+    let current_owner = io.read_owner();
+    if current_owner != 0 && current_owner != owner {
+        return false;
+    }
+    io.write_owner(0x0400_8b20, owner);
+    io.write_owner(0x0400_8b24, 0);
+    io.write_owner(0x0400_8b2c, 0);
+    true
+}
+
+#[inline(always)]
+fn publish_sta_after_owner(
+    record: crate::dtcm::VifRecordAddress,
+    owner_acquired: bool,
+) -> Result<(), JoinStateError> {
+    if !owner_acquired {
+        return Err(JoinStateError::Busy);
+    }
+    with_vif_mutation(|| {
+        vif_write_u8(record.active(), 2);
+        let effective = (vif_read_u16(record.allowed_links())
+            & (!vif_read_u16(record.sleeping_links()) | vif_read_u16(record.buffered_links())))
+            | vif_read_u16(record.awake_links());
+        vif_write_u16(record.effective_links(), effective);
+        vif_write_u8(record.operating_state(), 0x30);
+        vif_write_u8(record.activity_state(), 3);
+    })
+    .map_err(|_| JoinStateError::Busy)
+}
+
+#[inline(always)]
+fn deactivate_record(record: crate::dtcm::VifRecordAddress) {
+    vif_write_u8(record.active(), 0);
+    vif_write_u8(record.mode(), 0);
+    vif_write_u32(record.flags(), 0);
+    vif_write_u16(record.allowed_links(), 0);
+    vif_write_u16(record.effective_links(), 0);
+    vif_write_u8(record.activity_state(), 0);
+}
+
 #[cfg(target_arch = "arm")]
 pub fn join_gate(interface: u8, channel: u16) -> Result<(), JoinStateError> {
-    let _ = record_address(interface).ok_or(JoinStateError::InvalidInterface)?;
-    for other in 0..2_u8 {
-        if other == interface {
+    if !is_operating_interface(interface) {
+        return Err(JoinStateError::InvalidInterface);
+    }
+    for other in 0..2_usize {
+        if other == usize::from(interface) {
             continue;
         }
-        let other_base = record_address(other).ok_or(JoinStateError::InvalidInterface)?;
-        if read_u8(other_base + ACTIVE_OFFSET) != 0
-            && read_u16(other_base + CHANNEL_OFFSET) != channel
-        {
+        let record = crate::dtcm::vif_record(other).unwrap();
+        if vif_read_u8(record.active()) != 0 && vif_read_u16(record.channel()) != channel {
             return Err(JoinStateError::ChannelConflict);
         }
     }
@@ -403,7 +714,10 @@ pub unsafe fn activate_sta(
     request: &crate::wsm::JoinRequest<'_>,
     own_mac: [u8; 6],
 ) -> Result<(), JoinStateError> {
-    let base = record_address(interface).ok_or(JoinStateError::InvalidInterface)?;
+    if !is_operating_interface(interface) {
+        return Err(JoinStateError::InvalidInterface);
+    }
+    let record = crate::dtcm::vif_record(usize::from(interface)).unwrap();
     let basic_rates = if request.basic_rate_set == 0 {
         7
     } else {
@@ -413,90 +727,37 @@ pub unsafe fn activate_sta(
     // Proven JOIN publications: bit 0 plus exactly one of bit 10/bit 11.
     let join_control_bits = 1_u32 | if request.probe_for_join { 0x400 } else { 0x800 };
 
-    unsafe {
-        write_u8(base + MODE_OFFSET, 1);
-        write_u8(base + 0x1a, interface);
-        write_u8(base + 0x1b, 4);
-        write_u32(base + CONTROL_BITS_OFFSET, join_control_bits);
-        write_u32(base + RATE_CONFIG_OFFSET, 0x117);
-        write_u8(base + 0x22, request.band);
-        write_u8(base + 0x23, request.preamble_type);
-        write_u8(base + 0x24, lowest_rate);
-        write_u8(base + 0x25, lowest_rate);
-        write_u8(base + 0x27, 3);
-        write_u32(base + BASIC_RATES_OFFSET, basic_rates);
-        // `vif_enter_operating_state()` publishes host link 0 plus the
-        // firmware-internal slot 15. Class-6 uses its own context metadata;
-        // excluding bit 0 here causes vendor `task_b88e` to reject class-0.
-        write_u16(base + 0x2c, 0x8001);
-        write_u16(base + 0x15c, 0);
-        write_u16(base + 0x15e, 0);
-        copy_bytes(base + OWN_MAC_OFFSET, &own_mac);
-        copy_bytes(base + BSSID_OFFSET, &request.bssid);
-        write_u16(base + CHANNEL_OFFSET, request.channel_number);
-        write_u32(base + SSID_LENGTH_OFFSET, request.ssid.len() as u32);
-        copy_bytes(base + SSID_OFFSET, request.ssid);
-        for offset in request.ssid.len()..32 {
-            write_u8(base + SSID_OFFSET + offset, 0);
-        }
-        write_u8(base + DTIM_OFFSET, request.dtim_period.max(1));
-        write_u16(base + ATIM_OFFSET, request.atim_window);
-        write_u32(
-            base + BEACON_INTERVAL_OFFSET,
-            request.beacon_interval.wrapping_shl(10),
-        );
-        write_u16(base + 0x12a, 9);
-        write_u32(base + 0x13c, 0x100);
-        copy_bytes(base + 0x140, &own_mac);
-        copy_bytes(base + 0x146, &own_mac);
-        copy_bytes(base + 0x14c, &request.bssid);
-        write_u8(base + 0x50, 0x23);
-        write_u8(base + 0x51, interface);
-        write_u16(base + 0x52, request.channel_number);
-        write_u32(base + 0x54, u32::MAX);
-        write_u32(base + 0x5c, 0);
+    // Preliminary preparation is deliberately non-final. A Busy radio-owner
+    // result may leave these vendor-compatible defaults, but cannot publish an
+    // operating VIF, effective links, or activity state.
+    prepare_sta_record(
+        record,
+        interface,
+        request,
+        own_mac,
+        basic_rates,
+        lowest_rate,
+        join_control_bits,
+    ).map_err(|_| JoinStateError::Busy)?;
 
-        // Publish the actual JOIN PAS sequence, including the synthetic-view
-        // clear, copied path byte, backoff reset, address copies, and family
-        // words. The helper keeps every volatile access in vendor order.
-        publish_join_pas_with_io(
-            interface,
-            basic_rates,
-            request.band,
-            request.beacon_interval,
-            &own_mac,
-            &request.bssid,
-            &mut VolatilePasOperationIo,
-        );
-        let _ = set_active(interface, true);
-        // Vendor JOIN activates the VIF before channel programming. The
-        // channel-program tail then marks activity state 2 and derives the
-        // effective link mask used by the STA branch of `task_b88e`.
-        write_u8(base + ACTIVE_OFFSET, 2);
-        let effective = (read_u16(base + 0x2c)
-            & (!read_u16(base + 0x15c) | read_u16(base + 0x160)))
-            | read_u16(base + 0x15e);
-        write_u16(base + 0x2e, effective);
+    // Use the qualified low-MAC/PAS address owner and exact parent publication
+    // sequence. VIF typing does not duplicate PAS arithmetic or PS mutations.
+    publish_join_pas_with_io(
+        interface,
+        basic_rates,
+        request.band,
+        request.beacon_interval,
+        &own_mac,
+        &request.bssid,
+        &mut VolatilePasOperationIo,
+    );
 
-        // Awake-STA subset of vendor `lmc_sched_request_radio(VIF + 0x44)`.
-        // JOIN owns a single channel, so no pending-owner arbitration is
-        // reachable here. Channel programming already completed above; publish
-        // the retained owner and its post-program state before admitting TX.
-        let owner = (base + 0x44) as u32;
-        let current_owner = read_u32(0x0400_8b20);
-        if current_owner != 0 && current_owner != owner {
-            return Err(JoinStateError::Busy);
-        }
-        write_u32(0x0400_8b20, owner);
-        write_u32(0x0400_8b24, 0);
-        write_u32(0x0400_8b2c, 0);
-        write_u8(base + 0x50, 0x30);
-        write_u8(base + 0x66, 3);
-        // The vendor JOIN/channel-program path reaches retained PHY state 3.
-        // The synthetic scan path can leave state 5 behind; carrying it into
-        // ordinary STA TX produces a different packet-controller GO state.
-        write_u8(0x0400_99a9, 3);
+    let owner = record.radio_owner().get() as u32;
+    if !publish_radio_owner_with_io(owner, &mut VolatileRadioOwnerIo) {
+        return Err(JoinStateError::Busy);
     }
+    publish_sta_after_owner(record, true)?;
+    unsafe { write_u8(0x0400_99a9, 3) };
     Ok(())
 }
 
@@ -506,25 +767,17 @@ pub unsafe fn activate_sta(
 /// The selected VIF/PAS records must be exclusively owned.
 #[cfg(target_arch = "arm")]
 pub unsafe fn teardown(interface: u8) -> bool {
-    let Some(base) = record_address(interface) else {
+    if !is_operating_interface(interface) {
         return false;
-    };
-    unsafe {
-        let _ = set_active(interface, false);
-        write_u8(base + MODE_OFFSET, 0);
-        write_u32(base + CONTROL_BITS_OFFSET, 0);
-        write_u16(base + 0x2c, 0);
-        write_u16(base + 0x2e, 0);
-        let owner = (base + 0x44) as u32;
-        if read_u32(0x0400_8b20) == owner {
-            write_u32(0x0400_8b20, 0);
-        }
-        if read_u32(0x0400_8b2c) == owner {
-            write_u32(0x0400_8b2c, 0);
-        }
-        write_u8(base + 0x66, 0);
-        publish_teardown_pas_with_io(interface, !any_active(), &mut VolatilePasOperationIo);
     }
+    let record = crate::dtcm::vif_record(usize::from(interface)).unwrap();
+    deactivate_record(record);
+    let owner = record.radio_owner().get() as u32;
+    unsafe {
+        if read_u32(0x0400_8b20) == owner { write_u32(0x0400_8b20, 0); }
+        if read_u32(0x0400_8b2c) == owner { write_u32(0x0400_8b2c, 0); }
+    }
+    publish_teardown_pas_with_io(interface, !any_active(), &mut VolatilePasOperationIo);
     true
 }
 
@@ -534,18 +787,16 @@ pub unsafe fn teardown(interface: u8) -> bool {
 /// The selected vendor VIF record must be initialized and stable.
 #[cfg(target_arch = "arm")]
 pub unsafe fn snapshot(interface: u8) -> Option<VifState> {
-    let base = record_address(interface)?;
+    let record = crate::dtcm::vif_record(usize::from(interface))?;
     let mut bssid = [0_u8; 6];
-    for (offset, byte) in bssid.iter_mut().enumerate() {
-        *byte = unsafe { ((base + BSSID_OFFSET + offset) as *const u8).read_volatile() };
-    }
+    for (index, byte) in bssid.iter_mut().enumerate() { *byte = vif_read_u8(record.bssid_byte(index)?); }
     Some(VifState {
-        mode: unsafe { ((base + MODE_OFFSET) as *const u8).read_volatile() },
-        active: unsafe { ((base + ACTIVE_OFFSET) as *const u8).read_volatile() } != 0,
-        control_bits: unsafe { ((base + CONTROL_BITS_OFFSET) as *const u32).read_volatile() },
-        basic_rates: unsafe { ((base + BASIC_RATES_OFFSET) as *const u32).read_volatile() },
+        mode: vif_read_u8(record.mode()),
+        active: vif_read_u8(record.active()) != 0,
+        control_bits: vif_read_u32(record.flags()),
+        basic_rates: vif_read_u32(record.basic_rates()),
         bssid,
-        channel: unsafe { ((base + CHANNEL_OFFSET) as *const u16).read_volatile() },
+        channel: vif_read_u16(record.channel()),
     })
 }
 
@@ -554,6 +805,12 @@ mod tests {
     extern crate std;
 
     use super::*;
+
+    static TEST_VIF_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_vif_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_VIF_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn vendor_record_addresses_use_three_bounded_strides() {
@@ -570,6 +827,120 @@ mod tests {
         assert_eq!(BASIC_RATES_OFFSET, 0x28);
         assert_eq!(BSSID_OFFSET, 0x3c);
         assert_eq!(CHANNEL_OFFSET, 0x42);
+    }
+
+    fn zero_test_record(interface: usize) -> crate::dtcm::VifRecordAddress {
+        let record = crate::dtcm::vif_record(interface).unwrap();
+        for offset in 0..VIF_STRIDE {
+            unsafe {
+                crate::dtcm::shared_ptr::<u8>(crate::dtcm::DtcmAddress::new(
+                    record_address(interface as u8).unwrap() + offset,
+                ).unwrap()).write_volatile(0);
+            }
+        }
+        record
+    }
+
+    #[test]
+    fn nested_vif_mutation_is_explicitly_rejected() {
+        let _guard = test_vif_guard();
+        assert_eq!(
+            with_vif_mutation(|| with_vif_mutation(|| ())),
+            Ok(Err(VifAccessError::Reentered))
+        );
+    }
+
+    #[test]
+    fn activity_semantics_exclude_synthetic_record_from_reset() {
+        let _guard = test_vif_guard();
+        let first = zero_test_record(0);
+        let synthetic = zero_test_record(2);
+        vif_write_u8(first.active(), 2);
+        vif_write_u8(synthetic.active(), 2);
+        assert!(is_active(0));
+        assert!(!is_active(2));
+        assert_eq!(active_interface(), Some(0));
+        assert!(!is_operating_interface(2));
+        assert_eq!(vif_read_u8(synthetic.active()), 2);
+    }
+
+    #[test]
+    fn busy_join_does_not_publish_final_vif_state() {
+        let _guard = test_vif_guard();
+        let record = zero_test_record(0);
+        vif_write_u8(record.mode(), 1);
+        vif_write_u8(record.operating_state(), 0x23);
+        assert_eq!(publish_sta_after_owner(record, false), Err(JoinStateError::Busy));
+        assert_eq!(vif_read_u8(record.active()), 0);
+        assert_eq!(vif_read_u8(record.operating_state()), 0x23);
+        assert_eq!(vif_read_u8(record.activity_state()), 0);
+    }
+
+    #[test]
+    fn teardown_clears_operating_fields_but_never_record_two() {
+        let _guard = test_vif_guard();
+        let record = zero_test_record(1);
+        vif_write_u8(record.active(), 2);
+        vif_write_u8(record.mode(), 6);
+        vif_write_u32(record.flags(), u32::MAX);
+        vif_write_u16(record.allowed_links(), 0x8001);
+        vif_write_u16(record.effective_links(), 1);
+        vif_write_u8(record.activity_state(), 3);
+        deactivate_record(record);
+        assert_eq!(vif_read_u8(record.active()), 0);
+        assert_eq!(vif_read_u8(record.mode()), 0);
+        assert_eq!(vif_read_u32(record.flags()), 0);
+        assert_eq!(vif_read_u16(record.allowed_links()), 0);
+        assert_eq!(vif_read_u16(record.effective_links()), 0);
+        assert_eq!(vif_read_u8(record.activity_state()), 0);
+    }
+
+    #[test]
+    fn rate_word_overlay_preserves_independent_byte_reads() {
+        let _guard = test_vif_guard();
+        let record = zero_test_record(0);
+        vif_write_u32(record.rate_configuration(), 0x4433_2211);
+        assert_eq!((0..4).map(|index| vif_read_u8(record.rate_byte(index).unwrap())).collect::<std::vec::Vec<_>>(), [0x11, 0x22, 0x33, 0x44]);
+        vif_write_u8(record.rate_byte(7).unwrap(), 3);
+        assert_eq!(vif_read_u32(record.rate_configuration()), 0x4433_2211);
+        assert_eq!(vif_read_u8(record.rate_byte(7).unwrap()), 3);
+    }
+
+    #[test]
+    fn power_save_mutations_preserve_vendor_branch_behavior() {
+        let _guard = test_vif_guard();
+        let record = zero_test_record(0);
+        vif_write_u16(record.allowed_links(), 0x000f);
+        vif_write_u16(record.buffered_links(), 0x0004);
+        vif_write_u16(record.awake_links(), 0x0003);
+        clear_awake_link_and_maybe_recompute(0, 0xfffa, 3, 0x0002).unwrap();
+        assert_eq!(vif_read_u16(record.awake_links()), 1);
+        assert_eq!(vif_read_u16(record.effective_links()), 0);
+        vif_write_u16(record.effective_links(), 0x8000);
+        vif_write_u16(record.awake_links(), 7);
+        clear_awake_link_and_maybe_recompute(0, 0xfffa, 3, 0x0002).unwrap();
+        assert_eq!(vif_read_u16(record.awake_links()), 1);
+        assert_eq!(vif_read_u16(record.effective_links()), 5);
+
+        vif_write_u16(record.buffered_links(), 0x0008);
+        clear_buffered_link(0, 0x0004, 0x0002).unwrap();
+        assert_eq!(vif_read_u16(record.buffered_links()), 0x0004);
+    }
+
+    #[test]
+    fn wake_selection_reads_the_following_physical_record() {
+        let _guard = test_vif_guard();
+        let first = zero_test_record(0);
+        let second = zero_test_record(1);
+        let third = zero_test_record(2);
+        vif_write_u8(first.mode(), 5);
+        vif_write_u8(third.wake_reinit_flag(), 1);
+        assert_eq!(wake_reinit_candidate(), None);
+        vif_write_u8(second.wake_reinit_flag(), 1);
+        assert_eq!(wake_reinit_candidate(), Some(0));
+        vif_write_u8(first.mode(), 0);
+        vif_write_u8(second.mode(), 6);
+        assert_eq!(wake_reinit_candidate(), Some(1));
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -642,6 +1013,100 @@ mod tests {
         fn reset_backoff(&mut self, interface: u8) {
             reset_pas_backoff_with_io(interface, self);
         }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct OwnerAccess {
+        kind: AccessKind,
+        address: usize,
+        width: u8,
+        value: u32,
+    }
+
+    struct RecordingOwnerIo {
+        accesses: std::vec::Vec<OwnerAccess>,
+        current_owner: u32,
+    }
+
+    impl RadioOwnerIo for RecordingOwnerIo {
+        fn read_owner(&mut self) -> u32 {
+            self.accesses.push(OwnerAccess {
+                kind: AccessKind::Read,
+                address: 0x0400_8b20,
+                width: 4,
+                value: self.current_owner,
+            });
+            self.current_owner
+        }
+
+        fn write_owner(&mut self, address: usize, value: u32) {
+            self.accesses.push(OwnerAccess {
+                kind: AccessKind::Write,
+                address,
+                width: 4,
+                value,
+            });
+        }
+    }
+
+    #[test]
+    fn busy_join_model_runs_pas_then_owner_check_without_final_vif_publication() {
+        let _guard = test_vif_guard();
+        let record = zero_test_record(0);
+        let own_mac = [1, 2, 3, 4, 5, 6];
+        let request = crate::wsm::JoinRequest {
+            mode: 0,
+            band: 1,
+            channel_number: 11,
+            bssid: [7, 8, 9, 10, 11, 12],
+            atim_window: 0,
+            preamble_type: 1,
+            probe_for_join: false,
+            dtim_period: 2,
+            flags: 0,
+            ssid: b"busy-model",
+            beacon_interval: 100,
+            basic_rate_set: 7,
+        };
+        prepare_sta_record(record, 0, &request, own_mac, 7, 0, 0x801).unwrap();
+        assert_eq!(vif_read_u8(record.mode()), 1);
+        assert_eq!(vif_read_u8(record.operating_state()), 0x23);
+        assert_eq!(vif_read_u8(record.active()), 0);
+        assert_eq!(vif_read_u16(record.effective_links()), 0);
+        assert_eq!(vif_read_u8(record.activity_state()), 0);
+
+        let mut pas = RecordingPasIo::default();
+        publish_join_pas_with_io(
+            0,
+            7,
+            request.band,
+            request.beacon_interval,
+            &own_mac,
+            &request.bssid,
+            &mut pas,
+        );
+        assert_eq!(pas.accesses.len(), 40);
+        assert_eq!(pas.accesses.first().unwrap().branch, PasOperationBranch::JoinControl);
+        assert_eq!(pas.accesses.last().unwrap().branch, PasOperationBranch::JoinFamilyPublication);
+
+        let owner = record.radio_owner().get() as u32;
+        let mut owner_io = RecordingOwnerIo {
+            accesses: std::vec::Vec::new(),
+            current_owner: owner.wrapping_add(4),
+        };
+        let acquired = publish_radio_owner_with_io(owner, &mut owner_io);
+        assert!(!acquired);
+        assert_eq!(owner_io.accesses, [OwnerAccess {
+            kind: AccessKind::Read,
+            address: 0x0400_8b20,
+            width: 4,
+            value: owner.wrapping_add(4),
+        }]);
+        assert_eq!(publish_sta_after_owner(record, acquired), Err(JoinStateError::Busy));
+        assert_eq!(vif_read_u8(record.active()), 0);
+        assert_eq!(vif_read_u16(record.effective_links()), 0);
+        assert_eq!(vif_read_u8(record.operating_state()), 0x23);
+        assert_eq!(vif_read_u8(record.activity_state()), 0);
     }
 
     #[test]

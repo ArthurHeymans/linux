@@ -1,7 +1,7 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** implemented fixed-address shared-quarantine ABI candidate under independent review; address movement and exclusive/native ownership remain out of scope.  
-**Firmware lineage:** candidate based on `6dd278ebb533e7a9c029044eaf716ee297cc85aa` (`Document the retained DTCM ownership map`); earlier evidence includes the `ad989e0a5b1a` packet-RAM lineage.  
+**Status:** fresh typed-VIF-on-PAS candidate based on qualified low-MAC/PAS commit `319d653982e4`; deterministic host/static gates pass, but exact-parent hot-code comparison remains a clean-qualification blocker. No hardware run was performed or permitted. Address movement and exclusive/native ownership remain out of scope.  
+**Firmware lineage:** candidate based directly on `319d653982e441c9f15a44c41f15c9854d6dc996` (`Model low-MAC and PAS state in Rust`); the rejected typed-VIF snapshot `15861449d3d0` and `/tmp/xr819-typed-vif-final-rejected.patch` were references only.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
 
@@ -1642,3 +1642,254 @@ The candidate is therefore qualified as a fixed-address semantic layout and
 known-access conversion. It still claims neither exclusive movable ownership
 nor complete computed-reference closure; the unresolved VIF/link/BA/power-save
 and retained-vendor cycles remain migration blockers.
+
+
+### A.10 Fresh typed VIF conversion atop qualified low-MAC/PAS
+
+This candidate starts directly from `319d653982e4`. The old final typed-VIF
+snapshot and rejected patch were used only to recover field evidence and review
+findings; they were not applied. The design is intentionally narrower than the
+rejected attempt:
+
+* `VifRecord` is a complete `#[repr(C, align(4))]` ABI description with exact
+  `0x3b0` size and three physical records at `0x04003e98`, `0x04004248`, and
+  `0x040045f8`;
+* every named, reserved, overlay, and tail field has a compile-time offset,
+  size, and alignment assertion;
+* the rate word/byte overlap is one explicit eight-byte overlay, and the wake
+  access historically written as previous-record `+0x3c6` is documented and
+  addressed as the following record's `wake_reinit_flag` at `+0x16`;
+* operating VIFs remain exactly records 0 and 1. Record 2 is the synthetic scan
+  record and its activity byte is never sufficient for RESET or teardown.
+
+#### Ownership decision and unresolved vendor writers
+
+Complete exclusive Rust ownership is still unsound. Production-reachable
+retained vendor routines, timer callbacks, completion paths, and IRQ/FIQ code
+can mutate decoded VIF bytes. The candidate therefore does **not** construct a
+safe `&VifRecord`, `&mut VifRecord`, or array reference on target. Decoded
+scalars use shared ABI wrappers and operation helpers perform volatile accesses
+through field-derived raw addresses. This is the exact blocker requested by the
+review: translating the Rust consumer closure removes duplicate Rust address
+arithmetic, but does not remove retained vendor writers.
+
+No target IRQ/FIQ owner is asserted for the VIF records: that would imply an
+exclusive ordinary-reference domain which retained vendor writers disprove.
+Production operations remain narrow volatile accesses in the qualified parent
+order. Host tests alone use a process mutex/thread-local guard with explicit
+re-entry failure around the zeroed process-local `DTCM_STATE` backing; target
+addresses are never dereferenced on the host.
+
+#### Consumer closure and PAS integration
+
+Production consumers in VIF, JOIN, scan, MAC, platform, TX, vendor-host-TX,
+diagnostics, and tools now enter through typed VIF addresses or narrow VIF
+operations. Covered forms include direct interior literals, record stride
+arithmetic, mode-interior roots, link-map alternate roots, TALA AMPDU reads,
+probe MAC/rate fields, activity and link decisions, host-context counters,
+power-save masks, and the next-record wake selection.
+
+The low-MAC/PAS implementation from `319d6539` remains the only PAS address
+owner. JOIN and teardown retain its operation recorder, typed PAS stride views,
+backoff helper, and exact publication branches. No old `PAS_BASE` arithmetic or
+parallel power-save mutation implementation was reintroduced. VIF power-save
+fields remain volatile and their read-modify-write points preserve the qualified
+branch behavior: clearing `awake_links` always occurs, while effective links are
+recomputed only when the old effective mask is nonzero.
+
+JOIN preparation writes non-final defaults before owner acquisition, then runs
+the qualified PAS publication sequence. The radio-owner conflict check precedes
+all final VIF publication. Only owner success publishes `active = 2`, effective
+links, operating state `0x30`, and activity state `3`; Busy leaves none of those
+final values.
+
+#### Drift gates and focused tests
+
+`tools/check-vif-layout.py` rejects production source literals in the complete
+`0x04003e98..0x040049a8` physical range, all three record starts/end, historical
+low-16-bit synthesized forms, and legacy VIF root/stride identifiers outside the
+owners. Its linked-image gate decodes PC-relative literal loads and pins exact
+`(containing symbol, loaded value)` xrefs. It deliberately does not scan aligned
+words, because Thumb instructions are not address literals. The gate runs beside
+the low-MAC/PAS source and decoded-xref gates in `tools/check.sh`.
+
+Focused host tests cover exact field offsets, host-local backing, nested
+mutation rejection, operating-versus-synthetic activity semantics, record-2
+teardown exclusion, Busy/final JOIN publication, teardown fields, rate overlay,
+power-save branch interaction, following-record wake selection, TALA read timing,
+probe snapshots, and PAS access width/value/branch/order.
+
+#### Qualification and code generation
+
+No hardware testing was run. LSP reports no errors. Default host tests pass
+162/162 and diagnostic-feature tests pass 163/163. The full deterministic run
+with `XR819_B6_ELF=/tmp/xr819-b6-hif-startup.elf` passes source gates, host tests,
+ARM build, stack analysis, packet-RAM/DTCM layout, low-MAC/PAS and VIF decoded
+xref manifests, normalized clean-b6 transition checks, packing, and bootstrap.
+The deepest normal call chain remains 2892 bytes and exception use remains
+224/256 bytes.
+
+The exact `319d6539` parent was rebuilt from revision files in `/tmp` for a
+separate comparison. Parent `.text` is 67264 bytes (`0x106c0`); this candidate
+is 67792 bytes (`0x108d0`), a localized `+0x210` typed-VIF consumer delta. The
+largest changed bodies are VIF/host-TX consumers. No MMIO literal or barrier-set
+change is present, but several hot functions have changed decoded load/store
+mnemonic sequences from address materialization and inlining. Source-level
+volatile read/write points and ordering were reviewed and focused tests pass,
+but the broad `HostTxDriver::service_index` growth (`+0x90`) means exact-parent
+code-generation qualification is **not clean** and remains a blocker.
+
+| Function | Parent -> candidate size | Instructions | Stack | load/store/barrier order |
+| --- | ---: | ---: | ---: | --- |
+| `vif::activate_sta` | `0x2b8 -> 0x2e4` | `309 -> 329` | `96 -> 128` | changed |
+| `vif::teardown` | `0x78 -> 0xa4` | `50 -> 74` | `20 -> 20` | changed |
+| `vif::snapshot` | `0x5c -> 0x5c` | `44 -> 44` | `28 -> 28` | exact |
+| `join::activate_sta` | `0x154 -> 0x154` | `142 -> 142` | `80 -> 80` | exact |
+| `join::reset` | `0x90 -> 0xbc` | `52 -> 74` | `16 -> 24` | mnemonic order exact |
+| `tx::prepare_probe_context` | `0x290 -> 0x298` | `304 -> 308` | `80 -> 88` | changed; VIF reads remain at original decisions |
+| `tx::service_single_probe_runtime_inactive` | `0x1654 -> 0x1680` | `2528 -> 2551` | `208 -> 184` | changed |
+| `vendor_host_tx::program_pipe_eligible` | `0x1e8 -> 0x1dc` | `232 -> 226` | `56 -> 56` | changed |
+| `mac::reinitialize_after_wake` | `0x364 -> 0x364` | `352 -> 352` | `88 -> 88` | changed mnemonic sequence, exact size/stack |
+| `platform::program_station_address` | `0x80 -> 0xa0` | `57 -> 72` | `48 -> 48` | changed |
+| `HostTxDriver::admit` | `0x5dc -> 0x5e8` | `679 -> 685` | `160 -> 160` | changed |
+| `HostTxDriver::service_index` | `0x820 -> 0x8b0` | `963 -> 1030` | `712 -> 712` | changed; blocker |
+
+Fresh artifacts:
+
+```text
+ELF       /tmp/xr819-typed-vif-pas-20260820T130233Z.elf
+          a13c39e9a067b14c665f4a38e90d5972cedcaba0f9e494735c430881bb8ee233
+.text     size 0x108d0
+packed    /tmp/xr819-typed-vif-pas-20260820T130233Z.bin
+          f1e28897bdbe4dfdbec7b968e33990badf22223bde24c354f48a72b9ccfc1e9a
+bootstrap /tmp/xr819-typed-vif-pas-bootstrap-20260820T130233Z.bin
+          48d858b8785220aa7c9a9c0898164da1ecc71b4b6218283b2687b3d2f821d197
+```
+
+Qualification status is host/static and codegen-blocked, not clean. The exact
+remaining ownership blocker is retained vendor/IRQ mutation of decoded VIF
+fields; therefore this candidate is a typed volatile ABI conversion, not
+exclusive native VIF ownership. The separate clean-qualification blocker is the
+hot-code/LTO divergence listed above.
+
+### A.12 Independent-review blocker closure for typed VIF on PAS
+
+This follow-up fixes the independent-review blockers without hardware testing.
+It remains a fixed-address typed volatile ABI conversion, not native/exclusive
+VIF ownership and not proof of whole-parent equivalence.
+
+Power-save observation again follows the parent short-circuit timing.
+`sleeping_links` and `link_gate` are separate narrow volatile reads;
+`link_gate` is evaluated only after the frame-control read/classification and
+only when the preceding release predicate and link-zero/sleeping tests require
+it. A recorder test pins the ordered two-byte sleeping read, two-byte frame
+control read, and conditional one-byte link-gate read, including the branch in
+which no link-gate observation is permitted.
+
+Station-address publication again performs, for each source byte, low-MAC 0,
+low-MAC 1, VIF 0, VIF 1, and VIF 2 byte writes before advancing the loop. The
+VIF publication is one typed per-byte operation. A host recorder pins all 30
+write addresses, one-byte widths, values, and order. The target body is still
+four bytes larger than the exact parent because typed address materialization
+differs, despite having two fewer decoded instructions and the same 48-byte
+stack frame.
+
+`PendingVifState` and `prepare_pending_state` are removed. The pending TX path
+now derives one `VifRecordAddress` from the retained interface byte and keeps
+the parent's scalar `active_mask`, `effective_mask`, `effective_link`, control,
+radio-state, mode, and publication flow with narrow volatile field operations.
+`HostTxDriver::service_index` is reduced from the previous candidate's
+`0x8b0`/1030 instructions back to `0x834`/968, versus the exact parent's
+`0x820`/963, while retaining the exact 712-byte stack frame. The residual is
+`+0x14` bytes and five instructions, bounded by the new gate rather than called
+exact.
+
+`any_active`, `active_interface`, and `is_active` now use explicit record-0 then
+record-1 reads with no iterator/`Option` pipeline. Teardown derives one record,
+reuses it for all deactivation and owner operations, and excludes synthetic
+record 2 before mutation. Target hot paths no longer use the removed pending
+snapshot or a generic closure/`Result` abstraction for pending-state control.
+The host-only VIF mutation guard remains under `cfg(test)`.
+
+JOIN Busy coverage now models the complete relevant sequence: preliminary VIF
+preparation, the complete 40-operation PAS publication recorder, the radio-owner
+read, suppression of all three owner writes on conflict, and rejection of final
+VIF publication. The test verifies that `active`, effective links, and activity
+state remain unpublished and that operating state remains at its preliminary
+`0x23` value. This supersedes the earlier helper-only Busy outcome test as the
+sequencing evidence, while retaining that smaller focused test.
+
+`tools/check-hot-codegen.py` adds an exact-parent focused gate. It compares
+symbol size, decoded instruction count, LLVM stack metadata, exact decoded
+memory-mnemonic order for the unchanged JOIN wrapper, and the complete global
+IRQ/barrier mnemonic/operand sequence. It bounds service-index, pipe
+eligibility, large probe service, probe preparation, scan, JOIN/RESET, VIF
+activation/teardown, station programming, and wake reinitialization. The gate
+prints explicitly that it is bounded focused evidence, not whole-parent
+equivalence. `tools/check.sh` now runs default and diagnostic host suites and
+runs this comparison when `XR819_PARENT_ELF` is supplied. The VIF decoded-xref
+manifest remains a known-access drift gate only: it does not prove computed
+reference closure, indirect vendor-consumer completeness, semantic ownership,
+or full parent equivalence.
+
+Exact fixed-layout parent to final candidate comparison:
+
+| Function | Size | Instructions | Stack | Qualification |
+| --- | ---: | ---: | ---: | --- |
+| `HostTxDriver::service_index` | `0x820 -> 0x834` | `963 -> 968` | `712 -> 712` | bounded residual `+0x14`/`+5` |
+| `vendor_host_tx::program_pipe_eligible` | `0x1e8 -> 0x1e0` | `232 -> 228` | `56 -> 56` | smaller; ordered power-save recorder added |
+| `tx::service_single_probe_runtime_inactive` | `0x1654 -> 0x1680` | `2528 -> 2551` | `208 -> 184` | bounded typed-VIF residual |
+| `tx::prepare_probe_context` | `0x290 -> 0x298` | `304 -> 308` | `80 -> 88` | bounded typed-VIF residual |
+| `scan::service` | `0x504 -> 0x528` | `530 -> 548` | `48 -> 48` | bounded explicit-record residual |
+| `join::activate_sta` | `0x154 -> 0x154` | `142 -> 142` | `80 -> 80` | exact size/instruction/stack and memory-mnemonic order |
+| `join::reset` | `0x90 -> 0xa8` | `52 -> 62` | `16 -> 24` | bounded explicit-record residual |
+| `vif::activate_sta` | `0x2b8 -> 0x2e4` | `309 -> 329` | `96 -> 128` | bounded typed-address residual |
+| `vif::teardown` | `0x78 -> 0x80` | `50 -> 54` | `20 -> 16` | bounded; one record reused |
+| `platform::program_station_address` | `0x80 -> 0x84` | `57 -> 55` | `48 -> 48` | exact recorder order; address materialization residual |
+| `mac::reinitialize_after_wake` | `0x364 -> 0x364` | `352 -> 352` | `88 -> 88` | exact size/instruction/stack |
+
+The global decoded IRQ/barrier sequence is exact at 17 operations. The deepest
+normal call chain remains 2892 bytes and exception use remains 224/256 bytes.
+Final `.text` is `0x107bc`, `0xfc` above the exact fixed-layout parent
+`0x106c0` and `0x114` below the previous typed-VIF candidate `0x108d0`.
+
+Default host tests pass 165/165 and diagnostic-feature tests pass 166/166. LSP
+reports no errors; host-target inactive-code hints remain expected. The complete
+run with both
+`XR819_B6_ELF=/tmp/xr819-b6-hif-startup.elf` and
+`XR819_PARENT_ELF=/tmp/xr819-parent-319d6539/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup`
+passes source, packer, default/diagnostic host, ARM build, stack, packet-RAM,
+DTCM, low-MAC/PAS, VIF decoded-xref, focused exact-parent, normalized clean-b6
+MMIO/transition, packing, and bootstrap checks.
+
+Fresh uniquely named artifacts:
+
+```text
+ELF       /tmp/xr819-typed-vif-final-20260820T133802Z/hif-startup.elf
+          97f88bcee783f6ac0d3eefbdf938e0b1d8b0c6dae3677ce776ff52511954ec78
+packed    /tmp/xr819-typed-vif-final-20260820T133802Z/hif-startup.bin
+          39b3d010f506d886b7a6f768af27762a302cf870ef6a1ac002d56216ec927ae8
+bootstrap /tmp/xr819-typed-vif-final-20260820T133802Z/bootstrap.bin
+          48d858b8785220aa7c9a9c0898164da1ecc71b4b6218283b2687b3d2f821d197
+.text     size 0x107bc
+```
+
+A final adversarial comparison found one remaining parent mismatch in
+`program_pipe_eligible`: the typed helpers reloaded shared `buffered_links` and
+`awake_links` after the eligibility decision, while the qualified parent
+mutated the values already observed. In the hybrid execution model those late
+reloads can lose a concurrent wake or buffered-bit publication because the
+vendor scheduler serialization is no longer present. The helpers now receive
+the saved observations and perform no late reload. Tests explicitly mutate the
+backing values between observation and helper invocation and verify that the
+saved values remain authoritative.
+
+The corrected packed image is
+`2761563f78c4af6d84e8e7d446a5a7ab9528537e730060af8d2af96c794ef644`.
+Its first channel-11 qualification associated in two seconds, completed TCP at
+15.7 Mbit/s, transferred 30 MiB UDP at 8.39 Mbit/s with zero of 21,402
+datagrams lost, and finished with 20/20 ping, zero TX failures, and no fatal
+diagnostic. Additional qualification was still running when this checkpoint
+was committed. Remaining limitations are the bounded hot code-generation
+residuals above, retained vendor/IRQ writers, and lack of complete
+register-computed/indirect VIF-reference closure.

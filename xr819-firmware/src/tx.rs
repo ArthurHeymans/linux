@@ -467,8 +467,9 @@ unsafe fn release_wsm_context_address(context: u32) {
         let free_head = WSM_TX_CONTEXT_FREE_HEAD as *mut u32;
         ((address + 4) as *mut u32).write_volatile(free_head.read_volatile());
         free_head.write_volatile(context);
-        let allocated = 0x0400_3e9e as *mut u8;
-        allocated.write_volatile(allocated.read_volatile().wrapping_sub(1));
+        if crate::vif::adjust_host_contexts_in_flight(-1).is_err() {
+            crate::halt_always!();
+        }
         if let Some(backing) = backing {
             release_context_address(backing);
         }
@@ -4049,7 +4050,7 @@ impl Default for ProbeTxTracker {
 }
 
 fn completion_device_address(interface: u8) -> usize {
-    crate::dtcm::VIF_RECORDS.get() + usize::from(interface) * crate::dtcm::VIF_RECORD_SIZE + 0x18
+    crate::vif::mode_address(interface).unwrap_or(0)
 }
 
 fn completion_retry_limit_offset(alternate: bool) -> usize {
@@ -4258,7 +4259,7 @@ fn lmc_message_address(index: u8) -> u32 {
 }
 
 fn lmc_vif_address(interface: usize) -> usize {
-    crate::dtcm::VIF_RECORDS.get() + interface * crate::dtcm::VIF_RECORD_SIZE
+    crate::vif::record_address(interface as u8).unwrap_or(0)
 }
 
 fn infallible_to_never(value: core::convert::Infallible) -> ! {
@@ -4506,9 +4507,8 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                     let frame = frame as usize;
                     let mut selected_pipe = 8_u8;
                     for interface in 0..2_u8 {
-                        let record = unsafe {
-                            crate::dtcm::pas_stride_view_unchecked(usize::from(interface))
-                        };
+                        let record =
+                            crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
                         if read_u16(frame + 4) == read_u16(record.own_mac_byte_unchecked(0).get())
                             && read_u16(frame + 6)
                                 == read_u16(record.own_mac_byte_unchecked(2).get())
@@ -4909,13 +4909,28 @@ fn tala_reduction(
     }
 }
 
+fn tala_reduction_at_decision(
+    read_ampdu_length: impl FnOnce() -> u16,
+    weighted_total: u32,
+    weighted_penalty: u32,
+    parameter1: u32,
+    minimum: u32,
+) -> (u32, u32) {
+    tala_reduction(
+        u32::from(read_ampdu_length() & 0xff),
+        weighted_total,
+        weighted_penalty,
+        parameter1,
+        minimum,
+    )
+}
+
 unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
     unsafe {
         let node = frame_node.raw() as usize;
         let interface = usize::from(read_u8(node + 0x69));
-        let device = crate::dtcm::VIF_RECORDS.get() + interface * crate::dtcm::VIF_RECORD_SIZE;
         let override_value = read_u16(0xfff0_1a7c + interface * 2);
-        if override_value != 0 && read_u32(device + 0x124) >= 0x660 {
+        if override_value != 0 && crate::vif::rts_threshold(interface as u8).unwrap_or(0) >= 0x660 {
             return;
         }
 
@@ -4954,9 +4969,8 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
         let parameter1 = read_u32(0x0400_1fc4);
         let weighted_penalty = read_u32(penalty).wrapping_mul(100);
         let weighted_total = short_retries.wrapping_mul(completed);
-        let current = u32::from(read_u16(device + 0x128) & 0xff);
-        let (mut next, minimum) = tala_reduction(
-            current,
+        let (mut next, minimum) = tala_reduction_at_decision(
+            || crate::vif::ampdu_length(interface as u8).unwrap_or(0),
             weighted_total,
             weighted_penalty,
             parameter1,
@@ -5017,13 +5031,18 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
             } else {
                 next
             };
-            write_u16(device + 0x128, clamped as u16);
+            if crate::vif::set_ampdu_length(interface as u8, clamped as u16).is_err() {
+                crate::halt_always!();
+            }
         }
         write_u32(tries_total, 0);
         write_u32(penalty, 0);
         write_u32(failure, 0);
         write_u32(success, 0);
-        write_u32(0xfff0_2e4c, u32::from(read_u16(device + 0x128)));
+        write_u32(
+            0xfff0_2e4c,
+            u32::from(crate::vif::ampdu_length(interface as u8).unwrap_or(0)),
+        );
     }
 }
 
@@ -5116,8 +5135,9 @@ where
             }
             set_active_pas_contexts(active_pas_contexts().wrapping_sub(1));
             if interface < 3 {
-                let active = 0x0400_3e98 + interface * 0x3b0 + 0x30;
-                write_u16(active, read_u16(active).wrapping_sub(1));
+                if crate::vif::adjust_tx_busy(interface as u8, -1).is_err() {
+                    crate::halt_always!();
+                }
             }
             if interface < 2 {
                 service_power_save_completion(context, backend);
@@ -6281,29 +6301,23 @@ pub unsafe fn prepare_probe_context(
             return Err(ProbeBuildError::PacketRamMismatch);
         }
         let if_id = if_id.min(2);
-        ((header + 0x0a) as *mut u16).write_volatile(
-            ((0x0400_3ecc + usize::from(if_id) * 0x3b0) as *const u16).read_volatile(),
-        );
-        ((header + 0x0c) as *mut u16).write_volatile(
-            ((0x0400_3ece + usize::from(if_id) * 0x3b0) as *const u16).read_volatile(),
-        );
-        ((header + 0x0e) as *mut u16).write_volatile(
-            ((0x0400_3ed0 + usize::from(if_id) * 0x3b0) as *const u16).read_volatile(),
-        );
+        for word in 0..3 {
+            let Some(value) = crate::vif::own_mac_word(if_id, word) else {
+                release_context_address(context);
+                return Err(ProbeBuildError::InvalidContextPointer);
+            };
+            ((header + 0x0a + word as u32 * 2) as *mut u16).write_volatile(value);
+        }
         ((context_address + 0x5c) as *mut u16).write_volatile(probe.length as u16);
         ((context_address + 0xbf) as *mut u8).write_volatile(0x0f);
         ((context_address + 0xbd) as *mut u8).write_volatile(if_id);
 
         // Ordinary foreground scans store explicit rate 0xff, after which
         // `lmc_tx_assign_default_rate` resolves the VIF default.
-        let vif = 0x0400_3e98_usize + usize::from(if_id) * 0x3b0;
-        let mut rate = if ((vif + 0x26) as *const u8).read_volatile() == 0 {
-            ((vif + 0x12c) as *const u8).read_volatile()
-        } else {
-            ((vif + 0x12d) as *const u8).read_volatile()
-        };
-        if rate == 0xff || ((vif + 0x27) as *const u8).read_volatile() < 3 {
-            rate = ((vif + 0x24) as *const u8).read_volatile();
+        let default_index = usize::from(crate::vif::rate_byte(if_id, 6).unwrap_or(0) != 0);
+        let mut rate = crate::vif::default_rate(if_id, default_index).unwrap_or(0);
+        if rate == 0xff || crate::vif::rate_byte(if_id, 7).unwrap_or(0) < 3 {
+            rate = crate::vif::rate_byte(if_id, 4).unwrap_or(0);
         }
         let mut flags = 0_u32;
         if rate & 0x80 != 0 {
@@ -6374,8 +6388,9 @@ unsafe fn move_to_wsm_class0_context(
         }
         let destination_address = destination as usize;
         free_head.write_volatile(((destination_address + 4) as *const u32).read_volatile());
-        let allocated = 0x0400_3e9e as *mut u8;
-        allocated.write_volatile(allocated.read_volatile().wrapping_add(1));
+        if crate::vif::adjust_host_contexts_in_flight(1).is_err() {
+            crate::halt_always!();
+        }
 
         let destination_request = (destination_address as *const u32).read_volatile();
         let destination_frame_state = ((destination_address + 0xa0) as *const u32).read_volatile();
@@ -8871,6 +8886,23 @@ mod tests {
         assert_eq!(tala_reduction(16, 6, 100, parameters, 2), (12, 1));
         assert_eq!(tala_reduction(16, 8, 100, parameters, 2), (14, 2));
         assert_eq!(tala_reduction(16, 11, 100, parameters, 2), (16, 2));
+    }
+
+    #[test]
+    fn tala_ampdu_length_is_read_at_the_reduction_decision() {
+        let reads = core::cell::Cell::new(0);
+        let result = tala_reduction_at_decision(
+            || {
+                reads.set(reads.get() + 1);
+                16
+            },
+            8,
+            100,
+            0x1914_0f0a,
+            2,
+        );
+        assert_eq!(reads.get(), 1);
+        assert_eq!(result, (14, 2));
     }
 
     #[test]

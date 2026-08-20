@@ -438,9 +438,9 @@ unsafe fn save_register_context() {
 pub unsafe fn prepare_scan_context(channel: u16) {
     unsafe {
         let rate_config = 0x0117_u16;
-        write_u16(0x0400_3e98, rate_config);
-        write_u16(0x0400_3e9a, channel);
-        write_u8(0x0400_3e9c, 0);
+        if crate::vif::set_scan_context(channel).is_err() {
+            crate::halt_always!();
+        }
 
         write_u32(crate::platform::mac_register(0x0200), 0);
         write_u8(SHARED, 0);
@@ -449,8 +449,9 @@ pub unsafe fn prepare_scan_context(channel: u16) {
 
         // `syn_scan_program_channel` publishes the temporary VIF index and
         // active-record mask before entering `mac_apply_channel_and_vif_config`.
-        write_u8(0x0400_4611, 2);
-        write_u32(0x0400_4614, 0x0000_4000);
+        if crate::vif::publish_synthetic_scan_record().is_err() {
+            crate::halt_always!();
+        }
 
         // Synthetic scan record 2 (`0x04003678 + 2 * 0x98`) is marked as
         // scan-active by `phy_set_band_reg`/`mac_apply_channel_and_vif_config`.
@@ -1181,19 +1182,14 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
         write_u16(packet_ram::duration_word(0), read_u16(0x0400_3670));
         write_u16(packet_ram::duration_word(1), read_u16(0x0400_3672));
 
-        for vif in 0..2 {
-            let state = 0x0400_3e98 + vif * 0x3b0;
-            let mode = read_u8(state + 0x18);
-            if (mode == 5 || mode == 6) && read_u8(state + 0x3c6) != 0 {
-                program_mac_address(
-                    crate::dtcm::low_mac_peer_address_byte_unchecked(vif, 0).get(),
-                    crate::platform::mac_register(0x003c),
-                    0x101,
-                );
-                write_u32(crate::platform::mac_register(0x0258), 0x0200_0000);
-                write_u32(crate::platform::mac_register(0x0248), 0x0200_0001);
-                break;
-            }
+        if let Some(vif) = crate::vif::wake_reinit_candidate() {
+            program_mac_address(
+                crate::dtcm::low_mac_peer_address_byte_unchecked(vif, 0).get(),
+                crate::platform::mac_register(0x003c),
+                0x101,
+            );
+            write_u32(crate::platform::mac_register(0x0258), 0x0200_0000);
+            write_u32(crate::platform::mac_register(0x0248), 0x0200_0001);
         }
 
         for pointer in [

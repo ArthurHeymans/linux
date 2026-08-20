@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod configuration;
 pub mod crypto;
 pub mod download;

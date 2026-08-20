@@ -367,7 +367,9 @@ unsafe fn service_unjoined_scan_finish(storage: &mut ScanStorage) -> bool {
                 return false;
             }
             unsafe {
-                (0x0400_3e9a as *mut u16).write_volatile(0);
+                if crate::vif::clear_scan_channel().is_err() {
+                    crate::halt_always!();
+                }
                 crate::mac::finish_unjoined_scan_radio_stop();
             }
             storage.finish_state = 4;

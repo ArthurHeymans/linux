@@ -10,7 +10,6 @@ pub const HOST_CONTEXT_SIZE: usize = 0x170;
 pub const HOST_CONTEXT_BASE: u32 = 0x0400_5a24;
 pub const HOST_CONTEXT_COUNT: usize = 30;
 pub const HOST_FREE_HEAD: u32 = 0x0400_87b0;
-pub const HOST_IN_FLIGHT: u32 = 0x0400_3e9e;
 pub const HOST_FRAME_STATE_SIZE: u32 = packet_ram::HOST_FRAME_STATE_SIZE as u32;
 pub const PAS_OFFSET: usize = 0x54;
 pub const PAS_RING_CAPACITY: usize = 64;
@@ -293,21 +292,17 @@ pub fn classify_header(
 
 #[cfg(target_arch = "arm")]
 unsafe fn assign_sequence_number(context: HostContextAddress, frame_address: u32, tid: u8) {
-    const VIF_BASE: u32 = 0x0400_3e98;
-    const VIF_STRIDE: u32 = 0x3b0;
-    const LINK_MAP_OFFSET: u32 = 0x4920;
     const LINK_MAP_COUNT: u32 = 0x0400_87cc;
     const SEQUENCE_BASE: u32 = 0x0400_8890;
 
     let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
     let host_link = unsafe { read_live_u8(context.raw() + 0xbf) };
-    let vif = VIF_BASE + u32::from(interface) * VIF_STRIDE;
-    let mut internal_link = unsafe { read_live_u8(vif + 0x12a) };
+    let mut internal_link = crate::vif::internal_link(interface).unwrap_or(0) as u8;
     if host_link != 0 {
         let count = unsafe { (LINK_MAP_COUNT as *const u16).read_volatile() };
         let mut index = 0_u16;
         while index < count {
-            let entry = VIF_BASE + LINK_MAP_OFFSET + u32::from(index) * 0x0c;
+            let entry = crate::dtcm::LINK_SEQUENCE_ROOT.get() as u32 + u32::from(index) * 0x0c;
             if unsafe { read_live_u8(entry + 0x19) } == interface
                 && unsafe { read_live_u8(entry + 0x18) } == host_link
             {
@@ -514,12 +509,26 @@ unsafe fn vendor_timer() -> u32 {
     unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(0x0400_143c)) }
 }
 
+#[allow(unused_macros)]
+macro_rules! observe_normal_power_save_release {
+    ($sleeping:expr, $frame_control:expr, $link_gate:expr, $link_bit:expr, $policy:expr, $flags:expr) => {{
+        let sleeping = $sleeping;
+        let frame_control = $frame_control;
+        let frame_kind = frame_control & 0xff;
+        let normal_release = ((sleeping & $link_bit == 0)
+            || frame_kind == 0x50
+            || (frame_kind == 0xd0 && $policy == 0x0f))
+            && (($link_bit & 1 == 0) || sleeping == 0 || $link_gate == 0)
+            && $flags & (1 << 29) == 0;
+        (sleeping, frame_control, normal_release)
+    }};
+}
+
 /// Exact boolean/side-effect translation of `txp_program_pipe_hw(pas, 0)`.
 /// Vendor return value zero means blocked; nonzero means the pending task may
 /// release the frame toward PAS scheduling.
 #[cfg(target_arch = "arm")]
 unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
-    const VIF_BASE: u32 = 0x0400_3e98;
     const LINK_STATE: u32 = 0x0400_87b8;
     let pas = context.raw() + PAS_OFFSET as u32;
     let interface = unsafe { read_live_u8(pas + 0x69) };
@@ -527,8 +536,7 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
         return true;
     }
     let pas_state = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
-    let vif = VIF_BASE + u32::from(interface) * 0x3b0;
-    let vif_control_bits = unsafe { read_live_u32(vif + 0x1c) };
+    let Some(vif_control_bits) = crate::vif::flags(interface) else { return false; };
 
     let blocked = if unsafe { read_live_u8(pas_state.nonzero_block_byte().get() as u32) } != 0 {
         true
@@ -539,8 +547,8 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
             read_live_u32(crate::platform::mac_register(0x0e38) as u32)
                 .wrapping_add(read_live_u32(pas_state.tsf_adjust_low().get() as u32))
         };
-        let until_tbtt =
-            unsafe { read_live_u32(pas_state.next_tbtt_low().get() as u32) }.wrapping_sub(tsf) as i32;
+        let until_tbtt = unsafe { read_live_u32(pas_state.next_tbtt_low().get() as u32) }
+            .wrapping_sub(tsf) as i32;
         let duration = u32::from(unsafe { read_live_u16(pas + 0x30) })
             + u32::from(unsafe { read_live_u16(pas + 0x34) })
             + u32::from(unsafe { read_live_u16(pas + 0x38) })
@@ -549,36 +557,28 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
     };
     let policy = unsafe { read_live_u8(pas + 0x0e) };
     let global = unsafe { read_live_u32(0x0400_1fcc) };
-    if (policy != 0x0f || global & 0x80 == 0) && blocked {
-        return false;
-    }
-    if vif_control_bits & 4 == 0 {
-        return true;
-    }
+    if (policy != 0x0f || global & 0x80 == 0) && blocked { return false; }
+    if vif_control_bits & 4 == 0 { return true; }
 
     let link = unsafe { read_live_u8(pas + 0x6b) };
     let link_bit = 1_u16.wrapping_shl(u32::from(link));
-    let sleeping = unsafe { read_live_u16(vif + 0x15c) };
-    let frame_control = unsafe { read_live_u16(pas + 0x0a) };
-    let frame_kind = frame_control & 0xff;
-    let normal_release = ((sleeping & link_bit == 0)
-        || frame_kind == 0x50
-        || (frame_kind == 0xd0 && policy == 0x0f))
-        && ((link_bit & 1 == 0) || sleeping == 0 || unsafe { read_live_u8(vif + 0x164) } == 0)
-        && vif_control_bits & (1 << 29) == 0;
-    if normal_release {
-        return true;
-    }
+    let vif = crate::dtcm::vif_record_unchecked(usize::from(interface));
+    let (sleeping, frame_control, normal_release) = observe_normal_power_save_release!(
+        crate::vif::sleeping_links(vif),
+        unsafe { read_live_u16(pas + 0x0a) },
+        crate::vif::link_gate(vif),
+        link_bit,
+        policy,
+        vif_control_bits
+    );
+    if normal_release { return true; }
 
-    let awake = unsafe { read_live_u16(vif + 0x15e) };
-    let buffered = unsafe { read_live_u16(vif + 0x160) };
+    let Some(power_save) = crate::vif::power_save_masks(interface) else { return false; };
+    let awake = power_save.awake_links;
+    let buffered = power_save.buffered_links;
     if awake & link_bit == 0 && buffered & link_bit == 0 {
-        if unsafe { read_live_u16(LINK_STATE + 0x16) } & link_bit != 0 {
-            return false;
-        }
-        if unsafe { read_live_u16(vif + 0x2c) } & link_bit == 0 {
-            return false;
-        }
+        if unsafe { read_live_u16(LINK_STATE + 0x16) } & link_bit != 0 { return false; }
+        if crate::vif::allowed_links(interface).unwrap_or(0) & link_bit == 0 { return false; }
         let count = unsafe { read_live_u16(LINK_STATE + 0x14) };
         let mut index = 0_u16;
         while index < count {
@@ -586,10 +586,7 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
             if unsafe { read_live_u8(pas + 0x6b) } == unsafe { read_live_u8(entry + 0x18) } {
                 unsafe {
                     write_live_u8(entry + 0x1c, read_live_u8(entry + 0x1c) | 2);
-                    write_live_u16(
-                        LINK_STATE + 0x16,
-                        read_live_u16(LINK_STATE + 0x16) | link_bit,
-                    );
+                    write_live_u16(LINK_STATE + 0x16, read_live_u16(LINK_STATE + 0x16) | link_bit);
                 }
             }
             index += 1;
@@ -600,22 +597,22 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
     if awake & link_bit != 0 && buffered & link_bit != 0 && frame_control & 0x80 != 0 {
         let header = unsafe { read_live_u32(pas) };
         let qos_control = unsafe { read_live_u16(header + 0x18) };
-        if qos_control & 0x10 == 0 {
-            return true;
+        if qos_control & 0x10 == 0 { return true; }
+        if crate::vif::clear_buffered_link(interface, buffered, link_bit).is_err() {
+            crate::halt_always!();
         }
-        unsafe { write_live_u16(vif + 0x160, buffered & !link_bit) };
         return true;
     }
 
-    let new_awake = awake & !link_bit;
-    unsafe {
-        write_live_u16(vif + 0x15e, new_awake);
-        if read_live_u16(vif + 0x2e) != 0 {
-            write_live_u16(
-                vif + 0x2e,
-                (!sleeping | read_live_u16(vif + 0x160) | new_awake) & read_live_u16(vif + 0x2c),
-            );
-        }
+    if crate::vif::clear_awake_link_and_maybe_recompute(
+        interface,
+        sleeping,
+        awake,
+        link_bit,
+    )
+    .is_err()
+    {
+        crate::halt_always!();
     }
     true
 }
@@ -697,8 +694,9 @@ unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
         crate::tx::set_active_pas_contexts(active.wrapping_add(1));
         let interface = read_live_u8(context.raw() + 0xbd);
         if interface < 3 {
-            let vif_active = 0x0400_3e98 + u32::from(interface) * 0x3b0 + 0x30;
-            write_live_u16(vif_active, read_live_u16(vif_active).wrapping_add(1));
+            if crate::vif::adjust_tx_busy(interface, 1).is_err() {
+                crate::halt_always!();
+            }
         }
         true
     }
@@ -710,8 +708,9 @@ unsafe fn release_pas_accounting(context: HostContextAddress) {
         crate::tx::set_active_pas_contexts(crate::tx::active_pas_contexts().wrapping_sub(1));
         let interface = read_live_u8(context.raw() + 0xbd);
         if interface < 3 {
-            let vif_active = 0x0400_3e98 + u32::from(interface) * 0x3b0 + 0x30;
-            write_live_u16(vif_active, read_live_u16(vif_active).wrapping_sub(1));
+            if crate::vif::adjust_tx_busy(interface, -1).is_err() {
+                crate::halt_always!();
+            }
         }
     }
 }
@@ -771,13 +770,13 @@ pub unsafe fn pending_live_diagnostic(retained: &RetainedHostTx) -> PendingLiveD
     let context = retained.context;
     let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
     let link = unsafe { read_live_u8(context.raw() + 0xbf) };
-    let vif = 0x0400_3e98 + u32::from(interface) * 0x3b0;
+    let vif = crate::vif::diagnostic_snapshot(interface);
     PendingLiveDiagnostic {
         global: unsafe { read_live_u32(0x0400_1fcc) },
-        active_mask: unsafe { read_live_u16(vif + 0x2c) },
-        effective_mask: unsafe { read_live_u16(vif + 0x2e) },
-        vif_control_bits: unsafe { read_live_u32(vif + 0x1c) },
-        vif_mode_byte: unsafe { read_live_u8(vif + 0x18) },
+        active_mask: vif.map_or(0, |state| state.allowed_links),
+        effective_mask: vif.map_or(0, |state| state.effective_links),
+        vif_control_bits: vif.map_or(0, |state| state.flags),
+        vif_mode_byte: vif.map_or(0, |state| state.mode),
         interface,
         link,
         pipe_allowed: unsafe { program_pipe_eligible(context) },
@@ -800,7 +799,6 @@ pub unsafe fn service_pending(
     let context = retained.context;
     let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
     let link = unsafe { read_live_u8(context.raw() + 0xbf) };
-    let vif = 0x0400_3e98 + u32::from(interface) * 0x3b0;
     let link_bit = 1_u16.wrapping_shl(u32::from(link));
     let completion_class = unsafe { read_live_u8(context.raw() + 0x53) };
     let global_blocked = unsafe { read_live_u32(0x0400_1fcc) } & 0xa0 != 0;
@@ -808,15 +806,6 @@ pub unsafe fn service_pending(
     let submitted = unsafe { read_live_u32(context.raw() + 0x40) };
     let expired = (submitted.wrapping_sub(now).wrapping_add(0x004c_4b40) as i32) < 0;
 
-    let mut decision_input = PendingTaskInput {
-        global_blocked,
-        active_link: true,
-        link_gate_requests_removal: false,
-        vif_operating: false,
-        completion_class,
-        pipe_allowed: false,
-        expired,
-    };
     let decision = if global_blocked {
         pending_task_decision(PendingTaskInput {
             global_blocked: true,
@@ -828,28 +817,27 @@ pub unsafe fn service_pending(
             expired,
         })
     } else {
-        let active_mask = unsafe { read_live_u16(vif + 0x2c) };
+        let vif = crate::dtcm::vif_record_unchecked(usize::from(interface));
+        let active_mask = crate::vif::vif_read_u16(vif.allowed_links());
         let active_link = active_mask & link_bit != 0;
-        let mut effective_mask = unsafe { read_live_u16(vif + 0x2e) };
+        let mut effective_mask = crate::vif::vif_read_u16(vif.effective_links());
         let mut effective_link = effective_mask & link_bit != 0;
         let frame_kind = unsafe { read_live_u16(context.raw() + 0x5e) } & 0xff;
-        let vif_control_bits = unsafe { read_live_u32(vif + 0x1c) };
+        let vif_control_bits = crate::vif::vif_read_u32(vif.flags());
         if !effective_link && frame_kind != 0xd0 && effective_mask == 0 {
             if vif_control_bits & (1 << 30) != 0 {
-                unsafe { write_live_u32(vif + 0x1c, vif_control_bits | 0x0400_0000) };
+                crate::vif::vif_write_u32(vif.flags(), vif_control_bits | 0x0400_0000);
             } else {
-                // `vif_resume_tx_after_radio`: the joined runtime already owns
-                // the radio, so reproduce its effective-link publication.
-                let radio_state = unsafe { read_live_u8(vif + 0x66) };
+                let radio_state = crate::vif::vif_read_u8(vif.activity_state());
                 if radio_state == 2 || radio_state == 3 {
                     effective_mask = active_mask;
                     if interface < 2 {
-                        let sleeping = unsafe { read_live_u16(vif + 0x15c) };
-                        let buffered = unsafe { read_live_u16(vif + 0x160) };
-                        let awake = unsafe { read_live_u16(vif + 0x15e) };
+                        let sleeping = crate::vif::vif_read_u16(vif.sleeping_links());
+                        let buffered = crate::vif::vif_read_u16(vif.buffered_links());
+                        let awake = crate::vif::vif_read_u16(vif.awake_links());
                         effective_mask = (active_mask & (!sleeping | buffered)) | awake;
                     }
-                    unsafe { write_live_u16(vif + 0x2e, effective_mask) };
+                    crate::vif::vif_write_u16(vif.effective_links(), effective_mask);
                     effective_link = effective_mask & link_bit != 0;
                 }
             }
@@ -857,10 +845,10 @@ pub unsafe fn service_pending(
         let link_gate_requests_removal =
             (effective_link || frame_kind == 0xd0) && vif_control_bits & (1 << 29) == 0;
         if (effective_link || frame_kind == 0xd0) && vif_control_bits & (1 << 29) != 0 {
-            unsafe { write_live_u32(vif + 0x1c, vif_control_bits | 0x0400_0000) };
+            crate::vif::vif_write_u32(vif.flags(), vif_control_bits | 0x0400_0000);
         }
-        let state = unsafe { read_live_u8(vif + 0x18) };
-        decision_input = PendingTaskInput {
+        let state = crate::vif::vif_read_u8(vif.mode());
+        pending_task_decision(PendingTaskInput {
             global_blocked: false,
             active_link,
             link_gate_requests_removal,
@@ -868,8 +856,7 @@ pub unsafe fn service_pending(
             completion_class,
             pipe_allowed: unsafe { program_pipe_eligible(context) },
             expired,
-        };
-        pending_task_decision(decision_input)
+        })
     };
 
     match decision {
@@ -1467,7 +1454,9 @@ unsafe fn write_live_u32(address: u32, value: u32) {
 pub unsafe fn initialize_host_pool() {
     let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     unsafe {
-        write_live_u8(HOST_IN_FLIGHT, 0);
+        if crate::vif::set_host_contexts_in_flight(0).is_err() {
+            crate::halt_always!();
+        }
         write_live_u32(HOST_FREE_HEAD, 0);
         let mut head = 0;
         let mut index = 0;
@@ -1497,7 +1486,7 @@ pub unsafe fn initialize_host_pool() {
 pub unsafe fn allocate_host_context() -> Result<HostContextAddress, HostPoolError> {
     let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     let mut head = unsafe { read_live_u32(HOST_FREE_HEAD) };
-    let in_flight = unsafe { read_live_u8(HOST_IN_FLIGHT) };
+    let in_flight = crate::vif::host_contexts_in_flight().unwrap_or(0);
     if in_flight == 0 && HostContextAddress::from_raw(head).is_none() {
         unsafe { crate::tx::restore_irq_fiq_saved(previous) };
         unsafe { initialize_host_pool() };
@@ -1526,7 +1515,9 @@ pub unsafe fn allocate_host_context() -> Result<HostContextAddress, HostPoolErro
         write_live_u32(context.raw() + 0x20, 0xfe);
         write_live_u16(context.raw() + 0x70, 0x00fe);
         write_live_u32(context.raw() + 0x80, 0);
-        write_live_u8(HOST_IN_FLIGHT, read_live_u8(HOST_IN_FLIGHT).wrapping_add(1));
+        if crate::vif::adjust_host_contexts_in_flight(1).is_err() {
+            crate::halt_always!();
+        }
         crate::tx::restore_irq_fiq_saved(previous);
     }
     Ok(context)
@@ -1547,7 +1538,9 @@ pub unsafe fn free_host_context(context: HostContextAddress) {
         let head = read_live_u32(HOST_FREE_HEAD);
         write_live_u32(context.raw() + 4, head);
         write_live_u32(HOST_FREE_HEAD, context.raw());
-        write_live_u8(HOST_IN_FLIGHT, read_live_u8(HOST_IN_FLIGHT).wrapping_sub(1));
+        if crate::vif::adjust_host_contexts_in_flight(-1).is_err() {
+            crate::halt_always!();
+        }
         crate::tx::restore_irq_fiq_saved(previous);
     }
 }
@@ -1793,6 +1786,100 @@ pub const fn pending_task_decision(input: PendingTaskInput) -> PendingTaskDecisi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ObservationKind {
+        SleepingLinks,
+        FrameControl,
+        LinkGate,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct Observation {
+        kind: ObservationKind,
+        address: usize,
+        width: u8,
+    }
+
+    struct PowerSaveRecorder {
+        observations: std::vec::Vec<Observation>,
+        record: crate::dtcm::VifRecordAddress,
+        sleeping: u16,
+        frame_control: u16,
+        link_gate: u8,
+    }
+
+    impl PowerSaveRecorder {
+        fn sleeping_links(&mut self) -> u16 {
+            self.observations.push(Observation {
+                kind: ObservationKind::SleepingLinks,
+                address: self.record.sleeping_links().get(),
+                width: 2,
+            });
+            self.sleeping
+        }
+
+        fn frame_control(&mut self, address: usize) -> u16 {
+            self.observations.push(Observation {
+                kind: ObservationKind::FrameControl,
+                address,
+                width: 2,
+            });
+            self.frame_control
+        }
+
+        fn link_gate(&mut self) -> u8 {
+            self.observations.push(Observation {
+                kind: ObservationKind::LinkGate,
+                address: self.record.link_gate().get(),
+                width: 1,
+            });
+            self.link_gate
+        }
+    }
+
+    #[test]
+    fn power_save_observation_defers_link_gate_until_short_circuit_point() {
+        let record = crate::dtcm::vif_record(0).unwrap();
+        let frame_control_address = 0x0400_5a2e;
+        let mut recorder = PowerSaveRecorder {
+            observations: std::vec::Vec::new(),
+            record,
+            sleeping: 1,
+            frame_control: 0,
+            link_gate: 0,
+        };
+        let (_, _, released) = observe_normal_power_save_release!(
+            recorder.sleeping_links(),
+            recorder.frame_control(frame_control_address),
+            recorder.link_gate(),
+            1_u16,
+            0_u8,
+            0_u32
+        );
+        assert!(!released);
+        assert_eq!(recorder.observations, [
+            Observation { kind: ObservationKind::SleepingLinks, address: record.sleeping_links().get(), width: 2 },
+            Observation { kind: ObservationKind::FrameControl, address: frame_control_address, width: 2 },
+        ]);
+
+        recorder.observations.clear();
+        recorder.frame_control = 0x50;
+        let (_, _, released) = observe_normal_power_save_release!(
+            recorder.sleeping_links(),
+            recorder.frame_control(frame_control_address),
+            recorder.link_gate(),
+            1_u16,
+            0_u8,
+            0_u32
+        );
+        assert!(released);
+        assert_eq!(recorder.observations, [
+            Observation { kind: ObservationKind::SleepingLinks, address: record.sleeping_links().get(), width: 2 },
+            Observation { kind: ObservationKind::FrameControl, address: frame_control_address, width: 2 },
+            Observation { kind: ObservationKind::LinkGate, address: record.link_gate().get(), width: 1 },
+        ]);
+    }
 
     #[test]
     fn host_context_addresses_preserve_pool_and_frame_state_identity() {

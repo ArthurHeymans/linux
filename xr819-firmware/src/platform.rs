@@ -609,6 +609,21 @@ pub fn prepare_mac_receive_hardware() {
     register32(0x09c0_02ec).set(4);
 }
 
+#[cfg(test)]
+trait StationAddressIo {
+    fn write_low_mac_byte(&mut self, address: crate::dtcm::DtcmAddress, value: u8);
+    fn write_vif_bytes(&mut self, index: usize, value: u8);
+}
+
+#[cfg(test)]
+fn program_station_address_bytes_with_io<I: StationAddressIo>(address: [u8; 6], io: &mut I) {
+    for (index, value) in address.into_iter().enumerate() {
+        io.write_low_mac_byte(crate::dtcm::low_mac_own_mac_byte_unchecked(0, index), value);
+        io.write_low_mac_byte(crate::dtcm::low_mac_own_mac_byte_unchecked(1, index), value);
+        io.write_vif_bytes(index, value);
+    }
+}
+
 pub fn program_station_address(address: [u8; 6]) {
     for (index, value) in address.into_iter().enumerate() {
         unsafe {
@@ -616,13 +631,8 @@ pub fn program_station_address(address: [u8; 6]) {
                 .write_volatile(value);
             (crate::dtcm::low_mac_own_mac_byte_unchecked(1, index).get() as *mut u8)
                 .write_volatile(value);
-            for interface in 0..3_usize {
-                (0x0400_3ecc_usize
-                    .wrapping_add(interface * 0x3b0)
-                    .wrapping_add(index) as *mut u8)
-                    .write_volatile(value);
-            }
         }
+        crate::vif::set_all_own_mac_byte(index, value);
     }
     let low = u32::from_le_bytes([address[0], address[1], address[2], address[3]]);
     let high = u32::from(u16::from_le_bytes([address[4], address[5]]));
@@ -803,4 +813,71 @@ pub fn try_activate_hif(max_polls: u32) -> bool {
 /// Exact unbounded ready wait used by the reference startup routine.
 pub fn activate_hif_and_wait_ready() {
     while !try_activate_hif(u32::MAX) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct ByteWrite {
+        address: usize,
+        width: u8,
+        value: u8,
+    }
+
+    #[derive(Default)]
+    struct StationAddressRecorder {
+        writes: std::vec::Vec<ByteWrite>,
+    }
+
+    impl StationAddressIo for StationAddressRecorder {
+        fn write_low_mac_byte(&mut self, address: crate::dtcm::DtcmAddress, value: u8) {
+            self.writes.push(ByteWrite { address: address.get(), width: 1, value });
+        }
+
+        fn write_vif_bytes(&mut self, index: usize, value: u8) {
+            for interface in 0..3 {
+                let record = crate::dtcm::vif_record(interface).unwrap();
+                self.writes.push(ByteWrite {
+                    address: record.own_mac_byte(index).unwrap().get(),
+                    width: 1,
+                    value,
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn station_address_bytes_preserve_parent_address_width_and_order() {
+        let address = [0x10, 0x21, 0x32, 0x43, 0x54, 0x65];
+        let mut recorder = StationAddressRecorder::default();
+        program_station_address_bytes_with_io(address, &mut recorder);
+
+        let mut expected = std::vec::Vec::new();
+        for (index, value) in address.into_iter().enumerate() {
+            expected.push(ByteWrite {
+                address: crate::dtcm::low_mac_own_mac_byte_unchecked(0, index).get(),
+                width: 1,
+                value,
+            });
+            expected.push(ByteWrite {
+                address: crate::dtcm::low_mac_own_mac_byte_unchecked(1, index).get(),
+                width: 1,
+                value,
+            });
+            for interface in 0..3 {
+                expected.push(ByteWrite {
+                    address: crate::dtcm::vif_record(interface)
+                        .unwrap()
+                        .own_mac_byte(index)
+                        .unwrap()
+                        .get(),
+                    width: 1,
+                    value,
+                });
+            }
+        }
+        assert_eq!(recorder.writes, expected);
+    }
 }
