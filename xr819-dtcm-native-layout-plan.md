@@ -1,7 +1,7 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** read-only reverse-engineering plan; no firmware or linker change is proposed by this document.  
-**Firmware lineage studied:** `ad989e0a5b1a` (`Let the linker pack packet RAM objects`), the parent of the empty working-copy change.  
+**Status:** implemented fixed-address shared-quarantine ABI candidate under independent review; address movement and exclusive/native ownership remain out of scope.  
+**Firmware lineage:** candidate based on `6dd278ebb533e7a9c029044eaf716ee297cc85aa` (`Document the retained DTCM ownership map`); earlier evidence includes the `ad989e0a5b1a` packet-RAM lineage.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
 
@@ -22,7 +22,7 @@ What can be done now is narrower:
 3. add read-only maps, generated reference reports, exact-layout tests, and family-specific volatile access layers;
 4. translate whole dependency closures until a final atomic address-changing migration becomes possible.
 
-The likely final form is **several independently typed native Rust family objects**, mostly in ITCM, followed by one atomic removal of all legacy pointer roots and DTCM loader assumptions. A single packed `DtcmLayout` spanning `0x04000000..0x0400a000` is not sound today because it would claim unknown and overlaid bytes and would falsely imply one ownership domain.
+The likely final native form is **several independently typed Rust family objects**, mostly in ITCM, followed by one atomic removal of all legacy pointer roots and DTCM loader assumptions. The previously rejected design was a movable, exclusively/native-owned packed `DtcmLayout`. The implemented candidate is materially different: one fixed-address, private, `MaybeUninit`/`UnsafeCell`-backed object is used only as a shared quarantine ABI view. It allocates no holes, exposes no complete-record safe references, and does not claim one ownership or synchronization domain.
 
 ---
 
@@ -46,14 +46,14 @@ This rules out “using the missing upper 16 KiB” for native state.
 
 ### 1.2 Stacks are not layout fields
 
-The current linker partition in `xr819-firmware/link-main-low.x` is:
+The implemented candidate's linker partition in `xr819-firmware/link-main-low.x` is:
 
 ```text
-0x04000000..0x04009080    DTCM_LEGACY_LOW
-0x04009080..0x040094d4    DTCM_CONTEXT_POOL
-0x040094d4..0x0400a000    DTCM_LEGACY_HIGH
+0x04000000..0x0400a000    DTCM_STATE shared quarantine ABI object
 0x0400a000..0x0400c000    DTCM_STACKS
 ```
+
+The internal context pool remains a linker-exported member view at `0x04009080..0x040094d4`; it is no longer a standalone output section.
 
 The stack region has a fixed internal partition:
 
@@ -89,7 +89,8 @@ The current Rust sectioned image has no DTCM `PT_LOAD`. The release ELF inspecte
 .data                 0x000106b4 size 0x04c0
 .bss                  0x00010b78 size 0x3728
 .noinit.exception     0x000142a0 size 0x58
-.dtcm.context_pool    0x04009080 size 0x454, SHT_NOBITS, no PT_LOAD
+.dtcm.state           0x04000000 size 0xa000, SHT_NOBITS, no PT_LOAD
+  internal pool view  0x04009080..0x040094d4 via linker-exported symbols
 ```
 
 The packer emits only two ITCM load segments; it does not copy or fill the fixed context pool. `platform::initialize_runtime_state()` explicitly zeroes `0x04002078..0x04009c44`, and runtime startup reconstructs selected low-DTCM values and free lists. Low initialized DTCM below `0x04002078` is otherwise retained from an earlier vendor/boot state unless a specific Rust initializer rewrites it. This distinction matters: “zero at boot,” “zero on every Rust reload,” and “retained vendor COPY data” are not interchangeable.
@@ -253,7 +254,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04008f80..0x0400906c` | `0xec` | unknown | Unknown, not allocatable |
 | `0x0400906c..0x04009080` | `0x14` | internal-context global/header prefix | Medium; free head is reached at base `+0x14` |
 | `0x04009080..0x040094d4` | `0x454` | typed internal TX context pool: head + three `0x170` records | High exact linker-owned fixed quarantine |
-| `0x040094d4..0x040096dc` | `0x208` | two power-save records, stride `0x104` | High base/stride/count; many retained consumers |
+| `0x040094d4..0x040096dc` | `0x208` | opaque power-save family; observed address stride `0x104` | High base/family span and visible stride; record extent/count/overlap semantics remain uncertain |
 | `0x040096dc..0x04009720` | `0x44` | unknown/PS-HIF boundary | Unknown, not allocatable |
 | `0x04009720..0x04009754` | `0x34` | HIF buffer/free-list and deferred-transfer roots | Medium |
 | `0x04009754..0x04009928` | `0x1d4` | historical vendor HIF software/ring state; Rust owners now live in ITCM | High historical shape; fixed bytes remain quarantine for untranslated code |
@@ -273,7 +274,7 @@ Within `0x04000000..0x04002078`:
 | `0x04000138..0x0400014c` | 10 `u16` | TX duration timing table; rebuilt by Rust startup; read through the rate map |
 | `0x04000194..0x040001aa` | 22 bytes | rate encoding table |
 | `0x040001aa..0x040001c0` | 22 bytes | rate attribute table |
-| `0x04000260..0x04000288` | 10 `u32` visible | completion class callback table; class 6 at `0x04000278` contains Thumb `0x00015427` |
+| `0x04000260..0x04000288` | 10 visible `u32` words | completion-related initialized island; the class-6-visible word at `0x04000278` contains Thumb `0x00015427`, but not every word is proven to be a complete callback entry |
 | `0x040002d8` | `u32` | hardware ring-cursor to software-slot translation |
 | `0x040002dc..0x040002e4` | two 4-byte maps | pipe/queue status maps |
 | `0x04000710..0x040007a4` | 37 `u32` | WSM command dispatch table |
@@ -995,11 +996,11 @@ Steps 2–8 may be committed as translations while preserving addresses. The fin
 
 ### 9.1 Current linker facts
 
-`link-main-low.x` correctly:
+`link-main-low.x` currently:
 
 * bounds ITCM to observed `0x1c000`;
-* splits lower legacy DTCM around the fixed internal pool;
-* anchors `.dtcm.context_pool` at `0x04009080` and asserts end `0x040094d4`;
+* places one `.dtcm.state` shared-quarantine object at `0x04000000..0x0400a000` with no program header;
+* exports actual ELF symbols for the DTCM object and internal-pool member boundaries at `0x04009080`, `0x04009084`, and `0x040094d4`;
 * asserts stack floor/top;
 * keeps packet RAM as NOLOAD, no-program-header ownership objects;
 * puts ordinary Rust `.data`/`.bss` in ITCM.
@@ -1242,6 +1243,121 @@ Anything less leaves a fixed pointer or hidden writer that can invalidate native
 
 ## Final recommendation
 
-Do not implement a monolithic DTCM struct now. Treat `0x04000000..0x0400a000` as a shrinking quarantine, with only exact, evidence-backed anchored views. Continue translating complete state-machine closures while preserving fixed addresses. When the scheduler/timer core, TX lifecycle, VIF/PAS/link/BA/power-save cycle, scan/JOIN/channel-switch paths, remaining HIF/MIC consumers, and PHY/RF fixed-root users are all native, perform one final atomic migration that removes every legacy DTCM root and loader assumption together.
+Retain the implemented monolithic object only as a **fixed shared-quarantine ABI view** of `0x04000000..0x0400a000`; do not reinterpret it as a movable native state object or expose safe complete-record references. Its value is structural: one linker allocation, opaque occupied families, exact boundary checks, and narrow raw views. Continue translating complete state-machine closures while preserving fixed addresses. When the scheduler/timer core, TX lifecycle, VIF/PAS/link/BA/power-save cycle, scan/JOIN/channel-switch paths, remaining HIF/MIC consumers, and PHY/RF fixed-root users are all native, replace the quarantine with independently owned native families and remove every legacy DTCM root and loader assumption atomically.
 
-The existing fixed internal context pool is the model for what is safe today: improve type shape and linker verification without claiming exclusive ownership or address mobility. The failed TALA exact-layout experiment is the model for what must not be inferred: exact bytes and source arithmetic do not prove that a black-box ABI address is irrelevant.
+The internal context member view remains the model for what is safe today: improve type shape, direct symbol/addend addressing, and linker verification without claiming exclusive ownership or address mobility. The failed TALA exact-layout experiment remains the model for what must not be inferred: exact bytes and source arithmetic do not prove that a black-box ABI address is irrelevant.
+
+---
+
+## Implementation appendix: first linker-owned structural candidate
+
+The first candidate is implemented in `xr819-firmware/src/dtcm.rs` and deliberately changes the conclusion of Candidate A only in one narrow respect: a monolithic type is now used as a **fixed-address quarantine ABI map**, not as a movable or exclusively owned Rust object. It preserves every retained address and does not translate vendor behavior. This makes the linker allocation and the Rust structural assertions agree while retaining the ownership caveats established above.
+
+### A.1 Linker object and initialization contract
+
+`DTCM_STATE` is a `#[repr(C, align(4))]` object of exactly `0xa000` bytes in the single `.dtcm.state` output section:
+
+```text
+0x04000000..0x0400a000  .dtcm.state, SHT_NOBITS | SHF_ALLOC, NOLOAD, :NONE
+0x0400a000..0x0400c000  unchanged exception/system stack partition
+```
+
+`link-main-low.x` now has one `DTCM_STATE` memory region rather than lower-legacy/context-pool/upper-legacy regions. The output section is explicitly outside every program header. The linker still asserts the exact stack floor and top and additionally asserts the DTCM object size, the internal free head at `0x04009080`, first internal context at `0x04009084`, and pool end at `0x040094d4`.
+
+The Rust static stores `MaybeUninit<DtcmLayout>` inside `UnsafeCell`. Consequently, the Rust initializer does not provide COPY or zero-fill semantics. Retained vendor COPY bytes below `0x04002078` are left untouched. `platform::initialize_runtime_state()` continues to clear exactly `0x04002078..0x04009c44` and reconstruct the same selected low-DTCM startup words. No loader record was added.
+
+### A.2 Exact candidate field sequence
+
+Every entry below is a private field with compile-time `size_of!`, `align_of!`, and top-level `offset_of!` assertions. Named opaque families contain private `UnsafeCell<MaybeUninit<[u8; N]>>` storage and expose no byte slice or allocation API.
+
+| Offset | Size | Candidate type | Meaning |
+| ---: | ---: | --- | --- |
+| `0x0000` | `0x2078` | `InitializedVendorImage` | retained vendor COPY image, including tables, callbacks, AES data, and opaque initialized words |
+| `0x2078` | `0x114` | `RuntimePrefix` | early vendor-zeroed context/backoff/debug state |
+| `0x218c` | `0x28` | `ClockParameterIsland` | exact clock-parameter island |
+| `0x21b4` | `0x80` | `SchedulerHandlerTable` | 32 shared raw callback words |
+| `0x2234` | `0x127c` | `PreConfigurationTables` | PHY/template/beacon/filter state |
+| `0x34b0` | `0x130` | `SddConfigurationTables` | SDD-derived channel/gain/profile tables |
+| `0x35e0` | `0x90` | `WakeContextState` | mixed wake/context state |
+| `0x3670` | `0x4` | `DurationSources` | retained duration-source halfwords |
+| `0x3674` | `0x4` | `PreLowMacWord` | occupied undecoded word |
+| `0x3678` | `0x800` | `LowMacPasFamily` | shared low-MAC/PAS/rate/link/pipe/queue family |
+| `0x3e78` | `0x20` | `PreVifHeader` | pre-VIF link/aggregation header |
+| `0x3e98` | `0xb10` | `VifRecords` | three opaque `VifRecord` values at stride `0x3b0` |
+| `0x49a8` | `0x107c` | `PostVifQuarantine` | occupied VIF-adjacent unknown state |
+| `0x5a24` | `0x2b20` | `HostTxContexts` | 30 opaque host contexts at stride `0x170` |
+| `0x8544` | `0x50` | `PreCommandQuarantine` | occupied pre-command bytes |
+| `0x8594` | `0x84` | `CommandChannelSwitchOverlay` | one deliberately opaque overlay: command blob at `+0x00` and channel-switch view at `+0x64` overlap |
+| `0x8618` | `0x180` | `LmcControlRoots` | LMC/encryption/free-list control roots |
+| `0x8798` | `0x18` | `HostContextAccounting` | host-context/duplicate-cache accounting |
+| `0x87b0` | `0x8` | `HostContextFreeList` | shared free head plus unresolved adjacent word |
+| `0x87b8` | `0x220` | `LinkAndSequenceState` | link map/state and per-link/TID sequences |
+| `0x89d8` | `0x40` | `JoinScanControl` | JOIN/scan timers and controls |
+| `0x8a18` | `0xa0` | `WsmResponseScratch` | WSM response/scan/indication scratch |
+| `0x8ab8` | `0x20` | `BaLmcHeader` | BA/LMC global header |
+| `0x8ad8` | `0xe0` | `PendingBaLmcState` | shared pending-list/BA/LMC/scheduler/radio state |
+| `0x8bb8` | `0x2c0` | `LmcMessages` | 16 opaque records at stride `0x2c` |
+| `0x8e78` | `0xa0` | `PostLmcQuarantine` | occupied undecoded bytes |
+| `0x8f18` | `0x30` | `BaLinkEventState` | BA/link/event/timer state |
+| `0x8f48` | `0x24` | `TalaAccounting` | exact semantic arrays and reserved bytes; still shared quarantine |
+| `0x8f6c` | `0x14` | `ContextCompletionPrefix` | completion/context accounting anchor, including class-0 count at `+5` |
+| `0x8f80` | `0xec` | `PreInternalContextQuarantine` | occupied undecoded bytes |
+| `0x906c` | `0x14` | `InternalContextPrefix` | internal-context global/header prefix |
+| `0x9080` | `0x454` | `InternalContextPoolState` | free head plus three typed opaque `0x170` contexts |
+| `0x94d4` | `0x208` | `PowerSaveFamily` | one opaque family; `0x104` is retained only as an observed address/view stride with uncertain extent and overlap semantics |
+| `0x96dc` | `0x44` | `PowerSaveHifBoundary` | occupied PS/HIF boundary |
+| `0x9720` | `0x34` | `HifBufferState` | HIF buffer/free-list/deferred roots |
+| `0x9754` | `0x1d4` | `LegacyHifSoftwareState` | deliberately opaque historical HIF/ring family |
+| `0x9928` | `0x14` | `MicCompletionState` | MIC/HIF completion state |
+| `0x993c` | `0xd0` | `PhyCoreState` | PHY/RF/calibration/channel/gain core |
+| `0x9a0c` | `0x238` | `PhyTail` | remaining PHY and unknown vendor-zeroed tail |
+| `0x9c44` | `0x3bc` | `ResearchMargin` | occupied quarantine beyond the vendor zero-fill endpoint |
+
+### A.3 Semantic fields versus opaque storage
+
+High-confidence count/stride semantics are encoded for VIF records, host contexts, internal contexts, LMC messages, the scheduler table, and the exact TALA arrays. The power-save area is intentionally different: only the `0x208` family span and observed `0x104` address stride are retained, without asserting two owned records. `InitializedVendorImage` also asserts the documented initialized islands: duration timing at `0x0138`, rate encoding/attributes at `0x0194`/`0x01aa`, ten visible completion-related words at `0x0260`, ring/status maps at `0x02d8`/`0x02dc`, command dispatch at `0x0710`, AES descriptors/microcode at `0x0804`/`0x0830`, duration-quantum pointers at `0x10d4`, HIF shadow at `0x11ac`, IRQ callbacks at `0x11bc`, AMPDU counters at `0x12a0`, control words at `0x1420`, the low-MAC initialized root at `0x1680`, retry/TALA anchors within that root, scheduler exclusion words at `0x1fcc`, and the event island at `0x1fd4`. TALA uses shared scalar wrappers at offsets `0x00`, `0x04`, `0x0c`, `0x14`, and `0x1c`. The internal pool retains its exact `free_head`/`contexts` split at offsets `0` and `4`.
+
+Everything with unresolved internal extent or ownership is a private opaque family. In particular, the command/channel-switch overlap is one opaque overlay rather than two fields, and the historically overlapping HIF views are represented as one quarantine family. The power-save stride is asserted but no field API is provided because the decompilation's larger relative offsets remain ambiguous. Unknown ranges are represented only because the complete fixed ABI object necessarily spans them; no API names them as padding, free space, or allocatable capacity.
+
+### A.4 Pointer and ownership discipline
+
+`DtcmAddress` validates addresses against the state interval and preserves separate address-domain semantics. The module exposes no `&mut DtcmLayout`, no safe references to family records, and no dereference/slice API for opaque bytes. The only live typed view currently required is the internal TX pool, exposed crate-privately as raw pointers. `tx.rs` derives the free-head and context addresses from the `DTCM_STATE` symbol and then performs the same volatile initialization writes as before.
+
+This is therefore a **shared quarantine ABI view**. `#[repr(C)]` and semantic field names document byte identity and improve deterministic checking; they do not assert that Rust is the sole writer, that ordinary references are sound, or that any family can move independently.
+
+### A.5 Deterministic gates
+
+`tools/check-dtcm-layout.py` verifies the exact section set, `SHT_NOBITS | SHF_ALLOC` type, address, size, absence from every alias-inclusive DTCM `PT_LOAD`, actual ELF linker symbols for state/context boundaries, exact stack exclusion, and separation from packet RAM. When given a packed image, it also parses COPY/FILL records, rejects destinations anywhere in `0x04000000..0x04010000`, and requires ENTRY to be the terminal record. `pack-sectioned-elf.py` rejects every allocatable section in that alias-inclusive range regardless of name except the exact approved `.dtcm.state` policy. Both `tools/check.sh` and `tools/build-ota-image.sh` run the new gate.
+
+### A.6 ARM code-generation comparison
+
+The first monolithic formulation derived internal-pool fields through the top-level Rust object and caused a blanket `+0x50` shift at the first affected TX/probe functions. The final formulation exports `__dtcm_context_pool_start` from the actual `DTCM_STATE` object and uses raw symbol/addend pointer arithmetic on ARM. This restores direct absolute-address materialization while keeping the pool physically inside `.dtcm.state`; no separate storage or safe complete-record reference was introduced.
+
+Whole-function bytes were compared against `/tmp/xr819-b6-hif-startup.elf`. Exact identity is not practical under the required ownership/API changes and whole-crate size-LTO: seven streams retain differences. Their final sizes and SHA-256 hashes are recorded so the residual is explicit rather than normalized away:
+
+| Function | Parent size/hash | Candidate size/hash |
+| --- | --- | --- |
+| `HostSchedulerReservation::publish_in_batch` | `0x1e8` / `1529ccc8b90d86a71509298d11f4e751a07fb12b3938fd80c574967e63dd4dcd` | `0x1f0` / `3c6ec23111d57f7fee391cea0fbe415b5d68b9c2ec0b37bb8c510aba66bf54eb` |
+| `emit_prepared_probe_descriptor` | `0x2d0` / `15bcfc31fb3b7dd8cf259b2dbd535419f8423c81614da39d209662fc339d2ef4` | `0x2f0` / `a6eb2121eb2577c6ae661e23a6c3a1151116b609af0f175c9b5d10bcbf06e924` |
+| `enter_mac_fatal_quiescence` | `0xe0` / `b43c679f2dda323e43118646827cd17aa4dca1df3833f957ad7953c96994c9fc` | `0xdc` / `388de11ec9238faf0300352b370a9a29cbc0ad468f7e5f73f4c48198cfa1c3a2` |
+| `initialize_internal_pool` | `0x6c` / `4fcadf5c2116793227d27ced6dfad226339014d78780323b1a89065df592f15a` | `0x5c` / `0f62bebcc495df356df976b7da294ebc5676574e1b813b4ee2901a01143792c0` |
+| `prepare_probe_context` | `0x284` / `137dbd2e516a633ec650e376939c3b68df9ae784b0941300864cd2b91e817a5f` | `0x290` / `36be4e1c275eaf9a9b46e9070db7fd38507ad7f8f09e5ae936873a1f2a6e2589` |
+| `release_wsm_context_address` | `0xac` / `76a57832ba5479a2a9bc13683e91b3cc9fb8d8614bb63c7260bfb3078bcb9185` | `0xb4` / `de94a20a43922c17852d88e29e6503fad070a155a3f5ff9d86d84837ffb91a7d` |
+| `service_single_probe_runtime_inactive` | `0x1648` / `11ab52244cb1b6f4b8ac8077beb4fd7373044098e00bc31c7516332915bafbb2` | `0x1654` / `af31991d1e8b5a8cca0d213e3fdcb8e9b9575e14db7847b69ec039e4c5ba1469` |
+
+The differences are code-generation residuals, not hidden by the deterministic gates. Address identities and operation order remain separately checked.
+
+### A.7 Hardware qualification
+
+The reviewed candidate image
+`783a264ca91661928ddc812047e709629ed38e1fcb9ebfaae5f5c59d314a43ee`
+completed three channel-11 qualifications against the already qualified
+linker-packed packet-RAM parent. Associations completed in 8, 8, and 19
+seconds. TCP measured 12.8, 13.3, and 12.4 Mbit/s. Every UDP run transferred
+30 MiB at 8.39 Mbit/s with zero of 21,402 datagrams lost, and every final ping
+was 20/20. TX failure counters were 5, 6, and 0. No malformed WSM message,
+handler failure, exception, or fatal diagnostic occurred.
+
+These runs qualify the fixed-address structural representation and its residual
+code-generation differences. They do not prove exclusive ownership of any
+shared field or justify relocating DTCM families independently.

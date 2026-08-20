@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import struct
 import sys
+import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,20 @@ def load_packer():
 
 
 PACKER = load_packer()
+
+
+def load_dtcm_checker():
+    path = Path(__file__).with_name("check-dtcm-layout.py")
+    spec = importlib.util.spec_from_file_location("check_dtcm_layout", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+DTCM_CHECKER = load_dtcm_checker()
 
 
 @dataclass(frozen=True)
@@ -188,27 +203,82 @@ class PackerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "intersects PT_LOAD"):
             PACKER.pack_elf(data)
 
-    def test_zero_file_load_still_emits_dtcm_fill(self) -> None:
+    def test_dtcm_noload_section_cannot_intersect_load_segment(self) -> None:
         data = elf_fixture(
             destination=0x04002000,
             file_size=0,
             memory_size=0x20,
             sections=[
                 FixtureSection(
-                    ".dtcm.context_pool", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, 0x04002000, 0x20
+                    ".dtcm.state", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, 0x04002000, 0x20
                 )
             ],
         )
-        packed, _entry, _segments = PACKER.pack_elf(data)
-        self.assertEqual(
-            struct.unpack_from("<IIII", packed, 4),
-            (PACKER.TYPE_FILL, 0x04002000, 0, 0x20),
-        )
+        with self.assertRaisesRegex(ValueError, "DTCM or its alias"):
+            PACKER.pack_elf(data)
 
     def test_load_destination_in_09_window_is_rejected(self) -> None:
         data = elf_fixture(destination=0x09010000, file_size=4, memory_size=4, sections=[])
         with self.assertRaisesRegex(ValueError, "forbidden 0x09"):
             PACKER.pack_elf(data)
+
+    def test_load_destination_in_dtcm_alias_is_rejected(self) -> None:
+        data = elf_fixture(destination=0x0400C000, file_size=4, memory_size=4, sections=[])
+        with self.assertRaisesRegex(ValueError, "DTCM or its alias"):
+            PACKER.pack_elf(data)
+
+    def test_allocatable_section_in_dtcm_is_rejected_regardless_of_name(self) -> None:
+        data = elf_fixture(
+            destination=0x1000,
+            file_size=4,
+            memory_size=4,
+            sections=[FixtureSection(".ordinary", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, 0x04008000, 4)],
+        )
+        with self.assertRaisesRegex(ValueError, "allocatable section.*DTCM or its alias"):
+            PACKER.pack_elf(data)
+
+    def test_exact_dtcm_state_policy_is_accepted(self) -> None:
+        data = elf_fixture(
+            destination=0x1000,
+            file_size=4,
+            memory_size=4,
+            sections=[
+                FixtureSection(
+                    ".dtcm.state", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, 0x04000000, 0xA000
+                )
+            ],
+        )
+        packed, _entry, _segments = PACKER.pack_elf(data)
+        self.assertEqual(packed[-12:], struct.pack("<III", PACKER.TYPE_ENTRY, 0x1000, 0))
+
+    def check_packed_rejected(self, payload: bytes, message: str) -> None:
+        with tempfile.NamedTemporaryFile() as packed:
+            packed.write(PACKER.XR819_MAGIC + payload)
+            packed.flush()
+            with self.assertRaisesRegex(SystemExit, message):
+                DTCM_CHECKER.check_packed(Path(packed.name))
+
+    def test_packed_entry_must_be_terminal(self) -> None:
+        self.check_packed_rejected(
+            struct.pack("<III", PACKER.TYPE_ENTRY, 0x1000, 0)
+            + struct.pack("<III", PACKER.TYPE_ENTRY, 0x1000, 0),
+            "ENTRY is not terminal",
+        )
+
+    def test_packed_copy_into_dtcm_alias_is_rejected(self) -> None:
+        self.check_packed_rejected(
+            struct.pack("<III", PACKER.TYPE_COPY, 0x0400C000, 4)
+            + b"copy"
+            + struct.pack("<III", PACKER.TYPE_ENTRY, 0x1000, 0),
+            "DTCM or its alias",
+        )
+
+    def test_packed_fill_into_dtcm_alias_is_rejected(self) -> None:
+        self.check_packed_rejected(
+            struct.pack("<IIII", PACKER.TYPE_FILL, 0x0400C000, 0, 4)
+            + struct.pack("<III", PACKER.TYPE_ENTRY, 0x1000, 0),
+            "DTCM or its alias",
+        )
 
 
 if __name__ == "__main__":

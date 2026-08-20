@@ -40,6 +40,7 @@ SECTIONS
     /DISCARD/ :
     {
         *(.packet_ram.*)
+        *(.dtcm.*)
         *(.ARM.exidx*)
         *(.ARM.extab*)
         *(.comment*)

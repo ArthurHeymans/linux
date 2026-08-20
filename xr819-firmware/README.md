@@ -409,15 +409,18 @@ ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 `link-main-low.x` now divides observed DTCM ownership explicitly:
 
 ```text
-0x04000000..0x0400a000  temporary untranslated vendor-compatible state
+0x04000000..0x0400a000  .dtcm.state shared quarantine ABI view
 0x0400a000..0x0400a500  five 256-byte exception-mode stacks
 0x0400a500..0x0400c000  6,912-byte system stack
 ```
 
-The vendor image initializes through `0x04009c44`; rounding untranslated
-ownership to `0x0400a000` preserves a 956-byte research margin. This lower
-window is a quarantine for state that has not yet been decoded, not a permanent
-compatibility ABI.
+The vendor image initializes through `0x04009c44`; rounding the quarantine to
+`0x0400a000` preserves a 956-byte research margin. The monolithic NOLOAD object
+is a private structural view of vendor-shared bytes, not exclusive/native Rust
+ownership. Its fields expose no safe complete-record references. The internal
+TX context pool remains physically inside this object and is addressed through
+linker-exported member symbols at `0x04009080..0x040094d4`; there is no
+standalone `.dtcm.context_pool` section.
 
 CP15 `c0,c0,2` reports `0x001c0200`, whose standard fields describe 128 KiB
 ITCM and 64 KiB DTCM. That physical-size report does not provide another
@@ -433,10 +436,10 @@ state, the completed-frame FIFO, probe-context sequence, PAS accounting,
 internal-context count, retry PRNG state, channel PLL cache, and channel power
 limits. There is no native `.dtcm.bss` section or main-image DTCM fill record.
 Hardware descriptors, packet buffers, and MMIO identities remain in shared
-packet RAM or MMIO rather than TCM. The internal TX context pool is the explicit
-exception to ordinary ITCM placement: Rust owns its shape and linker section,
-but the section remains at qualified DTCM range `0x04009080..0x040094d4` while
-retained teardown and diagnostic code still addresses that identity.
+packet RAM or MMIO rather than TCM. The internal TX context pool is an exact
+typed member view of the shared quarantine object, not a standalone allocation
+or exclusive ownership claim; retained teardown and diagnostic code still
+addresses that fixed identity.
 
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state

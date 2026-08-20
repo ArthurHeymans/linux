@@ -28,6 +28,8 @@ PF_X = 1
 PF_W = 2
 PF_R = 4
 MAX_U32 = 0xFFFF_FFFF
+DTCM_ALIAS_RANGE = (0x0400_0000, 0x0401_0000)
+APPROVED_DTCM_SECTION = (".dtcm.state", 0x0400_0000, 0xA000)
 
 
 @dataclass(frozen=True)
@@ -182,11 +184,10 @@ def parse_sections(data: bytes) -> list[Section]:
     return sections
 
 
-def validate_packet_sections(data: bytes, segments: list[LoadSegment]) -> list[Section]:
-    packet_sections = [
-        section for section in parse_sections(data) if section.name.startswith(".packet_ram.")
-    ]
-    for section in packet_sections:
+def validate_noload_sections(
+    sections: list[Section], segments: list[LoadSegment]
+) -> None:
+    for section in sections:
         if section.section_type != SHT_NOBITS:
             raise ValueError(f"{section.name} is not SHT_NOBITS")
         if section.flags & SHF_ALLOC == 0:
@@ -200,7 +201,48 @@ def validate_packet_sections(data: bytes, segments: list[LoadSegment]) -> list[S
                     f"{section.name} [{section.address:#x}, {section_end:#x}) intersects "
                     f"PT_LOAD {segment.index} [{segment.destination:#x}, {segment_end:#x})"
                 )
+
+
+def validate_packet_sections(data: bytes, segments: list[LoadSegment]) -> list[Section]:
+    packet_sections = [
+        section for section in parse_sections(data) if section.name.startswith(".packet_ram.")
+    ]
+    validate_noload_sections(packet_sections, segments)
     return packet_sections
+
+
+def intersects(start: int, end: int, region: tuple[int, int]) -> bool:
+    return start < region[1] and region[0] < end
+
+
+def validate_dtcm_sections(data: bytes, segments: list[LoadSegment]) -> list[Section]:
+    sections = parse_sections(data)
+    named = [section for section in sections if section.name.startswith(".dtcm.")]
+    approved = [section for section in named if section.name == APPROVED_DTCM_SECTION[0]]
+    if len(approved) > 1:
+        raise ValueError("ELF contains more than one .dtcm.state section")
+
+    for section in named:
+        identity = (section.name, section.address, section.size)
+        if identity != APPROVED_DTCM_SECTION:
+            raise ValueError(f"unapproved DTCM section {identity!r}")
+
+    for section in sections:
+        end = section.address + section.size
+        checked_u32(f"{section.name or '<unnamed>'} end", end)
+        if (
+            section.size
+            and section.flags & SHF_ALLOC
+            and intersects(section.address, end, DTCM_ALIAS_RANGE)
+            and (section.name, section.address, section.size) != APPROVED_DTCM_SECTION
+        ):
+            raise ValueError(
+                f"allocatable section {section.name!r} [{section.address:#x}, {end:#x}) "
+                "intersects DTCM or its alias range"
+            )
+
+    validate_noload_sections(approved, segments)
+    return approved
 
 
 def validate_runtime_ranges(segments: list[LoadSegment]) -> None:
@@ -210,6 +252,11 @@ def validate_runtime_ranges(segments: list[LoadSegment]) -> None:
     for segment in segments:
         end = segment.destination + align_up(segment.memory_size, 4)
         checked_u32("segment end", end)
+        if intersects(segment.destination, end, DTCM_ALIAS_RANGE):
+            raise ValueError(
+                f"PT_LOAD {segment.index} destination [{segment.destination:#x}, {end:#x}) "
+                "intersects DTCM or its alias range"
+            )
         if segment.destination < forbidden_end and forbidden_start < end:
             raise ValueError(
                 f"PT_LOAD {segment.index} destination [{segment.destination:#x}, {end:#x}) "
@@ -229,6 +276,7 @@ def pack_elf(data: bytes) -> tuple[bytes, int, list[LoadSegment]]:
     entry, segments = parse_elf32_arm(data)
     validate_runtime_ranges(segments)
     validate_packet_sections(data, segments)
+    validate_dtcm_sections(data, segments)
 
     output = bytearray(XR819_MAGIC)
     for segment in segments:

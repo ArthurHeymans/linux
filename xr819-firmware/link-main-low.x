@@ -20,16 +20,12 @@ MEMORY
     /* Vendor ITCM content ends at 0x1b3dc; round up to the next 4 KiB page. */
     ITCM_OBSERVED (rwx) : ORIGIN = 0x00000000, LENGTH = 0x1c000
     /*
-     * Untranslated vendor-compatible state occupies the lower DTCM. The
-     * matching vendor image initializes through 0x04009c44; round its temporary
-     * compatibility envelope up to the next 1 KiB boundary. Rust-owned CPU
-     * state lives in ITCM BSS, leaving the upper 8 KiB for mode stacks. This
-     * boundary is transitional: translated vendor state should leave DTCM
-     * rather than becoming a permanent compatibility ABI.
+     * One Rust-described quarantine ABI covers all retained software state.
+     * It is NOLOAD: vendor COPY data below 0x04002078 remains retained, while
+     * startup explicitly clears the historical BSS range. Unknown bytes are
+     * occupied ABI state rather than linker-allocatable holes.
      */
-    DTCM_LEGACY_LOW (rw) : ORIGIN = 0x04000000, LENGTH = 0x09080
-    DTCM_CONTEXT_POOL (rw) : ORIGIN = 0x04009080, LENGTH = 0x00454
-    DTCM_LEGACY_HIGH (rw) : ORIGIN = 0x040094d4, LENGTH = 0x00b2c
+    DTCM_STATE (rw) : ORIGIN = 0x04000000, LENGTH = 0x0a000
     DTCM_STACKS (rw) : ORIGIN = 0x0400a000, LENGTH = 0x02000
 
     /* Rust-owned runtime objects are packed in source-controlled section order. */
@@ -93,16 +89,24 @@ SECTIONS
         KEEP(*(.packet_ram.rx_fifo_backing))
     } > PACKET_RX_FIFO :NONE
 
-    .dtcm.context_pool (NOLOAD) : ALIGN(4)
+    .dtcm.state (NOLOAD) : ALIGN(4)
     {
-        __dtcm_context_pool_start = .;
-        KEEP(*(.dtcm.context_pool))
-        __dtcm_context_pool_end = .;
-    } > DTCM_CONTEXT_POOL
+        __dtcm_state_start = .;
+        KEEP(*(.dtcm.state))
+        __dtcm_state_end = .;
+    } > DTCM_STATE :NONE
 
     __itcm_image_end = ADDR(.noinit.exception) + SIZEOF(.noinit.exception);
     __itcm_observed_limit = ORIGIN(ITCM_OBSERVED) + LENGTH(ITCM_OBSERVED);
-    __dtcm_legacy_base = ORIGIN(DTCM_LEGACY_LOW);
+    /*
+     * Export raw member-view symbols from the actual Rust object. Code can
+     * materialize these addresses directly without creating separate sections.
+     */
+    __dtcm_state_object_start = DTCM_STATE;
+    __dtcm_state_object_end = DTCM_STATE + SIZEOF(.dtcm.state);
+    __dtcm_context_pool_start = DTCM_STATE + 0x9080;
+    __dtcm_context_pool_contexts = DTCM_STATE + 0x9084;
+    __dtcm_context_pool_end = __dtcm_context_pool_contexts + 3 * 0x170;
     __dtcm_stack_floor = ORIGIN(DTCM_STACKS);
     __dtcm_stack_top = ORIGIN(DTCM_STACKS) + LENGTH(DTCM_STACKS);
 
@@ -110,14 +114,22 @@ SECTIONS
            "XR819 image exceeds the conservative vendor ITCM envelope")
     ASSERT(__bss_end <= __itcm_observed_limit,
            "XR819 ITCM-backed BSS exceeds the observed envelope")
-    ASSERT(ORIGIN(DTCM_CONTEXT_POOL) == ORIGIN(DTCM_LEGACY_LOW) + LENGTH(DTCM_LEGACY_LOW),
-           "XR819 context pool must follow lower compatibility DTCM")
-    ASSERT(ORIGIN(DTCM_LEGACY_HIGH) == ORIGIN(DTCM_CONTEXT_POOL) + LENGTH(DTCM_CONTEXT_POOL),
-           "XR819 upper compatibility DTCM must follow the context pool")
-    ASSERT(ORIGIN(DTCM_STACKS) == ORIGIN(DTCM_LEGACY_HIGH) + LENGTH(DTCM_LEGACY_HIGH),
-           "XR819 compatibility DTCM and stacks are not contiguous")
+    ASSERT(DTCM_STATE == __dtcm_state_start,
+           "XR819 Rust DTCM object is not the complete state section")
+    ASSERT(__dtcm_state_object_start == 0x04000000,
+           "XR819 DTCM state object base moved")
+    ASSERT(__dtcm_state_object_end == 0x0400a000,
+           "XR819 DTCM state object size changed")
+    ASSERT(__dtcm_state_end == __dtcm_state_object_end,
+           "XR819 DTCM state section and object differ")
+    ASSERT(SIZEOF(.dtcm.state) == 0xa000,
+           "XR819 Rust DTCM layout no longer fills its region")
+    ASSERT(ORIGIN(DTCM_STACKS) == ORIGIN(DTCM_STATE) + LENGTH(DTCM_STATE),
+           "XR819 DTCM state and stacks are not contiguous")
     ASSERT(__dtcm_context_pool_start == 0x04009080,
            "XR819 internal context free head moved")
+    ASSERT(__dtcm_context_pool_contexts == 0x04009084,
+           "XR819 first internal context moved")
     ASSERT(__dtcm_context_pool_end == 0x040094d4,
            "XR819 internal context pool size changed")
     ASSERT(__dtcm_stack_floor == 0x0400a000,

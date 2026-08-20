@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_HASHES = {
-    ("src/platform.rs", "pub fn prepare_dma_and_clocks"): "99c46ed3a7d601f298a4eb2b9cca45f22f3e577c2f0c5fe020f77c2b04131718",
+    ("src/platform.rs", "pub fn prepare_dma_and_clocks"): "eb9e097a4cf0df4fc7120db31cbd44d6b9f6b59ad75622233cf02520c00e5daf",
     ("src/hif.rs", "fn reclaim_tx"): "25ae09c1399e327a9a3f56a20548aae1e5a9f0ca57ac3afce49dd5e92ca366f1",
     ("src/hif.rs", "pub fn publish_radio"): "f1d255b6f46d11f0e3f210b75357ca748793a3a772a97fef1a825ebd89f07925",
     ("src/radio.rs", "fn normalize_offset"): "08c048deabe08325e83e9b0ffa8e09521202e2c620c030daf3043ed71b5c99b1",

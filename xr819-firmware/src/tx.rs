@@ -9,58 +9,33 @@ use core::cell::UnsafeCell;
 use crate::configuration::MAX_TEMPLATE_FRAME_LEN;
 use crate::packet_ram;
 
-const TX_CONTEXT_SIZE: usize = 0x170;
-const TX_CONTEXT_COUNT: usize = 3;
-const WSM_TX_CONTEXT_BASE: usize = 0x0400_5a24;
-const WSM_TX_CONTEXT_COUNT: usize = 30;
-const WSM_TX_CONTEXT_FREE_HEAD: usize = 0x0400_87b0;
+const TX_CONTEXT_SIZE: usize = crate::dtcm::INTERNAL_TX_CONTEXT_SIZE;
+const TX_CONTEXT_COUNT: usize = crate::dtcm::INTERNAL_TX_CONTEXT_COUNT;
+const WSM_TX_CONTEXT_BASE: usize = crate::dtcm::HOST_TX_CONTEXTS.get();
+const WSM_TX_CONTEXT_COUNT: usize = crate::dtcm::HOST_TX_CONTEXT_COUNT;
+const WSM_TX_CONTEXT_FREE_HEAD: usize = crate::dtcm::HOST_TX_CONTEXT_FREE_HEAD.get();
 const TX_BUFFER_SIZE: usize = packet_ram::INTERNAL_TX_BUFFER_SIZE;
 const FRAME_NODE_OFFSET: u32 = 0x54;
 // The class-0 allocation counter remains in the untranslated vendor
 // accounting record. Its independently decoded non-class-0 counter, probe
 // sequence, PAS accounting, and completed-frame FIFO are native Rust state.
-const CLASS0_INTERNAL_CONTEXTS: usize = 0x0400_8f71;
+const CLASS0_INTERNAL_CONTEXTS: usize = crate::dtcm::CONTEXT_COMPLETION_PREFIX.get() + 5;
 const COMPLETION_RING_CAPACITY: usize = 64;
-
-#[derive(Clone, Copy)]
-#[repr(C, align(4))]
-struct InternalTxContext([u8; TX_CONTEXT_SIZE]);
-
-#[repr(C)]
-struct InternalContextPoolState {
-    free_head: u32,
-    contexts: [InternalTxContext; TX_CONTEXT_COUNT],
-}
-
-struct SharedInternalContextPool(UnsafeCell<InternalContextPoolState>);
-
-unsafe impl Sync for SharedInternalContextPool {}
-
-// Keep the qualified DTCM identity while making the pool's ownership, shape,
-// and placement linker-checked Rust state. Retained teardown and diagnostic
-// code still addresses this exact range.
-#[unsafe(link_section = ".dtcm.context_pool")]
-static INTERNAL_CONTEXT_POOL: SharedInternalContextPool =
-    SharedInternalContextPool(UnsafeCell::new(InternalContextPoolState {
-        free_head: 0,
-        contexts: [InternalTxContext([0; TX_CONTEXT_SIZE]); TX_CONTEXT_COUNT],
-    }));
 
 #[inline(always)]
 fn internal_context_free_head() -> *mut u32 {
-    let state = INTERNAL_CONTEXT_POOL.0.get();
-    unsafe { &raw mut (*state).free_head }
+    crate::dtcm::internal_context_free_head_ptr()
 }
 
 #[inline(always)]
 fn internal_context_base() -> usize {
-    let state = INTERNAL_CONTEXT_POOL.0.get();
-    unsafe { (&raw mut (*state).contexts).cast::<InternalTxContext>() as usize }
+    crate::dtcm::internal_context_ptr(0).map_or_else(|| unreachable!(), |context| context as usize)
 }
 
 #[inline(always)]
 fn internal_context_address(index: usize) -> usize {
-    internal_context_base() + index * TX_CONTEXT_SIZE
+    crate::dtcm::internal_context_ptr(index)
+        .map_or_else(|| unreachable!(), |context| context as usize)
 }
 
 #[repr(C)]
@@ -199,11 +174,11 @@ const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
 const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
 const PIPE_RETRY_HARDWARE_STATE: u32 = 0x0400_1e6c;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
-const PIPE_RETRY_MASK_TABLE: u32 = 0x0400_3678;
+const PIPE_RETRY_MASK_TABLE: u32 = crate::dtcm::LOW_MAC_PAS_ROOT.get() as u32;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const PIPE_RETRY_RATE_MAP: u32 = 0x0400_1aec;
 const PIPE_RETRY_TIMING_TABLE: u32 = 0x0400_0138;
-const PAS_VIF_STATE: usize = 0x0400_3678;
+const PAS_VIF_STATE: usize = crate::dtcm::LOW_MAC_PAS_ROOT.get();
 const PAS_RATE_MAP_OFFSET: usize = 0x494;
 const PAS_ACK_TIMING_TABLE: usize = 0x0400_16c8;
 const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
@@ -4070,7 +4045,7 @@ impl Default for ProbeTxTracker {
 }
 
 fn completion_device_address(interface: u8) -> usize {
-    0x0400_3e98_usize + usize::from(interface) * 0x3b0 + 0x18
+    crate::dtcm::VIF_RECORDS.get() + usize::from(interface) * crate::dtcm::VIF_RECORD_SIZE + 0x18
 }
 
 fn completion_retry_limit_offset(alternate: bool) -> usize {
@@ -4279,7 +4254,7 @@ fn lmc_message_address(index: u8) -> u32 {
 }
 
 fn lmc_vif_address(interface: usize) -> usize {
-    0x0400_3e98_usize + interface * 0x3b0
+    crate::dtcm::VIF_RECORDS.get() + interface * crate::dtcm::VIF_RECORD_SIZE
 }
 
 fn infallible_to_never(value: core::convert::Infallible) -> ! {
@@ -4815,7 +4790,8 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
             return;
         }
         let interface = read_u8(context + 0xbd);
-        let state = 0x0400_94d4_usize + usize::from(interface) * 0x104;
+        let state = crate::dtcm::power_save_observed_view(usize::from(interface))
+            .map_or_else(|| unreachable!(), crate::dtcm::DtcmAddress::get);
         if read_u8(state + 0xfc) != 0
             && (read_u32(context + 0x58) & 0x03ff_ffff) >> 24 == 0
             && read_u16(context + 0x5e) & 0x4f != 0x48
@@ -4914,7 +4890,7 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
     unsafe {
         let node = frame_node.raw() as usize;
         let interface = usize::from(read_u8(node + 0x69));
-        let device = 0x0400_3e98_usize + interface * 0x3b0;
+        let device = crate::dtcm::VIF_RECORDS.get() + interface * crate::dtcm::VIF_RECORD_SIZE;
         let override_value = read_u16(0xfff0_1a7c + interface * 2);
         if override_value != 0 && read_u32(device + 0x124) >= 0x660 {
             return;
@@ -4988,12 +4964,12 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
 
         let control = read_u8(0x0400_1fbc);
         if weighted_total.wrapping_mul(parameter1 & 0xff) >> 1 < weighted_penalty {
-            write_u8(0x0400_8f48 + interface, 0);
+            write_u8(crate::dtcm::TALA_ACCOUNTING.get() + interface, 0);
             if control & 2 == 0 {
                 write_u8(0x0400_1fbc, control | 1);
             }
         } else {
-            let streak_address = 0x0400_8f48 + interface;
+            let streak_address = crate::dtcm::TALA_ACCOUNTING.get() + interface;
             let streak = read_u8(streak_address).wrapping_add(1);
             write_u8(streak_address, streak);
             if ((parameter0 >> 24) & 0x0f) <= u32::from(streak) {
@@ -8811,11 +8787,14 @@ mod tests {
 
     #[test]
     fn native_internal_context_pool_preserves_context_stride() {
-        assert_eq!(core::mem::size_of::<InternalTxContext>(), TX_CONTEXT_SIZE);
-        assert_eq!(core::mem::align_of::<InternalTxContext>(), 4);
-        assert_eq!(core::mem::offset_of!(InternalContextPoolState, free_head), 0);
-        assert_eq!(core::mem::offset_of!(InternalContextPoolState, contexts), 4);
-        assert_eq!(core::mem::size_of::<InternalContextPoolState>(), 0x454);
+        assert_eq!(crate::dtcm::INTERNAL_TX_CONTEXT_SIZE, TX_CONTEXT_SIZE);
+        assert_eq!(crate::dtcm::INTERNAL_TX_CONTEXT_COUNT, TX_CONTEXT_COUNT);
+        assert_eq!(crate::dtcm::INTERNAL_CONTEXT_POOL.get(), 0x0400_9080);
+        assert_eq!(internal_context_address(0), internal_context_base());
+        assert_eq!(
+            internal_context_address(2) - internal_context_base(),
+            2 * TX_CONTEXT_SIZE
+        );
     }
 
     #[test]

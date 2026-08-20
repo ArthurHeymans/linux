@@ -74,19 +74,6 @@ register_structs! {
         (0xc0 => @END),
     },
 
-    BootState {
-        (0x00 => _reserved0),
-        (0x04 => platform_ready: ReadWrite<u32>),
-        (0x08 => flags_08: ReadWrite<u16>),
-        (0x0a => _reserved1),
-        (0x12 => startup_mode: ReadWrite<u16>),
-        (0x14 => _reserved2),
-        (0x1c => remap_present: ReadWrite<u16>),
-        (0x1e => _reserved3),
-        (0x20 => remap_windows: [ReadWrite<u32>; 8]),
-        (0x40 => @END),
-    },
-
     InterruptRouting {
         (0x00 => _reserved0),
         (0x10 => route_10: ReadWrite<u32>),
@@ -99,19 +86,6 @@ register_structs! {
         (0x2c => route_2c: ReadWrite<u32>),
         (0x30 => route_30: ReadWrite<u32>),
         (0x34 => @END),
-    },
-
-    ClockParameters {
-        (0x00 => _reserved0),
-        (0x0c => reload: ReadWrite<u32>),
-        (0x10 => flags: ReadWrite<u32>),
-        (0x14 => _reserved1),
-        (0x18 => quantum: ReadWrite<u32>),
-        (0x1c => alternate_clock: ReadWrite<u8>),
-        (0x1d => _reserved2),
-        (0x20 => frequency: ReadWrite<u32>),
-        (0x24 => divisor: ReadWrite<u32>),
-        (0x28 => @END),
     }
 }
 
@@ -120,14 +94,14 @@ const SYSTEM_CONTROL_BASE: usize = 0x0a98_0000;
 const INTERRUPT_CONTROLLER_BASE: usize = 0x0a88_0000;
 const PERIPHERAL_CONTROL_BASE: usize = 0x0ac0_0000;
 const PLATFORM_CONTROL_BASE: usize = 0x0ac8_0000;
-const BOOT_STATE_BASE: usize = 0x0400_1fd4;
-const CLOCK_PARAMETERS_BASE: usize = 0x0400_218c;
+const BOOT_STATE_BASE: usize = crate::dtcm::SCHEDULER_EVENT_ROOT.get();
+const CLOCK_PARAMETERS_BASE: usize = crate::dtcm::CLOCK_PARAMETERS.get();
 const INTERRUPT_ROUTING_BASE: usize = 0x0abb_0000;
 const HOST_DOWNLOAD_STATE: usize = 0x0400_1428;
 const HIF_SHARED_BASE: usize = 0x0ab0_0100;
 const IRQ_CALLBACK_TABLE: usize = 0x0400_11bc;
-const VENDOR_BSS_START: usize = 0x0400_2078;
-const VENDOR_BSS_END: usize = 0x0400_9c44;
+const VENDOR_BSS_START: usize = crate::dtcm::VENDOR_BSS_START.get();
+const VENDOR_BSS_END: usize = crate::dtcm::VENDOR_BSS_END.get();
 
 const MAC_REGISTER_BASE: usize = 0x09c0_0000;
 const PACKET_CONTROLLER_REGISTER_BASE: usize = 0x09c1_0000;
@@ -191,12 +165,34 @@ fn platform_control() -> &'static PlatformControl {
     unsafe { &*(PLATFORM_CONTROL_BASE as *const PlatformControl) }
 }
 
-fn boot_state() -> &'static BootState {
-    unsafe { &*(BOOT_STATE_BASE as *const BootState) }
+#[inline(always)]
+fn boot_word(offset: usize) -> &'static ReadWrite<u32> {
+    register32(BOOT_STATE_BASE + offset)
 }
 
-fn clock_parameters() -> &'static ClockParameters {
-    unsafe { &*(CLOCK_PARAMETERS_BASE as *const ClockParameters) }
+#[inline(always)]
+fn boot_read_u16(offset: usize) -> u16 {
+    unsafe { (BOOT_STATE_BASE.wrapping_add(offset) as *const u16).read_volatile() }
+}
+
+#[inline(always)]
+fn boot_write_u16(offset: usize, value: u16) {
+    unsafe { (BOOT_STATE_BASE.wrapping_add(offset) as *mut u16).write_volatile(value) }
+}
+
+#[inline(always)]
+fn clock_parameter_word(offset: usize) -> &'static ReadWrite<u32> {
+    register32(CLOCK_PARAMETERS_BASE + offset)
+}
+
+#[inline(always)]
+fn clock_parameter_read_u8(offset: usize) -> u8 {
+    unsafe { (CLOCK_PARAMETERS_BASE.wrapping_add(offset) as *const u8).read_volatile() }
+}
+
+#[inline(always)]
+fn clock_parameter_write_u8(offset: usize, value: u8) {
+    unsafe { (CLOCK_PARAMETERS_BASE.wrapping_add(offset) as *mut u8).write_volatile(value) }
 }
 
 fn interrupt_routing() -> &'static InterruptRouting {
@@ -215,7 +211,7 @@ extern "C" fn diagnostic_irq_stub() {}
 /// platform event word. The original masks IRQ/FIQ around this read-modify-write;
 /// the interrupt dispatcher already invokes Rust callbacks with IRQs masked.
 extern "C" fn scheduler_event_irq() {
-    let events = register32(0x0400_1fd4);
+    let events = register32(crate::dtcm::SCHEDULER_EVENT_ROOT.get());
     events.set(events.get() | (1 << 27));
 }
 
@@ -258,9 +254,8 @@ pub fn initialize_runtime_state() {
     register32(0x0400_1fcc).set(0);
     register32(0x0400_1fd0).set(0);
 
-    let state = boot_state();
-    state.platform_ready.set(0);
-    state.flags_08.set(7);
+    boot_word(0x04).set(0);
+    boot_write_u16(0x08, 7);
     unsafe {
         (BOOT_STATE_BASE.wrapping_add(0x0a) as *mut u16).write_volatile(9);
         (BOOT_STATE_BASE.wrapping_add(0x0c) as *mut u32).write_volatile(0x14a);
@@ -293,33 +288,32 @@ pub fn wait_for_host_download_completion(max_polls: u32) -> bool {
 /// Samples and records the eight hardware remap windows (`FUN_00015944`).
 fn sample_remap_windows() {
     let clock = clock_reset();
-    let state = boot_state();
     let selector = clock.window_selector.get() & !0x1c;
     let mut any = 0;
 
-    for (index, saved) in state.remap_windows.iter().enumerate() {
+    for index in 0..8 {
         clock.window_selector.set(selector | ((index as u32) << 2));
         let value = clock.window_value.get();
         any |= value;
-        saved.set(value);
+        boot_word(0x20 + index * 4).set(value);
     }
 
-    state.remap_present.set(u16::from(any != 0));
+    boot_write_u16(0x1c, u16::from(any != 0));
     if any == 0 {
         return;
     }
 
-    let window_3 = state.remap_windows[3].get();
-    let window_4 = state.remap_windows[4].get();
-    let window_5 = state.remap_windows[5].get();
+    let window_3 = boot_word(0x2c).get();
+    let window_4 = boot_word(0x30).get();
+    let window_5 = boot_word(0x34).get();
     let relocated_3 = ((window_3 & 0x0fff_ffff) >> 12).wrapping_add(0x166);
     let relocated_4 = ((window_4 & 0x0fff_ffff) >> 12).wrapping_add(0x166);
     let relocated_high = (window_4 >> 28 | window_5 << 4).wrapping_add(0x166);
 
-    state.remap_windows[3].set((window_3 & 0xf000_0fff) | (relocated_3 << 12));
-    state.remap_windows[4]
+    boot_word(0x2c).set((window_3 & 0xf000_0fff) | (relocated_3 << 12));
+    boot_word(0x30)
         .set((window_4 & 0x0000_0fff) | (relocated_4 << 12) | (relocated_high << 28));
-    state.remap_windows[5].set((window_5 & 0xffff_f000) | ((relocated_high & 0xffff) >> 4));
+    boot_word(0x34).set((window_5 & 0xffff_f000) | ((relocated_high & 0xffff) >> 4));
 }
 
 /// Captures the cold hardware remap-window state without applying the later
@@ -352,18 +346,17 @@ pub fn prepare_memory_and_interrupts() {
 
     let clock = clock_reset();
     let system = system_control();
-    let state = boot_state();
-    let remap_control = if state.remap_present.get() != 0 {
-        let value = state.remap_windows[0].get();
+    let remap_control = if boot_read_u16(0x1c) != 0 {
+        let value = boot_word(0x20).get();
         let remap_flag = ((value & 0x0800_0000) >> 19) as u16;
-        state.flags_08.set(state.flags_08.get() | remap_flag);
+        boot_write_u16(0x08, boot_read_u16(0x08) | remap_flag);
         value
     } else {
         0
     };
 
     if remap_control & 0x0800_0000 == 0 {
-        state.startup_mode.set(3);
+        boot_write_u16(0x12, 3);
         let saved_features = clock.feature_control.get();
         clock.feature_control.set(saved_features | 0x0018_0200);
         system.control.set((system.control.get() & !0x20) | 0x40);
@@ -376,7 +369,7 @@ pub fn prepare_memory_and_interrupts() {
                 .secondary_control
                 .set(system.secondary_control.get() & !0x40);
             if system.status.get() & 0x20 == 0 {
-                state.startup_mode.set(1);
+                boot_write_u16(0x12, 1);
             }
         }
         clock.feature_control.set(saved_features);
@@ -424,7 +417,6 @@ pub fn prepare_dma_and_clocks() {
     let system = system_control();
     let clock = clock_reset();
     let platform = platform_control();
-    let state = boot_state();
 
     system.control.set((system.control.get() & !0x80) | 0x10);
     system
@@ -437,7 +429,7 @@ pub fn prepare_dma_and_clocks() {
 
     platform.shared_pointer.set(0x0004_0090);
     platform.power_control.set(0x10);
-    if state.remap_present.get() == 0 {
+    if boot_read_u16(0x1c) == 0 {
         platform
             .configuration
             .set(platform.configuration.get() | 0x0012_0000);
@@ -448,7 +440,7 @@ pub fn prepare_dma_and_clocks() {
     // after this write is not evidence that the CPU stopped executing.
     post_code(0x444d_4331);
     clock.control_04.set(0x200);
-    state.platform_ready.set(1);
+    boot_word(0x04).set(1);
     post_code(0x444d_4332);
     platform.parameter_a0.set(31);
     post_code(0x444d_4333);
@@ -462,26 +454,21 @@ pub fn prepare_dma_and_clocks() {
     }
     post_code(0x444d_4305);
 
-    let parameters = clock_parameters();
     if platform.clock_status.get() & 8 == 0 {
-        parameters.alternate_clock.set(1);
+        clock_parameter_write_u8(0x1c, 1);
     }
     post_code(0x444d_4306);
 
-    let alternate = parameters.alternate_clock.get() != 0;
+    let alternate = clock_parameter_read_u8(0x1c) != 0;
     let flags = if alternate { 0x0c02 } else { 0x0042 };
     if alternate {
-        parameters.divisor.set(0x30c);
+        clock_parameter_word(0x24).set(0x30c);
     }
-    parameters.flags.set(flags);
+    clock_parameter_word(0x10).set(flags);
     platform.clock_flags.set(flags);
-    parameters
-        .reload
-        .set(if alternate { 0x0001_e000 } else { 0x0001_3130 });
-    parameters
-        .frequency
-        .set(if alternate { 0x0098_9680 } else { 0x0131_2d00 });
-    parameters.quantum.set(0x5640);
+    clock_parameter_word(0x0c).set(if alternate { 0x0001_e000 } else { 0x0001_3130 });
+    clock_parameter_word(0x20).set(if alternate { 0x0098_9680 } else { 0x0131_2d00 });
+    clock_parameter_word(0x18).set(0x5640);
     post_code(0x444d_4307);
 }
 

@@ -27,6 +27,7 @@ cargo +nightly build --release --bin hif-startup --target "$TARGET" "${BUILD_STD
 python3 tools/check-rust-main-stack.py "$ELF"
 python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/pack-sectioned-elf.py "$ELF" "$PACKED"
+python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
   echo "== normalized disassembly gate against clean b6 =="

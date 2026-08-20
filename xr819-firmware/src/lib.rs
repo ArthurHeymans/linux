@@ -3,6 +3,7 @@
 pub mod configuration;
 pub mod crypto;
 pub mod download;
+pub mod dtcm;
 pub mod exception;
 pub mod hif;
 pub mod host_tx_arena;
