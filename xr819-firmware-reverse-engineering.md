@@ -2279,6 +2279,26 @@ using it for native state corrupts live vendor tables. The qualified stack top
 remains the usable DTCM boundary. The high-DTCM linker experiment and its
 loader extension were removed; native CPU state remains in ITCM.
 
+Packet-RAM objects are now ordinary Rust statics packed by one NOLOAD linker
+region rather than individually placed output sections. A fully compacted first
+layout moved the response-pointer, TX-command, and rate tables away from their
+qualified prefix and failed to complete association. Restoring those three
+objects to `0x09007000`, `0x09007080`, and `0x090075c0` restored association,
+but one run stalled TCP and another omitted the UDP server report. The remaining
+`0x100` bytes between the known rate entries and response family therefore stay
+as the private retained tail of the Rust `RateRam` structure, not as a linker
+hole or allocatable buffer. This preserves response commands at `0x09007bc4`
+and interface metadata at `0x09008008`; later HIF and software objects are
+linker-packed at their new symbol-derived addresses.
+
+The resulting image
+`f1624829ff78a46eeea4db33e372623ce972cee0c86d64e4a542e2d245f61190`
+completed three channel-11 qualifications. TCP measured 12.8, 12.2, and
+11.8 Mbit/s; UDP delivered 30 MiB at 8.39 Mbit/s with one, one, and zero of
+21,402 datagrams lost; every final ping was 20/20; and no fatal diagnostic
+occurred. This is evidence that the retained rate-tail spacing is behavioral,
+while the later historical gaps and addresses were not required by these runs.
+
 The TALA accounting family at `0x04008f48..0x04008f6b` is not yet accepted for
 migration. Static references appeared confined to translated
 `tx_complete_tala_adapt`, so a first trial replaced the fixed streak, success,

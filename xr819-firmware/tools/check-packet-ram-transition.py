@@ -22,7 +22,7 @@ SOURCE_HASHES = {
     ("src/radio.rs", "fn next_offset"): "f1aa3324d5bdd00ab4b8c89b0e86f9a59f2d5ea4a2cc509c409609e36b584e46",
     ("src/radio.rs", "fn slot_data_fits_packet_ram"): "3e923814d2e2c54f377985727dc8a02f34b677800b46ec04976772c6e5a3b829",
 }
-MAC_POINTERS = (0x09007000, 0x090075C0, 0x09007BC0, 0x09008008, 0x09016A28)
+MAC_POINTERS = (0x09007000, 0x090075C0, 0x09007BC0, 0x09008008, 0x09015BCC)
 
 
 def run(*arguments: str) -> str:

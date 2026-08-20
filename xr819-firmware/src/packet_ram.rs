@@ -44,6 +44,23 @@ impl<const N: usize> OpaqueStorage<N> {
     }
 }
 
+#[repr(C, align(4))]
+struct RateRam {
+    entries: OpaqueStorage<{ RATE_ENTRY_COUNT * RATE_ENTRY_SIZE }>,
+    // The MAC response family starts 0x100 bytes after the final known rate
+    // entry. Keep that retained hardware spacing as part of the Rust layout.
+    _retained_tail: OpaqueStorage<0x100>,
+}
+
+impl RateRam {
+    const fn uninit() -> Self {
+        Self {
+            entries: OpaqueStorage::uninit(),
+            _retained_tail: OpaqueStorage::uninit(),
+        }
+    }
+}
+
 macro_rules! packet_object {
     ($name:ident, $section:literal, $size:expr) => {
         #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
@@ -58,62 +75,64 @@ macro_rules! packet_object {
 
 packet_object!(
     HOST_FRAME_STATES,
-    ".packet_ram.host_frame_states",
+    ".packet_ram.runtime.120_host_frame_states",
     HOST_FRAME_STATE_COUNT * HOST_FRAME_STATE_SIZE
 );
 packet_object!(
     RESPONSE_POINTERS,
-    ".packet_ram.response_pointers",
+    ".packet_ram.runtime.010_response_pointers",
     RESPONSE_POINTER_COUNT * 4
 );
 packet_object!(
     TX_COMMANDS,
-    ".packet_ram.tx_commands",
+    ".packet_ram.runtime.020_tx_commands",
     TX_PIPE_COUNT * TX_COMMANDS_PER_PIPE * TX_COMMAND_SIZE
 );
-packet_object!(
-    RATE_RAM,
-    ".packet_ram.rate_ram",
-    RATE_ENTRY_COUNT * RATE_ENTRY_SIZE
-);
+#[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
+#[used]
+#[unsafe(link_section = ".packet_ram.runtime.030_rate_ram")]
+static RATE_RAM: RateRam = RateRam::uninit();
+
+#[cfg(not(all(target_arch = "arm", target_feature = "thumb-mode")))]
+static RATE_RAM: RateRam = RateRam::uninit();
 packet_object!(
     DURATION_WORDS,
-    ".packet_ram.duration_words",
+    ".packet_ram.runtime.040_duration_words",
     DURATION_WORD_COUNT * 2
 );
 packet_object!(
     RESPONSE_COMMANDS,
-    ".packet_ram.response_commands",
+    ".packet_ram.runtime.050_response_commands",
     RESPONSE_COMMAND_COUNT * TX_COMMAND_SIZE
 );
 packet_object!(
     INTERFACE_METADATA,
-    ".packet_ram.interface_metadata",
+    ".packet_ram.runtime.060_interface_metadata",
     INTERFACE_METADATA_SIZE
 );
 packet_object!(
     HIF_INPUTS,
-    ".packet_ram.hif_inputs",
+    ".packet_ram.runtime.070_hif_inputs",
     HIF_INPUT_COUNT * HIF_INPUT_SIZE
 );
 packet_object!(
     HIF_OUTPUTS,
-    ".packet_ram.hif_outputs",
+    ".packet_ram.runtime.080_hif_outputs",
     HIF_OUTPUT_COUNT * HIF_OUTPUT_SIZE
 );
 packet_object!(
     INTERNAL_TX_BUFFERS,
-    ".packet_ram.internal_tx_buffers",
+    ".packet_ram.runtime.090_internal_tx_buffers",
     INTERNAL_TX_BUFFER_COUNT * INTERNAL_TX_BUFFER_SIZE
 );
 packet_object!(
     SOFTWARE_RECORDS,
-    ".packet_ram.software_records",
+    ".packet_ram.runtime.100_software_records",
     SOFTWARE_RECORD_COUNT * SOFTWARE_RECORD_SIZE
 );
 packet_object!(
     AUTOMATIC_RESPONSE_LIST,
-    ".packet_ram.automatic_response_list",
+    ".packet_ram.runtime.110_automatic_response_list",
     AUTOMATIC_RESPONSE_LIST_SIZE
 );
 packet_object!(
@@ -124,7 +143,6 @@ packet_object!(
 
 #[cfg(target_arch = "arm")]
 unsafe extern "C" {
-    static __packet_ram_internal_tx_buffers_end: u8;
     static __packet_ram_lmc_anchor_0: u8;
     static __packet_ram_lmc_anchor_1: u8;
 }
@@ -268,14 +286,7 @@ pub fn internal_tx_buffer(index: usize) -> usize {
 
 #[inline(always)]
 pub fn internal_tx_buffers_end() -> usize {
-    #[cfg(target_arch = "arm")]
-    {
-        addr_of!(__packet_ram_internal_tx_buffers_end) as usize
-    }
-    #[cfg(not(target_arch = "arm"))]
-    {
-        internal_tx_buffers().end
-    }
+    internal_tx_buffers().end
 }
 
 #[inline(always)]

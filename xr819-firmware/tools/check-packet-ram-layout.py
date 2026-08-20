@@ -9,18 +9,7 @@ import sys
 from pathlib import Path
 
 EXPECTED = {
-    ".packet_ram.host_frame_states": (0x09003678, 30 * 0x54),
-    ".packet_ram.response_pointers": (0x09007000, 32 * 4),
-    ".packet_ram.tx_commands": (0x09007080, 4 * 4 * 0x54),
-    ".packet_ram.rate_ram": (0x090075C0, 80 * 0x10),
-    ".packet_ram.duration_words": (0x09007BC0, 4),
-    ".packet_ram.response_commands": (0x09007BC4, 13 * 0x54),
-    ".packet_ram.interface_metadata": (0x09008008, 4),
-    ".packet_ram.hif_inputs": (0x09008A68, 30 * 0x660),
-    ".packet_ram.hif_outputs": (0x090149A8, 4 * 0x180),
-    ".packet_ram.internal_tx_buffers": (0x09014FA8, 3 * 0x400),
-    ".packet_ram.software_records": (0x09015FA8, 4 * 0x2A0),
-    ".packet_ram.automatic_response_list": (0x09016A28, 0x8C),
+    ".packet_ram.runtime": (0x09007000, 0xF630),
     ".packet_ram.rx_fifo_backing": (0x09400000, 0x8000),
 }
 

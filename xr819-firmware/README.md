@@ -365,16 +365,17 @@ arbitrary low image.
 
 ### Packet-RAM ownership
 
-The production image owns qualified packet memory through independent
-`.packet_ram.*` NOBITS sections. Each section has one exact address and extent;
-unknown holes, the bootstrap FIFO/relocation overlay, diagnostic mailboxes, and
-unknown LMC extents are deliberately absent. The RX FIFO keeps a `0x7000`
-logical cursor over `0x8000` of linear hardware backing so crossing slots remain
-directly publishable without a copy buffer.
+The production image places ordinary Rust-owned packet objects sequentially in
+one `.packet_ram.runtime` NOBITS linker region. Ordered input subsections make
+the linker, rather than per-object address directives, assign each object's
+address. Retained LMC state remains outside the region. The RX FIFO stays in its
+separate `0x094` hardware window and keeps a `0x7000` logical cursor over
+`0x8000` of linear backing so crossing slots remain directly publishable without
+a copy buffer.
 
 `src/packet_ram.rs` is the sole Rust ownership map for runtime `0x090`/`0x094`
-storage. Consumers derive raw device addresses from its opaque aligned objects;
-LMC objects and the internal-TX end boundary remain linker anchors. Genuine
+storage. Consumers derive raw device addresses directly from its aligned Rust
+statics; only retained LMC objects remain linker anchors. Genuine
 packet-controller MMIO identities are centralized in `platform.rs`. The exact
 pre-transition control is clean b6 image
 `39b516dc65c1330ee67a12f8d17059e72aea7b07adf5aaac7043f080e0fdc47b`.
