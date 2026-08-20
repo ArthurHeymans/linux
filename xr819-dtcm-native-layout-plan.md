@@ -1361,3 +1361,112 @@ handler failure, exception, or fatal diagnostic occurred.
 These runs qualify the fixed-address structural representation and its residual
 code-generation differences. They do not prove exclusive ownership of any
 shared field or justify relocating DTCM families independently.
+
+### A.8 Native VIF ownership candidate
+
+The first semantic consumer conversion replaces the opaque `VifRecord` body
+with decoded ordinary Rust fields for the JOIN/scan-owned subset. Every decoded
+field has a compile-time offset assertion; embedded timers and unresolved bytes
+remain private `MaybeUninit` quarantine. The overlapping rate word/byte view is
+represented by one byte array with semantic setters rather than competing
+fields.
+
+`dtcm::with_vifs()` masks IRQ and FIQ on ARM, rejects synchronous re-entry with
+a borrow flag, and lends one temporary `&mut [VifRecord; 3]`. Because the target
+is single-core, interrupt masking plus the no-foreign-call closure boundary is
+the mutex. It does not use atomics and does not treat DTCM as MMIO.
+
+`vif.rs` now uses regular field reads and assignments for activity selection,
+JOIN conflict checks, STA initialization, active-link publication, teardown,
+and snapshots. STA defaults are collected in `VifRecord::initialize_sta()`.
+Raw volatile accesses remain only for the still-untyped PAS, radio-owner-global,
+and PHY families; those are outside this VIF conversion and must be converted
+with their own owners before their volatility can be removed.
+
+No hardware qualification was run for this semantic VIF conversion.
+
+### A.9 Complete native VIF consumer pass
+
+All Rust VIF-root consumers now enter through the typed owner rather than
+reconstructing `base + interface * 0x3b0 + field`:
+
+* `mac.rs` uses typed scan-prefix fields and models the wake-time `+0x3c6`
+  access as the following VIF record's decoded `wake_reinit_flag`, making the
+  cross-record relationship explicit;
+* `platform.rs` initializes each record's `own_mac` array directly;
+* `tx.rs` uses typed snapshots/mutations for TALA, completion accounting,
+  management-frame address/rate selection, and diagnostic helper addresses;
+* `vendor_host_tx.rs` uses typed VIF snapshots and mutation methods for link
+  eligibility, power-save link masks, sequence selection, pending decisions,
+  live diagnostics, and TX-busy accounting.
+
+The source gate now rejects the fixed VIF root outside `dtcm.rs` and unit-test
+layout expectations. Remaining volatile arithmetic in those consumers belongs
+to other not-yet-typed families, principally PAS, link/LMC, contexts, and PHY.
+No hardware qualification was run for this pass.
+
+### A.10 Independent typed-VIF blocker closure
+
+The independent review follow-up narrowed the semantic owner rather than
+expanding `SharedVifState` snapshots:
+
+* power-save now has two exact mutations matching `txp_program_pipe_hw`
+  (`annotated-main.c:11128-11243`): the QoS branch clears only `buffered_links`;
+  the tail always clears `awake_links`, reads the old effective mask after that
+  write, and recomputes only when the old mask was nonzero, using the earlier
+  sleeping-mask observation;
+* VIF reads are operation-specific (pipe flags, power-save policy/masks,
+  allowed links, TALA threshold/AMPDU, probe fields, diagnostics, wake
+  selection), preserving the TALA AMPDU read at the reduction decision rather
+  than at function entry;
+* direct/interior Rust accesses at scan completion, host-context accounting,
+  probe construction, synthetic scan publication, and wake restoration now use
+  typed VIF APIs. Source scanning covers Rust and tools, rejects every literal
+  in `0x04003e98..0x040049a8` plus synthesized record offsets outside the owner
+  and test expectations, and the linked-image gate pins the exact owner-emitted
+  interior literal set;
+* operating interfaces are explicitly `0..2`; record 2 is explicitly the
+  synthetic scan record. RESET eligibility is restricted to operating VIFs, so
+  record-2 activity cannot select teardown;
+* JOIN keeps preliminary record/PAS preparation but checks and publishes the
+  radio owner before final VIF `active`, effective-link, operating-state, and
+  activity-state publication. Busy therefore leaves no newly final VIF state;
+* `with_vifs` returns an explicit re-entry error, production mutations either
+  propagate it or halt instead of silently discarding writes, and closures are
+  field-only. Host tests use zeroed process-local backing plus a mutex/re-entry
+  guard and never form references at target DTCM addresses.
+
+Focused host tests cover both power-save branches, synthetic-record RESET
+eligibility, JOIN Busy/final publication, the vendor next-record wake flag,
+nested borrow rejection/write retention, host backing identity, and TALA read
+timing. All 158 host tests pass. LSP reports no errors in the touched Rust and
+Python files. Source, packer, stack, packet-RAM, DTCM layout, packed-image, and
+bootstrap checks pass.
+
+A fresh artifact was built at
+`/tmp/xr819-typed-vif-review-20260718-112411/thumbv5te-none-eabi/release/hif-startup`:
+
+```text
+ELF SHA-256     1b471b325cf577cac21954640229e3102ad209795edf47241663b5791b371e2a
+packed SHA-256  c8576c7ec2255eae08de8f4c46c493222af4ebc45a3735f6097513e7466c6c21
+bootstrap SHA-256 48d858b8785220aa7c9a9c0898164da1ecc71b4b6218283b2687b3d2f821d197
+.text size/hash 0x10e60 / 5d04c43d0249cce92ba48678e925c63b266060bc8ee9ca7c71f65ce18fc667b8
+```
+
+The explicit comparison baseline is `/tmp/xr819-b6-hif-startup.elf` (ELF
+SHA-256 `3fb63f89d154025f62d55501513169bc3b2d37bf04584793e51222b24968d0b2`,
+`.text` `0x10638`, SHA-256
+`7463d0dd4163322c534f32062a5cea2b9c795859038afa128ecb467356ad533c`).
+The candidate adds 13 sized text symbols, principally narrow VIF operations,
+and changes 127 of 195 common sized text-symbol byte streams under size-LTO;
+`.text` grows by `0x828`. Relevant normalized instruction-count changes include
+`program_pipe_eligible` 232 -> 256, `vif::activate_sta` 315 -> 327,
+`vif::teardown` 52 -> 56, `vif::snapshot` 44 -> 59,
+`join::activate_sta` 142 -> 123, `mac::reinitialize_after_wake` 338 -> 382,
+`prepare_probe_context` 296 -> 373, and `release_wsm_context_address` 72 -> 77.
+Consequently the existing clean-b6 normalized disassembly gate fails at the
+non-packet-MMIO literal-order comparison. This is recorded as a residual
+code-generation difference, not hidden by weakening that unrelated gate.
+
+No hardware test was run, and this uncommitted candidate does not supersede the
+previous hardware-qualified fixed-layout image.
