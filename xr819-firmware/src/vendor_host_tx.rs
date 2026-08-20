@@ -6,50 +6,30 @@
 
 use crate::packet_ram;
 
-pub const HOST_CONTEXT_SIZE: usize = 0x170;
-pub const HOST_CONTEXT_BASE: u32 = 0x0400_5a24;
-pub const HOST_CONTEXT_COUNT: usize = 30;
-pub const HOST_FREE_HEAD: u32 = 0x0400_87b0;
+pub(crate) use crate::dtcm::HostContextAddress;
 pub const HOST_FRAME_STATE_SIZE: u32 = packet_ram::HOST_FRAME_STATE_SIZE as u32;
-pub const PAS_OFFSET: usize = 0x54;
 pub const PAS_RING_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HostContextAddress(u32);
+pub(crate) struct HostConfirmationFields {
+    pub(crate) tx_rate: u8,
+    pub(crate) rate_try: [u32; 3],
+}
 
-impl HostContextAddress {
-    pub const fn from_index(index: usize) -> Option<Self> {
-        if index < HOST_CONTEXT_COUNT {
-            Some(Self(
-                HOST_CONTEXT_BASE + index as u32 * HOST_CONTEXT_SIZE as u32,
-            ))
-        } else {
-            None
+/// Read only the fields needed to build a class-0 confirmation at the original
+/// vendor read point. Retained completion/IRQ writers make volatile scalar
+/// reads mandatory even though foreground code owns the HIF release token.
+#[cfg(target_arch = "arm")]
+pub(crate) unsafe fn confirmation_fields(context: HostContextAddress) -> HostConfirmationFields {
+    unsafe {
+        HostConfirmationFields {
+            tx_rate: read_host_u8(context.tx_rate()),
+            rate_try: [
+                read_host_u32(context.rate_try(0).unwrap()),
+                read_host_u32(context.rate_try(1).unwrap()),
+                read_host_u32(context.rate_try(2).unwrap()),
+            ],
         }
-    }
-
-    pub const fn from_raw(address: u32) -> Option<Self> {
-        let offset = address.wrapping_sub(HOST_CONTEXT_BASE);
-        if address >= HOST_CONTEXT_BASE
-            && offset % HOST_CONTEXT_SIZE as u32 == 0
-            && offset / (HOST_CONTEXT_SIZE as u32) < HOST_CONTEXT_COUNT as u32
-        {
-            Some(Self(address))
-        } else {
-            None
-        }
-    }
-
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-
-    pub const fn index(self) -> usize {
-        ((self.0 - HOST_CONTEXT_BASE) / HOST_CONTEXT_SIZE as u32) as usize
-    }
-
-    pub fn frame_state(self) -> u32 {
-        packet_ram::host_frame_state(self.index()) as u32
     }
 }
 
@@ -88,7 +68,8 @@ pub const fn valid_phase_transition(current: HostTxPhase, next: HostTxPhase) -> 
 }
 
 /// One borrowed HIF request and its class-0 context identity. The release
-/// token deliberately stays here until confirmation or an explicit abort.
+/// token stays here until the inherited confirmation handoff or an explicit
+/// abort. This does not claim the vendor's request-buffer lifetime is matched.
 #[cfg(target_arch = "arm")]
 pub struct RetainedHostTx {
     context: HostContextAddress,
@@ -156,7 +137,7 @@ impl RetainedHostTx {
     }
 
     /// Return the class-0 context after completion accounting and hand the
-    /// original HIF request token back to the confirmation dispatcher.
+    /// original HIF request token to the inherited confirmation handoff.
     ///
     /// # Safety
     /// The completion path must have removed every PAS/pipe owner first.
@@ -295,8 +276,8 @@ unsafe fn assign_sequence_number(context: HostContextAddress, frame_address: u32
     const LINK_MAP_COUNT: u32 = 0x0400_87cc;
     const SEQUENCE_BASE: u32 = 0x0400_8890;
 
-    let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
-    let host_link = unsafe { read_live_u8(context.raw() + 0xbf) };
+    let interface = unsafe { read_host_u8(context.interface()) };
+    let host_link = unsafe { read_host_u8(context.host_link()) };
     let mut internal_link = crate::vif::internal_link(interface).unwrap_or(0) as u8;
     if host_link != 0 {
         let count = unsafe { (LINK_MAP_COUNT as *const u16).read_volatile() };
@@ -316,7 +297,7 @@ unsafe fn assign_sequence_number(context: HostContextAddress, frame_address: u32
     let sequence = unsafe { (sequence_address as *const u16).read_volatile() };
     unsafe {
         (frame_address.wrapping_add(0x16) as *mut u16).write_volatile(sequence);
-        write_live_u16(context.raw() + 0xa8, sequence >> 4);
+        write_host_u16(context.sequence_number(), sequence >> 4);
         (sequence_address as *mut u16).write_volatile(sequence.wrapping_add(0x10) & 0xfff0);
     }
 }
@@ -332,44 +313,38 @@ pub unsafe fn classify_and_encrypt(retained: &mut RetainedHostTx) -> Result<(), 
         return Err(HostPrepareError::WrongPhase);
     }
     let context = retained.context;
-    let frame_address = unsafe { read_live_u32(context.raw() + 0x54) };
-    let frame_length = unsafe { (context.raw().wrapping_add(0x5c) as *const u16).read_volatile() };
+    let frame_address = unsafe { read_host_u32(context.frame_address()) };
+    let frame_length = unsafe { read_host_u16(context.frame_length()) };
     let frame = unsafe {
         core::slice::from_raw_parts_mut(frame_address as *mut u8, usize::from(frame_length))
     };
-    let initial_flags = unsafe { read_live_u32(context.raw() + 0x58) };
+    let initial_flags = unsafe { read_host_u32(context.control_bits()) };
     let classification = classify_header(frame, initial_flags).map_err(HostPrepareError::Header)?;
 
     if classification.assign_sequence {
         unsafe { assign_sequence_number(context, frame_address, classification.tid) };
     }
-    let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
+    let interface = unsafe { read_host_u8(context.interface()) };
     unsafe {
-        write_live_u16(context.raw() + 0x5e, classification.frame_control);
-        write_live_u32(
-            context.raw() + 0x44,
-            u32::from(classification.header_length),
-        );
-        write_live_u32(
-            context.raw() + 0x48,
-            u32::from(classification.payload_length),
-        );
-        write_live_u32(context.raw() + 0x58, classification.flags);
-        write_live_u16(context.raw() + 0xc8, classification.qos_control);
-        write_live_u8(context.raw() + 0xa6, classification.tid);
-        write_live_u8(context.raw() + 0xaa, 0xff);
+        write_host_u16(context.frame_control(), classification.frame_control);
+        write_host_u32(context.header_length(), u32::from(classification.header_length));
+        write_host_u32(context.payload_length(), u32::from(classification.payload_length));
+        write_host_u32(context.control_bits(), classification.flags);
+        write_host_u16(context.qos_control(), classification.qos_control);
+        write_host_u8(context.tid(), classification.tid);
+        write_host_u8(context.retry_rate(), 0xff);
         let duration_slot = read_live_u8(
             crate::dtcm::pas_stride_view_unchecked(usize::from(interface))
                 .slot_bits()
                 .get() as u32,
         ) & 1;
-        write_live_u8(context.raw() + 0xbe, duration_slot);
+        write_host_u8(context.duration_slot(), duration_slot);
         crate::host_tx_diagnostics::capture_submission_identity(
             retained.packet_id,
-            context.raw(),
-            read_live_u8(context.raw() + 0x0f),
-            read_live_u8(context.raw() + 0x61),
-            read_live_u8(context.raw() + 0x60),
+            context,
+            read_host_u8(context.request_flags()),
+            read_host_u8(context.request_flag_rate_bits()),
+            read_host_u8(context.access_category()),
             classification.flags,
         );
     }
@@ -391,8 +366,8 @@ pub unsafe fn enqueue_post_crypto(retained: &mut RetainedHostTx) -> Result<(), P
     if retained.phase != HostTxPhase::Classified {
         return Err(PostCryptoError::WrongPhase);
     }
-    let context = retained.context.raw();
-    let status = unsafe { (context.wrapping_add(0x70) as *const u16).read_volatile() };
+    let context = retained.context;
+    let status = unsafe { read_host_u16(context.terminal_status()) };
     if status < 0x00fe {
         return Err(PostCryptoError::ExistingStatus(status));
     }
@@ -400,30 +375,30 @@ pub unsafe fn enqueue_post_crypto(retained: &mut RetainedHostTx) -> Result<(), P
     // The normal unicast station path leaves this optional per-peer object
     // disabled. Do not silently skip its allocation for multicast or when the
     // vendor global enables the alternate object class.
-    let flags = unsafe { read_live_u32(context + 0x58) };
+    let flags = unsafe { read_host_u32(context.control_bits()) };
     let alternate_enabled = unsafe {
         (crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get() as *const u16).read_volatile() != 0
     };
     if flags & 0x100 != 0 || alternate_enabled {
         return Err(PostCryptoError::OptionalPipeObjectRequired);
     }
-    unsafe { write_live_u32(context + 0x4c, 0) };
-    unsafe { crate::tx::build_host_frame_descriptor(context) }
+    unsafe { write_host_u32(context.optional_pipe_object(), 0) };
+    unsafe { crate::tx::build_host_frame_descriptor(context.raw()) }
         .map_err(PostCryptoError::Descriptor)?;
 
     let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     unsafe {
         const PENDING: u32 = 0x0400_8ad8;
         let tail = read_live_u32(PENDING + 4);
-        write_live_u32(context + 4, 0);
+        write_host_u32(context.intrusive_next(), 0);
         if tail == 0 {
-            write_live_u32(PENDING, context);
+            write_live_u32(PENDING, context.raw());
         } else {
-            write_live_u32(tail + 4, context);
+            write_context_link(tail, context.raw());
         }
-        write_live_u32(PENDING + 4, context);
-        write_live_u32(context + 0x80, read_live_u32(context + 0x80) | 0x20);
-        if read_live_u8(context + 0x0e) == 0 {
+        write_live_u32(PENDING + 4, context.raw());
+        write_host_u32(context.ownership_bits(), read_host_u32(context.ownership_bits()) | 0x20);
+        if read_host_u8(context.more()) == 0 {
             const SCHEDULER_EVENTS: u32 = 0x0400_1fd4;
             write_live_u32(
                 SCHEDULER_EVENTS,
@@ -446,22 +421,22 @@ unsafe fn remove_pending_context(
     let mut current = unsafe { read_live_u32(PENDING) };
     while current != 0 && current != context.raw() {
         prior = current;
-        current = unsafe { read_live_u32(current + 4) };
+        current = unsafe { read_context_link(current) };
     }
     if current == 0 {
         return Err(CancelError::MissingFromPendingList);
     }
-    let next = unsafe { read_live_u32(current + 4) };
+    let next = unsafe { read_context_link(current) };
     unsafe {
         if prior == 0 {
             write_live_u32(PENDING, next);
         } else {
-            write_live_u32(prior + 4, next);
+            write_context_link(prior, next);
         }
         if read_live_u32(PENDING + 4) == current {
             write_live_u32(PENDING + 4, prior);
         }
-        write_live_u32(current + 4, 0);
+        write_context_link(current, 0);
     }
     Ok(())
 }
@@ -530,7 +505,7 @@ macro_rules! observe_normal_power_save_release {
 #[cfg(target_arch = "arm")]
 unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
     const LINK_STATE: u32 = 0x0400_87b8;
-    let pas = context.raw() + PAS_OFFSET as u32;
+    let pas = context.pas().raw();
     let interface = unsafe { read_live_u8(pas + 0x69) };
     if interface > 2 {
         return true;
@@ -647,10 +622,7 @@ unsafe fn push_live_pas(
         return Err(PendingServiceError::PasRingFull);
     }
     unsafe {
-        write_live_u32(
-            RING + 8 + u32::from(write) * 4,
-            context.raw() + PAS_OFFSET as u32,
-        );
+        write_live_u32(RING + 8 + u32::from(write) * 4, context.pas().raw());
         write_live_u32(RING + 4, u32::from(next));
     }
     Ok(())
@@ -662,7 +634,7 @@ unsafe fn remove_live_pas(
     context: HostContextAddress,
 ) -> Result<(), CancelError> {
     const RING: u32 = 0x0400_1578;
-    let target = context.raw() + PAS_OFFSET as u32;
+    let target = context.pas().raw();
     let head = unsafe { read_live_u32(RING) as u8 & 0x3f };
     let tail = unsafe { read_live_u32(RING + 4) as u8 & 0x3f };
     let mut scan = head;
@@ -692,7 +664,7 @@ unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
             return false;
         }
         crate::tx::set_active_pas_contexts(active.wrapping_add(1));
-        let interface = read_live_u8(context.raw() + 0xbd);
+        let interface = read_host_u8(context.interface());
         if interface < 3 {
             if crate::vif::adjust_tx_busy(interface, 1).is_err() {
                 crate::halt_always!();
@@ -706,7 +678,7 @@ unsafe fn claim_pas_accounting(context: HostContextAddress) -> bool {
 unsafe fn release_pas_accounting(context: HostContextAddress) {
     unsafe {
         crate::tx::set_active_pas_contexts(crate::tx::active_pas_contexts().wrapping_sub(1));
-        let interface = read_live_u8(context.raw() + 0xbd);
+        let interface = read_host_u8(context.interface());
         if interface < 3 {
             if crate::vif::adjust_tx_busy(interface, -1).is_err() {
                 crate::halt_always!();
@@ -722,10 +694,7 @@ unsafe fn release_pending_to_pas(
 ) -> Result<(), PendingServiceError> {
     let context = retained.context;
     unsafe {
-        write_live_u32(
-            context.raw() + 0x80,
-            read_live_u32(context.raw() + 0x80) | 0x40,
-        );
+        write_host_u32(context.ownership_bits(), read_host_u32(context.ownership_bits()) | 0x40);
         crate::tx::prepare_host_frame_timing(context.raw()).map_err(PendingServiceError::Timing)?;
         if !claim_pas_accounting(context) {
             return Err(PendingServiceError::PhyState);
@@ -768,8 +737,8 @@ pub struct PendingLiveDiagnostic {
 #[cfg(target_arch = "arm")]
 pub unsafe fn pending_live_diagnostic(retained: &RetainedHostTx) -> PendingLiveDiagnostic {
     let context = retained.context;
-    let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
-    let link = unsafe { read_live_u8(context.raw() + 0xbf) };
+    let interface = unsafe { read_host_u8(context.interface()) };
+    let link = unsafe { read_host_u8(context.host_link()) };
     let vif = crate::vif::diagnostic_snapshot(interface);
     PendingLiveDiagnostic {
         global: unsafe { read_live_u32(0x0400_1fcc) },
@@ -797,13 +766,13 @@ pub unsafe fn service_pending(
     }
 
     let context = retained.context;
-    let interface = unsafe { read_live_u8(context.raw() + 0xbd) };
-    let link = unsafe { read_live_u8(context.raw() + 0xbf) };
+    let interface = unsafe { read_host_u8(context.interface()) };
+    let link = unsafe { read_host_u8(context.host_link()) };
     let link_bit = 1_u16.wrapping_shl(u32::from(link));
-    let completion_class = unsafe { read_live_u8(context.raw() + 0x53) };
+    let completion_class = unsafe { read_host_u8(context.completion_class()) };
     let global_blocked = unsafe { read_live_u32(0x0400_1fcc) } & 0xa0 != 0;
     let now = unsafe { vendor_timer() };
-    let submitted = unsafe { read_live_u32(context.raw() + 0x40) };
+    let submitted = unsafe { read_host_u32(context.submit_timer()) };
     let expired = (submitted.wrapping_sub(now).wrapping_add(0x004c_4b40) as i32) < 0;
 
     let decision = if global_blocked {
@@ -822,7 +791,7 @@ pub unsafe fn service_pending(
         let active_link = active_mask & link_bit != 0;
         let mut effective_mask = crate::vif::vif_read_u16(vif.effective_links());
         let mut effective_link = effective_mask & link_bit != 0;
-        let frame_kind = unsafe { read_live_u16(context.raw() + 0x5e) } & 0xff;
+        let frame_kind = unsafe { read_host_u16(context.frame_control()) } & 0xff;
         let vif_control_bits = crate::vif::vif_read_u32(vif.flags());
         if !effective_link && frame_kind != 0xd0 && effective_mask == 0 {
             if vif_control_bits & (1 << 30) != 0 {
@@ -957,7 +926,7 @@ pub struct SchedulerLiveDiagnostic {
 #[cfg(target_arch = "arm")]
 pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerLiveDiagnostic {
     let context = retained.context;
-    let pas = context.raw() + PAS_OFFSET as u32;
+    let pas = context.pas().raw();
     let mut idle_pipe_mask = 0_u8;
     for candidate in 0..4_u8 {
         let pipe_state = 0x0400_1720 + u32::from(candidate) * 0x6c;
@@ -1096,7 +1065,7 @@ impl HostSchedulerReservation {
             return false;
         }
         unsafe {
-            write_live_u32(self.context.raw() + 0x58, self.original_control_bits);
+            write_host_u32(self.context.control_bits(), self.original_control_bits);
             write_live_u32(self.slot_record, self.original_slot_header);
             write_live_u32(self.slot_record + 0x0c, self.original_slot_frame);
             write_live_u32(self.slot_record + 0x10, self.original_slot_auxiliary);
@@ -1105,7 +1074,7 @@ impl HostSchedulerReservation {
             }
             write_live_u32(
                 0x0400_1580 + u32::from(self.ring_slot) * 4,
-                self.context.raw() + PAS_OFFSET as u32,
+                self.context.pas().raw(),
             );
             write_live_u32(0x0400_1578, u32::from(self.original_ring_head));
         }
@@ -1143,7 +1112,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     }
 
     let context = retained.context;
-    let pas = context.raw() + PAS_OFFSET as u32;
+    let pas = context.pas().raw();
     let mut idle_pipe_mask = 0_u8;
     let mut candidate = 0_u8;
     while candidate < 4 {
@@ -1164,7 +1133,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         ring_slot = ring_slot.wrapping_add(1) & 0x3f;
     }
     let now = unsafe { vendor_timer() };
-    let submitted = unsafe { read_live_u32(context.raw() + 0x40) };
+    let submitted = unsafe { read_host_u32(context.submit_timer()) };
     let decision = non_aggregate_scheduler_decision(NonAggregateSchedulerInput {
         expired: (submitted.wrapping_sub(now).wrapping_add(0x007a_1200) as i32) < 0,
         pipe_allowed: unsafe { program_pipe_eligible(context) },
@@ -1194,7 +1163,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     unsafe {
         crate::hif::validate_tx_boundary(0x10, pipe, slot, command, hardware_ring);
     }
-    let original_control_bits = unsafe { read_live_u32(context.raw() + 0x58) };
+    let original_control_bits = unsafe { read_host_u32(context.control_bits()) };
     let original_slot_header = unsafe { read_live_u32(slot_record) };
     let original_slot_frame = unsafe { read_live_u32(slot_record + 0x0c) };
     let original_slot_auxiliary = unsafe { read_live_u32(slot_record + 0x10) };
@@ -1213,18 +1182,18 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         // Vendor marks the first ordinary descriptor with bit 26 and every
         // later descriptor in the same scheduler batch with bit 27 before
         // `txp_build_pipe_descriptor(..., 0)`.
-        write_live_u32(
-            context.raw() + 0x58,
+        write_host_u32(
+            context.control_bits(),
             scheduler_batch_control_bits(original_control_bits, 0),
         );
-        write_live_u32(
-            context.raw() + 0x80,
-            read_live_u32(context.raw() + 0x80) | 0x100,
+        write_host_u32(
+            context.ownership_bits(),
+            read_host_u32(context.ownership_bits()) | 0x100,
         );
-        write_live_u32(context.raw() + 0x6c, vendor_timer());
-        write_live_u32(context.raw() + 0x90, 0);
+        write_host_u32(context.scheduler_timestamp(), vendor_timer());
+        write_host_u32(context.descriptor_state(), 0);
         write_live_u8(slot_record, 0);
-        write_live_u8(slot_record + 1, read_live_u8(context.raw() + 0xaa));
+        write_live_u8(slot_record + 1, read_host_u8(context.retry_rate()));
         write_live_u8(slot_record + 2, 0);
         write_live_u8(slot_record + 3, 0);
         write_live_u32(slot_record + 0x0c, pas);
@@ -1239,7 +1208,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         {
             write_live_u32(0x0400_1580 + u32::from(ring_slot) * 4, pas);
             write_live_u32(0x0400_1578, u32::from(head));
-            write_live_u32(context.raw() + 0x58, original_control_bits);
+            write_host_u32(context.control_bits(), original_control_bits);
             write_live_u32(slot_record, original_slot_header);
             write_live_u32(slot_record + 0x0c, original_slot_frame);
             write_live_u32(slot_record + 0x10, original_slot_auxiliary);
@@ -1269,48 +1238,52 @@ pub unsafe fn reserve_non_aggregate_scheduler(
 }
 
 pub trait HostContextWriter {
-    fn write_u8(&mut self, offset: usize, value: u8);
-    fn write_u16(&mut self, offset: usize, value: u16);
-    fn write_u32(&mut self, offset: usize, value: u32);
+    fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8);
+    fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16);
+    fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32);
 }
 
 /// Emit only fields written by `tx_wsm_buf_alloc`, `wsm_h_04_tx_req`, and the
 /// non-policy portion of `tx_lmac_req_submit`. Pool-owned and unknown fields
 /// remain untouched in a live context.
-pub fn write_host_context_fields<W: HostContextWriter>(writer: &mut W, metadata: HostTxMetadata) {
-    writer.write_u32(0xa0, metadata.frame_state_address);
+pub fn write_host_context_fields<W: HostContextWriter>(
+    writer: &mut W,
+    context: HostContextAddress,
+    metadata: HostTxMetadata,
+) {
+    writer.write_u32(context.frame_state_address(), metadata.frame_state_address);
 
-    writer.write_u8(0x0f, 0);
-    writer.write_u32(0x20, 0xfe);
-    writer.write_u16(0x70, 0xfe);
-    writer.write_u32(0x80, 0);
+    writer.write_u8(context.request_flags(), 0);
+    writer.write_u32(context.completion_status(), 0xfe);
+    writer.write_u16(context.terminal_status(), 0xfe);
+    writer.write_u32(context.ownership_bits(), 0);
 
-    writer.write_u32(0x00, metadata.message_address);
-    writer.write_u32(0x08, metadata.packet_id);
-    writer.write_u8(0x0c, metadata.max_tx_rate);
-    writer.write_u8(0x0d, metadata.queue_id);
-    writer.write_u8(0x0e, u8::from(metadata.more));
-    writer.write_u8(0x0f, metadata.flags);
-    writer.write_u32(0x10, metadata.expire_time);
-    writer.write_u32(0x14, metadata.ht_tx_parameters);
-    writer.write_u32(0x18, u32::from(metadata.frame_length));
-    writer.write_u32(0x1c, metadata.frame_address);
-    writer.write_u8(0x24, metadata.max_tx_rate);
-    writer.write_u8(0x25, 0);
-    writer.write_u16(0x26, 0);
-    writer.write_u32(0x28, 0);
-    writer.write_u32(0x2c, 0);
-    writer.write_u32(0x30, 0);
+    writer.write_u32(context.request_buffer(), metadata.message_address);
+    writer.write_u32(context.packet_id(), metadata.packet_id);
+    writer.write_u8(context.requested_rate(), metadata.max_tx_rate);
+    writer.write_u8(context.queue_id(), metadata.queue_id);
+    writer.write_u8(context.more(), u8::from(metadata.more));
+    writer.write_u8(context.request_flags(), metadata.flags);
+    writer.write_u32(context.expiry_time(), metadata.expire_time);
+    writer.write_u32(context.ht_tx_parameters(), metadata.ht_tx_parameters);
+    writer.write_u32(context.borrowed_frame_length(), u32::from(metadata.frame_length));
+    writer.write_u32(context.borrowed_frame_address(), metadata.frame_address);
+    writer.write_u8(context.rate_copy(), metadata.max_tx_rate);
+    writer.write_u8(context.saved_status(), 0);
+    writer.write_u16(context.completion_flags(), 0);
+    for index in 0..3 {
+        writer.write_u32(context.rate_try(index).unwrap(), 0);
+    }
 
-    writer.write_u32(0x80, 1);
-    writer.write_u8(0xbd, metadata.interface);
-    writer.write_u8(0xbf, (metadata.queue_id & 0x3f) >> 2);
-    writer.write_u8(0x0d, metadata.queue_id & 3);
-    writer.write_u32(0x40, metadata.submit_timer);
-    writer.write_u8(0x53, 0);
-    writer.write_u16(0x50, 0);
-    writer.write_u8(0x52, 1);
-    writer.write_u32(0x4c, 0);
+    writer.write_u32(context.ownership_bits(), 1);
+    writer.write_u8(context.interface(), metadata.interface);
+    writer.write_u8(context.host_link(), (metadata.queue_id & 0x3f) >> 2);
+    writer.write_u8(context.queue_id(), metadata.queue_id & 3);
+    writer.write_u32(context.submit_timer(), metadata.submit_timer);
+    writer.write_u8(context.completion_class(), 0);
+    writer.write_u16(context.sequence_or_callback_state(), 0);
+    writer.write_u8(context.submit_state(), 1);
+    writer.write_u32(context.optional_pipe_object(), 0);
     let flags = 0x0080_0000
         | ((metadata.ht_tx_parameters >> 11) & 0xe0)
         | if metadata.flags & 1 != 0 {
@@ -1323,80 +1296,76 @@ pub fn write_host_context_fields<W: HostContextWriter>(writer: &mut W, metadata:
         } else {
             0
         };
-    writer.write_u32(0x58, flags);
-    writer.write_u32(0x74, 0);
-    writer.write_u32(0x78, 0);
-    writer.write_u32(0x7c, 0);
-    writer.write_u32(0x68, metadata.submit_timer.wrapping_sub(1));
-    writer.write_u32(0x6c, metadata.submit_timer.wrapping_sub(1));
-    writer.write_u32(0x38, 0);
-    writer.write_u32(0x3c, 0);
-    writer.write_u32(0x64, metadata.expire_time);
-    writer.write_u32(0x54, metadata.frame_address);
-    writer.write_u8(0x60, metadata.ac);
-    writer.write_u8(0x61, (metadata.flags & 0x0f) >> 1);
-    writer.write_u8(0x62, (metadata.flags & 0x7f) >> 4);
-    writer.write_u16(0x5c, metadata.frame_length);
-    writer.write_u16(0x70, 0xfe);
-    writer.write_u16(0x72, 0);
-    writer.write_u16(0xa4, 0);
-    writer.write_u8(0xa7, 1);
-    writer.write_u32(0x90, 0);
-    writer.write_u8(0x63, metadata.max_tx_rate);
+    writer.write_u32(context.control_bits(), flags);
+    for index in 0..3 {
+        writer.write_u32(context.pas_reset_word(index).unwrap(), 0);
+    }
+    writer.write_u32(context.completion_timestamp(), metadata.submit_timer.wrapping_sub(1));
+    writer.write_u32(context.scheduler_timestamp(), metadata.submit_timer.wrapping_sub(1));
+    for index in 0..2 {
+        writer.write_u32(context.timing_scratch(index).unwrap(), 0);
+    }
+    writer.write_u32(context.pas_expiry_time(), metadata.expire_time);
+    writer.write_u32(context.frame_address(), metadata.frame_address);
+    writer.write_u8(context.access_category(), metadata.ac);
+    writer.write_u8(context.request_flag_rate_bits(), (metadata.flags & 0x0f) >> 1);
+    writer.write_u8(context.retry_policy(), (metadata.flags & 0x7f) >> 4);
+    writer.write_u16(context.frame_length(), metadata.frame_length);
+    writer.write_u16(context.terminal_status(), 0xfe);
+    writer.write_u16(context.try_count(), 0);
+    writer.write_u16(context.auxiliary_state(), 0);
+    writer.write_u8(context.insertion_mode(), 1);
+    writer.write_u32(context.descriptor_state(), 0);
+    writer.write_u8(context.tx_rate(), metadata.max_tx_rate);
 }
 
-struct SliceContextWriter<'a>(&'a mut [u8; HOST_CONTEXT_SIZE]);
+struct SliceContextWriter<'a> {
+    context: HostContextAddress,
+    image: &'a mut [u8; crate::dtcm::HOST_TX_CONTEXT_SIZE],
+}
 
 impl HostContextWriter for SliceContextWriter<'_> {
-    fn write_u8(&mut self, offset: usize, value: u8) {
-        self.0[offset] = value;
+    fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8) {
+        self.image[address.get() - self.context.raw() as usize] = value;
     }
 
-    fn write_u16(&mut self, offset: usize, value: u16) {
-        self.0[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16) {
+        let offset = address.get() - self.context.raw() as usize;
+        self.image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn write_u32(&mut self, offset: usize, value: u32) {
-        self.0[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32) {
+        let offset = address.get() - self.context.raw() as usize;
+        self.image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 }
 
 /// Build a zero-based context image for tests and documentation. Runtime code
 /// should call `write_host_context_fields` with a volatile writer instead.
-pub fn initialize_host_context(image: &mut [u8; HOST_CONTEXT_SIZE], metadata: HostTxMetadata) {
+pub fn initialize_host_context(
+    image: &mut [u8; crate::dtcm::HOST_TX_CONTEXT_SIZE],
+    metadata: HostTxMetadata,
+) {
     image.fill(0);
-    write_host_context_fields(&mut SliceContextWriter(image), metadata);
+    let context = HostContextAddress::from_index(0).unwrap();
+    write_host_context_fields(&mut SliceContextWriter { context, image }, context, metadata);
 }
 
 #[cfg(target_arch = "arm")]
-struct VolatileContextWriter {
-    base: core::ptr::NonNull<u8>,
-}
+struct VolatileContextWriter;
 
 #[cfg(target_arch = "arm")]
 impl HostContextWriter for VolatileContextWriter {
-    fn write_u8(&mut self, offset: usize, value: u8) {
-        unsafe { self.base.as_ptr().add(offset).write_volatile(value) };
+    fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8) {
+        unsafe { write_host_u8(address, value) };
     }
 
-    fn write_u16(&mut self, offset: usize, value: u16) {
-        unsafe {
-            self.base
-                .as_ptr()
-                .add(offset)
-                .cast::<u16>()
-                .write_volatile(value)
-        };
+    fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16) {
+        unsafe { write_host_u16(address, value) };
     }
 
-    fn write_u32(&mut self, offset: usize, value: u32) {
-        unsafe {
-            self.base
-                .as_ptr()
-                .add(offset)
-                .cast::<u32>()
-                .write_volatile(value)
-        };
+    fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32) {
+        unsafe { write_host_u32(address, value) };
     }
 }
 
@@ -1406,13 +1375,8 @@ impl HostContextWriter for VolatileContextWriter {
 /// # Safety
 /// `address` must be an exclusively owned, aligned 0x170-byte host context.
 #[cfg(target_arch = "arm")]
-pub unsafe fn initialize_host_context_at(address: u32, metadata: HostTxMetadata) {
-    unsafe {
-        let mut writer = VolatileContextWriter {
-            base: core::ptr::NonNull::new_unchecked(address as *mut u8),
-        };
-        write_host_context_fields(&mut writer, metadata);
-    }
+pub unsafe fn initialize_host_context_at(context: HostContextAddress, metadata: HostTxMetadata) {
+    write_host_context_fields(&mut VolatileContextWriter, context, metadata);
 }
 
 #[cfg(target_arch = "arm")]
@@ -1445,6 +1409,129 @@ unsafe fn write_live_u32(address: u32, value: u32) {
     unsafe { (address as *mut u32).write_volatile(value) };
 }
 
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+unsafe fn read_host_u8(address: crate::dtcm::DtcmAddress) -> u8 {
+    unsafe { crate::dtcm::shared_ptr::<u8>(address).read_volatile() }
+}
+
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+unsafe fn read_host_u16(address: crate::dtcm::DtcmAddress) -> u16 {
+    unsafe { crate::dtcm::shared_ptr::<u16>(address).read_volatile() }
+}
+
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+unsafe fn read_host_u32(address: crate::dtcm::DtcmAddress) -> u32 {
+    unsafe { crate::dtcm::shared_ptr::<u32>(address).read_volatile() }
+}
+
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+unsafe fn write_host_u8(address: crate::dtcm::DtcmAddress, value: u8) {
+    unsafe { crate::dtcm::shared_ptr::<u8>(address).write_volatile(value) };
+}
+
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+unsafe fn write_host_u16(address: crate::dtcm::DtcmAddress, value: u16) {
+    unsafe { crate::dtcm::shared_ptr::<u16>(address).write_volatile(value) };
+}
+
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+unsafe fn write_host_u32(address: crate::dtcm::DtcmAddress, value: u32) {
+    unsafe { crate::dtcm::shared_ptr::<u32>(address).write_volatile(value) };
+}
+
+/// Read an intrusive `+0x04` link from a mixed internal/host TX list. Host
+/// nodes use the semantic layout; retained internal nodes keep their existing
+/// raw compatibility view until that family is decoded.
+#[cfg(target_arch = "arm")]
+unsafe fn read_context_link(context: u32) -> u32 {
+    if let Some(context) = HostContextAddress::from_raw(context) {
+        unsafe { read_host_u32(context.intrusive_next()) }
+    } else {
+        unsafe { read_live_u32(context.wrapping_add(4)) }
+    }
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn write_context_link(context: u32, next: u32) {
+    if let Some(context) = HostContextAddress::from_raw(context) {
+        unsafe { write_host_u32(context.intrusive_next(), next) };
+    } else {
+        unsafe { write_live_u32(context.wrapping_add(4), next) };
+    }
+}
+
+trait HostPoolIo {
+    fn read_u32(&mut self, address: crate::dtcm::DtcmAddress) -> u32;
+    fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8);
+    fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16);
+    fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32);
+}
+
+fn rebuild_host_free_list<I: HostPoolIo>(io: &mut I) {
+    io.write_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD, 0);
+    let mut head = 0;
+    for index in 0..crate::dtcm::HOST_TX_CONTEXT_COUNT {
+        let context = HostContextAddress::from_index(index).unwrap();
+        io.write_u32(context.intrusive_next(), head);
+        io.write_u16(context.terminal_status(), 0x00ff);
+        io.write_u32(context.frame_state_address(), context.expected_frame_state().raw());
+        head = context.raw();
+    }
+    io.write_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD, head);
+}
+
+fn pop_host_free_list<I: HostPoolIo>(io: &mut I) -> Result<HostContextAddress, HostPoolError> {
+    let head = io.read_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD);
+    let Some(context) = HostContextAddress::from_raw(head) else {
+        return Err(if head == 0 { HostPoolError::Empty } else { HostPoolError::CorruptFreeHead });
+    };
+    if io.read_u32(context.frame_state_address()) != context.expected_frame_state().raw() {
+        return Err(HostPoolError::CorruptFrameState);
+    }
+    let next = io.read_u32(context.intrusive_next());
+    io.write_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD, next);
+    io.write_u8(context.request_flags(), 0);
+    io.write_u32(context.completion_status(), 0xfe);
+    io.write_u16(context.terminal_status(), 0x00fe);
+    io.write_u32(context.ownership_bits(), 0);
+    Ok(context)
+}
+
+fn push_host_free_list<I: HostPoolIo>(io: &mut I, context: HostContextAddress) {
+    io.write_u32(context.completion_status(), 0xff);
+    io.write_u16(context.terminal_status(), 0x00ff);
+    let ownership = io.read_u32(context.ownership_bits());
+    io.write_u32(context.ownership_bits(), ownership | 0x0004_0000);
+    let head = io.read_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD);
+    io.write_u32(context.intrusive_next(), head);
+    io.write_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD, context.raw());
+}
+
+#[cfg(target_arch = "arm")]
+struct VolatileHostPoolIo;
+
+#[cfg(target_arch = "arm")]
+impl HostPoolIo for VolatileHostPoolIo {
+    fn read_u32(&mut self, address: crate::dtcm::DtcmAddress) -> u32 {
+        unsafe { read_host_u32(address) }
+    }
+    fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8) {
+        unsafe { write_host_u8(address, value) };
+    }
+    fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16) {
+        unsafe { write_host_u16(address, value) };
+    }
+    fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32) {
+        unsafe { write_host_u32(address, value) };
+    }
+}
+
 /// Rebuild the vendor 30-entry host free list while preserving the dedicated
 /// packet-SRAM descriptor address assigned to each context.
 ///
@@ -1457,19 +1544,7 @@ pub unsafe fn initialize_host_pool() {
         if crate::vif::set_host_contexts_in_flight(0).is_err() {
             crate::halt_always!();
         }
-        write_live_u32(HOST_FREE_HEAD, 0);
-        let mut head = 0;
-        let mut index = 0;
-        while index < HOST_CONTEXT_COUNT {
-            let context =
-                HostContextAddress(HOST_CONTEXT_BASE + index as u32 * HOST_CONTEXT_SIZE as u32);
-            write_live_u32(context.raw() + 4, head);
-            write_live_u16(context.raw() + 0x70, 0x00ff);
-            write_live_u32(context.raw() + 0xa0, context.frame_state());
-            head = context.raw();
-            index += 1;
-        }
-        write_live_u32(HOST_FREE_HEAD, head);
+        rebuild_host_free_list(&mut VolatileHostPoolIo);
         crate::tx::restore_irq_fiq_saved(previous);
     }
 }
@@ -1479,48 +1554,40 @@ pub unsafe fn initialize_host_pool() {
     unsafe { core::arch::asm!("") };
 }
 
-/// Allocate exactly as `tx_wsm_buf_alloc`. A zero free head is treated as an
-/// empty pool when the in-flight count is nonzero, rather than destructively
-/// rebuilding contexts that may still be hardware-owned.
+/// Allocate with the parent's deliberate recovery policy around
+/// `tx_wsm_buf_alloc`: when the typed in-flight count is zero, any empty,
+/// invalid-head, or frame-state mismatch rebuilds the complete pool. A zero
+/// head remains an ordinary empty pool when the count is nonzero, avoiding a
+/// destructive rebuild of contexts that may still be hardware-owned.
+///
+/// This is broader than the vendor allocator, which does not rebuild here.
+/// Narrowing it to an uninitialized-head signature would change the exact
+/// parent recovery semantics and requires separate failure evidence.
 #[cfg(target_arch = "arm")]
 pub unsafe fn allocate_host_context() -> Result<HostContextAddress, HostPoolError> {
     let previous = unsafe { crate::tx::disable_irq_fiq_save() };
-    let mut head = unsafe { read_live_u32(HOST_FREE_HEAD) };
     let in_flight = crate::vif::host_contexts_in_flight().unwrap_or(0);
-    if in_flight == 0 && HostContextAddress::from_raw(head).is_none() {
-        unsafe { crate::tx::restore_irq_fiq_saved(previous) };
-        unsafe { initialize_host_pool() };
-        return unsafe { allocate_host_context() };
-    }
-    let Some(context) = HostContextAddress::from_raw(head) else {
-        unsafe { crate::tx::restore_irq_fiq_saved(previous) };
-        return Err(if head == 0 {
-            HostPoolError::Empty
-        } else {
-            HostPoolError::CorruptFreeHead
-        });
-    };
-    if unsafe { read_live_u32(context.raw() + 0xa0) } != context.frame_state() {
-        unsafe { crate::tx::restore_irq_fiq_saved(previous) };
-        if in_flight == 0 {
+    let result = pop_host_free_list(&mut VolatileHostPoolIo);
+    match result {
+        Ok(context) => {
+            unsafe {
+                if crate::vif::adjust_host_contexts_in_flight(1).is_err() {
+                    crate::halt_always!();
+                }
+                crate::tx::restore_irq_fiq_saved(previous);
+            }
+            Ok(context)
+        }
+        Err(_) if in_flight == 0 => {
+            unsafe { crate::tx::restore_irq_fiq_saved(previous) };
             unsafe { initialize_host_pool() };
-            return unsafe { allocate_host_context() };
+            unsafe { allocate_host_context() }
         }
-        return Err(HostPoolError::CorruptFrameState);
-    }
-    head = unsafe { read_live_u32(context.raw() + 4) };
-    unsafe {
-        write_live_u32(HOST_FREE_HEAD, head);
-        write_live_u8(context.raw() + 0x0f, 0);
-        write_live_u32(context.raw() + 0x20, 0xfe);
-        write_live_u16(context.raw() + 0x70, 0x00fe);
-        write_live_u32(context.raw() + 0x80, 0);
-        if crate::vif::adjust_host_contexts_in_flight(1).is_err() {
-            crate::halt_always!();
+        Err(error) => {
+            unsafe { crate::tx::restore_irq_fiq_saved(previous) };
+            Err(error)
         }
-        crate::tx::restore_irq_fiq_saved(previous);
     }
-    Ok(context)
 }
 
 /// Return exactly as `tx_wsm_buf_free`.
@@ -1531,13 +1598,7 @@ pub unsafe fn allocate_host_context() -> Result<HostContextAddress, HostPoolErro
 pub unsafe fn free_host_context(context: HostContextAddress) {
     let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     unsafe {
-        write_live_u32(context.raw() + 0x20, 0xff);
-        write_live_u16(context.raw() + 0x70, 0x00ff);
-        let ownership = read_live_u32(context.raw() + 0x80);
-        write_live_u32(context.raw() + 0x80, ownership | 0x0004_0000);
-        let head = read_live_u32(HOST_FREE_HEAD);
-        write_live_u32(context.raw() + 4, head);
-        write_live_u32(HOST_FREE_HEAD, context.raw());
+        push_host_free_list(&mut VolatileHostPoolIo, context);
         if crate::vif::adjust_host_contexts_in_flight(-1).is_err() {
             crate::halt_always!();
         }
@@ -1603,10 +1664,10 @@ pub unsafe fn admit_host_tx(
         Err(error) => return Err((buffer, HostAdmissionError::Pool(error))),
     };
     let metadata = HostTxMetadata {
-        frame_state_address: context.frame_state(),
+        frame_state_address: context.expected_frame_state().raw(),
         ..metadata
     };
-    unsafe { initialize_host_context_at(context.raw(), metadata) };
+    unsafe { initialize_host_context_at(context, metadata) };
     Ok(RetainedHostTx {
         context,
         release: buffer.into_release(),
@@ -1615,11 +1676,11 @@ pub unsafe fn admit_host_tx(
     })
 }
 
-pub fn read_u16(image: &[u8; HOST_CONTEXT_SIZE], offset: usize) -> u16 {
+pub fn read_u16(image: &[u8; crate::dtcm::HOST_TX_CONTEXT_SIZE], offset: usize) -> u16 {
     u16::from_le_bytes([image[offset], image[offset + 1]])
 }
 
-pub fn read_u32(image: &[u8; HOST_CONTEXT_SIZE], offset: usize) -> u32 {
+pub fn read_u32(image: &[u8; crate::dtcm::HOST_TX_CONTEXT_SIZE], offset: usize) -> u32 {
     u32::from_le_bytes([
         image[offset],
         image[offset + 1],
@@ -1801,6 +1862,106 @@ mod tests {
         width: u8,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum AccessKind {
+        Read,
+        Write,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct PoolAccess {
+        kind: AccessKind,
+        address: usize,
+        width: u8,
+        value: u32,
+    }
+
+    struct PoolRecorder {
+        bytes: std::collections::BTreeMap<usize, u8>,
+        accesses: std::vec::Vec<PoolAccess>,
+        entered: bool,
+    }
+
+    impl PoolRecorder {
+        fn new() -> Self {
+            Self {
+                bytes: std::collections::BTreeMap::new(),
+                accesses: std::vec::Vec::new(),
+                entered: false,
+            }
+        }
+
+        fn enter(&mut self) -> bool {
+            if self.entered {
+                false
+            } else {
+                self.entered = true;
+                true
+            }
+        }
+
+        fn leave(&mut self) {
+            assert!(self.entered);
+            self.entered = false;
+        }
+
+        fn seed_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32) {
+            for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+                self.bytes.insert(address.get() + offset, byte);
+            }
+        }
+
+        fn load(&self, address: usize, width: usize) -> u32 {
+            let mut bytes = [0_u8; 4];
+            for (offset, byte) in bytes.iter_mut().take(width).enumerate() {
+                *byte = self.bytes.get(&(address + offset)).copied().unwrap_or(0);
+            }
+            u32::from_le_bytes(bytes)
+        }
+
+        fn store(&mut self, address: usize, width: usize, value: u32) {
+            for (offset, byte) in value.to_le_bytes().into_iter().take(width).enumerate() {
+                self.bytes.insert(address + offset, byte);
+            }
+        }
+    }
+
+    impl HostPoolIo for PoolRecorder {
+        fn read_u32(&mut self, address: crate::dtcm::DtcmAddress) -> u32 {
+            let value = self.load(address.get(), 4);
+            self.accesses.push(PoolAccess { kind: AccessKind::Read, address: address.get(), width: 4, value });
+            value
+        }
+        fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8) {
+            self.store(address.get(), 1, u32::from(value));
+            self.accesses.push(PoolAccess { kind: AccessKind::Write, address: address.get(), width: 1, value: u32::from(value) });
+        }
+        fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16) {
+            self.store(address.get(), 2, u32::from(value));
+            self.accesses.push(PoolAccess { kind: AccessKind::Write, address: address.get(), width: 2, value: u32::from(value) });
+        }
+        fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32) {
+            self.store(address.get(), 4, value);
+            self.accesses.push(PoolAccess { kind: AccessKind::Write, address: address.get(), width: 4, value });
+        }
+    }
+
+    struct AddressRecordingWriter {
+        writes: std::vec::Vec<PoolAccess>,
+    }
+
+    impl HostContextWriter for AddressRecordingWriter {
+        fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8) {
+            self.writes.push(PoolAccess { kind: AccessKind::Write, address: address.get(), width: 1, value: u32::from(value) });
+        }
+        fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16) {
+            self.writes.push(PoolAccess { kind: AccessKind::Write, address: address.get(), width: 2, value: u32::from(value) });
+        }
+        fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32) {
+            self.writes.push(PoolAccess { kind: AccessKind::Write, address: address.get(), width: 4, value });
+        }
+    }
+
     struct PowerSaveRecorder {
         observations: std::vec::Vec<Observation>,
         record: crate::dtcm::VifRecordAddress,
@@ -1883,21 +2044,137 @@ mod tests {
 
     #[test]
     fn host_context_addresses_preserve_pool_and_frame_state_identity() {
-        let first = HostContextAddress(HOST_CONTEXT_BASE);
-        let last = HostContextAddress(HOST_CONTEXT_BASE + 29 * 0x170);
+        let first = HostContextAddress::from_index(0).unwrap();
+        let last = HostContextAddress::from_index(29).unwrap();
 
         assert_eq!(HostContextAddress::from_index(0), Some(first));
         assert_eq!(
-            HostContextAddress::from_index(HOST_CONTEXT_COUNT - 1),
+            HostContextAddress::from_index(crate::dtcm::HOST_TX_CONTEXT_COUNT - 1),
             Some(last)
         );
-        assert_eq!(first.raw(), HOST_CONTEXT_BASE);
-        assert_eq!(first.frame_state(), packet_ram::host_frame_state(0) as u32);
-        assert_eq!(last.raw(), HOST_CONTEXT_BASE + 29 * 0x170);
-        assert_eq!(last.frame_state(), packet_ram::host_frame_state(29) as u32);
+        assert_eq!(first.raw(), crate::dtcm::HOST_TX_CONTEXTS.get() as u32);
+        assert_eq!(first.expected_frame_state().raw(), packet_ram::host_frame_state(0) as u32);
+        assert_eq!(last.raw(), crate::dtcm::HOST_TX_CONTEXTS.get() as u32 + 29 * 0x170);
+        assert_eq!(last.expected_frame_state().raw(), packet_ram::host_frame_state(29) as u32);
         assert_eq!(HostContextAddress::from_raw(last.raw()), Some(last));
         assert_eq!(HostContextAddress::from_raw(last.raw() + 4), None);
-        assert_eq!(HostContextAddress::from_index(HOST_CONTEXT_COUNT), None);
+        assert_eq!(HostContextAddress::from_index(crate::dtcm::HOST_TX_CONTEXT_COUNT), None);
+    }
+
+    #[test]
+    fn host_free_list_rebuild_pop_and_push_preserve_exact_order_and_widths() {
+        let mut io = PoolRecorder::new();
+        assert!(io.enter());
+        assert!(!io.enter());
+        rebuild_host_free_list(&mut io);
+        io.leave();
+
+        let first = HostContextAddress::from_index(0).unwrap();
+        let last = HostContextAddress::from_index(crate::dtcm::HOST_TX_CONTEXT_COUNT - 1).unwrap();
+        assert_eq!(io.load(crate::dtcm::HOST_CONTEXT_FREE_HEAD.get(), 4), last.raw());
+        assert_eq!(io.load(first.intrusive_next().get(), 4), 0);
+        assert_eq!(io.load(last.intrusive_next().get(), 4), HostContextAddress::from_index(28).unwrap().raw());
+        assert_eq!(io.accesses[0], PoolAccess {
+            kind: AccessKind::Write,
+            address: crate::dtcm::HOST_CONTEXT_FREE_HEAD.get(),
+            width: 4,
+            value: 0,
+        });
+        assert_eq!(io.accesses.last().copied(), Some(PoolAccess {
+            kind: AccessKind::Write,
+            address: crate::dtcm::HOST_CONTEXT_FREE_HEAD.get(),
+            width: 4,
+            value: last.raw(),
+        }));
+
+        io.accesses.clear();
+        let popped = pop_host_free_list(&mut io).unwrap();
+        assert_eq!(popped, last);
+        assert_eq!(io.accesses, [
+            PoolAccess { kind: AccessKind::Read, address: crate::dtcm::HOST_CONTEXT_FREE_HEAD.get(), width: 4, value: last.raw() },
+            PoolAccess { kind: AccessKind::Read, address: last.frame_state_address().get(), width: 4, value: last.expected_frame_state().raw() },
+            PoolAccess { kind: AccessKind::Read, address: last.intrusive_next().get(), width: 4, value: HostContextAddress::from_index(28).unwrap().raw() },
+            PoolAccess { kind: AccessKind::Write, address: crate::dtcm::HOST_CONTEXT_FREE_HEAD.get(), width: 4, value: HostContextAddress::from_index(28).unwrap().raw() },
+            PoolAccess { kind: AccessKind::Write, address: last.request_flags().get(), width: 1, value: 0 },
+            PoolAccess { kind: AccessKind::Write, address: last.completion_status().get(), width: 4, value: 0xfe },
+            PoolAccess { kind: AccessKind::Write, address: last.terminal_status().get(), width: 2, value: 0xfe },
+            PoolAccess { kind: AccessKind::Write, address: last.ownership_bits().get(), width: 4, value: 0 },
+        ]);
+
+        io.accesses.clear();
+        push_host_free_list(&mut io, popped);
+        assert_eq!(io.accesses, [
+            PoolAccess { kind: AccessKind::Write, address: last.completion_status().get(), width: 4, value: 0xff },
+            PoolAccess { kind: AccessKind::Write, address: last.terminal_status().get(), width: 2, value: 0xff },
+            PoolAccess { kind: AccessKind::Read, address: last.ownership_bits().get(), width: 4, value: 0 },
+            PoolAccess { kind: AccessKind::Write, address: last.ownership_bits().get(), width: 4, value: 0x0004_0000 },
+            PoolAccess { kind: AccessKind::Read, address: crate::dtcm::HOST_CONTEXT_FREE_HEAD.get(), width: 4, value: HostContextAddress::from_index(28).unwrap().raw() },
+            PoolAccess { kind: AccessKind::Write, address: last.intrusive_next().get(), width: 4, value: HostContextAddress::from_index(28).unwrap().raw() },
+            PoolAccess { kind: AccessKind::Write, address: crate::dtcm::HOST_CONTEXT_FREE_HEAD.get(), width: 4, value: last.raw() },
+        ]);
+    }
+
+    #[test]
+    fn host_free_list_rejects_empty_interior_and_corrupt_frame_state_pointers() {
+        let first = HostContextAddress::from_index(0).unwrap();
+        let mut io = PoolRecorder::new();
+        assert_eq!(pop_host_free_list(&mut io), Err(HostPoolError::Empty));
+
+        io.seed_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD, first.raw() + 4);
+        assert_eq!(pop_host_free_list(&mut io), Err(HostPoolError::CorruptFreeHead));
+
+        io.seed_u32(crate::dtcm::HOST_CONTEXT_FREE_HEAD, first.raw());
+        io.seed_u32(first.frame_state_address(), 0x0900_0000);
+        assert_eq!(pop_host_free_list(&mut io), Err(HostPoolError::CorruptFrameState));
+    }
+
+    #[test]
+    fn context_initialization_records_field_derived_addresses_widths_and_order() {
+        let context = HostContextAddress::from_index(3).unwrap();
+        let metadata = HostTxMetadata {
+            message_address: 0x0900_9000,
+            packet_id: 0x1234_5678,
+            max_tx_rate: 14,
+            queue_id: 0x22,
+            more: false,
+            flags: 0x53,
+            expire_time: 200,
+            ht_tx_parameters: 1 | (0x60 << 11),
+            frame_address: 0x0900_9018,
+            frame_length: 147,
+            interface: 1,
+            submit_timer: 0x1020_3040,
+            ac: 2,
+            frame_state_address: context.expected_frame_state().raw(),
+        };
+        let mut writer = AddressRecordingWriter { writes: std::vec::Vec::new() };
+        write_host_context_fields(&mut writer, context, metadata);
+        assert_eq!(writer.writes[0], PoolAccess {
+            kind: AccessKind::Write,
+            address: context.frame_state_address().get(),
+            width: 4,
+            value: context.expected_frame_state().raw(),
+        });
+        assert_eq!(writer.writes[1..5], [
+            PoolAccess { kind: AccessKind::Write, address: context.request_flags().get(), width: 1, value: 0 },
+            PoolAccess { kind: AccessKind::Write, address: context.completion_status().get(), width: 4, value: 0xfe },
+            PoolAccess { kind: AccessKind::Write, address: context.terminal_status().get(), width: 2, value: 0xfe },
+            PoolAccess { kind: AccessKind::Write, address: context.ownership_bits().get(), width: 4, value: 0 },
+        ]);
+        let tail = writer.writes.last().copied().unwrap();
+        assert_eq!(tail, PoolAccess {
+            kind: AccessKind::Write,
+            address: context.tx_rate().get(),
+            width: 1,
+            value: 14,
+        });
+        let ownership_publication = writer.writes.iter().position(|access| {
+            access.address == context.ownership_bits().get() && access.value == 1
+        }).unwrap();
+        let request_identity = writer.writes.iter().position(|access| {
+            access.address == context.request_buffer().get()
+        }).unwrap();
+        assert!(request_identity < ownership_publication);
     }
 
     #[test]
@@ -1962,7 +2239,7 @@ mod tests {
 
     #[test]
     fn host_initializer_preserves_vendor_offsets() {
-        let mut image = [0xaa; HOST_CONTEXT_SIZE];
+        let mut image = [0xaa; crate::dtcm::HOST_TX_CONTEXT_SIZE];
         initialize_host_context(
             &mut image,
             HostTxMetadata {

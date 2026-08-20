@@ -394,11 +394,106 @@ opaque_family!(
     0x107c
 );
 
+/// Address stored in a host context for the original borrowed HIF request.
+///
+/// The value remains a raw ABI word: this type distinguishes its address domain
+/// but does not dereference it or transfer the `RequestBuffer` owner's lifetime.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HifRequestAddress(u32);
+
+/// Packet-RAM address stored in a host context for an MPDU or its dedicated
+/// per-context descriptor/work area.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PacketRamAddress(u32);
+
+/// The decoded `ctx+0x54` PAS/frame-node overlay.
+///
+/// Names are limited to fields exercised by translated Rust or directly
+/// supported by retained vendor evidence. The remaining bytes preserve live
+/// overlays used by retry, encryption, aggregation, and completion code.
+#[repr(C, align(4))]
+struct HostPasContext {
+    frame_address: SharedScalar<PacketRamAddress>, // +0x00 / outer +0x54
+    control_bits: SharedU32,                       // +0x04
+    frame_length: SharedU16,                       // +0x08
+    frame_control: SharedU16,                      // +0x0a
+    access_category: SharedU8,                     // +0x0c
+    request_flag_rate_bits: SharedU8,              // +0x0d; request flags bits 1..3
+    retry_policy: SharedU8,                        // +0x0e
+    tx_rate: SharedU8,                             // +0x0f
+    expiry_time: SharedU32,                        // +0x10
+    completion_timestamp: SharedU32,               // +0x14
+    scheduler_timestamp: SharedU32,                // +0x18
+    terminal_status: SharedU16,                    // +0x1c
+    try_count: SharedU16,                          // +0x1e
+    opaque_20: OpaqueBytes<0x0c>,
+    ownership_bits: SharedU32,                     // +0x2c
+    opaque_30: OpaqueBytes<0x06>,
+    duration: SharedU16,                           // +0x36
+    opaque_38: OpaqueBytes<0x04>,
+    descriptor_state: SharedU32,                   // +0x3c
+    opaque_40: OpaqueBytes<0x08>,
+    word_48: SharedU32,                            // +0x48; unresolved timing/accounting word
+    frame_state_address: SharedScalar<PacketRamAddress>, // +0x4c
+    auxiliary_state: SharedU16,                    // +0x50
+    tid: SharedU8,                                 // +0x52
+    insertion_mode: SharedU8,                      // +0x53
+    sequence_number: SharedU16,                    // +0x54
+    retry_rate: SharedU8,                          // +0x56
+    byte_57: SharedU8,                             // +0x57; unresolved retry/encoding overlay
+    opaque_58: OpaqueBytes<0x11>,
+    interface: SharedU8,                           // +0x69
+    duration_slot: SharedU8,                       // +0x6a
+    host_link: SharedU8,                           // +0x6b
+    completion_byte_6c: SharedU8,                  // +0x6c; copied into completion metadata
+    opaque_6d: OpaqueBytes<0x07>,
+    qos_control: SharedU16,                        // +0x74
+    cipher_class: SharedU8,                        // +0x76
+    opaque_77: OpaqueBytes<0x05>,
+    word_7c: SharedU16,                            // +0x7c; unresolved crypto tail overlay
+    opaque_7e: OpaqueBytes<0x02>,
+}
+
+/// One exact host WSM TX context at fixed DTCM identity.
+///
+/// This is a semantic ABI description, not a Rust ownership declaration.
+/// Foreground code, retained callbacks, diagnostics, and IRQ/FIQ completion can
+/// all access a live record. No ordinary reference to this type is exposed;
+/// production access is field-derived raw volatile I/O, with multiword/list
+/// transitions serialized by the MAC domain or explicit IRQ/FIQ exclusion.
 #[repr(C, align(4))]
 struct HostTxContext {
-    /// Exact host-context stride. Intrusive links, packet-RAM pointers, timers,
-    /// and overlaid metadata remain accessible only through volatile raw views.
-    storage: OpaqueBytes<HOST_TX_CONTEXT_SIZE>,
+    request_buffer: SharedScalar<HifRequestAddress>, // +0x00
+    intrusive_next: SharedU32,                       // +0x04
+    packet_id: SharedU32,                            // +0x08
+    requested_rate: SharedU8,                        // +0x0c
+    queue_id: SharedU8,                              // +0x0d
+    more: SharedU8,                                  // +0x0e
+    request_flags: SharedU8,                         // +0x0f
+    expiry_time: SharedU32,                          // +0x10
+    ht_tx_parameters: SharedU32,                     // +0x14
+    borrowed_frame_length: SharedU32,                // +0x18
+    borrowed_frame_address: SharedScalar<PacketRamAddress>, // +0x1c
+    completion_status: SharedU32,                    // +0x20
+    rate_copy: SharedU8,                             // +0x24; duplicate request max-rate byte
+    saved_status: SharedU8,                          // +0x25
+    completion_flags: SharedU16,                     // +0x26
+    rate_try: [SharedU32; 3],                        // +0x28
+    opaque_34: OpaqueBytes<0x04>,
+    timing_scratch: [SharedU32; 2],                  // +0x38
+    submit_timer: SharedU32,                         // +0x40
+    header_length: SharedU32,                        // +0x44
+    payload_length: SharedU32,                       // +0x48
+    optional_pipe_object: SharedU32,                 // +0x4c
+    sequence_or_callback_state: SharedU16,           // +0x50
+    submit_state: SharedU8,                          // +0x52; initialized to one at submit
+    completion_class: SharedU8,                      // +0x53
+    pas: HostPasContext,                             // +0x54
+    /// Includes the crypto callback interior root at outer `+0x110` and all
+    /// unresolved encryption/aggregation tail overlays through `+0x170`.
+    opaque_d4: OpaqueBytes<0x9c>,
 }
 
 #[repr(C, align(4))]
@@ -425,11 +520,18 @@ opaque_family!(
     LmcControlRoots,
     0x180
 );
-opaque_family!(
-    /// Host-context and duplicate-cache accounting.
-    HostContextAccounting,
-    0x18
-);
+/// Mixed accounting rooted at `0x04008798`.
+///
+/// Only direct vendor consumers are named. The auxiliary free list is distinct
+/// from the host WSM context list at the following word and is not absorbed by
+/// host-pool operations.
+#[repr(C, align(4))]
+struct HostContextAccounting {
+    opaque_00: OpaqueBytes<0x0c>,
+    duplicate_cache_cursor: SharedU32,
+    deferred_event_owner: SharedU32,
+    auxiliary_tx_buffer_free_head: SharedU32,
+}
 
 /// Host TX free-list root plus one adjacent unresolved word.
 #[repr(C, align(4))]
@@ -694,6 +796,196 @@ pub(crate) fn internal_context_ptr(index: usize) -> Option<*mut InternalTxContex
     };
     Some(unsafe { contexts.add(index) })
 }
+
+/// Checked identity of one of the 30 fixed host WSM TX contexts.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostContextAddress(DtcmAddress);
+
+/// Checked identity of the intrusive PAS/frame node embedded at context `+0x54`.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostFrameNodeAddress(DtcmAddress);
+
+/// Checked identity of the decoded PAS overlay beginning at context `+0x54`.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostPasAddress(DtcmAddress);
+
+impl HifRequestAddress {
+    pub(crate) const fn raw(self) -> u32 { self.0 }
+}
+
+impl PacketRamAddress {
+    pub(crate) const fn raw(self) -> u32 { self.0 }
+}
+
+impl HostContextAddress {
+    pub(crate) const fn from_index(index: usize) -> Option<Self> {
+        if index < HOST_TX_CONTEXT_COUNT {
+            Some(Self(DtcmAddress::from_offset_unchecked(
+                core::mem::offset_of!(DtcmLayout, host_contexts)
+                    + index * core::mem::size_of::<HostTxContext>(),
+            )))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn from_raw(address: u32) -> Option<Self> {
+        let base = HOST_TX_CONTEXTS.get();
+        let offset = (address as usize).wrapping_sub(base);
+        if address as usize >= base
+            && offset % core::mem::size_of::<HostTxContext>() == 0
+            && offset / core::mem::size_of::<HostTxContext>() < HOST_TX_CONTEXT_COUNT
+        {
+            Some(Self(DtcmAddress::from_offset_unchecked(
+                core::mem::offset_of!(DtcmLayout, host_contexts) + offset,
+            )))
+        } else {
+            None
+        }
+    }
+
+    /// Construct a host-context address after equivalent range and stride
+    /// validation has already been performed.
+    ///
+    /// # Safety
+    /// `address` must identify the start of one `HostTxContext` record.
+    pub(crate) const unsafe fn from_raw_unchecked(address: u32) -> Self {
+        Self(DtcmAddress::from_offset_unchecked(
+            address as usize - DTCM_STATE_BASE,
+        ))
+    }
+
+    pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
+    pub(crate) const fn index(self) -> usize {
+        (self.0.offset() - core::mem::offset_of!(DtcmLayout, host_contexts))
+            / core::mem::size_of::<HostTxContext>()
+    }
+    const fn field(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+    const fn pas_field(self, offset: usize) -> DtcmAddress {
+        self.field(core::mem::offset_of!(HostTxContext, pas) + offset)
+    }
+
+    pub(crate) const fn request_buffer(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, request_buffer)) }
+    pub(crate) const fn intrusive_next(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, intrusive_next)) }
+    pub(crate) const fn packet_id(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, packet_id)) }
+    pub(crate) const fn requested_rate(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, requested_rate)) }
+    pub(crate) const fn queue_id(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, queue_id)) }
+    pub(crate) const fn more(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, more)) }
+    pub(crate) const fn request_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, request_flags)) }
+    pub(crate) const fn expiry_time(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, expiry_time)) }
+    pub(crate) const fn ht_tx_parameters(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, ht_tx_parameters)) }
+    pub(crate) const fn borrowed_frame_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, borrowed_frame_length)) }
+    pub(crate) const fn borrowed_frame_address(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, borrowed_frame_address)) }
+    pub(crate) const fn completion_status(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, completion_status)) }
+    pub(crate) const fn rate_copy(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, rate_copy)) }
+    pub(crate) const fn saved_status(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, saved_status)) }
+    pub(crate) const fn completion_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, completion_flags)) }
+    pub(crate) const fn rate_try(self, index: usize) -> Option<DtcmAddress> {
+        if index < 3 { Some(self.field(core::mem::offset_of!(HostTxContext, rate_try) + index * 4)) } else { None }
+    }
+    pub(crate) const fn timing_scratch(self, index: usize) -> Option<DtcmAddress> {
+        if index < 2 { Some(self.field(core::mem::offset_of!(HostTxContext, timing_scratch) + index * 4)) } else { None }
+    }
+    pub(crate) const fn submit_timer(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, submit_timer)) }
+    pub(crate) const fn header_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, header_length)) }
+    pub(crate) const fn payload_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, payload_length)) }
+    pub(crate) const fn optional_pipe_object(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, optional_pipe_object)) }
+    pub(crate) const fn sequence_or_callback_state(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, sequence_or_callback_state)) }
+    pub(crate) const fn submit_state(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, submit_state)) }
+    pub(crate) const fn completion_class(self) -> DtcmAddress { self.field(core::mem::offset_of!(HostTxContext, completion_class)) }
+    pub(crate) const fn frame_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, frame_address)) }
+    pub(crate) const fn control_bits(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, control_bits)) }
+    pub(crate) const fn frame_length(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, frame_length)) }
+    pub(crate) const fn frame_control(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, frame_control)) }
+    pub(crate) const fn access_category(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, access_category)) }
+    pub(crate) const fn request_flag_rate_bits(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, request_flag_rate_bits)) }
+    pub(crate) const fn retry_policy(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, retry_policy)) }
+    pub(crate) const fn tx_rate(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, tx_rate)) }
+    pub(crate) const fn pas_expiry_time(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, expiry_time)) }
+    pub(crate) const fn completion_timestamp(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, completion_timestamp)) }
+    pub(crate) const fn scheduler_timestamp(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, scheduler_timestamp)) }
+    pub(crate) const fn terminal_status(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, terminal_status)) }
+    pub(crate) const fn try_count(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, try_count)) }
+    /// Three pool-initialized words with unresolved retry/aggregation overlay semantics.
+    pub(crate) const fn pas_reset_word(self, index: usize) -> Option<DtcmAddress> {
+        if index < 3 { Some(self.pas_field(core::mem::offset_of!(HostPasContext, opaque_20) + index * 4)) } else { None }
+    }
+    pub(crate) const fn ownership_bits(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, ownership_bits)) }
+    pub(crate) const fn duration(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, duration)) }
+    pub(crate) const fn descriptor_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, descriptor_state)) }
+    pub(crate) const fn word_48(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, word_48)) }
+    pub(crate) const fn frame_state_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, frame_state_address)) }
+    pub(crate) const fn auxiliary_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, auxiliary_state)) }
+    pub(crate) const fn tid(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, tid)) }
+    pub(crate) const fn insertion_mode(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, insertion_mode)) }
+    pub(crate) const fn sequence_number(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, sequence_number)) }
+    pub(crate) const fn retry_rate(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, retry_rate)) }
+    pub(crate) const fn byte_57(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, byte_57)) }
+    pub(crate) const fn interface(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, interface)) }
+    pub(crate) const fn duration_slot(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, duration_slot)) }
+    pub(crate) const fn host_link(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, host_link)) }
+    pub(crate) const fn completion_byte_6c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, completion_byte_6c)) }
+    pub(crate) const fn qos_control(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, qos_control)) }
+    pub(crate) const fn cipher_class(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, cipher_class)) }
+    pub(crate) const fn word_7c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, word_7c)) }
+    pub(crate) const fn pas(self) -> HostPasAddress { HostPasAddress(self.frame_address()) }
+    pub(crate) const fn frame_node(self) -> HostFrameNodeAddress { HostFrameNodeAddress(self.frame_address()) }
+    pub(crate) fn expected_frame_state(self) -> PacketRamAddress {
+        PacketRamAddress(crate::packet_ram::host_frame_state(self.index()) as u32)
+    }
+}
+
+impl HostFrameNodeAddress {
+    pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
+    pub(crate) const fn context(self) -> HostContextAddress {
+        HostContextAddress(DtcmAddress::from_offset_unchecked(
+            self.0.offset() - core::mem::offset_of!(HostTxContext, pas),
+        ))
+    }
+}
+
+impl HostPasAddress {
+    pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
+    pub(crate) const fn context(self) -> HostContextAddress {
+        HostContextAddress(DtcmAddress::from_offset_unchecked(
+            self.0.offset() - core::mem::offset_of!(HostTxContext, pas),
+        ))
+    }
+}
+
+pub(crate) const fn host_context(index: usize) -> Option<HostContextAddress> {
+    HostContextAddress::from_index(index)
+}
+
+pub(crate) const fn host_context_from_raw(address: u32) -> Option<HostContextAddress> {
+    HostContextAddress::from_raw(address)
+}
+
+pub(crate) const HOST_DUPLICATE_CACHE_CURSOR: DtcmAddress = DtcmAddress::from_offset(
+    core::mem::offset_of!(DtcmLayout, host_context_accounting)
+        + core::mem::offset_of!(HostContextAccounting, duplicate_cache_cursor),
+);
+pub(crate) const HOST_DEFERRED_EVENT_OWNER: DtcmAddress = DtcmAddress::from_offset(
+    core::mem::offset_of!(DtcmLayout, host_context_accounting)
+        + core::mem::offset_of!(HostContextAccounting, deferred_event_owner),
+);
+pub(crate) const AUXILIARY_TX_BUFFER_FREE_HEAD: DtcmAddress = DtcmAddress::from_offset(
+    core::mem::offset_of!(DtcmLayout, host_context_accounting)
+        + core::mem::offset_of!(HostContextAccounting, auxiliary_tx_buffer_free_head),
+);
+pub const HOST_CONTEXT_FREE_HEAD: DtcmAddress = DtcmAddress::from_offset(
+    core::mem::offset_of!(DtcmLayout, host_context_free_list)
+        + core::mem::offset_of!(HostContextFreeList, free_head),
+);
+pub(crate) const HOST_CONTEXT_ADJACENT_STATE: DtcmAddress = DtcmAddress::from_offset(
+    core::mem::offset_of!(DtcmLayout, host_context_free_list)
+        + core::mem::offset_of!(HostContextFreeList, adjacent_state),
+);
 
 const LOW_MAC_PAS_OFFSET: usize = core::mem::offset_of!(DtcmLayout, low_mac_pas);
 pub const LOW_MAC_PAS_SIZE: usize = core::mem::size_of::<LowMacPasFamily>();
@@ -1026,7 +1318,7 @@ pub const VIF_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x3e98);
 pub const VIF_RECORD_END: usize = VIF_RECORDS.get() + VIF_RECORD_COUNT * VIF_RECORD_SIZE;
 pub const HOST_TX_CONTEXTS: DtcmAddress = DtcmAddress::from_offset(0x5a24);
 pub const COMMAND_CHANNEL_SWITCH_OVERLAY: DtcmAddress = DtcmAddress::from_offset(0x8594);
-pub const HOST_TX_CONTEXT_FREE_HEAD: DtcmAddress = DtcmAddress::from_offset(0x87b0);
+pub const HOST_TX_CONTEXT_FREE_HEAD: DtcmAddress = HOST_CONTEXT_FREE_HEAD;
 pub const LINK_SEQUENCE_ROOT: DtcmAddress = DtcmAddress::from_offset(0x87b8);
 pub const TALA_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(0x8f48);
 pub const CONTEXT_COMPLETION_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x8f6c);
@@ -1228,13 +1520,91 @@ const _: () = {
     assert!(core::mem::offset_of!(VifRecord, opaque_tail) == 0x165);
     assert_type_layout!(VifRecords, 0xb10, 4);
     assert_type_layout!(PostVifQuarantine, 0x107c, 4);
+    assert_type_layout!(HifRequestAddress, 4, 4);
+    assert_type_layout!(PacketRamAddress, 4, 4);
+    assert_type_layout!(HostContextAddress, 4, 4);
+    assert_type_layout!(HostFrameNodeAddress, 4, 4);
+    assert_type_layout!(HostPasAddress, 4, 4);
+    assert_type_layout!(HostPasContext, 0x80, 4);
+    assert!(core::mem::offset_of!(HostPasContext, frame_address) == 0x00);
+    assert!(core::mem::offset_of!(HostPasContext, control_bits) == 0x04);
+    assert!(core::mem::offset_of!(HostPasContext, frame_length) == 0x08);
+    assert!(core::mem::offset_of!(HostPasContext, frame_control) == 0x0a);
+    assert!(core::mem::offset_of!(HostPasContext, access_category) == 0x0c);
+    assert!(core::mem::offset_of!(HostPasContext, request_flag_rate_bits) == 0x0d);
+    assert!(core::mem::offset_of!(HostPasContext, retry_policy) == 0x0e);
+    assert!(core::mem::offset_of!(HostPasContext, tx_rate) == 0x0f);
+    assert!(core::mem::offset_of!(HostPasContext, expiry_time) == 0x10);
+    assert!(core::mem::offset_of!(HostPasContext, completion_timestamp) == 0x14);
+    assert!(core::mem::offset_of!(HostPasContext, scheduler_timestamp) == 0x18);
+    assert!(core::mem::offset_of!(HostPasContext, terminal_status) == 0x1c);
+    assert!(core::mem::offset_of!(HostPasContext, try_count) == 0x1e);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_20) == 0x20);
+    assert!(core::mem::offset_of!(HostPasContext, ownership_bits) == 0x2c);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_30) == 0x30);
+    assert!(core::mem::offset_of!(HostPasContext, duration) == 0x36);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_38) == 0x38);
+    assert!(core::mem::offset_of!(HostPasContext, descriptor_state) == 0x3c);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_40) == 0x40);
+    assert!(core::mem::offset_of!(HostPasContext, word_48) == 0x48);
+    assert!(core::mem::offset_of!(HostPasContext, frame_state_address) == 0x4c);
+    assert!(core::mem::offset_of!(HostPasContext, auxiliary_state) == 0x50);
+    assert!(core::mem::offset_of!(HostPasContext, tid) == 0x52);
+    assert!(core::mem::offset_of!(HostPasContext, insertion_mode) == 0x53);
+    assert!(core::mem::offset_of!(HostPasContext, sequence_number) == 0x54);
+    assert!(core::mem::offset_of!(HostPasContext, retry_rate) == 0x56);
+    assert!(core::mem::offset_of!(HostPasContext, byte_57) == 0x57);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_58) == 0x58);
+    assert!(core::mem::offset_of!(HostPasContext, interface) == 0x69);
+    assert!(core::mem::offset_of!(HostPasContext, duration_slot) == 0x6a);
+    assert!(core::mem::offset_of!(HostPasContext, host_link) == 0x6b);
+    assert!(core::mem::offset_of!(HostPasContext, completion_byte_6c) == 0x6c);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_6d) == 0x6d);
+    assert!(core::mem::offset_of!(HostPasContext, qos_control) == 0x74);
+    assert!(core::mem::offset_of!(HostPasContext, cipher_class) == 0x76);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_77) == 0x77);
+    assert!(core::mem::offset_of!(HostPasContext, word_7c) == 0x7c);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_7e) == 0x7e);
     assert_type_layout!(HostTxContext, HOST_TX_CONTEXT_SIZE, 4);
+    assert!(core::mem::offset_of!(HostTxContext, request_buffer) == 0x00);
+    assert!(core::mem::offset_of!(HostTxContext, intrusive_next) == 0x04);
+    assert!(core::mem::offset_of!(HostTxContext, packet_id) == 0x08);
+    assert!(core::mem::offset_of!(HostTxContext, requested_rate) == 0x0c);
+    assert!(core::mem::offset_of!(HostTxContext, queue_id) == 0x0d);
+    assert!(core::mem::offset_of!(HostTxContext, more) == 0x0e);
+    assert!(core::mem::offset_of!(HostTxContext, request_flags) == 0x0f);
+    assert!(core::mem::offset_of!(HostTxContext, expiry_time) == 0x10);
+    assert!(core::mem::offset_of!(HostTxContext, ht_tx_parameters) == 0x14);
+    assert!(core::mem::offset_of!(HostTxContext, borrowed_frame_length) == 0x18);
+    assert!(core::mem::offset_of!(HostTxContext, borrowed_frame_address) == 0x1c);
+    assert!(core::mem::offset_of!(HostTxContext, completion_status) == 0x20);
+    assert!(core::mem::offset_of!(HostTxContext, rate_copy) == 0x24);
+    assert!(core::mem::offset_of!(HostTxContext, saved_status) == 0x25);
+    assert!(core::mem::offset_of!(HostTxContext, completion_flags) == 0x26);
+    assert!(core::mem::offset_of!(HostTxContext, rate_try) == 0x28);
+    assert!(core::mem::offset_of!(HostTxContext, opaque_34) == 0x34);
+    assert!(core::mem::offset_of!(HostTxContext, timing_scratch) == 0x38);
+    assert!(core::mem::offset_of!(HostTxContext, submit_timer) == 0x40);
+    assert!(core::mem::offset_of!(HostTxContext, header_length) == 0x44);
+    assert!(core::mem::offset_of!(HostTxContext, payload_length) == 0x48);
+    assert!(core::mem::offset_of!(HostTxContext, optional_pipe_object) == 0x4c);
+    assert!(core::mem::offset_of!(HostTxContext, sequence_or_callback_state) == 0x50);
+    assert!(core::mem::offset_of!(HostTxContext, submit_state) == 0x52);
+    assert!(core::mem::offset_of!(HostTxContext, completion_class) == 0x53);
+    assert!(core::mem::offset_of!(HostTxContext, pas) == 0x54);
+    assert!(core::mem::offset_of!(HostTxContext, opaque_d4) == 0xd4);
     assert_type_layout!(HostTxContexts, 0x2b20, 4);
     assert_type_layout!(PreCommandQuarantine, 0x50, 4);
     assert_type_layout!(CommandChannelSwitchOverlay, 0x84, 4);
     assert_type_layout!(LmcControlRoots, 0x180, 4);
     assert_type_layout!(HostContextAccounting, 0x18, 4);
+    assert!(core::mem::offset_of!(HostContextAccounting, opaque_00) == 0x00);
+    assert!(core::mem::offset_of!(HostContextAccounting, duplicate_cache_cursor) == 0x0c);
+    assert!(core::mem::offset_of!(HostContextAccounting, deferred_event_owner) == 0x10);
+    assert!(core::mem::offset_of!(HostContextAccounting, auxiliary_tx_buffer_free_head) == 0x14);
     assert_type_layout!(HostContextFreeList, 0x8, 4);
+    assert!(core::mem::offset_of!(HostContextFreeList, free_head) == 0x00);
+    assert!(core::mem::offset_of!(HostContextFreeList, adjacent_state) == 0x04);
     assert_type_layout!(LinkAndSequenceState, 0x220, 4);
     assert_type_layout!(JoinScanControl, 0x40, 4);
     assert_type_layout!(WsmResponseScratch, 0xa0, 4);
@@ -1475,6 +1845,105 @@ mod tests {
         assert!(first.rate_byte(8).is_none());
         assert!(first.own_mac_byte(6).is_none());
         assert!(first.ssid_byte(32).is_none());
+    }
+
+    #[test]
+    fn host_context_addresses_round_trip_and_reject_interior_or_gap_pointers() {
+        let first = host_context(0).unwrap();
+        let last = host_context(HOST_TX_CONTEXT_COUNT - 1).unwrap();
+        assert_eq!(first.raw(), 0x0400_5a24);
+        assert_eq!(last.raw(), 0x0400_83d4);
+        assert_eq!(last.raw() + HOST_TX_CONTEXT_SIZE as u32, 0x0400_8544);
+        assert_eq!(HostContextAddress::from_raw(first.raw()), Some(first));
+        assert_eq!(HostContextAddress::from_raw(last.raw()), Some(last));
+        assert_eq!(first.frame_node().raw(), first.raw() + 0x54);
+        assert_eq!(first.frame_node().context(), first);
+        assert_eq!(first.pas().raw(), first.frame_node().raw());
+        assert_eq!(first.pas().context(), first);
+        assert!(host_context(HOST_TX_CONTEXT_COUNT).is_none());
+        assert!(HostContextAddress::from_raw(first.raw() - 4).is_none());
+        assert!(HostContextAddress::from_raw(first.raw() + 4).is_none());
+        assert!(HostContextAddress::from_raw(0x0400_8544).is_none());
+        assert!(HostContextAddress::from_raw(HOST_CONTEXT_FREE_HEAD.get() as u32).is_none());
+    }
+
+    #[test]
+    fn host_context_field_addresses_follow_the_semantic_layout() {
+        let context = host_context(7).unwrap();
+        let base = context.raw() as usize;
+        let offsets = [
+            (context.request_buffer(), 0x00),
+            (context.intrusive_next(), 0x04),
+            (context.packet_id(), 0x08),
+            (context.requested_rate(), 0x0c),
+            (context.queue_id(), 0x0d),
+            (context.more(), 0x0e),
+            (context.request_flags(), 0x0f),
+            (context.expiry_time(), 0x10),
+            (context.ht_tx_parameters(), 0x14),
+            (context.borrowed_frame_length(), 0x18),
+            (context.borrowed_frame_address(), 0x1c),
+            (context.completion_status(), 0x20),
+            (context.rate_copy(), 0x24),
+            (context.saved_status(), 0x25),
+            (context.completion_flags(), 0x26),
+            (context.rate_try(0).unwrap(), 0x28),
+            (context.rate_try(2).unwrap(), 0x30),
+            (context.submit_timer(), 0x40),
+            (context.header_length(), 0x44),
+            (context.payload_length(), 0x48),
+            (context.optional_pipe_object(), 0x4c),
+            (context.sequence_or_callback_state(), 0x50),
+            (context.submit_state(), 0x52),
+            (context.completion_class(), 0x53),
+            (context.frame_address(), 0x54),
+            (context.control_bits(), 0x58),
+            (context.frame_length(), 0x5c),
+            (context.frame_control(), 0x5e),
+            (context.access_category(), 0x60),
+            (context.request_flag_rate_bits(), 0x61),
+            (context.retry_policy(), 0x62),
+            (context.tx_rate(), 0x63),
+            (context.pas_expiry_time(), 0x64),
+            (context.completion_timestamp(), 0x68),
+            (context.scheduler_timestamp(), 0x6c),
+            (context.terminal_status(), 0x70),
+            (context.try_count(), 0x72),
+            (context.ownership_bits(), 0x80),
+            (context.duration(), 0x8a),
+            (context.descriptor_state(), 0x90),
+            (context.word_48(), 0x9c),
+            (context.frame_state_address(), 0xa0),
+            (context.auxiliary_state(), 0xa4),
+            (context.tid(), 0xa6),
+            (context.insertion_mode(), 0xa7),
+            (context.sequence_number(), 0xa8),
+            (context.retry_rate(), 0xaa),
+            (context.byte_57(), 0xab),
+            (context.interface(), 0xbd),
+            (context.duration_slot(), 0xbe),
+            (context.host_link(), 0xbf),
+            (context.completion_byte_6c(), 0xc0),
+            (context.qos_control(), 0xc8),
+            (context.cipher_class(), 0xca),
+            (context.word_7c(), 0xd0),
+        ];
+        for (address, offset) in offsets {
+            assert_eq!(address.get() - base, offset);
+        }
+        assert!(context.rate_try(3).is_none());
+        assert_eq!(context.expected_frame_state().raw(), crate::packet_ram::host_frame_state(7) as u32);
+    }
+
+    #[test]
+    fn host_accounting_roots_and_cross_family_boundaries_are_exact() {
+        assert_eq!(HOST_DUPLICATE_CACHE_CURSOR.get(), 0x0400_87a4);
+        assert_eq!(HOST_DEFERRED_EVENT_OWNER.get(), 0x0400_87a8);
+        assert_eq!(AUXILIARY_TX_BUFFER_FREE_HEAD.get(), 0x0400_87ac);
+        assert_eq!(HOST_CONTEXT_FREE_HEAD.get(), 0x0400_87b0);
+        assert_eq!(HOST_CONTEXT_ADJACENT_STATE.get(), 0x0400_87b4);
+        assert_eq!(HOST_CONTEXT_ADJACENT_STATE.get() + 4, LINK_SEQUENCE_ROOT.get());
+        assert_eq!(host_context(0).unwrap().expected_frame_state().raw(), crate::packet_ram::host_frame_state(0) as u32);
     }
 
     #[test]

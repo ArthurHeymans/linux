@@ -15,16 +15,17 @@ PACKED=$(mktemp)
 BOOTSTRAP=$(mktemp)
 trap 'rm -f "$PACKED" "$BOOTSTRAP"' EXIT
 
-echo "== default host tests =="
+echo "== default process-local host tests (do not execute ARM driver/HIF behavior) =="
 cargo +nightly test
 
-echo "== diagnostic host tests =="
+echo "== diagnostic process-local host tests/recorders (do not execute ARM driver/HIF behavior) =="
 cargo +nightly test --features vendor-host-tx-diagnostics
 
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
+python3 tools/check-host-context-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
 echo "== arm build and stack check: feature-free firmware =="
@@ -35,9 +36,10 @@ python3 tools/pack-sectioned-elf.py "$ELF" "$PACKED"
 python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
+python3 tools/check-host-context-layout.py "$ELF"
 
 if [[ -n "${XR819_PARENT_ELF:-}" ]]; then
-  echo "== focused exact-parent hot-code gate =="
+  echo "== complete reviewed exact-parent text-symbol delta gate =="
   python3 tools/check-hot-codegen.py "$XR819_PARENT_ELF" "$ELF"
 else
   echo "== exact-parent hot-code gate skipped: set XR819_PARENT_ELF to the fixed-layout parent ELF =="

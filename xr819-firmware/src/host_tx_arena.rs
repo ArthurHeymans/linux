@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_publication_is_the_release_boundary() {
+    fn confirmation_handoff_releases_the_model_slot() {
         let mut arena = ArenaModel::<HOST_CONTEXT_COUNT>::new();
         let id = ContextId::new(4).unwrap();
         arena.occupy(id, 0x1234, 0, 1).unwrap();

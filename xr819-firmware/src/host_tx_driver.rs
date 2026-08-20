@@ -1,8 +1,10 @@
 //! Concurrent retained host-TX ownership with a single class-0 MAC executor.
 //!
-//! Each of the 30 vendor host contexts owns its original HIF request until its
-//! confirmation is published. Pending contexts advance independently, while at
-//! most one context may reserve or own the shared class-0 hardware runtime.
+//! Each of the 30 host contexts owns its original HIF request until the inherited
+//! confirmation handoff point. The current HIF transport then returns request
+//! credit before it enqueues the separately copied confirmation; this module does
+//! not redesign that parent ordering. Pending contexts advance independently,
+//! while at most one context may reserve or own the shared class-0 hardware runtime.
 
 use crate::{hif, host_tx_diagnostics, host_tx_policy, tx, vendor_host_tx};
 
@@ -276,7 +278,7 @@ impl HostTxDriver {
         };
         unsafe {
             host_tx_diagnostics::capture_completion(
-                completion.context,
+                retained.context(),
                 completion.status,
                 completion.ack_failures,
             );
@@ -347,7 +349,7 @@ impl HostTxDriver {
                         let hardware = HardwareOwner {
                             pipe,
                             slot,
-                            frame_node: retained.context().raw().wrapping_add(0x54),
+                            frame_node: retained.context().frame_node().raw(),
                         };
                         HostTxState::Owned {
                             retained,
@@ -470,7 +472,7 @@ impl HostTxDriver {
                                     hardware = Some(HardwareOwner {
                                         pipe,
                                         slot,
-                                        frame_node: retained.context().raw().wrapping_add(0x54),
+                                        frame_node: retained.context().frame_node().raw(),
                                     });
                                     self.states[index] = Some(HostTxState::Owned {
                                         retained,
@@ -550,26 +552,21 @@ impl HostTxDriver {
         ack_failures: u8,
         completion_order: u32,
     ) -> HostTxState {
-        let context = retained.context().raw();
-        let tx_rate = unsafe { (context.wrapping_add(0x63) as *const u8).read_volatile() };
+        let context = retained.context();
+        let fields = unsafe { vendor_host_tx::confirmation_fields(context) };
+        let tx_rate = fields.tx_rate;
         unsafe {
             host_tx_diagnostics::capture_retry_feedback(context, status, tx_rate, ack_failures);
         }
         HostTxState::Confirming {
             confirmation: HostTxConfirmation {
                 packet_id: retained.packet_id(),
-                context,
+                context: context.raw(),
                 status,
                 tx_rate,
                 ack_failures,
                 rate_try: {
-                    let reported = unsafe {
-                        [
-                            (context.wrapping_add(0x28) as *const u32).read_volatile(),
-                            (context.wrapping_add(0x2c) as *const u32).read_volatile(),
-                            (context.wrapping_add(0x30) as *const u32).read_volatile(),
-                        ]
-                    };
+                    let reported = fields.rate_try;
                     if reported == [0; 3] {
                         host_tx_policy::rate_try_for_single_rate(tx_rate, ack_failures)
                     } else {
@@ -607,8 +604,9 @@ impl HostTxDriver {
         }
     }
 
-    /// Finish the same first confirmation returned by `confirmation()` only
-    /// after it has been admitted to the HIF software output queue.
+    /// Finish the same first confirmation returned by `confirmation()` at the
+    /// inherited HIF handoff point. `publish_request_in_place` subsequently
+    /// returns request credit before enqueuing its copied output buffer.
     ///
     /// # Safety
     /// Completion accounting must already have removed hardware ownership.
@@ -662,16 +660,11 @@ impl HostTxDriver {
         retained: vendor_host_tx::RetainedHostTx,
         completion_order: u32,
     ) -> HostTxState {
-        let context = retained.context().raw();
+        let context = retained.context();
         let packet_id = retained.packet_id();
-        let tx_rate = unsafe { (context.wrapping_add(0x63) as *const u8).read_volatile() };
-        let rate_try = unsafe {
-            [
-                (context.wrapping_add(0x28) as *const u32).read_volatile(),
-                (context.wrapping_add(0x2c) as *const u32).read_volatile(),
-                (context.wrapping_add(0x30) as *const u32).read_volatile(),
-            ]
-        };
+        let fields = unsafe { vendor_host_tx::confirmation_fields(context) };
+        let tx_rate = fields.tx_rate;
+        let rate_try = fields.rate_try;
         let release = unsafe {
             retained
                 .cancel_before_pas(guard)
@@ -681,7 +674,7 @@ impl HostTxDriver {
             owner: ConfirmationOwner::Release(release),
             confirmation: HostTxConfirmation {
                 packet_id,
-                context,
+                context: context.raw(),
                 status: 1,
                 tx_rate,
                 ack_failures: 0,

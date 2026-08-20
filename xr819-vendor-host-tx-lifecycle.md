@@ -327,8 +327,13 @@ The normal completion drain eventually calls `tx_frame_complete()`. Class 0's
 callback is `tx_frame_complete_stats()`, which snapshots status/rate/retry and
 delay fields, then calls `tx_confirm_build_and_send()`.
 
-`tx_confirm_build_and_send()` builds WSM `0x0404` or coalesced `0x041e`, sends
-it through HIF, and finally calls `tx_wsm_buf_free()`.
+`tx_confirm_build_and_send()` builds WSM `0x0404` or coalesced `0x041e`, frees
+the host context with `tx_wsm_buf_free()`, and then passes the confirmation
+buffer to `hif_send_msg_to_host()`. For the ordinary non-coalesced case that
+buffer is the original request message pointer from `ctx+0x00`, not an
+independent copy. `hif_tx_confirm_drain()` releases that HIF message only after
+the host-facing TX descriptor completes. Context lifetime and request-buffer
+credit lifetime are therefore distinct.
 
 `tx_wsm_buf_free()` performs the host-pool return under IRQ masking:
 
@@ -397,10 +402,12 @@ gate. It preserves leave-queued behavior, unlinks rejected contexts for a WSM
 confirmation, and routes eligible contexts through ownership bit `0x40`, PAS
 retiming, compaction, and insertion into the real ring at `0x04001578`.
 
-Class-0 rejection confirmations now retain the HIF token until the confirmation
-is actually published, then free the host context and recycle the request.
-RESET can also remove a context from either the pending list or an unscheduled
-PAS-ring slot.
+Class-0 rejection confirmations retain the HIF token until the inherited
+confirmation handoff, then free the host context and pass the token to the HIF
+transport. The current transport returns request credit before it enqueues the
+independently copied confirmation; this is parent behavior, not vendor-lifetime
+equivalence. RESET can also remove a context from either the pending list or an
+unscheduled PAS-ring slot.
 
 Minimum non-aggregate scheduler reservation is now wired. It derives the idle
 pipe mask, maps PAS AC through `0x040002e0`, rechecks lifetime and
@@ -419,11 +426,13 @@ runtime then cooperatively services the existing MAC event/retry/completion
 machinery.
 
 Class 0 no longer returns through the internal class-6 free path. Completion is
-retained until a WSM TX confirmation descriptor is available; the confirmation
-uses the completed status, final rate, and observed retry count. Only after HIF
-publication does the runtime perform `tx_wsm_buf_free()` semantics and recycle
-the original borrowed request token. RESET refuses to unwind a hardware-owned
-scheduled frame and lets it complete normally.
+retained until the HIF handoff can begin; the confirmation uses the completed
+status, final rate, and observed retry count. At handoff the runtime performs
+`tx_wsm_buf_free()` semantics, then the inherited HIF path returns the request
+credit before confirmation enqueue. Matching the vendor's original-buffer
+lifetime through host-facing descriptor completion remains a separate issue.
+RESET refuses to unwind a hardware-owned scheduled frame and lets it complete
+normally.
 
 This is now a complete minimum single-outstanding, non-aggregate
 allocation-to-confirmation path suitable for the next gated hardware candidate.

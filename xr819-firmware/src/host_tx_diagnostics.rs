@@ -629,16 +629,22 @@ pub unsafe fn trace(stage: u32, value0: u32, value1: u32) {
 
 /// Preserve the completed frame header before its borrowed HIF buffer returns.
 #[inline(always)]
-pub unsafe fn capture_retry_feedback(context: u32, status: u32, tx_rate: u8, ack_failures: u8) {
+pub unsafe fn capture_retry_feedback(
+    context: crate::dtcm::HostContextAddress,
+    status: u32,
+    tx_rate: u8,
+    ack_failures: u8,
+) {
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
         trace(
             0x4854_5200 | u32::from(tx_rate),
-            (context.wrapping_add(0x28) as *const u32).read_volatile(),
-            (context.wrapping_add(0x2c) as *const u32).read_volatile(),
+            crate::dtcm::shared_ptr::<u32>(context.rate_try(0).unwrap()).read_volatile(),
+            crate::dtcm::shared_ptr::<u32>(context.rate_try(1).unwrap()).read_volatile(),
         );
         let snapshot = &mut *LEGACY_SNAPSHOT.0.get();
-        snapshot.frame_address = (context.wrapping_add(0x30) as *const u32).read_volatile();
+        snapshot.frame_address =
+            crate::dtcm::shared_ptr::<u32>(context.rate_try(2).unwrap()).read_volatile();
         snapshot.frame_metadata =
             (status & 0xffff) | (u32::from(ack_failures) << 16) | (u32::from(tx_rate) << 24);
     }
@@ -652,7 +658,7 @@ pub unsafe fn capture_retry_feedback(context: u32, status: u32, tx_rate: u8, ack
 /// The caller must serialize access with the foreground host-TX runtime.
 pub unsafe fn capture_submission_identity(
     packet_id: u32,
-    context: u32,
+    context: crate::dtcm::HostContextAddress,
     request_flags: u8,
     priority: u8,
     ac: u8,
@@ -664,7 +670,7 @@ pub unsafe fn capture_submission_identity(
         values[0] = 0x5854_4944; // "XTID"
         values[1] = values[1].wrapping_add(1);
         values[2] = packet_id;
-        values[3] = context;
+        values[3] = context.raw();
         values[4] = u32::from(request_flags) | (u32::from(priority) << 8) | (u32::from(ac) << 16);
         values[5] = tx_flags;
     }
@@ -759,18 +765,23 @@ pub unsafe fn capture_pipe_cursor(packed: u32, diverged: bool) {
     let _ = (packed, diverged);
 }
 
-pub unsafe fn capture_completion(context: u32, status: u16, retries: u8) {
+pub unsafe fn capture_completion(
+    context: crate::dtcm::HostContextAddress,
+    status: u16,
+    retries: u8,
+) {
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
         trace(
             0x4854_3000,
-            context,
+            context.raw(),
             u32::from(status) | (u32::from(retries) << 16),
         );
         let snapshot = &mut *LEGACY_SNAPSHOT.0.get();
-        let frame = (context.wrapping_add(0x54) as *const u32).read_volatile();
+        let frame = crate::dtcm::shared_ptr::<u32>(context.frame_address()).read_volatile();
         snapshot.frame_address = frame;
-        snapshot.frame_metadata = (context.wrapping_add(0x5c) as *const u32).read_volatile();
+        snapshot.frame_metadata =
+            crate::dtcm::shared_ptr::<u32>(context.frame_length()).read_volatile();
         for (index, destination) in snapshot.frame_words.iter_mut().enumerate() {
             *destination = (frame.wrapping_add(index as u32 * 4) as *const u32).read_volatile();
         }

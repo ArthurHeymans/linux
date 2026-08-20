@@ -11,9 +11,6 @@ use crate::packet_ram;
 
 const TX_CONTEXT_SIZE: usize = crate::dtcm::INTERNAL_TX_CONTEXT_SIZE;
 const TX_CONTEXT_COUNT: usize = crate::dtcm::INTERNAL_TX_CONTEXT_COUNT;
-const WSM_TX_CONTEXT_BASE: usize = crate::dtcm::HOST_TX_CONTEXTS.get();
-const WSM_TX_CONTEXT_COUNT: usize = crate::dtcm::HOST_TX_CONTEXT_COUNT;
-const WSM_TX_CONTEXT_FREE_HEAD: usize = crate::dtcm::HOST_TX_CONTEXT_FREE_HEAD.get();
 const TX_BUFFER_SIZE: usize = packet_ram::INTERNAL_TX_BUFFER_SIZE;
 const FRAME_NODE_OFFSET: u32 = 0x54;
 // The class-0 allocation counter remains in the untranslated vendor
@@ -299,6 +296,56 @@ impl ContextAddress {
     pub const fn frame_node(self) -> FrameNodeAddress {
         FrameNodeAddress(self.0.wrapping_add(FRAME_NODE_OFFSET))
     }
+
+    #[inline(always)]
+    fn host(self) -> Option<crate::dtcm::HostContextAddress> {
+        crate::dtcm::host_context_from_raw(self.0)
+    }
+
+    #[inline(always)]
+    fn host_or_offset(
+        self,
+        host_field: impl FnOnce(crate::dtcm::HostContextAddress) -> crate::dtcm::DtcmAddress,
+        internal_offset: u32,
+    ) -> usize {
+        if let Some(host) = self.host() {
+            host_field(host).get()
+        } else {
+            self.0.wrapping_add(internal_offset) as usize
+        }
+    }
+
+    fn intrusive_next_address(self) -> usize { self.host_or_offset(|c| c.intrusive_next(), 0x04) }
+    fn borrowed_frame_address_address(self) -> usize { self.host_or_offset(|c| c.borrowed_frame_address(), 0x1c) }
+    fn completion_status_address(self) -> usize { self.host_or_offset(|c| c.completion_status(), 0x20) }
+    fn saved_status_address(self) -> usize { self.host_or_offset(|c| c.saved_status(), 0x25) }
+    fn completion_flags_address(self) -> usize { self.host_or_offset(|c| c.completion_flags(), 0x26) }
+    fn optional_pipe_object_address(self) -> usize { self.host_or_offset(|c| c.optional_pipe_object(), 0x4c) }
+    fn completion_class_address(self) -> usize { self.host_or_offset(|c| c.completion_class(), 0x53) }
+    fn frame_address_address(self) -> usize { self.host_or_offset(|c| c.frame_address(), 0x54) }
+    fn control_bits_address(self) -> usize { self.host_or_offset(|c| c.control_bits(), 0x58) }
+    fn frame_length_address(self) -> usize { self.host_or_offset(|c| c.frame_length(), 0x5c) }
+    fn frame_control_address(self) -> usize { self.host_or_offset(|c| c.frame_control(), 0x5e) }
+    fn access_category_address(self) -> usize { self.host_or_offset(|c| c.access_category(), 0x60) }
+    fn request_flag_rate_bits_address(self) -> usize { self.host_or_offset(|c| c.request_flag_rate_bits(), 0x61) }
+    fn retry_policy_address(self) -> usize { self.host_or_offset(|c| c.retry_policy(), 0x62) }
+    fn tx_rate_address(self) -> usize { self.host_or_offset(|c| c.tx_rate(), 0x63) }
+    fn completion_timestamp_address(self) -> usize { self.host_or_offset(|c| c.completion_timestamp(), 0x68) }
+    fn scheduler_timestamp_address(self) -> usize { self.host_or_offset(|c| c.scheduler_timestamp(), 0x6c) }
+    fn terminal_status_address(self) -> usize { self.host_or_offset(|c| c.terminal_status(), 0x70) }
+    fn try_count_address(self) -> usize { self.host_or_offset(|c| c.try_count(), 0x72) }
+    fn ownership_bits_address(self) -> usize { self.host_or_offset(|c| c.ownership_bits(), 0x80) }
+    fn duration_address(self) -> usize { self.host_or_offset(|c| c.duration(), 0x8a) }
+    fn descriptor_state_address(self) -> usize { self.host_or_offset(|c| c.descriptor_state(), 0x90) }
+    fn frame_state_address_address(self) -> usize { self.host_or_offset(|c| c.frame_state_address(), 0xa0) }
+    fn auxiliary_state_address(self) -> usize { self.host_or_offset(|c| c.auxiliary_state(), 0xa4) }
+    fn tid_address(self) -> usize { self.host_or_offset(|c| c.tid(), 0xa6) }
+    fn sequence_number_address(self) -> usize { self.host_or_offset(|c| c.sequence_number(), 0xa8) }
+    fn retry_rate_address(self) -> usize { self.host_or_offset(|c| c.retry_rate(), 0xaa) }
+    fn interface_address(self) -> usize { self.host_or_offset(|c| c.interface(), 0xbd) }
+    fn duration_slot_address(self) -> usize { self.host_or_offset(|c| c.duration_slot(), 0xbe) }
+    fn host_link_address(self) -> usize { self.host_or_offset(|c| c.host_link(), 0xbf) }
+    fn completion_byte_6c_address(self) -> usize { self.host_or_offset(|c| c.completion_byte_6c(), 0xc0) }
 }
 
 impl FrameNodeAddress {
@@ -432,13 +479,6 @@ unsafe fn packet_ram_matches(destination: u32, source: &[u8]) -> bool {
     true
 }
 
-fn is_wsm_tx_context(context: u32) -> bool {
-    let address = context as usize;
-    (WSM_TX_CONTEXT_BASE..WSM_TX_CONTEXT_BASE + WSM_TX_CONTEXT_COUNT * TX_CONTEXT_SIZE)
-        .contains(&address)
-        && (address - WSM_TX_CONTEXT_BASE).is_multiple_of(TX_CONTEXT_SIZE)
-}
-
 unsafe fn release_context_address(context: u32) {
     unsafe {
         let address = context as usize;
@@ -453,27 +493,23 @@ unsafe fn release_context_address(context: u32) {
     }
 }
 
-unsafe fn release_wsm_context_address(context: u32) {
+#[cfg(target_arch = "arm")]
+unsafe fn release_wsm_context_address(context: crate::dtcm::HostContextAddress) {
     unsafe {
-        let address = context as usize;
-        let header = ((address + 0x1c) as *const u32).read_volatile();
+        let header = crate::dtcm::shared_ptr::<u32>(context.borrowed_frame_address()).read_volatile();
         let backing = (0..TX_CONTEXT_COUNT)
             .map(|index| internal_context_address(index) as u32)
             .find(|candidate| expected_header_address(*candidate) == Some(header));
-        ((address + 0x20) as *mut u32).write_volatile(0xff);
-        ((address + 0x70) as *mut u16).write_volatile(0x00ff);
-        let flags = (address + 0x80) as *mut u32;
-        flags.write_volatile(flags.read_volatile() | 0x0004_0000);
-        let free_head = WSM_TX_CONTEXT_FREE_HEAD as *mut u32;
-        ((address + 4) as *mut u32).write_volatile(free_head.read_volatile());
-        free_head.write_volatile(context);
-        if crate::vif::adjust_host_contexts_in_flight(-1).is_err() {
-            crate::halt_always!();
-        }
+        crate::vendor_host_tx::free_host_context(context);
         if let Some(backing) = backing {
             release_context_address(backing);
         }
     }
+}
+
+#[cfg(not(target_arch = "arm"))]
+unsafe fn release_wsm_context_address(_context: crate::dtcm::HostContextAddress) {
+    unsafe { core::arch::asm!("") };
 }
 
 fn expected_header_address(context: u32) -> Option<u32> {
@@ -577,7 +613,7 @@ pub fn build_phy_rate_words(
     rate_index: u8,
     legacy_mode: u8,
     tx_flags: u32,
-    hardware_rate_code: u8,
+    request_flag_rate_bits: u8,
     rate_attribute: u8,
 ) -> PhyRateWords {
     let mut control = 2;
@@ -597,7 +633,9 @@ pub fn build_phy_rate_words(
     };
     PhyRateWords {
         control,
-        rate: class | u32::from(rate_attribute & 0x0f) | (u32::from(hardware_rate_code & 7) << 16),
+        rate: class
+            | u32::from(rate_attribute & 0x0f)
+            | (u32::from(request_flag_rate_bits & 7) << 16),
     }
 }
 
@@ -2991,8 +3029,9 @@ fn terminal_probe_backend_fault(pipe: u8) -> ! {
 impl TxPolicy for SingleProbeMacBackend {
     fn program_random_backoff(&mut self, _pipe: u8, descriptor: u32, frame_node: u32) {
         let mut mmio = VolatileMacPipeMmio;
-        let interface = u32::from(mmio.read_u8(frame_node + 0x69));
-        let selector = u32::from(mmio.read_u8(frame_node + 0x0c));
+        let context = FrameNodeAddress::new(frame_node).context();
+        let interface = u32::from(mmio.read_u8(context.interface_address() as u32));
+        let selector = u32::from(mmio.read_u8(context.access_category_address() as u32));
         let mask = mmio.read_u16(
             crate::dtcm::pas_stride_view_unchecked(interface as usize)
                 .contention_window_unchecked(selector as usize)
@@ -3122,9 +3161,9 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
                 status,
                 |completion_class, context| {
                     if completion_class == 0 && true {
-                        // The vendor-host runtime retains class-0 context and
-                        // HIF ownership until its WSM confirmation is actually
-                        // published by the main dispatcher.
+                        // Class-0 ownership lasts until inherited confirmation
+                        // handoff; current HIF returns request credit before
+                        // output enqueue. This does not match vendor lifetime.
                     } else if completion_class == 6 {
                         service_class6_probe_completion(context.raw());
                     } else {
@@ -3153,8 +3192,9 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
                 terminal_probe_backend_fault(0)
             };
             self.publications[publication_index] = None;
-            let ack_failures = if is_wsm_tx_context(context.raw()) {
-                unsafe { read_u16(frame_node.raw() as usize + 0x1e) }.min(u16::from(u8::MAX)) as u8
+            let ack_failures = if let Some(host) = context.host() {
+                unsafe { crate::dtcm::shared_ptr::<u16>(host.try_count()).read_volatile() }
+                    .min(u16::from(u8::MAX)) as u8
             } else {
                 self.retry.attempts()
             };
@@ -3175,21 +3215,21 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
 #[cfg(target_arch = "arm")]
 impl SingleFrameRearmBackend for SingleProbeMacBackend {
     fn rebuild_rate_descriptor(&mut self, pipe: u8, slot: u32, frame_node: FrameNodeAddress) {
-        let context = frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET);
-        if unsafe { prepare_host_frame_timing(context) }.is_err() {
+        let context = frame_node.context();
+        if unsafe { prepare_host_frame_timing(context.raw()) }.is_err() {
             terminal_probe_backend_fault(pipe);
         }
         let command = unsafe { read_u32(slot as usize + 0x14) };
         if command == 0
-            || unsafe { emit_host_frame_descriptor_at(context, command.wrapping_add(0x0c)) }
+            || unsafe { emit_host_frame_descriptor_at(context.raw(), command.wrapping_add(0x0c)) }
                 .is_err()
         {
             terminal_probe_backend_fault(pipe);
         }
         unsafe {
             write_u32(
-                frame_node.raw() as usize + 4,
-                read_u32(frame_node.raw() as usize + 4) & !0x000c_0000,
+                context.control_bits_address(),
+                read_u32(context.control_bits_address()) & !0x000c_0000,
             );
         }
     }
@@ -3212,13 +3252,17 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         _slot: u32,
         frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
-        if !is_wsm_tx_context(frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET)) {
+        let Some(context) = crate::dtcm::host_context_from_raw(
+            frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET),
+        ) else {
             return self.retry.decide();
-        }
+        };
 
-        let context = frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET);
-        let rate = unsafe { read_u8(frame_node.raw() as usize + 0x0f) };
-        let status_address = context + 0x28 + u32::from(rate >> 3) * 4;
+        let rate = unsafe { crate::dtcm::shared_ptr::<u8>(context.tx_rate()).read_volatile() };
+        let Some(status_field) = context.rate_try(usize::from(rate >> 3)) else {
+            return self.retry.decide();
+        };
+        let status_address = status_field.get();
         let shift = u32::from((rate & 7) * 4);
         let status = unsafe { read_u32(status_address as usize) };
         let attempts = (status >> shift) & 0x0f;
@@ -3231,12 +3275,14 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             }
         }
 
-        let policy_index = unsafe { read_u8(frame_node.raw() as usize + 0x0e) };
+        let policy_index = unsafe {
+            crate::dtcm::shared_ptr::<u8>(context.retry_policy()).read_volatile()
+        };
         let Some(policy) = crate::rate_policy::get(policy_index) else {
             return self.retry.decide();
         };
-        let try_count = unsafe { read_u16(frame_node.raw() as usize + 0x1e) };
-        let flags = unsafe { read_u32(frame_node.raw() as usize + 4) };
+        let try_count = unsafe { crate::dtcm::shared_ptr::<u16>(context.try_count()).read_volatile() };
+        let flags = unsafe { crate::dtcm::shared_ptr::<u32>(context.control_bits()).read_volatile() };
         let long_frame = (flags & 0x7ff) >> 9 != 0;
         match crate::rate_policy::retry_step(policy, rate, try_count, long_frame) {
             crate::rate_policy::RetryStep::GiveUp => SingleTxRetryDecision::GiveUp,
@@ -3246,10 +3292,10 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 if first_retry || rate_changed {
                     unsafe {
                         if rate_changed {
-                            write_u8(frame_node.raw() as usize + 0x0f, next_rate);
+                            crate::dtcm::shared_ptr::<u8>(context.tx_rate()).write_volatile(next_rate);
                         }
                         write_u32(
-                            frame_node.raw() as usize + 4,
+                            context.control_bits().get(),
                             flags
                                 | 0x10
                                 | 0x0008_0000
@@ -3262,7 +3308,8 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     }
                 }
                 unsafe {
-                    write_u16(frame_node.raw() as usize + 0x1e, try_count.wrapping_add(1));
+                    crate::dtcm::shared_ptr::<u16>(context.try_count())
+                        .write_volatile(try_count.wrapping_add(1));
                 }
                 self.retry.record_rearm();
                 SingleTxRetryDecision::Rearm
@@ -3531,16 +3578,19 @@ pub unsafe fn publish_host_class0_slot(
     command: u32,
     batch: BatchPosition,
 ) -> Result<(), ProbeBuildError> {
-    if !is_wsm_tx_context(context) || pipe >= 4 || slot >= 4 {
+    let Some(host_context) = crate::dtcm::host_context_from_raw(context) else {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    };
+    if pipe >= 4 || slot >= 4 {
         return Err(ProbeBuildError::UnsupportedPublicationShape);
     }
-    let frame_node = FrameNodeAddress::new(context + FRAME_NODE_OFFSET);
+    let frame_node = FrameNodeAddress::new(host_context.frame_node().raw());
     if !single_frame_slot_matches(
         unsafe { read_u32(slot_record as usize + 0x0c) },
         frame_node.raw(),
         unsafe { read_u8(slot_record as usize) },
         unsafe { read_u8(slot_record as usize + 1) },
-        unsafe { read_u8(frame_node.raw() as usize + 0x56) },
+        unsafe { crate::dtcm::shared_ptr::<u8>(host_context.retry_rate()).read_volatile() },
     ) {
         return Err(ProbeBuildError::PipeSlotOwnershipMismatch);
     }
@@ -3621,7 +3671,9 @@ pub unsafe fn publish_host_class0_slot(
                 command_storage: command,
                 hardware_ring,
                 frame_node,
-                expects_ack: read_u8(frame_node.raw() as usize + 0x56) != 0xff,
+                expects_ack: crate::dtcm::shared_ptr::<u8>(host_context.retry_rate())
+                    .read_volatile()
+                    != 0xff,
                 batch,
             },
         );
@@ -4148,21 +4200,20 @@ where
     F: FnOnce() -> bool,
 {
     unsafe {
-        let node = frame_node.raw() as usize;
-        let context = frame_node.context().raw() as usize;
+        let context = frame_node.context();
         COMPLETION_RING.enqueue(frame_node);
 
-        let flags = (node + 0x2c) as *mut u32;
+        let flags = context.ownership_bits_address() as *mut u32;
         flags.write_volatile(flags.read_volatile() | (1 << 14));
-        if ((node + 0x1c) as *const u16).read_volatile() == 0x16 {
-            let completion_flags = (node + 0x50) as *mut u16;
+        if (context.terminal_status_address() as *const u16).read_volatile() == 0x16 {
+            let completion_flags = context.auxiliary_state_address() as *mut u16;
             completion_flags.write_volatile(completion_flags.read_volatile() | 2);
         } else {
             raise_scheduler_bits(1 << 21);
         }
 
-        let completion_class = ((context + 0x53) as *const u8).read_volatile();
-        let frame_control = ((node + 0x0a) as *const u16).read_volatile();
+        let completion_class = (context.completion_class_address() as *const u8).read_volatile();
+        let frame_control = (context.frame_control_address() as *const u16).read_volatile();
         let special_gate_nonzero = if completion_class == 0 && frame_control & 8 != 0 {
             special_gate()
         } else {
@@ -4443,7 +4494,7 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
         let slot = slot as usize;
         let timestamp = read_u32(0x0ac0_0004);
         let mut final_link_state = 10_u8;
-        let link = read_u8(first_frame_node.raw() as usize + 0x6c);
+        let link = read_u8(first_frame_node.context().completion_byte_6c_address());
         let slot_kind = read_u8(slot);
 
         if slot_kind != 0 {
@@ -4467,15 +4518,24 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
 
         let mut frame_node = first_frame_node;
         loop {
-            let node = frame_node.raw() as usize;
+            let context = frame_node.context();
             if slot_kind == 1 {
-                write_u32(node + 0x2c, read_u32(node + 0x2c) | 0x400);
-                write_u16(node + 0x50, read_u16(node + 0x50) | 1);
+                write_u32(
+                    context.ownership_bits_address(),
+                    read_u32(context.ownership_bits_address()) | 0x400,
+                );
+                write_u16(
+                    context.auxiliary_state_address(),
+                    read_u16(context.auxiliary_state_address()) | 1,
+                );
             }
-            let class_bits = ((read_u32(node + 4) >> 18) & 0x0c) as u16;
-            write_u16(node + 0x50, read_u16(node + 0x50) | class_bits);
-            write_u16(node + 0x1c, status);
-            write_u32(node + 0x14, timestamp);
+            let class_bits = ((read_u32(context.control_bits_address()) >> 18) & 0x0c) as u16;
+            write_u16(
+                context.auxiliary_state_address(),
+                read_u16(context.auxiliary_state_address()) | class_bits,
+            );
+            write_u16(context.terminal_status_address(), status);
+            write_u32(context.completion_timestamp_address(), timestamp);
 
             if slot_kind == 1 {
                 if status == 0 {
@@ -4484,13 +4544,16 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                     final_link_state = 0x0b;
                 }
             } else {
-                write_u32(node + 0x2c, read_u32(node + 0x2c) | 0x800);
+                write_u32(
+                    context.ownership_bits_address(),
+                    read_u32(context.ownership_bits_address()) | 0x800,
+                );
                 enqueue_completion_frame_node(frame_node, || {
                     backend.special_completion_gate(frame_node)
                 });
             }
 
-            let next = read_u32(node + 0x3c);
+            let next = read_u32(context.descriptor_state_address());
             if next == 0 {
                 break;
             }
@@ -4594,14 +4657,14 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
         write_u8(current_slot + 3, 3);
 
         if read_u8(pipe_state + 3) == 1 && read_u8(current_slot + 1) == 0xff {
-            let frame = current_frame.raw() as usize;
-            let flags = read_u32(frame + 4);
+            let frame = current_frame.context();
+            let flags = read_u32(frame.control_bits_address());
             if flags & (1 << 4) == 0 {
                 backend.set_frame_lifetime(current_frame);
             }
             if flags & (1 << 15) == 0 {
                 backend.reset_backoff(
-                    read_u8(frame + 0x69),
+                    read_u8(frame.interface_address()),
                     read_u8(0x0400_02dc + usize::from(pipe)),
                 );
             }
@@ -4678,9 +4741,10 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
 
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::TX_START);
         write_u8(slot + 3, 2);
-        let frame_node = read_u32(slot + 0x0c) as usize;
+        let frame_node = FrameNodeAddress::new(read_u32(slot + 0x0c));
+        let context = frame_node.context();
         if read_u32(0x0400_1d2c) == 3 {
-            let secondary = read_u8(0x0400_0194 + usize::from(read_u8(frame_node + 0x0f)));
+            let secondary = read_u8(0x0400_0194 + usize::from(read_u8(context.tx_rate_address())));
             dispatch_phy_command_2(secondary);
             if read_u8(0x0400_1d48) == 4 {
                 write_u32(0x0400_1d2c, 4);
@@ -4691,15 +4755,18 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
 
         if read_u8(pipe_state + 3) == 1
             && read_u8(slot) == 0
-            && read_u16(frame_node + 0x0a) & 0x0f != 4
-            && read_u32(frame_node + 4) & 1 == 0
+            && read_u16(context.frame_control_address()) & 0x0f != 4
+            && read_u32(context.control_bits_address()) & 1 == 0
         {
-            let rate = read_u8(frame_node + 0x6a);
+            let rate = read_u8(context.duration_slot_address());
             let duration = read_u16(packet_ram::duration_word(usize::from(rate)));
-            let header = read_u32(frame_node) as usize;
+            let header = read_u32(context.frame_address_address()) as usize;
             write_u16(header + 0x16, duration);
-            write_u16(frame_node + 0x54, duration);
-            write_u32(frame_node + 4, read_u32(frame_node + 4) | 1);
+            write_u16(context.sequence_number_address(), duration);
+            write_u32(
+                context.control_bits_address(),
+                read_u32(context.control_bits_address()) | 1,
+            );
             write_u8(global + 6, 1);
             write_u8(global + 0x0c, rate);
         }
@@ -4808,16 +4875,15 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
     backend: &mut B,
 ) {
     unsafe {
-        let context = context.raw() as usize;
-        if read_u16(context + 0x70) == 0x16 {
+        if read_u16(context.terminal_status_address()) == 0x16 {
             return;
         }
-        let interface = read_u8(context + 0xbd);
+        let interface = read_u8(context.interface_address());
         let state = crate::dtcm::power_save_observed_view(usize::from(interface))
             .map_or_else(|| unreachable!(), crate::dtcm::DtcmAddress::get);
         if read_u8(state + 0xfc) != 0
-            && (read_u32(context + 0x58) & 0x03ff_ffff) >> 24 == 0
-            && read_u16(context + 0x5e) & 0x4f != 0x48
+            && (read_u32(context.control_bits_address()) & 0x03ff_ffff) >> 24 == 0
+            && read_u16(context.frame_control_address()) & 0x4f != 0x48
         {
             write_u16(state + 0x44, read_u16(state + 0x44) | 8);
             backend.timer_start((state + 0xe8) as u32, read_u32(state + 0x118));
@@ -4834,7 +4900,7 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
             return;
         }
 
-        if read_u16(context + 0x70) == 0 {
+        if read_u16(context.terminal_status_address()) == 0 {
             write_u16(lmc_vif_address(usize::from(interface)) + 0x1e2, 0);
         }
         let mode = read_u8(state + 0x40);
@@ -4851,13 +4917,13 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
             write_u16(state + 0x44, read_u16(state + 0x44) | 4);
             backend.timer_start((state + 0xac) as u32, read_u32(state + 0x120));
         }
-        let context_flags = read_u32(context + 0x58);
+        let context_flags = read_u32(context.control_bits_address());
         if context_flags & (1 << 25) != 0 {
             backend.timer_start((state + 0xc0) as u32, read_u32(0x0400_9504));
             return;
         }
 
-        let queue = read_u8(context + 0x60);
+        let queue = read_u8(context.access_category_address());
         let power_save_mask = read_u16(state + 0x5a);
         let queue_mask = 1_u32.wrapping_shl(u32::from(queue) & 0x1f);
         if u32::from(power_save_mask) & queue_mask == 0 {
@@ -4927,14 +4993,14 @@ fn tala_reduction_at_decision(
 
 unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
     unsafe {
-        let node = frame_node.raw() as usize;
-        let interface = usize::from(read_u8(node + 0x69));
+        let context = frame_node.context();
+        let interface = usize::from(read_u8(context.interface_address()));
         let override_value = read_u16(0xfff0_1a7c + interface * 2);
         if override_value != 0 && crate::vif::rts_threshold(interface as u8).unwrap_or(0) >= 0x660 {
             return;
         }
 
-        let status = read_u16(node + 0x1c);
+        let status = read_u16(context.terminal_status_address());
         let success = 0x0400_8f4c + interface * 4;
         let failure = 0x0400_8f54 + interface * 4;
         let tries_total = 0x0400_8f5c + interface * 4;
@@ -4946,12 +5012,12 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
         }
 
         let completed = read_u32(success).wrapping_add(read_u32(failure));
-        let policy = usize::from(read_u8(node + 0x0e));
+        let policy = usize::from(read_u8(context.retry_policy_address()));
         let short_retries = u32::from(read_u8(
             crate::dtcm::rate_policy_short_retry_limit_compat(policy).get(),
         ));
         let expected = short_retries.wrapping_mul(15).wrapping_add(99) / 100;
-        let tries = u32::from(read_u16(node + 0x1e));
+        let tries = u32::from(read_u16(context.try_count_address()));
         write_u32(tries_total, read_u32(tries_total).wrapping_add(tries));
         let addition = if tries > (expected & 0xffff) {
             1_u32 << (tries.wrapping_sub(expected & 0xffff).wrapping_add(1) & 0x0f)
@@ -5068,7 +5134,7 @@ where
             let mut index = cursor.next;
             while index != cursor.target {
                 let node = COMPLETION_RING.frame_node(index);
-                if read_u8(node.wrapping_sub(1) as usize) == 0 {
+                if read_u8(FrameNodeAddress::new(node).context().completion_class_address()) == 0 {
                     zero_class_pending = zero_class_pending.wrapping_add(1);
                 }
                 index = index.wrapping_add(1) & 0x3f;
@@ -5076,21 +5142,22 @@ where
         }
 
         while let Some(frame_node) = cursor.pop() {
-            let node = frame_node.raw() as usize;
             let context = frame_node.context();
-            let context_address = context.raw() as usize;
-            let status = read_u16(node + 0x1c);
-            let interface = usize::from(read_u8(node + 0x69));
+            let status = read_u16(context.terminal_status_address());
+            let interface = usize::from(read_u8(context.interface_address()));
 
             update_tala_for_completion(frame_node);
-            write_u16(node.wrapping_sub(0x2e), read_u32(node + 0x50) as u16);
+            write_u16(
+                context.completion_flags_address(),
+                read_u32(context.auxiliary_state_address()) as u16,
+            );
 
-            let flags = read_u32(node + 4);
+            let flags = read_u32(context.control_bits_address());
             if flags & (1 << 5) != 0 {
                 let stats = 0x0400_12a0_usize;
                 let accumulated =
                     u64::from(read_u32(stats + 8)) | (u64::from(read_u32(stats + 0x0c)) << 32);
-                let accumulated = accumulated.wrapping_add(u64::from(read_u16(node + 8)));
+                let accumulated = accumulated.wrapping_add(u64::from(read_u16(context.frame_length_address())));
                 write_u32(stats + 8, accumulated as u32);
                 write_u32(stats + 0x0c, (accumulated >> 32) as u32);
                 write_u32(stats + 4, read_u32(stats + 4).wrapping_add(1));
@@ -5107,12 +5174,12 @@ where
                             let message = message as usize;
                             write_u8(message, 7);
                             write_u8(message + 0x28, interface as u8);
-                            write_u8(message + 4, read_u8(node + 0x52));
-                            write_u8(message + 0x29, read_u8(node + 0x6c));
-                            let queue = usize::from(read_u8(node + 0x0c));
+                            write_u8(message + 4, read_u8(context.tid_address()));
+                            write_u8(message + 0x29, read_u8(context.completion_byte_6c_address()));
+                            let queue = usize::from(read_u8(context.access_category_address()));
                             write_u8(message + 5, read_u8(0x0400_02e0 + queue));
-                            write_u16(message + 6, read_u16(node + 0x54) << 4);
-                            let header = read_u32(node) as usize;
+                            write_u16(message + 6, read_u16(context.sequence_number_address()) << 4);
+                            let header = read_u32(context.frame_address_address()) as usize;
                             write_u16(message + 8, read_u16(header + 4));
                             write_u16(message + 0x0a, read_u16(header + 6));
                             write_u16(message + 0x0c, read_u16(header + 8));
@@ -5142,14 +5209,17 @@ where
             if interface < 2 {
                 service_power_save_completion(context, backend);
             }
-            if zero_class_pending > 1 && read_u8(node.wrapping_sub(1)) == 0 {
+            if zero_class_pending > 1 && read_u8(context.completion_class_address()) == 0 {
                 write_u16(
-                    context_address + 0x26,
-                    read_u16(context_address + 0x26) | 0x20,
+                    context.completion_flags_address(),
+                    read_u16(context.completion_flags_address()) | 0x20,
                 );
                 zero_class_pending = zero_class_pending.wrapping_sub(1);
             }
-            write_u32(node + 0x2c, read_u32(node + 0x2c) | 0x8000);
+            write_u32(
+                context.ownership_bits_address(),
+                read_u32(context.ownership_bits_address()) | 0x8000,
+            );
             backend.complete_context(context, status);
         }
 
@@ -5204,30 +5274,32 @@ where
     G: FnOnce(),
 {
     unsafe {
-        let address = context.raw() as usize;
-        if ((address + 0x70) as *const u16).read_volatile() == 0x00ff {
+        if (context.terminal_status_address() as *const u16).read_volatile() == 0x00ff {
             return CompletedContextDispatch::NoCallback;
         }
 
-        let saved_status = ((address + 0x72) as *const u16).read_volatile();
-        ((address + 0x25) as *mut u8).write_volatile(saved_status as u8);
-        ((address + 0x70) as *mut u16).write_volatile(completion_status);
-        ((address + 0x20) as *mut u32).write_volatile(u32::from(completion_status));
+        let saved_status = (context.try_count_address() as *const u16).read_volatile();
+        (context.saved_status_address() as *mut u8).write_volatile(saved_status as u8);
+        (context.terminal_status_address() as *mut u16).write_volatile(completion_status);
+        (context.completion_status_address() as *mut u32)
+            .write_volatile(u32::from(completion_status));
 
-        let aggregate = ((address + 0x4c) as *const u32).read_volatile();
+        let aggregate = (context.optional_pipe_object_address() as *const u32).read_volatile();
         if aggregate != 0 {
             let budget = (aggregate as usize + 7) as *mut u8;
             let budget_value = budget.read_volatile() as i8;
-            if budget_value > 0 && ((address + 0x53) as *const u8).read_volatile() == 0 {
+            if budget_value > 0
+                && (context.completion_class_address() as *const u8).read_volatile() == 0
+            {
                 budget.write_volatile((budget_value - 1) as u8);
             }
         }
 
-        let interface = ((address + 0xbd) as *const u8).read_volatile();
+        let interface = (context.interface_address() as *const u8).read_volatile();
         if interface < 2 {
             let device = completion_device_address(interface);
             let retry_class = if completion_status == 0
-                && ((address + 0x5e) as *const u16).read_volatile() & 0x0f == 8
+                && (context.frame_control_address() as *const u16).read_volatile() & 0x0f == 8
             {
                 1
             } else {
@@ -5241,7 +5313,7 @@ where
             if (flags >> 1) & 3 == 3 {
                 let countdown = (device + 0x14b) as *mut u8;
                 let countdown_value = countdown.read_volatile();
-                let peer = ((address + 0x54) as *const u32).read_volatile() as usize;
+                let peer = (context.frame_address_address() as *const u32).read_volatile() as usize;
                 if countdown_value != 0 && ((peer + 4) as *const u8).read_volatile() & 1 != 0 {
                     let next = countdown_value.wrapping_sub(1);
                     countdown.write_volatile(next);
@@ -5256,13 +5328,13 @@ where
             }
         }
 
-        let completion_class = ((address + 0x53) as *const u8).read_volatile();
+        let completion_class = (context.completion_class_address() as *const u8).read_volatile();
         let callback_address =
             (0x0400_0260_usize + usize::from(completion_class) * 4) as *const u32;
         if callback_address.read_volatile() == 0 {
             return CompletedContextDispatch::NoCallback;
         }
-        let ownership_flags = (address + 0x80) as *mut u32;
+        let ownership_flags = context.ownership_bits_address() as *mut u32;
         ownership_flags.write_volatile(ownership_flags.read_volatile() | (1 << 16));
         callback(completion_class, context);
         raise_scheduler_bits(1 << 21);
@@ -5276,7 +5348,8 @@ where
             let alternate = ((device + 0x0e) as *const u8).read_volatile() != 0;
             let retry_limit =
                 ((device + completion_retry_limit_offset(alternate)) as *const u8).read_volatile();
-            if retry_limit != 0xff && ((address + 0x63) as *const u8).read_volatile() <= retry_limit
+            if retry_limit != 0xff
+                && (context.tx_rate_address() as *const u8).read_volatile() <= retry_limit
             {
                 let retry_count = (device + 0x0f) as *mut u8;
                 let mut retries = retry_count.read_volatile();
@@ -5284,7 +5357,7 @@ where
                     retries = retries.wrapping_add(1);
                     retry_count.write_volatile(retries);
                 }
-                let consumed = ((address + 0x25) as *const u8).read_volatile();
+                let consumed = (context.saved_status_address() as *const u8).read_volatile();
                 if consumed != 0 {
                     retry_count.write_volatile(retries.saturating_sub(consumed));
                 }
@@ -6046,13 +6119,14 @@ impl PreparedProbePublication {
     ) -> Result<PublishedProbePublication, ProbeBuildError> {
         unsafe {
             let frame_node = FrameNodeAddress::new(self.context.context + FRAME_NODE_OFFSET);
+            let context_address = frame_node.context();
             let slot_record = self.slot_record as usize;
             let valid = single_frame_slot_matches(
                 read_u32(slot_record + 0x0c),
                 frame_node.raw(),
                 read_u8(slot_record),
                 read_u8(slot_record + 1),
-                read_u8(frame_node.raw() as usize + 0x56),
+                read_u8(context_address.retry_rate_address()),
             );
             if !valid {
                 let cancellation = self.cancel();
@@ -6178,8 +6252,8 @@ impl PreparedProbePublication {
             for (index, word) in self.original_command.into_iter().enumerate() {
                 ((self.command as usize + index * 4) as *mut u32).write_volatile(word);
             }
-            if is_wsm_tx_context(self.context.context) {
-                release_wsm_context_address(self.context.context);
+            if let Some(context) = crate::dtcm::host_context_from_raw(self.context.context) {
+                release_wsm_context_address(context);
             } else {
                 release_context_address(self.context.context);
             }
@@ -6373,27 +6447,18 @@ unsafe fn move_to_wsm_class0_context(
     source: PreparedProbeContext,
 ) -> Result<PreparedProbeContext, ProbeBuildError> {
     unsafe {
-        let free_head = WSM_TX_CONTEXT_FREE_HEAD as *mut u32;
-        let mut destination = free_head.read_volatile();
-        if destination == 0 || !is_wsm_tx_context(destination) {
-            // Keep management/EAPOL startup byte-for-byte free of host-pool
-            // retained-memory reconstruction. Initialize the pool only when
-            // the first ordinary host frame actually needs class-0 ownership.
-            crate::mac::initialize_wsm_tx_context_pool();
-            destination = free_head.read_volatile();
-        }
-        if destination == 0 || !is_wsm_tx_context(destination) {
-            release_context_address(source.context);
-            return Err(ProbeBuildError::ContextPoolEmpty);
-        }
-        let destination_address = destination as usize;
-        free_head.write_volatile(((destination_address + 4) as *const u32).read_volatile());
-        if crate::vif::adjust_host_contexts_in_flight(1).is_err() {
-            crate::halt_always!();
-        }
-
-        let destination_request = (destination_address as *const u32).read_volatile();
-        let destination_frame_state = ((destination_address + 0xa0) as *const u32).read_volatile();
+        let destination = match crate::vendor_host_tx::allocate_host_context() {
+            Ok(context) => context,
+            Err(_) => {
+                release_context_address(source.context);
+                return Err(ProbeBuildError::ContextPoolEmpty);
+            }
+        };
+        let destination_address = destination.raw() as usize;
+        let destination_request =
+            crate::dtcm::shared_ptr::<u32>(destination.request_buffer()).read_volatile();
+        let destination_frame_state =
+            crate::dtcm::shared_ptr::<u32>(destination.frame_state_address()).read_volatile();
         if packet_ram::host_frame_state_index(destination_frame_state as usize).is_none() {
             release_context_address(source.context);
             release_wsm_context_address(destination);
@@ -6408,19 +6473,19 @@ unsafe fn move_to_wsm_class0_context(
         // Our transformed frame lives in the internal context's packet-RAM
         // buffer, so retain that context as the host descriptor's backing
         // owner instead of guessing a nonexistent host-pool buffer mapping.
-        (destination_address as *mut u32).write_volatile(destination_request);
-        ((destination_address + 0x0f) as *mut u8).write_volatile(0);
-        ((destination_address + 0x1c) as *mut u32).write_volatile(source.header);
-        ((destination_address + 0x20) as *mut u32).write_volatile(0xfe);
-        ((destination_address + 0x54) as *mut u32).write_volatile(source.header);
-        ((destination_address + 0x70) as *mut u16).write_volatile(0xfe);
-        ((destination_address + 0xa0) as *mut u32).write_volatile(destination_frame_state);
-        ((destination_address + 0x53) as *mut u8).write_volatile(0);
-        ((destination_address + 0xbf) as *mut u8).write_volatile(0);
-        ((destination_address + 0x80) as *mut u32).write_volatile(3);
+        crate::dtcm::shared_ptr::<u32>(destination.request_buffer()).write_volatile(destination_request);
+        crate::dtcm::shared_ptr::<u8>(destination.request_flags()).write_volatile(0);
+        crate::dtcm::shared_ptr::<u32>(destination.borrowed_frame_address()).write_volatile(source.header);
+        crate::dtcm::shared_ptr::<u32>(destination.completion_status()).write_volatile(0xfe);
+        crate::dtcm::shared_ptr::<u32>(destination.frame_address()).write_volatile(source.header);
+        crate::dtcm::shared_ptr::<u16>(destination.terminal_status()).write_volatile(0xfe);
+        crate::dtcm::shared_ptr::<u32>(destination.frame_state_address()).write_volatile(destination_frame_state);
+        crate::dtcm::shared_ptr::<u8>(destination.completion_class()).write_volatile(0);
+        crate::dtcm::shared_ptr::<u8>(destination.host_link()).write_volatile(0);
+        crate::dtcm::shared_ptr::<u32>(destination.ownership_bits()).write_volatile(3);
 
         Ok(PreparedProbeContext {
-            context: destination,
+            context: destination.raw(),
             ..source
         })
     }
@@ -6432,8 +6497,8 @@ unsafe fn move_to_wsm_class0_context(
 /// `context` must still be software-owned and must not have entered a queue.
 pub unsafe fn release_unpublished_probe_context(context: PreparedProbeContext) {
     unsafe {
-        if is_wsm_tx_context(context.context) {
-            release_wsm_context_address(context.context);
+        if let Some(host) = crate::dtcm::host_context_from_raw(context.context) {
+            release_wsm_context_address(host);
         } else {
             release_context_address(context.context);
         }
@@ -6451,10 +6516,11 @@ pub unsafe fn build_prepared_probe_descriptor(
     context: &PreparedProbeContext,
 ) -> SingleFramePipeDescriptor {
     unsafe {
-        let address = context.context as usize;
-        let rate = ((address + 0x63) as *const u8).read_volatile();
-        let tx_flags = ((address + 0x58) as *const u32).read_volatile();
-        let hardware_rate_code = ((address + 0x61) as *const u8).read_volatile();
+        let address = ContextAddress::new(context.context);
+        let rate = (address.tx_rate_address() as *const u8).read_volatile();
+        let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
+        let request_flag_rate_bits =
+            (address.request_flag_rate_bits_address() as *const u8).read_volatile();
         let legacy_mode = (0x0400_1685 as *const u8).read_volatile();
         let rate_attribute =
             (0x0400_0194_usize.wrapping_add(usize::from(rate)) as *const u8).read_volatile();
@@ -6464,12 +6530,12 @@ pub unsafe fn build_prepared_probe_descriptor(
             rate,
             legacy_mode,
             tx_flags,
-            hardware_rate_code,
+            request_flag_rate_bits,
             rate_attribute,
         );
-        let if_id = ((address + 0xbd) as *const u8).read_volatile();
+        let if_id = (address.interface_address() as *const u8).read_volatile();
         let metadata_address = packet_ram::interface_metadata_byte(usize::from(if_id)) as u32;
-        let duration_slot = ((address + 0xbe) as *const u8).read_volatile();
+        let duration_slot = (address.duration_slot_address() as *const u8).read_volatile();
         // `txp_submit_to_pipe` uses PAS `bVifSlot` (`ctx+0xbe`) here when
         // flags bit 0 is clear. Both internal and host contexts use this
         // selector; the TX rate indexes different PHY tables.
@@ -6479,10 +6545,10 @@ pub unsafe fn build_prepared_probe_descriptor(
             phy_control_word: finalize_phy_control(phy, rate, context.length),
             frame_length: context.length,
             hardware_rate,
-            frame_control: ((address + 0x5e) as *const u16).read_volatile(),
-            retry_flag: ((address + 0x58) as *const u32).read_volatile() & 0x10 != 0,
+            frame_control: (address.frame_control_address() as *const u16).read_volatile(),
+            retry_flag: (address.control_bits_address() as *const u32).read_volatile() & 0x10 != 0,
             metadata_address,
-            duration: ((address + 0x8a) as *const u16).read_volatile(),
+            duration: (address.duration_address() as *const u16).read_volatile(),
             header_address: context.header,
             secondary_command: 0x2100_0000 | (secondary_address & 0x007f_ffff),
             address_mask: 0x007f_fffc,
@@ -6496,10 +6562,11 @@ unsafe fn emit_prepared_probe_descriptor(
     destination: u32,
 ) -> Result<u32, ProbeBuildError> {
     unsafe {
-        let address = context.context as usize;
-        let rate = ((address + 0x63) as *const u8).read_volatile();
-        let tx_flags = ((address + 0x58) as *const u32).read_volatile();
-        let hardware_rate_code = ((address + 0x61) as *const u8).read_volatile();
+        let address = ContextAddress::new(context.context);
+        let rate = (address.tx_rate_address() as *const u8).read_volatile();
+        let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
+        let request_flag_rate_bits =
+            (address.request_flag_rate_bits_address() as *const u8).read_volatile();
         let legacy_mode = (0x0400_1685 as *const u8).read_volatile();
         let rate_attribute =
             (0x0400_0194_usize.wrapping_add(usize::from(rate)) as *const u8).read_volatile();
@@ -6509,13 +6576,13 @@ unsafe fn emit_prepared_probe_descriptor(
             rate,
             legacy_mode,
             tx_flags,
-            hardware_rate_code,
+            request_flag_rate_bits,
             rate_attribute,
         );
-        let if_id = ((address + 0xbd) as *const u8).read_volatile();
-        let duration_slot = ((address + 0xbe) as *const u8).read_volatile();
-        let frame_control = u32::from(((address + 0x5e) as *const u16).read_volatile())
-            | if ((address + 0x58) as *const u32).read_volatile() & 0x10 != 0 {
+        let if_id = (address.interface_address() as *const u8).read_volatile();
+        let duration_slot = (address.duration_slot_address() as *const u8).read_volatile();
+        let frame_control = u32::from((address.frame_control_address() as *const u16).read_volatile())
+            | if (address.control_bits_address() as *const u32).read_volatile() & 0x10 != 0 {
                 0x0800
             } else {
                 0
@@ -6537,7 +6604,7 @@ unsafe fn emit_prepared_probe_descriptor(
         add(0x4700_0000 + (frame_control >> 8));
         add(0x2080_0000
             | (packet_ram::interface_metadata_byte(usize::from(if_id)) as u32 & 0x007f_ffff));
-        add(0x3200_0000 | u32::from(((address + 0x8a) as *const u16).read_volatile()));
+        add(0x3200_0000 | u32::from((address.duration_address() as *const u16).read_volatile()));
         add(0x2900_0000 | (context.header.wrapping_add(4) & 0x007f_ffff));
         add(single_frame_secondary_command(
             tx_flags,
@@ -6566,17 +6633,39 @@ unsafe fn emit_prepared_probe_descriptor(
 /// # Safety
 /// `context` must be an exclusively owned class-0 host context whose header,
 /// length, rate, classification, and duration fields are initialized.
+#[inline(always)]
+fn validated_host_context(context: u32) -> Option<crate::dtcm::HostContextAddress> {
+    let address = context as usize;
+    let base = crate::dtcm::HOST_TX_CONTEXTS.get();
+    if (base..base + crate::dtcm::HOST_TX_CONTEXT_COUNT * crate::dtcm::HOST_TX_CONTEXT_SIZE)
+        .contains(&address)
+        && (address - base).is_multiple_of(crate::dtcm::HOST_TX_CONTEXT_SIZE)
+    {
+        Some(unsafe { crate::dtcm::HostContextAddress::from_raw_unchecked(context) })
+    } else {
+        None
+    }
+}
+
+#[inline(never)]
 fn host_prepared_context(context: u32) -> Result<PreparedProbeContext, ProbeBuildError> {
-    if !is_wsm_tx_context(context) {
+    let raw = context as usize;
+    let base = crate::dtcm::HOST_TX_CONTEXTS.get();
+    if !(base..base + crate::dtcm::HOST_TX_CONTEXT_COUNT * crate::dtcm::HOST_TX_CONTEXT_SIZE)
+        .contains(&raw)
+        || !(raw - base).is_multiple_of(crate::dtcm::HOST_TX_CONTEXT_SIZE)
+    {
         return Err(ProbeBuildError::InvalidContextPointer);
     }
-    let address = context as usize;
+    let address = unsafe { crate::dtcm::HostContextAddress::from_raw_unchecked(context) };
     Ok(PreparedProbeContext {
         context,
-        header: unsafe { ((address + 0x54) as *const u32).read_volatile() },
-        length: unsafe { ((address + 0x5c) as *const u16).read_volatile() },
-        rate: unsafe { ((address + 0x63) as *const u8).read_volatile() },
-        expects_ack: unsafe { ((address + 0x58) as *const u32).read_volatile() & 0x300 == 0 },
+        header: unsafe { crate::dtcm::shared_ptr::<u32>(address.frame_address()).read_volatile() },
+        length: unsafe { crate::dtcm::shared_ptr::<u16>(address.frame_length()).read_volatile() },
+        rate: unsafe { crate::dtcm::shared_ptr::<u8>(address.tx_rate()).read_volatile() },
+        expects_ack: unsafe {
+            crate::dtcm::shared_ptr::<u32>(address.control_bits()).read_volatile() & 0x300 == 0
+        },
     })
 }
 
@@ -6599,8 +6688,11 @@ pub unsafe fn emit_host_frame_descriptor_at(
 }
 
 pub unsafe fn build_host_frame_descriptor(context: u32) -> Result<u32, ProbeBuildError> {
-    let address = context as usize;
-    let destination = unsafe { ((address + 0xa0) as *const u32).read_volatile() };
+    let address = validated_host_context(context)
+        .ok_or(ProbeBuildError::InvalidContextPointer)?;
+    let destination = unsafe {
+        crate::dtcm::shared_ptr::<u32>(address.frame_state_address()).read_volatile()
+    };
     if packet_ram::host_frame_state_index(destination as usize).is_none() {
         return Err(ProbeBuildError::InvalidContextPointer);
     }
@@ -6639,33 +6731,36 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
     context: u32,
 ) -> Result<(), ProbeBuildError> {
     unsafe {
+        let Some(host) = crate::dtcm::host_context_from_raw(context) else {
+            return Err(ProbeBuildError::InvalidContextPointer);
+        };
         let previous = mask_irq_fiq_terminal();
         let pending = 0x0400_8ad8_usize;
         let old_head = read_u32(pending);
         let old_tail = read_u32(pending + 4);
 
         // `txq_list_insert(context, queue, 2)` prepends to the pending list.
-        write_u32(context as usize + 4, old_head);
+        write_u32(host.intrusive_next().get(), old_head);
         if old_tail == 0 {
             write_u32(pending + 4, context);
         }
         write_u32(pending, context);
         write_u32(
-            context as usize + 0x80,
-            read_u32(context as usize + 0x80) | 0x20,
+            host.ownership_bits().get(),
+            read_u32(host.ownership_bits().get()) | 0x20,
         );
 
         // The joined/active task accepts this frame, removes the same head,
         // and passes it through `tx_frame_done_release`.
-        let next = read_u32(context as usize + 4);
+        let next = read_u32(host.intrusive_next().get());
         write_u32(pending, next);
         if read_u32(pending + 4) == context {
             write_u32(pending + 4, if next == 0 { 0 } else { old_tail });
         }
-        write_u32(context as usize + 4, 0);
+        write_u32(host.intrusive_next().get(), 0);
         write_u32(
-            context as usize + 0x80,
-            read_u32(context as usize + 0x80) | 0x40,
+            host.ownership_bits().get(),
+            read_u32(host.ownership_bits().get()) | 0x40,
         );
 
         // `pas_txq_push_global(context + 0x54)` appends class-0 host frames.
@@ -6677,7 +6772,7 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
             restore_irq_fiq(previous);
             return Err(ProbeBuildError::PipeSlotBusy);
         }
-        let frame_node = context + FRAME_NODE_OFFSET;
+        let frame_node = host.frame_node().raw();
         write_u32(ring + 8 + usize::from(tail) * 4, frame_node);
         write_u32(ring + 4, u32::from(following));
 
@@ -6693,8 +6788,8 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
         // The non-aggregate scheduler branch marks the selected frame before
         // `txp_build_pipe_descriptor(..., 0)`.
         write_u32(
-            context as usize + 0x58,
-            read_u32(context as usize + 0x58) | 0x0400_0000,
+            host.control_bits().get(),
+            read_u32(host.control_bits().get()) | 0x0400_0000,
         );
         restore_irq_fiq(previous);
     }

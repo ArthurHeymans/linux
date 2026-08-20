@@ -40,7 +40,6 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context', 0x04003EBC): 2,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context', 0x04003FC4): 1,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26service_host_management_tx', 0x04003EB1): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27release_wsm_context_address', 0x04003E9E): 1,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003EB0): 4,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003FC0): 6,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x0400425C): 1,

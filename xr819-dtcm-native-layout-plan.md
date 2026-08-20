@@ -1,7 +1,7 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** fresh typed-VIF-on-PAS candidate based on qualified low-MAC/PAS commit `319d653982e4`; deterministic host/static gates pass, but exact-parent hot-code comparison remains a clean-qualification blocker. No hardware run was performed or permitted. Address movement and exclusive/native ownership remain out of scope.  
-**Firmware lineage:** candidate based directly on `319d653982e441c9f15a44c41f15c9854d6dc996` (`Model low-MAC and PAS state in Rust`); the rejected typed-VIF snapshot `15861449d3d0` and `/tmp/xr819-typed-vif-final-rejected.patch` were references only.  
+**Status:** native semantic host-WSM-context and coupled free-list candidate based directly on committed typed VIF `8940467e9cdc`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
+**Firmware lineage:** candidate based directly on `8940467e9cdc` (`Model VIF state in Rust`), itself atop qualified low-MAC/PAS. The exact parent was rebuilt from revision files for code-generation comparison; no rejected patch was applied.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
 
@@ -1893,3 +1893,325 @@ diagnostic. Additional qualification was still running when this checkpoint
 was committed. Remaining limitations are the bounded hot code-generation
 residuals above, retained vendor/IRQ writers, and lack of complete
 register-computed/indirect VIF-reference closure.
+
+### A.13 Native host WSM TX contexts and coupled free-list lifecycle
+
+This candidate starts directly from committed typed VIF `8940467e9cdc`. It
+models the 30 host class-0 contexts at their fixed ABI identity and converts the
+known production Rust closure without relocating any byte or claiming exclusive
+Rust ownership. No hardware run was performed.
+
+#### Exact record and coupled roots
+
+`HostTxContext` is now a complete `#[repr(C, align(4))` layout of exactly
+`0x170` bytes. The 30-record `HostTxContexts` array remains exactly
+`0x04005a24..0x04008544`; the following `0x50`-byte pre-command quarantine still
+begins at `0x8544` and is not consumed. Every named field, opaque region, nested
+PAS overlay, size, alignment, and offset has a compile-time assertion.
+
+The semantic prefix covers the original HIF request pointer, intrusive link,
+packet identity, WSM request metadata, borrowed MPDU pointer/length, completion
+status/rate words, submit timing, header/payload split, optional pipe object,
+completion class, and the decoded `ctx+0x54` PAS/frame-node overlay. The PAS
+view names only supported fields: control bits, AC/rate/policy, timestamps,
+status/tries, ownership, duration, descriptor state, airtime, dedicated packet-
+RAM frame-state pointer, TID/insertion mode/sequence, interface/duration-slot/
+host-link, completion link byte, QoS/cipher state, and their exact widths.
+`ctx+0xd4..+0x170` remains private opaque storage; it includes the retained
+crypto callback interior root at `ctx+0x110`. Smaller unresolved PAS words and
+bytes remain private opaque fields even where initialization writes a known
+zero.
+
+Address domains are explicit: `HostContextAddress`, `HostFrameNodeAddress`,
+`HostPasAddress`, `HifRequestAddress`, and `PacketRamAddress`. Context/index and
+frame-node/PAS round trips are checked; interior, pre-range, end, pre-command,
+and free-head pointers are rejected. No API yields `&HostTxContext`,
+`&mut HostTxContext`, or a record slice.
+
+The mixed root at `0x04008798..0x040087b0` is decoded only as far as direct
+vendor evidence supports:
+
+```text
++0x00..+0x0c  opaque accounting/cache state
++0x0c         duplicate-cache cursor
++0x10         deferred event owner/context
++0x14         auxiliary TX-buffer free-list head (not the host WSM list)
+```
+
+The host WSM free head remains the following word at `0x040087b0`. The adjacent
+word at `0x040087b4` remains unresolved and has no production mutation API.
+`0x040087b8` is still the separate qualified link/sequence root; this pass does
+not absorb link, LMC, BA, TALA, or power-save storage.
+
+#### Consumer closure and ownership
+
+The Rust closure now derives host-field addresses from the layout in:
+
+* `vendor_host_tx.rs`: pool rebuild/pop/push, request initialization, header
+  classification and sequence publication, post-crypto pending insertion,
+  pending removal and eligibility, PAS accounting/ring handoff, scheduler
+  reservation/cancellation/publication, and live diagnostics;
+* `host_tx_driver.rs`: admission identity, frame-node ownership, bounded service,
+  completion routing, confirmation reads, RESET cancellation, and final release;
+* `tx.rs`: host pointer validation, transformed-host compatibility ownership,
+  descriptor preparation/publication, retry/rearm, pipe start/success, completion
+  enqueue/drain/callback, power-save/TALA reads, and class-0 free integration;
+* `host_tx_diagnostics.rs`: submission, retry, completion, and frame snapshots.
+
+Generic completion code that can receive either internal or host contexts uses
+operation-specific scalar address helpers. The host branch is layout-derived;
+the retained internal branch keeps its existing raw compatibility offset until
+the internal family is decoded further. Mixed pending-list links likewise use a
+typed host link when the node is in the host range and preserve the raw internal
+link for internal nodes.
+
+The context/request-credit-before-confirmation ordering is inherited unchanged
+from exact parent `8940467e9cdc`; it is not vendor-lifetime equivalence. The
+executable statements in parent and candidate `hif_startup.rs:518-548` call
+`finish_confirmation()` before `publish_request_in_place()`, and
+`hif.rs:1103-1125` appends the request credit before `enqueue_output()`. The
+conversion did not alter either file's executable ordering, so this structural
+migration deliberately leaves it alone. Packet-RAM MPDU and per-context
+`0x54` frame-state identities, service budget, scheduling, batching, retry
+policy, and confirmation ordering remain inherited from the parent.
+
+**Separate future correctness issue — HIF request-buffer lifetime.** The vendor
+ordinary non-coalesced confirmation reuses the original request pointer held at
+`ctx+0x00`: `tx_confirm_build_and_send` frees the host context at
+`annotated-main.c:13412`, then calls `hif_send_msg_to_host(puVar9)` at
+`annotated-main.c:13417-13418`. `hif_send_msg_to_host` publishes that same
+message pointer into the host-facing TX ring (`annotated-main.c:17583-17617`),
+and `hif_tx_confirm_drain` calls `hi_msg_release()` only after descriptor
+completion (`annotated-main.c:17541-17578`). The Rust parent/candidate instead
+copy confirmation bytes to independent output storage, append the original RX
+request credit at `hif.rs:1124`, and only then enqueue the output at
+`hif.rs:1125`. Matching the vendor request-buffer lifetime and publication
+dependency therefore needs a separate HIF redesign; it is explicitly out of
+scope for this candidate.
+
+Ownership remains mixed shared ABI. Retained vendor callbacks, the translated
+IRQ/FIQ-shaped completion path, and diagnostics can access live fields, so all
+production scalar accesses are raw volatile. Multiword/list/free-list
+transitions remain under IRQ/FIQ masking or `MacDomainGuard`; the process-local
+recorder's re-entry test models that exclusion. No ordinary safe reference is
+formed over target DTCM.
+
+#### Retained vendor and diagnostic evidence
+
+The local decoded main image resolves the host pool root in
+`tx_abort_frames_for_vif`, the `0x04008798` root in `txbuf_freelist_pop/push`,
+`tx_wsm_buf_alloc/free`, `rx_dup_cache_check`, `dup_cache_init`,
+`lmc_post_event_200`, and `task_13b58`. The exact root arithmetic establishes
+host head `root+0x18`, auxiliary head `root+0x14`, duplicate cursor `root+0x0c`,
+and deferred owner `root+0x10`.
+
+The high-TCM diagnostic dispatcher starts at `0x04005a24`, walks at stride
+`0x170` for at most 30 records, matches packet ID at `+0x08`, and reads `+0x60`,
+`+0x70`, `+0x72`, `+0x58`, and `+0x80`. The negative-root post-crypto callback
+continues to prove the `ctx+0x110` interior identity. The vendor abort routine's
+known non-advancing loop still checks only record zero despite a bound of 30;
+this implementation does not copy that bug and RESET uses the native 30-owner
+driver state.
+
+Arbitrary MIB memory access and unknown indirect vendor consumers remain a
+limitation. The gates below do not prove register-computed references or
+exclusive ownership, and no address relocation is proposed.
+
+#### Free-list and lifecycle operations
+
+Pool operations are explicit and preserve vendor order and widths:
+
+* rebuild clears the head, links records in ascending-index push order, writes
+  terminal `0x00ff`, restores each dedicated packet-RAM frame-state pointer, and
+  publishes the final head;
+* pop reads/validates the exact head, validates the frame-state identity, reads
+  the next link, publishes the new head, then writes request flags (8-bit),
+  completion status (32-bit), terminal status (16-bit), and ownership (32-bit);
+* push writes completion and terminal sentinels, ORs host return bit
+  `0x00040000`, reads the old head, stores the context link, publishes the new
+  head, then decrements typed VIF in-flight accounting;
+* pending/PAS/reservation/scheduled/completing phases still prevent publication
+  skips and prevent hardware-owned cancellation; free occurs only after
+  confirmation admission or a reversible pre-hardware abort.
+
+The transformed class-0 compatibility path now reuses the same allocator/free
+implementation instead of maintaining a second host-head arithmetic copy.
+
+Pool rebuild is a deliberate broader recovery policy inherited from the exact
+parent, not vendor-equivalent allocation. With zero typed in-flight contexts,
+the parent rebuilds after an empty head, invalid head, or frame-state mismatch;
+with a nonzero count it returns the allocation error. Vendor
+`tx_wsm_buf_alloc` (`annotated-main.c:13531-13552`) simply pops a nonzero head
+and never rebuilds. There is no source evidence that only one zeroed word is a
+unique safe "uninitialized head" signature, and narrowing would change parent
+recovery behavior, so this candidate retains the broader policy.
+
+#### Gates and tests
+
+`tools/check-host-context-layout.py` scans production source across Rust,
+Python, shell, C/C++, assembly, linker/build scripts, and TOML extensions. It
+rejects literals in the full context range and `0x04008798..0x040087b8`, known
+low-16-bit synthesized forms, and legacy root/stride identifiers outside
+`dtcm.rs`. One generic packer test literal at `0x04008000` is explicitly
+classified as a non-context DTCM fixture. Complete items that are exclusively
+`cfg(test)` are masked while later production items continue to be scanned;
+the former first-`cfg(test)` tail truncation is gone.
+
+The linked manifests pin reviewed aligned literal words and decoded PC-relative
+literal xrefs by containing symbol. They are drift evidence, not complete
+closure. The gate deliberately does not classify arbitrary
+aligned Thumb words as xrefs, recover register-only computed addresses, inspect
+arbitrary MIB accesses, or prove retained vendor closure. The existing VIF xref
+manifest was narrowed by one entry because transformed host release now calls
+the typed host free operation instead of duplicating the VIF in-flight write.
+
+Process-local host tests and recorders cover every named field offset,
+size/alignment, context/index
+and frame-node/PAS round trips, malformed/interior/end pointer rejection,
+packet-RAM identity, accounting/free-head/link-root boundaries, exact pool
+rebuild/pop/push address-width-value order, empty/corrupt head and frame-state
+rejection, initialization address-width-value order, nested guard rejection,
+phase skips, pending append/removal, PAS compaction, scheduler ownership, and the
+existing arena confirmation/RESET invariants. These tests execute process-local
+models and recorders; they do not execute ARM driver, packet-RAM, interrupt, or
+HIF publication behavior.
+
+#### Exact-parent and B6 code generation
+
+The exact `8940467e9cdc` parent ELF is
+`xr819-firmware/target/8940467e-exact-parent.elf`, SHA-256
+`9109a91163f65cfdf691d0a72c609731df371b4a756cff44d9486cef3b7d53d7`.
+Its `.text` is `0x107bc`, SHA-256
+`db5a4f5bb914d7a3118390acf867c45872e29482f7f39db7a666aed60f7da3ed`.
+The qualified candidate `.text` is `0x10770`, net `-0x4c`, SHA-256
+`18c7dab420e7c79ee6065ec826026be4b578906e8d5954b61355fbe76c1dc839`.
+The final clean-B6 gate input ELF is SHA-256
+`0d9fb3b923b5db128bb255b22b68ea2b52a21f13dc3623fb24019af8d463471c`
+(the pre-normalization archived ELF identity was
+`3fb63f89d154025f62d55501513169bc3b2d37bf04584793e51222b24968d0b2`);
+its unchanged `.text` is `0x10638`, SHA-256
+`7463d0dd4163322c534f32062a5cea2b9c795859038afa128ecb467356ad533c`.
+
+`tools/check-hot-codegen.py` now gates the complete sized text-symbol inventory
+through `tools/host-context-codegen-manifest.json`: 196 parent symbols, 197
+candidate symbols, 195 common, 81 exact-byte-identical common symbols, 114
+changed common byte streams, one parent-only symbol, and two candidate-only
+symbols. Any new, removed, or changed stream fails until the complete manifest
+is reviewed and regenerated. It records address, size, instruction count, LLVM
+stack size, exact byte hash, normalized instruction hash, and load/store
+signature for every residual. This remains drift evidence, not behavioral or
+ownership closure.
+
+The parent-only symbol is the parent's
+`HostSchedulerReservation::publish_in_batch` monomorphization (`...Ms2...`).
+Candidate-only symbols are the corresponding candidate monomorphization
+(`...Ms1...`) and `rate_policy::rate_for_try_count`. The fixed
+`tx::host_prepared_context` is present in both images.
+
+Required exact-parent rows are reported even when their bytes are unchanged:
+
+| Function | Size | Instructions | Stack | Memory ops |
+| --- | ---: | ---: | ---: | ---: |
+| `rust_main` | `0x1b24 -> 0x1b6c` | `2986 -> 3012` | `1552 -> 1552` | `1470 -> 1479` |
+| `HostTxDriver::admit` | `0x5e8 -> 0x5c0` | `685 -> 668` | `160 -> 160` | `338 -> 327` |
+| `HostTxDriver::service_index` | `0x834 -> 0x834` | `968 -> 968` | `712 -> 712` | `496 -> 496` |
+| `HostTxDriver::confirmation_state` | `0xa8 -> 0xa4` | `81 -> 79` | `72 -> 72` | `45 -> 43` |
+| `HostTxDriver::finish_confirmation` | `0x58 -> 0x58` | `37 -> 37` | `16 -> 16` | `9 -> 9` |
+| `HostTxDriver::cancelled_confirmation` | `0xc0 -> 0xc0` | `82 -> 82` | `48 -> 48` | `43 -> 43` |
+| `free_host_context` | `0x3c -> 0x3c` | `24 -> 24` | `16 -> 16` | `13 -> 13` |
+| `HostSchedulerReservation::publish_in_batch` | `0x1f0 -> 0x1d8` | `224 -> 217` | `144 -> 144` | `122 -> 118` |
+| `release_pending_to_pas` | `0x170 -> 0x170` | `165 -> 165` | `48 -> 48` | `69 -> 69` |
+| `program_pipe_eligible` | `0x1e0 -> 0x1e0` | `228 -> 228` | `56 -> 56` | `87 -> 87` |
+| `prepare_host_frame_timing` | `0x38 -> 0x38` | `25 -> 25` | `48 -> 48` | `6 -> 6` |
+| transformed publication `cancel` | `0xd4 -> 0xb4` | `91 -> 80` | `112 -> 112` | `45 -> 42` |
+| `release_wsm_context_address` | `0xb4 -> 0x8c` | `74 -> 56` | `32 -> 24` | `35 -> 20` |
+| `prepare_context_publication` | `0x180 -> 0x180` | `183 -> 183` | `216 -> 216` | `116 -> 116` |
+| `emit_host_frame_descriptor_at` | `0x46 -> 0x46` | `33 -> 33` | `56 -> 56` | `12 -> 12` |
+| `emit_prepared_probe_descriptor` | `0x2f0 -> 0x2f0` | `355 -> 355` | `112 -> 112` | `150 -> 150` |
+| `release_unpublished_probe_context` | `0x70 -> 0x5c` | `41 -> 36` | `8 -> 16` | `18 -> 15` |
+| `prepare_probe_context` | `0x298 -> 0x298` | `308 -> 308` | `88 -> 88` | `159 -> 159` |
+| `service_single_probe_runtime_inactive` | `0x1680 -> 0x160c` | `2551 -> 2498` | `184 -> 184` | `1175 -> 1150` |
+| `Transport::enqueue_output` | `0x78 -> 0x78` | `53 -> 53` | `40 -> 40` | `26 -> 26` |
+| `Transport::release_request` | `0x48 -> 0x48` | `31 -> 31` | `16 -> 16` | `11 -> 11` |
+| `Transport::publish_request_in_place` | `0x110 -> 0x110` | `113 -> 113` | `56 -> 56` | `38 -> 38` |
+| `Transport::publish` | `0x6c -> 0x6c` | `39 -> 39` | `32 -> 32` | `13 -> 13` |
+
+The global 17-entry IRQ/barrier sequence is exact. Decoded load/store mnemonic
+order is exact for `free_host_context` and `publish_request_in_place`; the
+process-local free-list recorder separately pins address, width, value, and
+operation order. The normalized clean-B6 packet/MMIO transition gate passes.
+The full 114-stream residual with exact per-symbol hashes is in the checked
+manifest and the uniquely named residual log below.
+
+Hardware qualification was subsequently run with the exact archived images and
+strict receiver/ping/TX-failure accounting. The original candidate completed
+two of three runs: the complete runs measured 15.5 and 14.9 Mbit/s TCP, zero of
+21,402 UDP datagrams lost, 20/20 final pings, and zero TX failures. The third
+measured 13.9 Mbit/s TCP but produced no final UDP receiver report and only
+19/20 pings, despite zero TX failures. The interleaved exact typed-VIF parent
+completed its paired run at 14.6 Mbit/s TCP, zero UDP loss, 20/20 pings, and
+zero TX failures; the established parent sample remained complete.
+
+The first two timing experiments were inconclusive when applied directly to
+the full candidate. Forcing `rate_policy::rate_for_try_count` inline produced
+one clean run and one 19/20-ping run. An initial parent-shaped validator build
+completed traffic but reported five and three TX failures in two of three
+runs. Both experiments were removed before constructing narrower boundaries.
+
+A hardware-guided source bisect then isolated the failure:
+
+* retaining the typed DTCM layout while restoring all runtime files produced
+  the exact parent ELF byte-for-byte;
+* typed allocator/free-list, host-driver, and lifecycle code with parent
+  `tx.rs` completed 3/3 runs, as did its three interleaved parents;
+* adding the early `tx.rs` context/completion/retry access conversion completed
+  3/3 runs, as did its three interleaved parents;
+* the complementary late publication/descriptor/release partition lost 1,628
+  of 21,402 UDP datagrams in its first run, while its paired parent lost three;
+* descriptor-only runs lost zero and 6,105 datagrams respectively;
+* the final validator-only boundary lost 5,998 of 21,401 datagrams, while its
+  paired parent lost 20.
+
+The isolated validator used `HostContextAddress::from_raw`, whose stride check
+compiled to `__aeabi_uidivmod` in both per-frame wrappers. The final fix keeps
+typed field ownership, validates the bounded range/stride without division,
+constructs the already-validated address through a documented unsafe
+constructor, and keeps `host_prepared_context` out of line. The resulting
+`prepare_host_frame_timing` and `emit_host_frame_descriptor_at` streams exactly
+match the parent's normalized instruction hashes and restore the parent counts
+of 25/6 and 33/12 instructions/memory operations.
+
+The fixed candidate completed 3/3 interleaved runs:
+
+| Run | TCP | UDP loss | Final ping | TX failures |
+| --- | ---: | ---: | ---: | ---: |
+| candidate 1 | 14.2 Mbit/s | 0/21,402 | 20/20 | 0 |
+| candidate 2 | 12.4 Mbit/s | 3/21,402 | 20/20 | 0 |
+| candidate 3 | 16.0 Mbit/s | 0/21,402 | 20/20 | 0 |
+
+The corresponding parent controls measured 14.5, 14.5, and 13.2 Mbit/s TCP.
+The first two lost 15 and one UDP datagrams with 20/20 pings and zero TX
+failures. The third parent was itself degraded, losing 2,833 datagrams and
+reporting one TX failure, while the immediately preceding candidate remained
+clean. The fixed candidate therefore meets or exceeds the interleaved parent
+distribution.
+
+Final uniquely named artifacts were emitted after the complete deterministic
+run with both exact-parent and B6 gates enabled:
+
+```text
+ELF       /tmp/xr819-dtcm-layout/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+.text     size 0x10770
+          18c7dab420e7c79ee6065ec826026be4b578906e8d5954b61355fbe76c1dc839
+packed    /tmp/xr819-host-context-fast-validation-fix.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+bootstrap
+          48d858b8785220aa7c9a9c0898164da1ecc71b4b6218283b2687b3d2f821d197
+checks    /tmp/xr819-fast-validation-final-check.log
+          32743129fa33fdc6d25856c772e938c7a560ede823238f481c5165bf61941e8d
+manifest  tools/host-context-codegen-manifest.json
+          e7b15480a63bd41d58d9084f97d72781664362a3f617886500b63c8b3e70de56
+```
+
+The host-context migration is hardware-qualified.

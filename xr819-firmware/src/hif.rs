@@ -1096,7 +1096,9 @@ impl Transport {
     /// request identity. The bytes use independent output storage because this
     /// direct-ring implementation does not yet reproduce the vendor HIF
     /// transfer scheduler that safely serializes opposite-direction DMA to the
-    /// same packet-RAM pointer.
+    /// same packet-RAM pointer. The inherited implementation returns request
+    /// credit before enqueuing that copied output; changing this ordering is a
+    /// separate HIF lifetime correction, not part of DTCM structural migration.
     ///
     /// # Safety
     /// `source[..length]` must contain a complete WSM response or confirmation.

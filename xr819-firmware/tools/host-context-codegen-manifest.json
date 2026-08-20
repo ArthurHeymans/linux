@@ -1,0 +1,3266 @@
+{
+  "candidate_only": {
+    "_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch": {
+      "address": 11660,
+      "instructions": 217,
+      "memory_mnemonics_sha256": "ca0d732036e637c488184aabaecc31e55f55b1cdd7e35016fe96f8dfde5e9c4d",
+      "memory_operations": 118,
+      "normalized_instructions_sha256": "9eedbc7c923835c8139bc0625e4ce39717fe94a9b8d84dd0b8789eeafc61db2b",
+      "sha256": "e82f23ba3687371b35bdd4b5e92f2ee13000ee2b066f8d41541952f550829bc2",
+      "size": 472,
+      "stack": 144
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware11rate_policy18rate_for_try_count": {
+      "address": 10580,
+      "instructions": 40,
+      "memory_mnemonics_sha256": "8ab444456cd29db347240298ec34c83ffa2509ba6654b35207f40b7c067d9052",
+      "memory_operations": 4,
+      "normalized_instructions_sha256": "973af0dbebbe4f998af9d4281a897aed8642d0fe56082ce25aef8bd3f2fcc71e",
+      "sha256": "0234eb1c74d196d6342fa13e0433321a792adca07ddfe1cee3c1f7ce48690883",
+      "size": 84,
+      "stack": 16
+    }
+  },
+  "candidate_symbol_count": 197,
+  "candidate_text_sha256": "18c7dab420e7c79ee6065ec826026be4b578906e8d5954b61355fbe76c1dc839",
+  "changed_common": {
+    "_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_": {
+      "candidate": {
+        "address": 7732,
+        "instructions": 155,
+        "memory_mnemonics_sha256": "a88eceaad2dfaf6d067901c9813fa4f7aa993f14f03efc0d93e22271ce709229",
+        "memory_operations": 72,
+        "normalized_instructions_sha256": "7b6a17a4536fb12d76603366bcc83dfc66227a2e156ea995918caca9f2412e2c",
+        "sha256": "98992a690214a3ac30b772dc515fcfd8d91e1c5c5e2b1ce44ef004e90b35877e",
+        "size": 348,
+        "stack": 56
+      },
+      "parent": {
+        "address": 7660,
+        "instructions": 155,
+        "memory_mnemonics_sha256": "a88eceaad2dfaf6d067901c9813fa4f7aa993f14f03efc0d93e22271ce709229",
+        "memory_operations": 72,
+        "normalized_instructions_sha256": "7b6a17a4536fb12d76603366bcc83dfc66227a2e156ea995918caca9f2412e2c",
+        "sha256": "5f5f49a2ca03d1ae1cfcade47927aae0093580433f5f62704db1251db52a72d9",
+        "size": 348,
+        "stack": 56
+      }
+    },
+    "_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_": {
+      "candidate": {
+        "address": 8584,
+        "instructions": 96,
+        "memory_mnemonics_sha256": "3f65fd5d36bb7de4d38908a212f00434a4e09d037d934c1a3291af739b188f01",
+        "memory_operations": 31,
+        "normalized_instructions_sha256": "a668bfb06de07e37f91793a55a018bb1f2aa9f025b1aaee7e4ec9e9bbdd9fd6e",
+        "sha256": "323bc22438d969561f4b6df6971687967d46031810cf8a69e32af6e426c82eb8",
+        "size": 228,
+        "stack": 24
+      },
+      "parent": {
+        "address": 8512,
+        "instructions": 96,
+        "memory_mnemonics_sha256": "3f65fd5d36bb7de4d38908a212f00434a4e09d037d934c1a3291af739b188f01",
+        "memory_operations": 31,
+        "normalized_instructions_sha256": "a668bfb06de07e37f91793a55a018bb1f2aa9f025b1aaee7e4ec9e9bbdd9fd6e",
+        "sha256": "f76c0adcfa0642b9c5d7f503e3b8d169851499924b0b37456fd48e16b75ad20c",
+        "size": 228,
+        "stack": 24
+      }
+    },
+    "_RINvNtCsiHlLB2CErfM_14xr819_firmware3hif21publish_exception_nowKj12_EB4_": {
+      "candidate": {
+        "address": 10664,
+        "instructions": 59,
+        "memory_mnemonics_sha256": "b94483680eb3fa6da2a2fc99cfb905b7ae8a86c0eaa620b8d4ea2b13caba7174",
+        "memory_operations": 20,
+        "normalized_instructions_sha256": "9d6b5414a9513b0067b0e503e17d53958deacf383caba2b1ff06fee9b00e3938",
+        "sha256": "5463d3a0c680ab627971149157235d02b613bfa1989c25534cce59c248e48e31",
+        "size": 136,
+        "stack": 24
+      },
+      "parent": {
+        "address": 10512,
+        "instructions": 59,
+        "memory_mnemonics_sha256": "b94483680eb3fa6da2a2fc99cfb905b7ae8a86c0eaa620b8d4ea2b13caba7174",
+        "memory_operations": 20,
+        "normalized_instructions_sha256": "9d6b5414a9513b0067b0e503e17d53958deacf383caba2b1ff06fee9b00e3938",
+        "sha256": "3d4475ff67e98a0c96622987a28eb15c2ea66a8b16acf02106c6db38dfb091d4",
+        "size": 136,
+        "stack": 24
+      }
+    },
+    "_RNCINvNtCsiHlLB2CErfM_14xr819_firmware2tx29service_power_save_completionNtB4_21SingleProbeMacBackendE0B6_": {
+      "candidate": {
+        "address": 8568,
+        "instructions": 5,
+        "memory_mnemonics_sha256": "405971f5f137d1099fff455aa6e2fa7e0f09209502d68c55a789a1ff827cf42d",
+        "memory_operations": 2,
+        "normalized_instructions_sha256": "e95d94d6e6b637a88e5f2c62ff0b81400a65a86c6560a338170d43e00714826e",
+        "sha256": "0d3d109ab2dc255c3939cf7bb0c8009d85e1cecd5b0c8109110515baf42e43a1",
+        "size": 16,
+        "stack": 8
+      },
+      "parent": {
+        "address": 8496,
+        "instructions": 5,
+        "memory_mnemonics_sha256": "405971f5f137d1099fff455aa6e2fa7e0f09209502d68c55a789a1ff827cf42d",
+        "memory_operations": 2,
+        "normalized_instructions_sha256": "e95d94d6e6b637a88e5f2c62ff0b81400a65a86c6560a338170d43e00714826e",
+        "sha256": "ff0a7ee40a004e5a1fd493afd599a03bfb0cea3d32cdce92618872d05e0c6dfd",
+        "size": 16,
+        "stack": 8
+      }
+    },
+    "_RNvCsfwsEbg7H0cK_7___rustc17rust_begin_unwind": {
+      "candidate": {
+        "address": 588,
+        "instructions": 22,
+        "memory_mnemonics_sha256": "be2f1519f559dfddcf37e4c7966f6a43757e63de943b47d7466ff6fc6564c952",
+        "memory_operations": 5,
+        "normalized_instructions_sha256": "2117aacd6283e8eb5be402c53ca1f47f90977c49750284bc61731366227a4ce2",
+        "sha256": "fa85aa1a00782993821a041a6ec398143eff07ed96f279fde6a5242392633963",
+        "size": 48,
+        "stack": 24
+      },
+      "parent": {
+        "address": 588,
+        "instructions": 22,
+        "memory_mnemonics_sha256": "be2f1519f559dfddcf37e4c7966f6a43757e63de943b47d7466ff6fc6564c952",
+        "memory_operations": 5,
+        "normalized_instructions_sha256": "2117aacd6283e8eb5be402c53ca1f47f90977c49750284bc61731366227a4ce2",
+        "sha256": "ee7e27237d123c536b672740518703f72fc855ef10d5764c963b273d9b517cf6",
+        "size": 48,
+        "stack": 24
+      }
+    },
+    "_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start": {
+      "candidate": {
+        "address": 12132,
+        "instructions": 128,
+        "memory_mnemonics_sha256": "2491f4a8330676645349ab3345efffd503538c7fa6e5e502feffc9887a0d3c87",
+        "memory_operations": 60,
+        "normalized_instructions_sha256": "eab591529c4da579058c636200847a40f8e134bfa45fe5ccfbb08be07c36d862",
+        "sha256": "c110d184e01a78212252df5bed232eca606ea83749b28f4ae280b3a9369accf4",
+        "size": 288,
+        "stack": 112
+      },
+      "parent": {
+        "address": 11300,
+        "instructions": 128,
+        "memory_mnemonics_sha256": "2491f4a8330676645349ab3345efffd503538c7fa6e5e502feffc9887a0d3c87",
+        "memory_operations": 60,
+        "normalized_instructions_sha256": "eab591529c4da579058c636200847a40f8e134bfa45fe5ccfbb08be07c36d862",
+        "sha256": "444776a81e07e154f9f0130f4bf63a863056c92335ec90888a2647ebfd339bf3",
+        "size": 288,
+        "stack": 112
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport10initialize": {
+      "candidate": {
+        "address": 27664,
+        "instructions": 120,
+        "memory_mnemonics_sha256": "a22b57ad86f837e01eac0c718bfd49d3e88d3d90dddbf136e95b9b0c3dc98874",
+        "memory_operations": 57,
+        "normalized_instructions_sha256": "5f1fd9976a5db642ba8e8d786083abcdd8e0e40b4637caf7ab44cca2785d3046",
+        "sha256": "66863547e543e064acdd58be7c3a751d6b02a61101706d9a973e02094370613e",
+        "size": 276,
+        "stack": 944
+      },
+      "parent": {
+        "address": 27328,
+        "instructions": 120,
+        "memory_mnemonics_sha256": "a22b57ad86f837e01eac0c718bfd49d3e88d3d90dddbf136e95b9b0c3dc98874",
+        "memory_operations": 57,
+        "normalized_instructions_sha256": "5f1fd9976a5db642ba8e8d786083abcdd8e0e40b4637caf7ab44cca2785d3046",
+        "sha256": "27268265e35a28ca424de5804c28f003d8d594c76bf6e07cb77c33108210da3a",
+        "size": 276,
+        "stack": 944
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport10reclaim_tx": {
+      "candidate": {
+        "address": 28436,
+        "instructions": 112,
+        "memory_mnemonics_sha256": "a832ede6d16b169c95894972872c475e0f921c15417446db4c0718e9c85fa53d",
+        "memory_operations": 55,
+        "normalized_instructions_sha256": "76d723d0afa50b16453e58ef6f56dd8c15788b6fd59a2ea79642fd30e418e125",
+        "sha256": "a97187847490ad3d20ed67018ee06779bf0bc0dc2c5aaf4997e1e09e76d5ab9b",
+        "size": 252,
+        "stack": 56
+      },
+      "parent": {
+        "address": 28100,
+        "instructions": 112,
+        "memory_mnemonics_sha256": "a832ede6d16b169c95894972872c475e0f921c15417446db4c0718e9c85fa53d",
+        "memory_operations": 55,
+        "normalized_instructions_sha256": "76d723d0afa50b16453e58ef6f56dd8c15788b6fd59a2ea79642fd30e418e125",
+        "sha256": "5017b9adfb33ac0430d5fc5296c5a7649ffdd0757976b3b21b079b2856d928e5",
+        "size": 252,
+        "stack": 56
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport12poll_request": {
+      "candidate": {
+        "address": 27940,
+        "instructions": 159,
+        "memory_mnemonics_sha256": "c3299a03c3cef391dee55ad4fbc6525d876506483e67a2e6e6387a102f5c44cf",
+        "memory_operations": 74,
+        "normalized_instructions_sha256": "162a09f6819d1be5b07635e019e0c58b60e39919bae50c3989826ab45fe33d9e",
+        "sha256": "38e2fb9e9f5529a71f025e496d18df84aa78d2c121d53408692ab1eb41cbe43b",
+        "size": 340,
+        "stack": 48
+      },
+      "parent": {
+        "address": 27604,
+        "instructions": 159,
+        "memory_mnemonics_sha256": "c3299a03c3cef391dee55ad4fbc6525d876506483e67a2e6e6387a102f5c44cf",
+        "memory_operations": 74,
+        "normalized_instructions_sha256": "162a09f6819d1be5b07635e019e0c58b60e39919bae50c3989826ab45fe33d9e",
+        "sha256": "dc00195591441956ebbb40b124b52e2047ccf79f92f08f92e2869fea7a16bb32",
+        "size": 340,
+        "stack": 48
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport13output_buffer": {
+      "candidate": {
+        "address": 28352,
+        "instructions": 30,
+        "memory_mnemonics_sha256": "d6b4f0eb00b97753485a58cc2a4756e161936a3f7f62071a5c6dc1037ad00250",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "f890ae47534127a61debafa96dbbb22614a9949eee11d4388e50f1d7095f7c24",
+        "sha256": "3e00a76b31ef4ef3ef23a24442a97a1957b0eec904ca36e4b963726c2b85ac22",
+        "size": 84,
+        "stack": 16
+      },
+      "parent": {
+        "address": 28016,
+        "instructions": 30,
+        "memory_mnemonics_sha256": "d6b4f0eb00b97753485a58cc2a4756e161936a3f7f62071a5c6dc1037ad00250",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "f890ae47534127a61debafa96dbbb22614a9949eee11d4388e50f1d7095f7c24",
+        "sha256": "1e08a16d50d527bc781b293ff6cdd3a276ac2eec2212ca0df2647a45525ab49b",
+        "size": 84,
+        "stack": 16
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport13stage_next_tx": {
+      "candidate": {
+        "address": 28688,
+        "instructions": 58,
+        "memory_mnemonics_sha256": "e368cd161150c6421a814aa16a62de05b16f6de3cdd254f9c750ad3c3b352a22",
+        "memory_operations": 22,
+        "normalized_instructions_sha256": "5bd42d7fffd89200bc2b663400f139cd6e07309279c7bc3e721375397a4dd16e",
+        "sha256": "a21b6e2dd51c83c545f21aed74210baaa7749eb1b459df88ad5719480adf2670",
+        "size": 128,
+        "stack": 24
+      },
+      "parent": {
+        "address": 28352,
+        "instructions": 58,
+        "memory_mnemonics_sha256": "e368cd161150c6421a814aa16a62de05b16f6de3cdd254f9c750ad3c3b352a22",
+        "memory_operations": 22,
+        "normalized_instructions_sha256": "5bd42d7fffd89200bc2b663400f139cd6e07309279c7bc3e721375397a4dd16e",
+        "sha256": "0408717e29a0cf56922db99c0e6285ba3e8814b1fe8e3b3c99aff9eb50cdc128",
+        "size": 128,
+        "stack": 24
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport14enqueue_output": {
+      "candidate": {
+        "address": 29148,
+        "instructions": 53,
+        "memory_mnemonics_sha256": "5ff01c9a3897147fddd6e4cf779b49942410a486aee8c327671e635f6c781f1e",
+        "memory_operations": 26,
+        "normalized_instructions_sha256": "1e032ce9e64638f449fffa80e77ba067804fe3b541763b8ffee6b55174308f83",
+        "sha256": "4caeccb35ddcfa43ba4ae9f2a3f7e6555b02798b8d267b3faefae7fb2fbf2017",
+        "size": 120,
+        "stack": 40
+      },
+      "parent": {
+        "address": 28812,
+        "instructions": 53,
+        "memory_mnemonics_sha256": "5ff01c9a3897147fddd6e4cf779b49942410a486aee8c327671e635f6c781f1e",
+        "memory_operations": 26,
+        "normalized_instructions_sha256": "1e032ce9e64638f449fffa80e77ba067804fe3b541763b8ffee6b55174308f83",
+        "sha256": "94e9f04c0bb79a5925e39600d22029b43d63948dd75fb1fa4ef82ec2313dafe3",
+        "size": 120,
+        "stack": 40
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport15release_request": {
+      "candidate": {
+        "address": 28280,
+        "instructions": 31,
+        "memory_mnemonics_sha256": "98f9c5cd2cbbf8a689219e878e628e8a420e8a5b4b38d3638870a071b554a28b",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "52736734162fd8761c708607e2b9166e9123952b19d1235f2a8884e90614b861",
+        "sha256": "09a95caee7c11b9c28b397833ec9e44c696b8f93799ea24725492ed5e04d4475",
+        "size": 72,
+        "stack": 16
+      },
+      "parent": {
+        "address": 27944,
+        "instructions": 31,
+        "memory_mnemonics_sha256": "98f9c5cd2cbbf8a689219e878e628e8a420e8a5b4b38d3638870a071b554a28b",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "52736734162fd8761c708607e2b9166e9123952b19d1235f2a8884e90614b861",
+        "sha256": "94665dcc1ff6f64e9a639bc5ae4881b5231dac3c73bb4db5111463a92d518b56",
+        "size": 72,
+        "stack": 16
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport16output_available": {
+      "candidate": {
+        "address": 29268,
+        "instructions": 35,
+        "memory_mnemonics_sha256": "df8498e14d5d90d7196830bc825c7fdbb26bcb7f7f584f851b3a9da6f2863488",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "3a0c9af9933f4eed5be2be48ede8c9e08c15623ddc5bde6cf677d062f56726ab",
+        "sha256": "018b5bc36040eed98993bca5180bb8ac36d2c28cc7ddede89c1eb909939ef719",
+        "size": 76,
+        "stack": 16
+      },
+      "parent": {
+        "address": 28932,
+        "instructions": 35,
+        "memory_mnemonics_sha256": "df8498e14d5d90d7196830bc825c7fdbb26bcb7f7f584f851b3a9da6f2863488",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "3a0c9af9933f4eed5be2be48ede8c9e08c15623ddc5bde6cf677d062f56726ab",
+        "sha256": "2acf5fcb7a9789ac26c32cfc34a39fea09f784bd5bd17bf0bd9a9007b704451e",
+        "size": 76,
+        "stack": 16
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place": {
+      "candidate": {
+        "address": 29344,
+        "instructions": 113,
+        "memory_mnemonics_sha256": "861fd82c26854c67aa07c68fec16d8bea42c76a2111d7191ad3c841a9ceb00fb",
+        "memory_operations": 38,
+        "normalized_instructions_sha256": "319d044edcd06e7967bd59ec8a2734856aaceff56560792000e968c3090e6c22",
+        "sha256": "a58920ffffc3c80cb9988b4a1770cd6457b468ea2c5bcb00725ecd5f2f2756b5",
+        "size": 272,
+        "stack": 56
+      },
+      "parent": {
+        "address": 29008,
+        "instructions": 113,
+        "memory_mnemonics_sha256": "861fd82c26854c67aa07c68fec16d8bea42c76a2111d7191ad3c841a9ceb00fb",
+        "memory_operations": 38,
+        "normalized_instructions_sha256": "319d044edcd06e7967bd59ec8a2734856aaceff56560792000e968c3090e6c22",
+        "sha256": "74357c6a349d9f9e1f23fb3f779d586e87b8d5b215647fca0350b52517f64a3e",
+        "size": 272,
+        "stack": 56
+      }
+    },
+    "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport7publish": {
+      "candidate": {
+        "address": 29616,
+        "instructions": 39,
+        "memory_mnemonics_sha256": "25d49d211a7e44e36f1fe6548c84b3a0f0881238e4341c897cc8414180c62a79",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "1397191ab320f91b70c302a12a40bee1e2c94b91666aaa40a955242c9efc688c",
+        "sha256": "3c7a302e1f473ca459d9bd4e7bfa4cab2640756942d3f354ba626c2ede4f2222",
+        "size": 108,
+        "stack": 32
+      },
+      "parent": {
+        "address": 29280,
+        "instructions": 39,
+        "memory_mnemonics_sha256": "25d49d211a7e44e36f1fe6548c84b3a0f0881238e4341c897cc8414180c62a79",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "1397191ab320f91b70c302a12a40bee1e2c94b91666aaa40a955242c9efc688c",
+        "sha256": "978489ae5e957c94e9e0830448d828a227b71c8acc83dde890bb74e362e1f8e1",
+        "size": 108,
+        "stack": 32
+      }
+    },
+    "_RNvMs6_NtCsiHlLB2CErfM_14xr819_firmware3wsmNtB5_16StartScanRequest4ssid": {
+      "candidate": {
+        "address": 29724,
+        "instructions": 45,
+        "memory_mnemonics_sha256": "85c1d9eea1de01ce1aad95e8e159f057518fa0ec99ba9995f244fcfe5cc026ec",
+        "memory_operations": 14,
+        "normalized_instructions_sha256": "308a9968c16a4b6b6079f858e17451485be78cd5c364a18ce915a739f79c94b7",
+        "sha256": "8dc4d0a721555b06a3902a6281956bcd5e131aae19ea1033b594298b0c854bfe",
+        "size": 96,
+        "stack": 24
+      },
+      "parent": {
+        "address": 29388,
+        "instructions": 45,
+        "memory_mnemonics_sha256": "85c1d9eea1de01ce1aad95e8e159f057518fa0ec99ba9995f244fcfe5cc026ec",
+        "memory_operations": 14,
+        "normalized_instructions_sha256": "308a9968c16a4b6b6079f858e17451485be78cd5c364a18ce915a739f79c94b7",
+        "sha256": "78e46694e8b2a4442402f98e204707db17269b0c61029a8847424c9b86c18add",
+        "size": 96,
+        "stack": 24
+      }
+    },
+    "_RNvMs7_NtCsiHlLB2CErfM_14xr819_firmware3wsmNtB5_11JoinRequest5parse": {
+      "candidate": {
+        "address": 30108,
+        "instructions": 109,
+        "memory_mnemonics_sha256": "16df8bda9c6bc724377534132e16a65b034203fc3a3ae21029227f7625df4003",
+        "memory_operations": 65,
+        "normalized_instructions_sha256": "7e8b3c0845dadc9e262e678e9a6279ee3e71ce5a0fafc9d03982e42d5a9fc8e2",
+        "sha256": "70a5b017c3691f033a4a1d46e6af454e26bdbfba35de0b0d5649494c87adaa33",
+        "size": 220,
+        "stack": 80
+      },
+      "parent": {
+        "address": 29772,
+        "instructions": 109,
+        "memory_mnemonics_sha256": "16df8bda9c6bc724377534132e16a65b034203fc3a3ae21029227f7625df4003",
+        "memory_operations": 65,
+        "normalized_instructions_sha256": "7e8b3c0845dadc9e262e678e9a6279ee3e71ce5a0fafc9d03982e42d5a9fc8e2",
+        "sha256": "549ff56beb0f60b4d230068f35c782a9e193cb9e1b9b9143143a7e9f04ec8a35",
+        "size": 220,
+        "stack": 80
+      }
+    },
+    "_RNvMs8_NtCsiHlLB2CErfM_14xr819_firmware3wsmNtB5_9TxRequest15is_unicast_data": {
+      "candidate": {
+        "address": 30328,
+        "instructions": 32,
+        "memory_mnemonics_sha256": "a6ddf19c4b22e7db972175c116bb9e47d09ef9bf21f7ebf1bc9ea8529d83ce15",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "4f87b8d9a8907ba9c70377ef115eef9eed79a962cc69bc3ed06e1042cb1a2704",
+        "sha256": "69a18b89e4039d23b2e3445dcb3c6e264b84edfdabba2557ef950ddba2dd488c",
+        "size": 80,
+        "stack": 8
+      },
+      "parent": {
+        "address": 29992,
+        "instructions": 32,
+        "memory_mnemonics_sha256": "a6ddf19c4b22e7db972175c116bb9e47d09ef9bf21f7ebf1bc9ea8529d83ce15",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "4f87b8d9a8907ba9c70377ef115eef9eed79a962cc69bc3ed06e1042cb1a2704",
+        "sha256": "91a5a65a9e510aafcc0a2b46f2e96edeb63c1b7d6100e4c36434d45f8a989995",
+        "size": 80,
+        "stack": 8
+      }
+    },
+    "_RNvMs8_NtCsiHlLB2CErfM_14xr819_firmware3wsmNtB5_9TxRequest16is_unicast_eapol": {
+      "candidate": {
+        "address": 30408,
+        "instructions": 83,
+        "memory_mnemonics_sha256": "158a5d20774abcf9906c9ff1cffc7da7dd45e38ddfbae71a436db2edbe67e3e9",
+        "memory_operations": 18,
+        "normalized_instructions_sha256": "1fdd11ee8e26f310bcf09b2eae9302bf39d79f2ad04199f53fbc479d04fd688c",
+        "sha256": "4e6ee4916b10e96f64b06586e4587ab5810e74cfb686f2c7086d468e7b5a6713",
+        "size": 196,
+        "stack": 24
+      },
+      "parent": {
+        "address": 30072,
+        "instructions": 83,
+        "memory_mnemonics_sha256": "158a5d20774abcf9906c9ff1cffc7da7dd45e38ddfbae71a436db2edbe67e3e9",
+        "memory_operations": 18,
+        "normalized_instructions_sha256": "1fdd11ee8e26f310bcf09b2eae9302bf39d79f2ad04199f53fbc479d04fd688c",
+        "sha256": "9512b1037d1e96101c4fde7d5a4f4047f06a993c6707d9b1c60752b3808c8be9",
+        "size": 196,
+        "stack": 24
+      }
+    },
+    "_RNvMs8_NtCsiHlLB2CErfM_14xr819_firmware3wsmNtB5_9TxRequest21is_unicast_management": {
+      "candidate": {
+        "address": 30604,
+        "instructions": 30,
+        "memory_mnemonics_sha256": "a6ddf19c4b22e7db972175c116bb9e47d09ef9bf21f7ebf1bc9ea8529d83ce15",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "fff2ed5c9888afe8da05c96ed8c7ad86ab3475cc0ba516852b0a7a25300753a5",
+        "sha256": "6ef1d60ab1249f792f80be138aed6ccb19757a2957386a4eb604eeceefeba649",
+        "size": 76,
+        "stack": 8
+      },
+      "parent": {
+        "address": 30268,
+        "instructions": 30,
+        "memory_mnemonics_sha256": "a6ddf19c4b22e7db972175c116bb9e47d09ef9bf21f7ebf1bc9ea8529d83ce15",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "fff2ed5c9888afe8da05c96ed8c7ad86ab3475cc0ba516852b0a7a25300753a5",
+        "sha256": "f9512f7ea0bb70ac954ee89ddb0a1ea5c12a80885e0670d49f3f725400fcd79a",
+        "size": 76,
+        "stack": 8
+      }
+    },
+    "_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel": {
+      "candidate": {
+        "address": 30812,
+        "instructions": 80,
+        "memory_mnemonics_sha256": "2005853f74b055cf35b6956a6db045434219dbebff7ac082d550cd42b921313c",
+        "memory_operations": 42,
+        "normalized_instructions_sha256": "dfa792e39f0323930f582196dfb8e815ff974865a8af65110b8760a708051f85",
+        "sha256": "3ebe6e8c95f97fdc4e0c49aaf27402fd8896ff24fb6a4f03f2b2ad2f037168a4",
+        "size": 180,
+        "stack": 112
+      },
+      "parent": {
+        "address": 30476,
+        "instructions": 91,
+        "memory_mnemonics_sha256": "783268371481447fe458d744cde1e6a1aa709229b49d8a6009576dd8c72b05bc",
+        "memory_operations": 45,
+        "normalized_instructions_sha256": "17bb0a803ad65046a6da2e749f38d16b8472978295b3592cdecf5c5709b1abe9",
+        "sha256": "aed5301a90fb6e9f5e34e26a34356368483ecb2ba5014505bb3f8870f2f7a156",
+        "size": 212,
+        "stack": 112
+      }
+    },
+    "_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication7publish": {
+      "candidate": {
+        "address": 31132,
+        "instructions": 220,
+        "memory_mnemonics_sha256": "c0c1bd4af1df61bf6b7a3b7a1e9c407f94b81ae9018ad7b26d612a0c2faf15de",
+        "memory_operations": 134,
+        "normalized_instructions_sha256": "28e967c09636a5ab82e50943bc1462a6d4759ac1badf99fea0ce33fc20ece4c1",
+        "sha256": "c926bd7d7df07081ed305258e2c4aeacaad8701b7fa9ae7cff4f8f4408be8c66",
+        "size": 484,
+        "stack": 144
+      },
+      "parent": {
+        "address": 30868,
+        "instructions": 220,
+        "memory_mnemonics_sha256": "c0c1bd4af1df61bf6b7a3b7a1e9c407f94b81ae9018ad7b26d612a0c2faf15de",
+        "memory_operations": 134,
+        "normalized_instructions_sha256": "28e967c09636a5ab82e50943bc1462a6d4759ac1badf99fea0ce33fc20ece4c1",
+        "sha256": "1a4e14900a4f0ccce49aba5303abed6feaaa220422e0a276939a24f45b82b340",
+        "size": 484,
+        "stack": 144
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver12confirmation": {
+      "candidate": {
+        "address": 31680,
+        "instructions": 32,
+        "memory_mnemonics_sha256": "3d5f2122ea7074a0fe51dfb8ff6364eede1880c1190afa024ada3f4527d4a3a9",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "c171b3081bcae1cb1f3b13f43403487ee50b24098120ea443831a738e3eccc1f",
+        "sha256": "92f216b727c8de13a953ba1fcd5672cfd21422954bd37247e24da338a2413e32",
+        "size": 76,
+        "stack": 24
+      },
+      "parent": {
+        "address": 31416,
+        "instructions": 32,
+        "memory_mnemonics_sha256": "3d5f2122ea7074a0fe51dfb8ff6364eede1880c1190afa024ada3f4527d4a3a9",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "c171b3081bcae1cb1f3b13f43403487ee50b24098120ea443831a738e3eccc1f",
+        "sha256": "2aaf828aacb7e0d0bc0d40f0edf4845f0552b16f21d3c8355d02393362eb0b9e",
+        "size": 76,
+        "stack": 24
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index": {
+      "candidate": {
+        "address": 41804,
+        "instructions": 968,
+        "memory_mnemonics_sha256": "8944e362828532ec1ea01c8989638cb6f2d2d53fa20e3226c5ae25cd7dedc10e",
+        "memory_operations": 496,
+        "normalized_instructions_sha256": "f70c7f767c7a8fda76b22b23bf4610aadc34132383de312aecd11993bf555e0d",
+        "sha256": "483f65f6fb71d5f877e39cd03a6487acc2779750e63f069f1827f6819e37de7e",
+        "size": 2100,
+        "stack": 712
+      },
+      "parent": {
+        "address": 41908,
+        "instructions": 968,
+        "memory_mnemonics_sha256": "8944e362828532ec1ea01c8989638cb6f2d2d53fa20e3226c5ae25cd7dedc10e",
+        "memory_operations": 496,
+        "normalized_instructions_sha256": "f70c7f767c7a8fda76b22b23bf4610aadc34132383de312aecd11993bf555e0d",
+        "sha256": "3a377332850a8b549ef67f36715c424f84fd554daf2289f12f46cbea0a50d111",
+        "size": 2100,
+        "stack": 712
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_index": {
+      "candidate": {
+        "address": 31756,
+        "instructions": 61,
+        "memory_mnemonics_sha256": "20810e0d2c0c94d367133455ff71941b00c51fe7fa0b3b93729381b91e073240",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "54129e92fa61fcb106cae302d0ab12e9e4f1d5adc90e6a5c6169c5814f3856bf",
+        "sha256": "84229d03b5b37038f024b81841411265fc36442cbc86618b466eec350b8d84cf",
+        "size": 136,
+        "stack": 24
+      },
+      "parent": {
+        "address": 31492,
+        "instructions": 61,
+        "memory_mnemonics_sha256": "20810e0d2c0c94d367133455ff71941b00c51fe7fa0b3b93729381b91e073240",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "54129e92fa61fcb106cae302d0ab12e9e4f1d5adc90e6a5c6169c5814f3856bf",
+        "sha256": "ab722e2ab7a54b64c38226d18ffe3c1274e0284945c63b81b784accb2da21739",
+        "size": 136,
+        "stack": 24
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state": {
+      "candidate": {
+        "address": 41640,
+        "instructions": 79,
+        "memory_mnemonics_sha256": "967621ab356b7a0745272a2c67ca586e03848dd90528a7c3889ac5fc7a3e54ef",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "e762996c256cc219d692f56b9c7c994a09e65d38a98fecd4568be387d5deee05",
+        "sha256": "87b9721e92f6e1707c05a6ec341705e4a48981984acb0896fc4630e3a4999489",
+        "size": 164,
+        "stack": 72
+      },
+      "parent": {
+        "address": 41740,
+        "instructions": 81,
+        "memory_mnemonics_sha256": "d8f87b5fc9b1b74614e842bbbf810bd1c8127eed24bc36173e9d14be50af6db9",
+        "memory_operations": 45,
+        "normalized_instructions_sha256": "a500464a50c2ea7774d6fd8d05fc4f61424085b90e9c797483af0b6109f91da1",
+        "sha256": "66e9f47e442c1ac2be8dc0b0c52909e049d73fdfcbdf81b57d141148d32e0342",
+        "size": 168,
+        "stack": 72
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation": {
+      "candidate": {
+        "address": 31892,
+        "instructions": 37,
+        "memory_mnemonics_sha256": "b6dd89f29b42595dc12b52cdc9d28af68aead0d8ff43eb78c4a532fa4b71482e",
+        "memory_operations": 9,
+        "normalized_instructions_sha256": "6b52c356376ddde24b7349a0d2538e81a3d9e1ea942073bd5ffdf51e10e107e9",
+        "sha256": "a128e5a87822c48d7d24f7a58d86dfef4c528c56bcb29add8171a29454d96f76",
+        "size": 88,
+        "stack": 16
+      },
+      "parent": {
+        "address": 31628,
+        "instructions": 37,
+        "memory_mnemonics_sha256": "b6dd89f29b42595dc12b52cdc9d28af68aead0d8ff43eb78c4a532fa4b71482e",
+        "memory_operations": 9,
+        "normalized_instructions_sha256": "6b52c356376ddde24b7349a0d2538e81a3d9e1ea942073bd5ffdf51e10e107e9",
+        "sha256": "53c704fb0bbf1529e5d2dac7bef03426e4ee948350b21828c3d1b3e43199f134",
+        "size": 88,
+        "stack": 16
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation": {
+      "candidate": {
+        "address": 35772,
+        "instructions": 82,
+        "memory_mnemonics_sha256": "c5b35452e8a9e1ea889c5e361b6c077ded4097b77cb43357f11160b11d4585a1",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "b6b552c1fbc6efaa1f76d0e675b9ee1972945e31b0defcec8855d0b8926508a3",
+        "sha256": "8c532ce82484638405107b863c468970bf99ba034099f26f8dd5830ec77e2ded",
+        "size": 192,
+        "stack": 48
+      },
+      "parent": {
+        "address": 35608,
+        "instructions": 82,
+        "memory_mnemonics_sha256": "c5b35452e8a9e1ea889c5e361b6c077ded4097b77cb43357f11160b11d4585a1",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "b6b552c1fbc6efaa1f76d0e675b9ee1972945e31b0defcec8855d0b8926508a3",
+        "sha256": "5b95bb81aae19d8ce31b5c5f08e5948679da6d5890d88caf55baf07a0c585971",
+        "size": 192,
+        "stack": 48
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit": {
+      "candidate": {
+        "address": 31980,
+        "instructions": 668,
+        "memory_mnemonics_sha256": "c0ea6b58d7bb118a6fa9132b85ab3ec6251671e71697a24c4641d219afeb7af3",
+        "memory_operations": 327,
+        "normalized_instructions_sha256": "1cc6db81dd53600eb60f6ddba4fb9e727571624106f7740d569befccfb00d57e",
+        "sha256": "3ae051c772172a3026a10904799fd068891cb081c7d56f6a7365fd39d56f9b0e",
+        "size": 1472,
+        "stack": 160
+      },
+      "parent": {
+        "address": 31776,
+        "instructions": 685,
+        "memory_mnemonics_sha256": "591601c81c93af731bc4438beda0f8b5937d8b65fbf1b213ab616500ff66e765",
+        "memory_operations": 338,
+        "normalized_instructions_sha256": "baec0dd830efdff62241d8a4b0cf585c09137c2f8994dd2ed4b8a78882b5d89d",
+        "sha256": "25249845348cb334a0d8c30da56b152f5562c5b9ee2e991dfdbbf0605060919d",
+        "size": 1512,
+        "stack": 160
+      }
+    },
+    "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset": {
+      "candidate": {
+        "address": 35360,
+        "instructions": 189,
+        "memory_mnemonics_sha256": "8daa42256136c42430867baa1d284c7ef58e13d53694a2e6396827b4471d25af",
+        "memory_operations": 91,
+        "normalized_instructions_sha256": "ddcab64d7b1fdc0ae323b442d23b4b412ef11cec2e7bcefe89002959c863ac06",
+        "sha256": "43d064e0090153c5482e7ee1964ebf038a454970b8746b22e99b6aac4e289980",
+        "size": 412,
+        "stack": 384
+      },
+      "parent": {
+        "address": 35196,
+        "instructions": 189,
+        "memory_mnemonics_sha256": "8daa42256136c42430867baa1d284c7ef58e13d53694a2e6396827b4471d25af",
+        "memory_operations": 91,
+        "normalized_instructions_sha256": "ddcab64d7b1fdc0ae323b442d23b4b412ef11cec2e7bcefe89002959c863ac06",
+        "sha256": "6be1ee77a15f85b7701830ac9bbda90a1cadff91f8e5987a1eeb40955a633d0c",
+        "size": 412,
+        "stack": 384
+      }
+    },
+    "_RNvMsa_NtCsiHlLB2CErfM_14xr819_firmware3wsmNtB5_17StartupIndication6encode": {
+      "candidate": {
+        "address": 45092,
+        "instructions": 100,
+        "memory_mnemonics_sha256": "1cd428226611b63e61e5d9dc826b67cbeb52d1393bbe5e3c37937f489c51ac02",
+        "memory_operations": 62,
+        "normalized_instructions_sha256": "792d4f6092bc1ecd203b60ef22ceb3359004f52fa5c43322846cea42015ca7a6",
+        "sha256": "eb5bf59db4f0896f65123132723bafc8edc01c852600710bc4301678fada2d0e",
+        "size": 206,
+        "stack": 192
+      },
+      "parent": {
+        "address": 45196,
+        "instructions": 100,
+        "memory_mnemonics_sha256": "1cd428226611b63e61e5d9dc826b67cbeb52d1393bbe5e3c37937f489c51ac02",
+        "memory_operations": 62,
+        "normalized_instructions_sha256": "792d4f6092bc1ecd203b60ef22ceb3359004f52fa5c43322846cea42015ca7a6",
+        "sha256": "2c79175038d19fc43f88bed1e5a1bd924c96e38778384aee16b4343d90f4b378",
+        "size": 206,
+        "stack": 192
+      }
+    },
+    "_RNvNtCsdLQv1dpAmAb_4core9panicking9panic_fmt": {
+      "candidate": {
+        "address": 7656,
+        "instructions": 3,
+        "memory_mnemonics_sha256": "d107ea3629c326718876f07356a48dea26f123742f8bf44ce75f8f805cf9a37d",
+        "memory_operations": 1,
+        "normalized_instructions_sha256": "9a37ee636888e110c697030ce4df5d40edf9f1069c6abed7523f22264361ceec",
+        "sha256": "ff488d1f6430b9eeceaa14241066328628a966adf58444b57ba07d5d45d4dcfa",
+        "size": 8,
+        "stack": 8
+      },
+      "parent": {
+        "address": 7584,
+        "instructions": 3,
+        "memory_mnemonics_sha256": "d107ea3629c326718876f07356a48dea26f123742f8bf44ce75f8f805cf9a37d",
+        "memory_operations": 1,
+        "normalized_instructions_sha256": "9a37ee636888e110c697030ce4df5d40edf9f1069c6abed7523f22264361ceec",
+        "sha256": "16bfa223ccab80f808551964097a8a4cca20b0e019e6770d2aed8a44be0683ec",
+        "size": 8,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware11rate_policy7install": {
+      "candidate": {
+        "address": 45300,
+        "instructions": 62,
+        "memory_mnemonics_sha256": "a978519b69f7ecba426f41f1f294855679e4cb961e1d93b1864d66865d7d6b35",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "27bb768ffd0805c956c0985610bbd63ceead0e744ee11f37ea6e76537db1f7ed",
+        "sha256": "82fda9b602cc267a2dd9bf019f4286d873a5f27a212a5fe77e0701e3d6b6e956",
+        "size": 136,
+        "stack": 24
+      },
+      "parent": {
+        "address": 45404,
+        "instructions": 62,
+        "memory_mnemonics_sha256": "a978519b69f7ecba426f41f1f294855679e4cb961e1d93b1864d66865d7d6b35",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "27bb768ffd0805c956c0985610bbd63ceead0e744ee11f37ea6e76537db1f7ed",
+        "sha256": "d8de2b75930b45b8996d04830b1f7a2c4f5f3add4ce4d11f6ed26c363dd67ef0",
+        "size": 136,
+        "stack": 24
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration14template_frame": {
+      "candidate": {
+        "address": 45436,
+        "instructions": 21,
+        "memory_mnemonics_sha256": "aa8251932160d421e89e97fe4d187a62ca7b939570a6f5ccf8b02695f9471ee6",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "ccf2b426284be83ead74a3d699ec983ebc3e9aab21011ae7e219d8047314d7dc",
+        "sha256": "17b9430aaf68a18929645f4319b895c8b3d9bcd0cca7f3affd1489e577564601",
+        "size": 56,
+        "stack": 8
+      },
+      "parent": {
+        "address": 45540,
+        "instructions": 21,
+        "memory_mnemonics_sha256": "aa8251932160d421e89e97fe4d187a62ca7b939570a6f5ccf8b02695f9471ee6",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "ccf2b426284be83ead74a3d699ec983ebc3e9aab21011ae7e219d8047314d7dc",
+        "sha256": "ca7c91fd80edbf84f9f0e6c9355a17efd3ad7ac96bcb17f19d5b905228480229",
+        "size": 56,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration15tx_power_ranges": {
+      "candidate": {
+        "address": 45492,
+        "instructions": 52,
+        "memory_mnemonics_sha256": "78a15b857f1a7dc49bf8e9d3237b7aa7318169587280e88f7129773dbfe934b7",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "dc900619fbd04c8fa74954a2ce7712a9fadbadc831987b396f5b94985ef6d408",
+        "sha256": "a47b7e62aeef301f4245bf911e2daa3a736b35621a0f6af7cf19ff1c48520969",
+        "size": 108,
+        "stack": 24
+      },
+      "parent": {
+        "address": 45596,
+        "instructions": 52,
+        "memory_mnemonics_sha256": "78a15b857f1a7dc49bf8e9d3237b7aa7318169587280e88f7129773dbfe934b7",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "dc900619fbd04c8fa74954a2ce7712a9fadbadc831987b396f5b94985ef6d408",
+        "sha256": "5f82c838b0a9b2675869bfbcc47f373e155243d16c9576633f5b3d521ca8e639",
+        "size": 108,
+        "stack": 24
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration16find_sdd_element": {
+      "candidate": {
+        "address": 18208,
+        "instructions": 30,
+        "memory_mnemonics_sha256": "82700ff59c0f2ffe49ab02e3b53f933cccc7e098354feb259ffed039615bbd39",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "8d162906b7f407181a73068c7b450a523d8f7c8b0f43138183ea399beb115fc6",
+        "sha256": "bb8b336286a0ae536a29eac9c33fec1dde789d920f3c605d34a431bc2aaec1f7",
+        "size": 72,
+        "stack": 20
+      },
+      "parent": {
+        "address": 17376,
+        "instructions": 30,
+        "memory_mnemonics_sha256": "82700ff59c0f2ffe49ab02e3b53f933cccc7e098354feb259ffed039615bbd39",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "8d162906b7f407181a73068c7b450a523d8f7c8b0f43138183ea399beb115fc6",
+        "sha256": "3825154e187c7b6c62c0a642ce7f10b61e4812782d222a8d50614cb4284c96f7",
+        "size": 72,
+        "stack": 20
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration20retain_interface_mib": {
+      "candidate": {
+        "address": 45600,
+        "instructions": 145,
+        "memory_mnemonics_sha256": "ab17fbfd430e082818f75716e16cccaf0ce73fbadc59353000e3f65a4159f961",
+        "memory_operations": 68,
+        "normalized_instructions_sha256": "30222c5e562e2f2aa931694bc223d8591e4f07a7c0b27822898447cfaeb9483e",
+        "sha256": "702a2be9f80c4568ce693611f6d858b60512b1475ad7d55de0c717c6b081eb6b",
+        "size": 384,
+        "stack": 32
+      },
+      "parent": {
+        "address": 45704,
+        "instructions": 145,
+        "memory_mnemonics_sha256": "ab17fbfd430e082818f75716e16cccaf0ce73fbadc59353000e3f65a4159f961",
+        "memory_operations": 68,
+        "normalized_instructions_sha256": "30222c5e562e2f2aa931694bc223d8591e4f07a7c0b27822898447cfaeb9483e",
+        "sha256": "3bfe889625d0ab9a6e81a9ec10349e6cd04abad4ea3662d63a1b643c44748e0d",
+        "size": 384,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration6retain": {
+      "candidate": {
+        "address": 45984,
+        "instructions": 302,
+        "memory_mnemonics_sha256": "2b18d3bb187805a8e324c3efc128daf9187e375bb1cfba869dbd51aae8d8d7da",
+        "memory_operations": 86,
+        "normalized_instructions_sha256": "124f68c6fdb09ecdd2336d64649d42b14668acc5159bb37e68275ac43c6ee79d",
+        "sha256": "f7fc80e8a36441891d01c18d7a4c2e71913045de4c377c0ec588873145cccc6c",
+        "size": 692,
+        "stack": 32
+      },
+      "parent": {
+        "address": 46088,
+        "instructions": 302,
+        "memory_mnemonics_sha256": "2b18d3bb187805a8e324c3efc128daf9187e375bb1cfba869dbd51aae8d8d7da",
+        "memory_operations": 86,
+        "normalized_instructions_sha256": "124f68c6fdb09ecdd2336d64649d42b14668acc5159bb37e68275ac43c6ee79d",
+        "sha256": "cbdcb1919840a8e79e69e05664f9b905eaae6fd4b16628dcf09e21b52f71a681",
+        "size": 692,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx17free_host_context": {
+      "candidate": {
+        "address": 11372,
+        "instructions": 24,
+        "memory_mnemonics_sha256": "b7204e30aaaca008f239317cd1a8e82f82e5e30a5f5152e6a539e7cc76bc1943",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "ce3d22097974cb67e9bfcc4f10f0780b743839192f060255a39b927ad5c7bb35",
+        "sha256": "39d3f539b5a885a7908fecb88e798fbc02035ab7df1f49d8be95f042e429c32c",
+        "size": 60,
+        "stack": 16
+      },
+      "parent": {
+        "address": 31716,
+        "instructions": 24,
+        "memory_mnemonics_sha256": "b7204e30aaaca008f239317cd1a8e82f82e5e30a5f5152e6a539e7cc76bc1943",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "ce3d22097974cb67e9bfcc4f10f0780b743839192f060255a39b927ad5c7bb35",
+        "sha256": "4a78ee2d183786f38ae360ea7a7775f044bc3ed3c9ca6e85fbf8683856b340b2",
+        "size": 60,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22reject_unscheduled_pas": {
+      "candidate": {
+        "address": 43904,
+        "instructions": 35,
+        "memory_mnemonics_sha256": "586a0cad144eaa31615321ad263a8be74b6c2b83ea9900a40db2f77318c6254f",
+        "memory_operations": 14,
+        "normalized_instructions_sha256": "b1bd29759d07563826d9c3f8629e4f8452285a86827c34653bc7f5c1dd150449",
+        "sha256": "ce2757d11b210c59f05277196d63f10441954000140777d0395da49ac8626d7c",
+        "size": 80,
+        "stack": 16
+      },
+      "parent": {
+        "address": 44008,
+        "instructions": 35,
+        "memory_mnemonics_sha256": "586a0cad144eaa31615321ad263a8be74b6c2b83ea9900a40db2f77318c6254f",
+        "memory_operations": 14,
+        "normalized_instructions_sha256": "b1bd29759d07563826d9c3f8629e4f8452285a86827c34653bc7f5c1dd150449",
+        "sha256": "2cd525e2876060b2aa34baae3a9fdd479319fa5cd1463f159617478f18f1a0c9",
+        "size": 80,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22release_pending_to_pas": {
+      "candidate": {
+        "address": 44464,
+        "instructions": 165,
+        "memory_mnemonics_sha256": "cfe2ee2c1f101f2c21ca0a8b3755c5b6cb15b6514497d3ebd8d6a278f40adba7",
+        "memory_operations": 69,
+        "normalized_instructions_sha256": "dd0a4ea9df26270b7d6b701a416e2cf58a7cf2d4968d044f11f25f1a894e17b7",
+        "sha256": "749539ccc6377368a2da743d47ca2c3b5c6f2ee09d0f81445d73d69a39c0142b",
+        "size": 368,
+        "stack": 48
+      },
+      "parent": {
+        "address": 44568,
+        "instructions": 165,
+        "memory_mnemonics_sha256": "cfe2ee2c1f101f2c21ca0a8b3755c5b6cb15b6514497d3ebd8d6a278f40adba7",
+        "memory_operations": 69,
+        "normalized_instructions_sha256": "dd0a4ea9df26270b7d6b701a416e2cf58a7cf2d4968d044f11f25f1a894e17b7",
+        "sha256": "50ae171b30a7a7e2313081be23762a75407ec27d6de818887feb1a79c4de81a0",
+        "size": 368,
+        "stack": 48
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx18copy_to_packet_ram": {
+      "candidate": {
+        "address": 47432,
+        "instructions": 72,
+        "memory_mnemonics_sha256": "54c8f0c9f15a0838a10321a6d16ea7571d3e13477db10b9f89440df6fb22927d",
+        "memory_operations": 16,
+        "normalized_instructions_sha256": "e947d05ff6191e4a820e38e7c338b241cdb9e08031569f017c8f6d5e7def7d60",
+        "sha256": "59000170dd5d596e0ded3095b4a3684186998c6e3582b2b904c54b5d98985cf6",
+        "size": 172,
+        "stack": 24
+      },
+      "parent": {
+        "address": 47536,
+        "instructions": 72,
+        "memory_mnemonics_sha256": "54c8f0c9f15a0838a10321a6d16ea7571d3e13477db10b9f89440df6fb22927d",
+        "memory_operations": 16,
+        "normalized_instructions_sha256": "e947d05ff6191e4a820e38e7c338b241cdb9e08031569f017c8f6d5e7def7d60",
+        "sha256": "e80cd2938cddda4b887089a106cb4ce4b653ad5012a629a6c1c12378c9f20055",
+        "size": 172,
+        "stack": 24
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx18packet_ram_matches": {
+      "candidate": {
+        "address": 47604,
+        "instructions": 46,
+        "memory_mnemonics_sha256": "694bd220c258c81b08a67f861a7bc530960a438d5a46b631334b942c30463a23",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "62db89469b91397db762312344ff402ba73e6ae507d09c57b12155e0e2656806",
+        "sha256": "1e056634fae96197e99e16faee53396d30baed5a6f66b5c50f019c8219bb8268",
+        "size": 94,
+        "stack": 32
+      },
+      "parent": {
+        "address": 47708,
+        "instructions": 46,
+        "memory_mnemonics_sha256": "694bd220c258c81b08a67f861a7bc530960a438d5a46b631334b942c30463a23",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "62db89469b91397db762312344ff402ba73e6ae507d09c57b12155e0e2656806",
+        "sha256": "04cae4ed5f203438052bda3a1a38348a0f8299cfae9aeb91aeb069a2a06a726c",
+        "size": 94,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21host_prepared_context": {
+      "candidate": {
+        "address": 9264,
+        "instructions": 40,
+        "memory_mnemonics_sha256": "ae0ecc2050775bf3cd1b087838e066ecdd0dd6d4452780b81df64284263d621e",
+        "memory_operations": 16,
+        "normalized_instructions_sha256": "842826a5e07b3910a4b98d91cb0bc74a2be6694b1d2c6cec29fea7254eb9b79d",
+        "sha256": "ce41d76ce9654965f7b1eb59134bb9a16fc71ce712e3cf7dd1b9ce8a06fc7719",
+        "size": 100,
+        "stack": 16
+      },
+      "parent": {
+        "address": 9192,
+        "instructions": 42,
+        "memory_mnemonics_sha256": "d4d6c647ac0ad11e76ac9231caaf8a76d9fc96de5e25584e2bba5d54cb7837be",
+        "memory_operations": 16,
+        "normalized_instructions_sha256": "70edec3d99f79cb1f8e52501ac3ad60094f096639a4ba86aa544d04b6f4bc39c",
+        "sha256": "63e273c391df691436ed5a664b2b5fad4e6c1fcfeaad0c66b790f9bb633065bf",
+        "size": 104,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context": {
+      "candidate": {
+        "address": 46768,
+        "instructions": 308,
+        "memory_mnemonics_sha256": "e2af6380014c8751b79caffc9b4efdd95cd619998a19e59701810aaea3ec9000",
+        "memory_operations": 159,
+        "normalized_instructions_sha256": "518cdae7c9e3768b3de30c1285acca31327790c23ecd8ad4184592afcf10d397",
+        "sha256": "8645e515f4440f6690b41224d87911c0090eae39cd3769f1addaf62813eea82e",
+        "size": 664,
+        "stack": 88
+      },
+      "parent": {
+        "address": 46872,
+        "instructions": 308,
+        "memory_mnemonics_sha256": "e2af6380014c8751b79caffc9b4efdd95cd619998a19e59701810aaea3ec9000",
+        "memory_operations": 159,
+        "normalized_instructions_sha256": "518cdae7c9e3768b3de30c1285acca31327790c23ecd8ad4184592afcf10d397",
+        "sha256": "077c2c45b9572654dc85f45521128d6fa8e561eea684af5bd9951fa62dce8968",
+        "size": 664,
+        "stack": 88
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21start_phy_operation_1": {
+      "candidate": {
+        "address": 31616,
+        "instructions": 23,
+        "memory_mnemonics_sha256": "2787fcf84f777170fb85741cb4269bf4fcb55aa203282beaeab462da997c7634",
+        "memory_operations": 16,
+        "normalized_instructions_sha256": "b07bb5f350395ba31b2bc1241d3ac59466a03402ae7a13760e1608ed8cd0d217",
+        "sha256": "7b27c40728a3536719019334d979479e3959bebb841bc75fdec19a8a4757eaa8",
+        "size": 64,
+        "stack": 8
+      },
+      "parent": {
+        "address": 31352,
+        "instructions": 23,
+        "memory_mnemonics_sha256": "2787fcf84f777170fb85741cb4269bf4fcb55aa203282beaeab462da997c7634",
+        "memory_operations": 16,
+        "normalized_instructions_sha256": "b07bb5f350395ba31b2bc1241d3ac59466a03402ae7a13760e1608ed8cd0d217",
+        "sha256": "467373858f1655108e6983d4deb877958b74e8e51552155ab80b7a415cdb2970",
+        "size": 64,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21start_scheduler_timer": {
+      "candidate": {
+        "address": 8080,
+        "instructions": 67,
+        "memory_mnemonics_sha256": "1b891f5b83cc57152d4d02d34319669892a50e6269b1b4b8a9bd5d842897bb3d",
+        "memory_operations": 29,
+        "normalized_instructions_sha256": "1e64ecfa27a956f612b190b35bdeeaa38104de1b5f7723d149b01563c3e36949",
+        "sha256": "9f0420375c8a6f700d792753898b46633832d18ac93e823f5596b2d3d0151a6b",
+        "size": 152,
+        "stack": 32
+      },
+      "parent": {
+        "address": 8008,
+        "instructions": 67,
+        "memory_mnemonics_sha256": "1b891f5b83cc57152d4d02d34319669892a50e6269b1b4b8a9bd5d842897bb3d",
+        "memory_operations": 29,
+        "normalized_instructions_sha256": "1e64ecfa27a956f612b190b35bdeeaa38104de1b5f7723d149b01563c3e36949",
+        "sha256": "15cdfe81a79b87106b8de2b7d79ce3dcdd832bd880da3097b95d6a830633a562",
+        "size": 152,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx22cancel_scheduler_timer": {
+      "candidate": {
+        "address": 8232,
+        "instructions": 38,
+        "memory_mnemonics_sha256": "15ac4a20804b5bdd41c448f19c9dd576728b1f082440ffcd3366133c04c04d4c",
+        "memory_operations": 15,
+        "normalized_instructions_sha256": "158b4e3ec34e5043f41d99af36c52ab965431253a0f684d12f706b49e4d29366",
+        "sha256": "218c280f5bb4114b713576b6e9ef1005326f4f300c0e579fe1196b0cdef7ff4b",
+        "size": 88,
+        "stack": 16
+      },
+      "parent": {
+        "address": 8160,
+        "instructions": 38,
+        "memory_mnemonics_sha256": "15ac4a20804b5bdd41c448f19c9dd576728b1f082440ffcd3366133c04c04d4c",
+        "memory_operations": 15,
+        "normalized_instructions_sha256": "158b4e3ec34e5043f41d99af36c52ab965431253a0f684d12f706b49e4d29366",
+        "sha256": "d2cb9097ffae0a605aa2552680122e5c170311a7fa3fd91db3ee70f42b58d919",
+        "size": 88,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx23fatal_scan_stop_timeout": {
+      "candidate": {
+        "address": 47698,
+        "instructions": 4,
+        "memory_mnemonics_sha256": "d107ea3629c326718876f07356a48dea26f123742f8bf44ce75f8f805cf9a37d",
+        "memory_operations": 1,
+        "normalized_instructions_sha256": "bd3017acb70ba6c57d65610a67c9610487de47112241acd1afcad0b27de1f39d",
+        "sha256": "1513592405d6d937d061467f65ec5643892a6e6c1f5fac75bb0c64e7e10226af",
+        "size": 10,
+        "stack": 8
+      },
+      "parent": {
+        "address": 47802,
+        "instructions": 4,
+        "memory_mnemonics_sha256": "d107ea3629c326718876f07356a48dea26f123742f8bf44ce75f8f805cf9a37d",
+        "memory_operations": 1,
+        "normalized_instructions_sha256": "bd3017acb70ba6c57d65610a67c9610487de47112241acd1afcad0b27de1f39d",
+        "sha256": "de19b3da80600b17c3c2902586e3e9edcca1defe30ec58570a32bbd602dab0ec",
+        "size": 10,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx23probe_runtime_quiescent": {
+      "candidate": {
+        "address": 47708,
+        "instructions": 32,
+        "memory_mnemonics_sha256": "348061145153d8afbc0f7436d954c70f9250429ba2bc07deb166105880479325",
+        "memory_operations": 15,
+        "normalized_instructions_sha256": "6d389bf8a2b70bbdd6bc5733141fa55b6bb8d9b0858ccebe8d44d5ff5af72c49",
+        "sha256": "3843adc392b527ce84dbd141c17e0afe27e8f05e3e35c335cb60bbac56de9d46",
+        "size": 84,
+        "stack": 8
+      },
+      "parent": {
+        "address": 47812,
+        "instructions": 32,
+        "memory_mnemonics_sha256": "348061145153d8afbc0f7436d954c70f9250429ba2bc07deb166105880479325",
+        "memory_operations": 15,
+        "normalized_instructions_sha256": "6d389bf8a2b70bbdd6bc5733141fa55b6bb8d9b0858ccebe8d44d5ff5af72c49",
+        "sha256": "4c2c89f8c8f716054b74053437719dbf1f67c8d0ad649c692cd2e3866859471c",
+        "size": 84,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx24wsm_status_from_internal": {
+      "candidate": {
+        "address": 41608,
+        "instructions": 12,
+        "memory_mnemonics_sha256": "7cad01e48f1abfab21d19b509f1ad39ab11c2b092f7e687ea4bbecfb303de1fa",
+        "memory_operations": 6,
+        "normalized_instructions_sha256": "6acc2894bd4a7f30b4d893809ab5295757eaca81106067395f7f481febbdea43",
+        "sha256": "9f17d8dbd43fbc3b6f63312b183933af1cba4ba382437eaca7f215786ba61213",
+        "size": 32,
+        "stack": 8
+      },
+      "parent": {
+        "address": 41708,
+        "instructions": 12,
+        "memory_mnemonics_sha256": "7cad01e48f1abfab21d19b509f1ad39ab11c2b092f7e687ea4bbecfb303de1fa",
+        "memory_operations": 6,
+        "normalized_instructions_sha256": "6acc2894bd4a7f30b4d893809ab5295757eaca81106067395f7f481febbdea43",
+        "sha256": "4d025b0e526578c0086e3c5602e480d6e52380107e1e1b74cbd603ef422284b8",
+        "size": 32,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx25prepare_host_frame_timing": {
+      "candidate": {
+        "address": 9136,
+        "instructions": 25,
+        "memory_mnemonics_sha256": "63cf9df3d7e5267e57ae5cbc60ba3b2f19e33a2416ac55e59ce07aff8b28e246",
+        "memory_operations": 6,
+        "normalized_instructions_sha256": "0ced14970e41c692e9a67702fbb8370fe341351ceb1ae64dd3c9c26abd9ab39b",
+        "sha256": "2c468f2d2e202d45ffffc877f058f4c7052467f0c5cbc96f0877262431e07270",
+        "size": 56,
+        "stack": 48
+      },
+      "parent": {
+        "address": 9064,
+        "instructions": 25,
+        "memory_mnemonics_sha256": "63cf9df3d7e5267e57ae5cbc60ba3b2f19e33a2416ac55e59ce07aff8b28e246",
+        "memory_operations": 6,
+        "normalized_instructions_sha256": "0ced14970e41c692e9a67702fbb8370fe341351ceb1ae64dd3c9c26abd9ab39b",
+        "sha256": "28f29b9fbb2025bc6eb3a29836eb0ad30dc3f3a1e4d7be2534b2d4ae84f0d02e",
+        "size": 56,
+        "stack": 48
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26enter_mac_fatal_quiescence": {
+      "candidate": {
+        "address": 8348,
+        "instructions": 91,
+        "memory_mnemonics_sha256": "43c72c6f0f30adbef8c1e00a67c17e7d30fd433c70b9de623ea97462898ce12d",
+        "memory_operations": 59,
+        "normalized_instructions_sha256": "efdbebc34319e2030c8175dd73451ce5305a4637f5935b6ba0832de7c5bf837d",
+        "sha256": "2a59a11dd8f2d1eda8f1ba99b1f2c3f6e4a90335ef4b51fde240368d9fb9043d",
+        "size": 220,
+        "stack": 16
+      },
+      "parent": {
+        "address": 8276,
+        "instructions": 91,
+        "memory_mnemonics_sha256": "43c72c6f0f30adbef8c1e00a67c17e7d30fd433c70b9de623ea97462898ce12d",
+        "memory_operations": 59,
+        "normalized_instructions_sha256": "efdbebc34319e2030c8175dd73451ce5305a4637f5935b6ba0832de7c5bf837d",
+        "sha256": "89ad03c8bcf4d2b3fc17b8880612a57f3d5ee89894b57b9bb4423b388a9c8d63",
+        "size": 220,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26service_host_management_tx": {
+      "candidate": {
+        "address": 48360,
+        "instructions": 751,
+        "memory_mnemonics_sha256": "a1c1ed3102a3d292c77806b9175876f2012e720eb78157dd75f5b8224b53e22e",
+        "memory_operations": 324,
+        "normalized_instructions_sha256": "effaa38ce8850babbf9ba794f232f25c099916edbc9f83f20c8d5f40d0f1188c",
+        "sha256": "8ce0dc7e64cf7dac73a633e048e0a87eeb486893b22aba05762301fbcc5d0ad7",
+        "size": 1680,
+        "stack": 416
+      },
+      "parent": {
+        "address": 48484,
+        "instructions": 751,
+        "memory_mnemonics_sha256": "a1c1ed3102a3d292c77806b9175876f2012e720eb78157dd75f5b8224b53e22e",
+        "memory_operations": 324,
+        "normalized_instructions_sha256": "effaa38ce8850babbf9ba794f232f25c099916edbc9f83f20c8d5f40d0f1188c",
+        "sha256": "2947bd1dc78883eea562bc7df451a24c6c0b9315788e3e9583ce22443606ab18",
+        "size": 1680,
+        "stack": 416
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27claim_scheduler_mask_atomic": {
+      "candidate": {
+        "address": 44924,
+        "instructions": 14,
+        "memory_mnemonics_sha256": "e9b08394720e0366d0338cf747158360ab80ac555245c45f14a5410efda28f4b",
+        "memory_operations": 5,
+        "normalized_instructions_sha256": "13c35af8a4d419d0750f26ff3b9ce237d82d12d777f0e4b121dc9bdc4132886b",
+        "sha256": "d841b044ba7027b10693a27acf26f03d30573e3a3f344d91ae8606177ded5637",
+        "size": 36,
+        "stack": 16
+      },
+      "parent": {
+        "address": 45028,
+        "instructions": 14,
+        "memory_mnemonics_sha256": "e9b08394720e0366d0338cf747158360ab80ac555245c45f14a5410efda28f4b",
+        "memory_operations": 5,
+        "normalized_instructions_sha256": "13c35af8a4d419d0750f26ff3b9ce237d82d12d777f0e4b121dc9bdc4132886b",
+        "sha256": "f099aed7320579610e1a380dd6221258f3351ebdd38ddc46d19d5b5d2829da9c",
+        "size": 36,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication": {
+      "candidate": {
+        "address": 47884,
+        "instructions": 183,
+        "memory_mnemonics_sha256": "873b106d0c3a9548eba88b0fdcfa8ea7c69d2095500c6a9c8e56c266789a58e4",
+        "memory_operations": 116,
+        "normalized_instructions_sha256": "9d55742026e8f1e5faa1b185ba64ceb7be31f161ff2627eebea177bfe09d6464",
+        "sha256": "f493ad65e4fba1151b35ce63e1389a408d4ab1cec9b20c149a982122fa61220f",
+        "size": 384,
+        "stack": 216
+      },
+      "parent": {
+        "address": 47988,
+        "instructions": 183,
+        "memory_mnemonics_sha256": "873b106d0c3a9548eba88b0fdcfa8ea7c69d2095500c6a9c8e56c266789a58e4",
+        "memory_operations": 116,
+        "normalized_instructions_sha256": "9d55742026e8f1e5faa1b185ba64ceb7be31f161ff2627eebea177bfe09d6464",
+        "sha256": "0f7787bb5fe3996f371d01a0a2782edf8dfb17ca7a2978f68d2dba76d02a330d",
+        "size": 384,
+        "stack": 216
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27release_wsm_context_address": {
+      "candidate": {
+        "address": 30992,
+        "instructions": 56,
+        "memory_mnemonics_sha256": "aa9147027a18b638875da5b25db1b70f3f9108c345db228dcbfd3e2667286c3b",
+        "memory_operations": 20,
+        "normalized_instructions_sha256": "b4822da5824ce62717ebf1341814fd4f612bee33ddfb41e8375ac53ca96240e0",
+        "sha256": "f3869963e45e1b2795149ec3f803892f6476dc5a08780b9315ca502502b6c7f5",
+        "size": 140,
+        "stack": 24
+      },
+      "parent": {
+        "address": 30688,
+        "instructions": 74,
+        "memory_mnemonics_sha256": "a284fbd34b884c10001f7c65e327efd82cb066bce4ae8dd51c57e246e9dc5eff",
+        "memory_operations": 35,
+        "normalized_instructions_sha256": "6f1c3ccee60bc9c96eede8e3b13a5e5177c0aa974e79cb9ab5082be54b639589",
+        "sha256": "d4e721ec0a3040d98ff4b0a1b8a899b60e720e8fd669f2a60b5634009f67149f",
+        "size": 180,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx28service_mac_event_drain_tail": {
+      "candidate": {
+        "address": 44960,
+        "instructions": 57,
+        "memory_mnemonics_sha256": "5570aa0c97ad3f11c186b9d1bcb3b83b6171e89d210bd06fd98cc7c331fc0873",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "78b8671100bfb0aa1d63933d9ce3a88dc8a3db6469237f1d6ad8ce59e7bc810d",
+        "sha256": "0a49ef037f46dcebd80458c32080149052f8b5166172b6f54c891e4617ea3485",
+        "size": 132,
+        "stack": 16
+      },
+      "parent": {
+        "address": 45064,
+        "instructions": 57,
+        "memory_mnemonics_sha256": "5570aa0c97ad3f11c186b9d1bcb3b83b6171e89d210bd06fd98cc7c331fc0873",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "78b8671100bfb0aa1d63933d9ce3a88dc8a3db6469237f1d6ad8ce59e7bc810d",
+        "sha256": "999957c00fbff425052aec34bff896d0e5c0708c7ec1efbb2971858e9d13f568",
+        "size": 132,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx29emit_host_frame_descriptor_at": {
+      "candidate": {
+        "address": 9192,
+        "instructions": 33,
+        "memory_mnemonics_sha256": "047e97cf7f02a11ed6411db1783344318104210ab6342781e14300acf5806474",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "75b9e0a321edbe4bf223d79ad7fcf731aae7895252ff63e798d1e8a255da4a9f",
+        "sha256": "d160899a67ebfca06c82857bcaa4209ad6c6ba3a6df1170e0fdfb76c64e6350f",
+        "size": 70,
+        "stack": 56
+      },
+      "parent": {
+        "address": 9120,
+        "instructions": 33,
+        "memory_mnemonics_sha256": "047e97cf7f02a11ed6411db1783344318104210ab6342781e14300acf5806474",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "75b9e0a321edbe4bf223d79ad7fcf731aae7895252ff63e798d1e8a255da4a9f",
+        "sha256": "bbbfc42d007af0c2a8487270fb678fe62c8c81565d59c3d4456ccc494e655899",
+        "size": 70,
+        "stack": 56
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx30emit_prepared_probe_descriptor": {
+      "candidate": {
+        "address": 9364,
+        "instructions": 355,
+        "memory_mnemonics_sha256": "f37187591f217e4b289d78d1c51925f057588a188108f31fb092259c75643140",
+        "memory_operations": 150,
+        "normalized_instructions_sha256": "6fddbe824e5fe11c0d770cdb0debfaeb634b0ae5ca73ba55bb195ad076bf141e",
+        "sha256": "d262795799cc9ef85c94e3275bc3a02ac72496f184d815f73b72c9cced44a291",
+        "size": 752,
+        "stack": 112
+      },
+      "parent": {
+        "address": 9296,
+        "instructions": 355,
+        "memory_mnemonics_sha256": "f37187591f217e4b289d78d1c51925f057588a188108f31fb092259c75643140",
+        "memory_operations": 150,
+        "normalized_instructions_sha256": "6fddbe824e5fe11c0d770cdb0debfaeb634b0ae5ca73ba55bb195ad076bf141e",
+        "sha256": "5d313da4c5253300678d996fc31e8786a62709772c118d33516acd3f0c2fa5ff",
+        "size": 752,
+        "stack": 112
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx33release_unpublished_probe_context": {
+      "candidate": {
+        "address": 48268,
+        "instructions": 36,
+        "memory_mnemonics_sha256": "6faae11be673eabfde6299665ef95d2567d791618a8afaaf113d6d4872a592f7",
+        "memory_operations": 15,
+        "normalized_instructions_sha256": "79328e9f400cbff66dddfc3e136ed6b01a7b7d191b1e891654b93640244fde96",
+        "sha256": "88e14b17f821f5485d5ca267b0c48ad299e38488d968717a7ad22b47937bf184",
+        "size": 92,
+        "stack": 16
+      },
+      "parent": {
+        "address": 48372,
+        "instructions": 41,
+        "memory_mnemonics_sha256": "e1d990543ab9fed898c0ad43a5d49e64fc1691aa9500fdebf08a5bd45544c010",
+        "memory_operations": 18,
+        "normalized_instructions_sha256": "f2ddda87a9eadd51d7e7766853cf5d1e605ea429f3ad732e8acbd9c5787e5ac3",
+        "sha256": "75c0ee6b561ba6d22bd9d69f40ff2fa04fe4d735df4fb7f1b84b496102cfa850",
+        "size": 112,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime": {
+      "candidate": {
+        "address": 50040,
+        "instructions": 83,
+        "memory_mnemonics_sha256": "6f012cfc1369c2ebedfb4654d2affea56400b6d4c291ce6bc7cefab86fbf065f",
+        "memory_operations": 25,
+        "normalized_instructions_sha256": "0d203580830354d81b94f68236070262f0d479f0bbacc91d48205868281df2ae",
+        "sha256": "1134742e5376301c29b83caacefc2159ad0b455fe235a8a38f7c1e39b4a072ef",
+        "size": 172,
+        "stack": 32
+      },
+      "parent": {
+        "address": 50164,
+        "instructions": 83,
+        "memory_mnemonics_sha256": "6f012cfc1369c2ebedfb4654d2affea56400b6d4c291ce6bc7cefab86fbf065f",
+        "memory_operations": 25,
+        "normalized_instructions_sha256": "0d203580830354d81b94f68236070262f0d479f0bbacc91d48205868281df2ae",
+        "sha256": "ddeee41f51ef4579efeb0ccc3ab00c3c9427727f2f4b6a8e898a3f68735e1200",
+        "size": 172,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive": {
+      "candidate": {
+        "address": 35964,
+        "instructions": 2498,
+        "memory_mnemonics_sha256": "e72ae12073fdaec03a82fe40028075a3f337f7a44f391d39d4f5eb8f5daff7d2",
+        "memory_operations": 1150,
+        "normalized_instructions_sha256": "29aff732bd6a1c89ec176bd103de9a3aaedd876629976a6106769a56fb72e8df",
+        "sha256": "1e01c2d03ab6f9127888b59bd2ace45b1779c93a8975a7bf44e7d850d666ca43",
+        "size": 5644,
+        "stack": 184
+      },
+      "parent": {
+        "address": 35948,
+        "instructions": 2551,
+        "memory_mnemonics_sha256": "0568527a752174892cf4901f803fc97acb479c86a54bba52825a58c03fe915f2",
+        "memory_operations": 1175,
+        "normalized_instructions_sha256": "b8a7d31c1890e04e592f690b07b5eff8254356fa21ef2173a210fa4b47c74f2a",
+        "sha256": "06b3322d3bffc560c7059b8ab3bd3a4de035bb032d73f059b79719837611c80a",
+        "size": 5760,
+        "stack": 184
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac12base_airtime": {
+      "candidate": {
+        "address": 10416,
+        "instructions": 74,
+        "memory_mnemonics_sha256": "c73bafb523d0b80f79b30270ec03597cf5d02c90e9db444309b07b7eba47866d",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "f031009bd4b2a9373990eb3edf346732a0fdfa219c416179ca5ea65ae5e97c21",
+        "sha256": "704d51e19e5fff85c2d1316e8586856a3508087211d514fe7394057e515c0a66",
+        "size": 164,
+        "stack": 24
+      },
+      "parent": {
+        "address": 10348,
+        "instructions": 74,
+        "memory_mnemonics_sha256": "c73bafb523d0b80f79b30270ec03597cf5d02c90e9db444309b07b7eba47866d",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "f031009bd4b2a9373990eb3edf346732a0fdfa219c416179ca5ea65ae5e97c21",
+        "sha256": "03f339e47bab6c1d205586621b752f642b8e38cf23f34a4037a1410e2cfbe9ed",
+        "size": 164,
+        "stack": 24
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac16build_rate_entry": {
+      "candidate": {
+        "address": 24532,
+        "instructions": 151,
+        "memory_mnemonics_sha256": "21edc4274995fedc8035e65c434be5bc85adadfa159e1e31818a459abcd7cccb",
+        "memory_operations": 44,
+        "normalized_instructions_sha256": "ef21b33952ff8f30a1d819f84c16443fb4b5d31bfa94fc7ebfe06b597380b77c",
+        "sha256": "68d6310f97f0e660a7a622551d1c04c53e3902a8bfad3ce9843d53dee3c8e9b9",
+        "size": 336,
+        "stack": 56
+      },
+      "parent": {
+        "address": 23700,
+        "instructions": 151,
+        "memory_mnemonics_sha256": "21edc4274995fedc8035e65c434be5bc85adadfa159e1e31818a459abcd7cccb",
+        "memory_operations": 44,
+        "normalized_instructions_sha256": "ef21b33952ff8f30a1d819f84c16443fb4b5d31bfa94fc7ebfe06b597380b77c",
+        "sha256": "5c9a1fa5dc0872d4ad30ea5970619d78f865a4e280f503747e1851509d8bda09",
+        "size": 336,
+        "stack": 56
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac19program_rate_tables": {
+      "candidate": {
+        "address": 23816,
+        "instructions": 323,
+        "memory_mnemonics_sha256": "555932be5db2e005514695db44a54a9272bed0575b7be6c49657aa79588f8acc",
+        "memory_operations": 113,
+        "normalized_instructions_sha256": "6a05cbca5004a2a7c40a04ddc561bf3218a017de1c5da6457e5adf87f0ef78c9",
+        "sha256": "027380c05e81209f84a09a5d162f0b77d60a8d007e3bcbdc9eeaaedd4f351d6e",
+        "size": 716,
+        "stack": 200
+      },
+      "parent": {
+        "address": 22984,
+        "instructions": 323,
+        "memory_mnemonics_sha256": "555932be5db2e005514695db44a54a9272bed0575b7be6c49657aa79588f8acc",
+        "memory_operations": 113,
+        "normalized_instructions_sha256": "6a05cbca5004a2a7c40a04ddc561bf3218a017de1c5da6457e5adf87f0ef78c9",
+        "sha256": "1bbfa3c503f971946b671eb0e13060273586c7ae1ea8fde52cbf2e4b82e985fb",
+        "size": 716,
+        "stack": 200
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reinitialize_after_wake": {
+      "candidate": {
+        "address": 14356,
+        "instructions": 352,
+        "memory_mnemonics_sha256": "69522fae1bb9a5a57084c3239ed307880aecdaf62c3782bc0ede2838d3d3b00b",
+        "memory_operations": 186,
+        "normalized_instructions_sha256": "a160eb8aad5d6bbaab6ec2064b03f74b4fafe299a35c4805c410cf8691e37bcb",
+        "sha256": "eba492b35af39cc60bb1dab22bebdf639a3d19714619b26ca84ae8b1255de497",
+        "size": 868,
+        "stack": 88
+      },
+      "parent": {
+        "address": 13524,
+        "instructions": 352,
+        "memory_mnemonics_sha256": "69522fae1bb9a5a57084c3239ed307880aecdaf62c3782bc0ede2838d3d3b00b",
+        "memory_operations": 186,
+        "normalized_instructions_sha256": "a160eb8aad5d6bbaab6ec2064b03f74b4fafe299a35c4805c410cf8691e37bcb",
+        "sha256": "cd603131f0644e89c32ec8a17d9372d222687dcd78549b2bbed69bc1302208b1",
+        "size": 868,
+        "stack": 88
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac24initialize_tx_pipe_state": {
+      "candidate": {
+        "address": 50212,
+        "instructions": 89,
+        "memory_mnemonics_sha256": "bfc719c36e5097f3c01d20bc2dbad9bfcf07f82f07af93ef0e39037fdadcff9b",
+        "memory_operations": 42,
+        "normalized_instructions_sha256": "db78724cff7cfbf1b58c2be019bfcb62459f918036862f1e1c1598424b07d34f",
+        "sha256": "4f0cba60fb3a47e0cfc7d9d1737bc2384cab4895ff1bb286dcfc76a0512acfb2",
+        "size": 224,
+        "stack": 80
+      },
+      "parent": {
+        "address": 50336,
+        "instructions": 89,
+        "memory_mnemonics_sha256": "bfc719c36e5097f3c01d20bc2dbad9bfcf07f82f07af93ef0e39037fdadcff9b",
+        "memory_operations": 42,
+        "normalized_instructions_sha256": "db78724cff7cfbf1b58c2be019bfcb62459f918036862f1e1c1598424b07d34f",
+        "sha256": "8ecc05f7e045c77eff636bac724e7086345c5c962bd0db33bf54af66bf4013f4",
+        "size": 224,
+        "stack": 80
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31finish_unjoined_scan_radio_stop": {
+      "candidate": {
+        "address": 50580,
+        "instructions": 25,
+        "memory_mnemonics_sha256": "fe7e2265eb14cc9981da6c4d28fa42d2f453f704cdd81226d71da330121982ef",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "0a264b01eccda49fb0a3e47f314d2cb1b32cbecfd81b7d0d9f84b8bdc1df31fb",
+        "sha256": "4456224c66f63de0550b91dfb48d37bcf662add52de88744d1c7d040c34f8eca",
+        "size": 68,
+        "stack": 8
+      },
+      "parent": {
+        "address": 50704,
+        "instructions": 25,
+        "memory_mnemonics_sha256": "fe7e2265eb14cc9981da6c4d28fa42d2f453f704cdd81226d71da330121982ef",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "0a264b01eccda49fb0a3e47f314d2cb1b32cbecfd81b7d0d9f84b8bdc1df31fb",
+        "sha256": "99202b5871a84e328d1670a2637a211fe78db7e605aade3e01a8a043c88705ca",
+        "size": 68,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state": {
+      "candidate": {
+        "address": 50648,
+        "instructions": 259,
+        "memory_mnemonics_sha256": "c3d20103e4b7359710649e2b6789ee430b145d7b21f01bca606698b2892866b3",
+        "memory_operations": 124,
+        "normalized_instructions_sha256": "b26555c8eff3e63f1e218c1e4ebe22c375dcec5619efa761cd7ad631eb1f661a",
+        "sha256": "6b02bade13c2198b6c0b301d3fadfd8ed997692e26333f2275fde5c1a240bab7",
+        "size": 628,
+        "stack": 88
+      },
+      "parent": {
+        "address": 50772,
+        "instructions": 259,
+        "memory_mnemonics_sha256": "c3d20103e4b7359710649e2b6789ee430b145d7b21f01bca606698b2892866b3",
+        "memory_operations": 124,
+        "normalized_instructions_sha256": "b26555c8eff3e63f1e218c1e4ebe22c375dcec5619efa761cd7ad631eb1f661a",
+        "sha256": "145ac4132708a9b04d2742be6386b449d48dab407e7efc2995db966da96bde4d",
+        "size": 628,
+        "stack": 88
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy14dynamic_iq_dft": {
+      "candidate": {
+        "address": 11000,
+        "instructions": 177,
+        "memory_mnemonics_sha256": "4ef2e10e21d04d62590acecb0d336a9ccf113800dfedf65876b2540fa2e4b8ae",
+        "memory_operations": 85,
+        "normalized_instructions_sha256": "3ac4c6c94c07fe6ea916013b40bf9c53ddad30c9ae79a953561ba613bfc1acde",
+        "sha256": "c64526352742bea3cdb6538dba394a8f74e815afca3a2c6528e5315d7fe7d970",
+        "size": 372,
+        "stack": 96
+      },
+      "parent": {
+        "address": 10848,
+        "instructions": 177,
+        "memory_mnemonics_sha256": "4ef2e10e21d04d62590acecb0d336a9ccf113800dfedf65876b2540fa2e4b8ae",
+        "memory_operations": 85,
+        "normalized_instructions_sha256": "3ac4c6c94c07fe6ea916013b40bf9c53ddad30c9ae79a953561ba613bfc1acde",
+        "sha256": "a36768053155195fb4029fbca01f4ef0ab8b768e51c9b385bc4114cdca5ac5a3",
+        "size": 372,
+        "stack": 96
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy22run_channel_transition": {
+      "candidate": {
+        "address": 51284,
+        "instructions": 87,
+        "memory_mnemonics_sha256": "8d3735e5ecbfa3379bdfb0038b4fccdbd09a34fb8ecb1bb5be5fb336ce2e0f64",
+        "memory_operations": 44,
+        "normalized_instructions_sha256": "4264b11ce8692a75c53232deaa1269aa17ab58475777231d4d165751f4dda5e6",
+        "sha256": "29170d272f7a94c8d800464fd4f85a0cb0b2d755259fe00a7cd543a8fd8c6ffa",
+        "size": 188,
+        "stack": 104
+      },
+      "parent": {
+        "address": 51408,
+        "instructions": 87,
+        "memory_mnemonics_sha256": "8d3735e5ecbfa3379bdfb0038b4fccdbd09a34fb8ecb1bb5be5fb336ce2e0f64",
+        "memory_operations": 44,
+        "normalized_instructions_sha256": "4264b11ce8692a75c53232deaa1269aa17ab58475777231d4d165751f4dda5e6",
+        "sha256": "4509b511dd34660c5f4d16ab27ed5a94248a1f6fa4d99af7c39e277a0d15ab61",
+        "size": 188,
+        "stack": 104
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy23build_mode0_gain_tables": {
+      "candidate": {
+        "address": 16232,
+        "instructions": 171,
+        "memory_mnemonics_sha256": "5176d4435f8092c824f97d3044af74d352e27ca78e22c1de4127eeb989fe9d06",
+        "memory_operations": 56,
+        "normalized_instructions_sha256": "a74297804dec8222e12ec1eaca84fab89e6c958fdf5431ad57fba57446247a15",
+        "sha256": "c3c9b8e3c4e017d2f9f8f6dcb5002751bf0aabbfdc66cbd7608d78f53e36f745",
+        "size": 372,
+        "stack": 504
+      },
+      "parent": {
+        "address": 15400,
+        "instructions": 171,
+        "memory_mnemonics_sha256": "5176d4435f8092c824f97d3044af74d352e27ca78e22c1de4127eeb989fe9d06",
+        "memory_operations": 56,
+        "normalized_instructions_sha256": "a74297804dec8222e12ec1eaca84fab89e6c958fdf5431ad57fba57446247a15",
+        "sha256": "f15825b3273e4cfba789cb9d4232f458618a4d6d5c8b51050c8121d7f5a3e2ee",
+        "size": 372,
+        "stack": 504
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy23run_iq_calibration_core": {
+      "candidate": {
+        "address": 18280,
+        "instructions": 811,
+        "memory_mnemonics_sha256": "3b816915bbd37f233cca2d610e6457dbbe8274cf3323fac53c8da40b907a7d4f",
+        "memory_operations": 464,
+        "normalized_instructions_sha256": "03d696430bc6876bb7bf2df29a9bfb584518244a37aec28143c2939e57a65c86",
+        "sha256": "d9b6e9c37301d4802e2c52064c1d6313b9479460b8cddce95721816a91c1e028",
+        "size": 1796,
+        "stack": 144
+      },
+      "parent": {
+        "address": 17448,
+        "instructions": 811,
+        "memory_mnemonics_sha256": "3b816915bbd37f233cca2d610e6457dbbe8274cf3323fac53c8da40b907a7d4f",
+        "memory_operations": 464,
+        "normalized_instructions_sha256": "03d696430bc6876bb7bf2df29a9bfb584518244a37aec28143c2939e57a65c86",
+        "sha256": "af46126d4b800ece2918b48138b883fcdcba350183c4cdba4b9f61e7244c6b23",
+        "size": 1796,
+        "stack": 144
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy24begin_channel_transition": {
+      "candidate": {
+        "address": 12420,
+        "instructions": 819,
+        "memory_mnemonics_sha256": "4fdb4d6b7cfbd8602a00cfa20b71074b69f1ebc19aef88ed88bc3543d3277541",
+        "memory_operations": 408,
+        "normalized_instructions_sha256": "7d26c9930909d07eb0884cc34657352d071bfef93eb0de11e781dd85dd7daf3f",
+        "sha256": "27f5c66f287115fda124ff22c90d0c3ef00f70cf7e658309371fe5d265c0066f",
+        "size": 1936,
+        "stack": 160
+      },
+      "parent": {
+        "address": 11588,
+        "instructions": 819,
+        "memory_mnemonics_sha256": "4fdb4d6b7cfbd8602a00cfa20b71074b69f1ebc19aef88ed88bc3543d3277541",
+        "memory_operations": 408,
+        "normalized_instructions_sha256": "7d26c9930909d07eb0884cc34657352d071bfef93eb0de11e781dd85dd7daf3f",
+        "sha256": "9093d26586f99d7fee1c1a64654588bd99d0ecff5f44cedb63c27996bbdd9489",
+        "size": 1936,
+        "stack": 160
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25initialize_mac_core_mode0": {
+      "candidate": {
+        "address": 23420,
+        "instructions": 61,
+        "memory_mnemonics_sha256": "5f95283aa022feeabe30e379723bbe74ad225815c915bd798658609dd7c25270",
+        "memory_operations": 31,
+        "normalized_instructions_sha256": "648082edd01816eb7b2b5e177e5eff832c78cd5aef370b5b3fd5e837ff44b0d9",
+        "sha256": "e310a3dce78a6f4ba055177c1d403382aa43636eb29c9f178595ab21161ee349",
+        "size": 172,
+        "stack": 64
+      },
+      "parent": {
+        "address": 22588,
+        "instructions": 61,
+        "memory_mnemonics_sha256": "5f95283aa022feeabe30e379723bbe74ad225815c915bd798658609dd7c25270",
+        "memory_operations": 31,
+        "normalized_instructions_sha256": "648082edd01816eb7b2b5e177e5eff832c78cd5aef370b5b3fd5e837ff44b0d9",
+        "sha256": "9a23321a209f0688a1ac53e549f44cfaf37a40126047244a1e7d044cfcf7572a",
+        "size": 172,
+        "stack": 64
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25program_all_tx_gain_slots": {
+      "candidate": {
+        "address": 16720,
+        "instructions": 423,
+        "memory_mnemonics_sha256": "943b495bb5f8f9fdb04f64494237001bd3c434419cdf20a0296c8706021fb945",
+        "memory_operations": 174,
+        "normalized_instructions_sha256": "c77812fbde7b227e08c801aaf59db1e01b96f94a1b7258e4a26387e56787d974",
+        "sha256": "ec1e85cadc479f34d6313b6fbd43f47ebe9da69b5148e5f46e1bcad2669ef726",
+        "size": 948,
+        "stack": 176
+      },
+      "parent": {
+        "address": 15888,
+        "instructions": 423,
+        "memory_mnemonics_sha256": "943b495bb5f8f9fdb04f64494237001bd3c434419cdf20a0296c8706021fb945",
+        "memory_operations": 174,
+        "normalized_instructions_sha256": "c77812fbde7b227e08c801aaf59db1e01b96f94a1b7258e4a26387e56787d974",
+        "sha256": "0d28de82758d2e8425f809cd2f6c7966207e141dbec35315a4fdfd42944c6265",
+        "size": 948,
+        "stack": 176
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy27run_calibration_sample_mode": {
+      "candidate": {
+        "address": 23288,
+        "instructions": 54,
+        "memory_mnemonics_sha256": "4276fd47b7504cded3873ef3ac36473eec5c27223ad03bbf3b962071ddbfda9e",
+        "memory_operations": 19,
+        "normalized_instructions_sha256": "476d6c4da90b37c2da7ce7f8f79b28ea385268a9e8a2128879fd83ee9b16bbd6",
+        "sha256": "8d71e3e312122224216187894d2ba1ad4c5fcb22960aaaf09382a207e3b05e5e",
+        "size": 132,
+        "stack": 16
+      },
+      "parent": {
+        "address": 22456,
+        "instructions": 54,
+        "memory_mnemonics_sha256": "4276fd47b7504cded3873ef3ac36473eec5c27223ad03bbf3b962071ddbfda9e",
+        "memory_operations": 19,
+        "normalized_instructions_sha256": "476d6c4da90b37c2da7ce7f8f79b28ea385268a9e8a2128879fd83ee9b16bbd6",
+        "sha256": "918fa421168deecbd2b30d7a44d02d124a55b35e0c9b462acd4c297e4b262502",
+        "size": 132,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy31dynamic_iq_verification_metrics": {
+      "candidate": {
+        "address": 10800,
+        "instructions": 99,
+        "memory_mnemonics_sha256": "7ed805e8d6e523627982663b50c743f953abf0cac22263fb7e9abcc95db92430",
+        "memory_operations": 28,
+        "normalized_instructions_sha256": "452135ced3f96237927410344d8d73d7bd37e3d40786ed430d29187809a8c662",
+        "sha256": "c5c0834e1da29dfed3f01d8ddabe8df9f38af605e1dead82f9d394f53f94ef59",
+        "size": 198,
+        "stack": 56
+      },
+      "parent": {
+        "address": 10648,
+        "instructions": 99,
+        "memory_mnemonics_sha256": "7ed805e8d6e523627982663b50c743f953abf0cac22263fb7e9abcc95db92430",
+        "memory_operations": 28,
+        "normalized_instructions_sha256": "452135ced3f96237927410344d8d73d7bd37e3d40786ed430d29187809a8c662",
+        "sha256": "d058aad8fb3fab4b89a14c689bbf4456a60db62a62c1498bb3553f00127db7d5",
+        "size": 198,
+        "stack": 56
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration": {
+      "candidate": {
+        "address": 20076,
+        "instructions": 1419,
+        "memory_mnemonics_sha256": "a36a214955d9cfa38482f90bd8c4d194301c6285c8d2dd0b41918df571ea9194",
+        "memory_operations": 713,
+        "normalized_instructions_sha256": "96d4564b6ca6bb3113d994b226bce140a6588cbaee759ea7ca5bb4c16aaaf3d1",
+        "sha256": "9bb426e0b6cef47fb92effe85aaaf6fe983a5bd56f3bcf2954262031ae86ddf1",
+        "size": 3148,
+        "stack": 792
+      },
+      "parent": {
+        "address": 19244,
+        "instructions": 1419,
+        "memory_mnemonics_sha256": "a36a214955d9cfa38482f90bd8c4d194301c6285c8d2dd0b41918df571ea9194",
+        "memory_operations": 713,
+        "normalized_instructions_sha256": "96d4564b6ca6bb3113d994b226bce140a6588cbaee759ea7ca5bb4c16aaaf3d1",
+        "sha256": "4dace61146e574e60650b96d10694f5bcbf1597a0ab7409b26a2df3f50a64d42",
+        "size": 3148,
+        "stack": 792
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware3wsm29encode_configuration_response": {
+      "candidate": {
+        "address": 53236,
+        "instructions": 110,
+        "memory_mnemonics_sha256": "ef01b54b1d65da34893b94717dfc283fa787be3df770d4e448d1a4c0a48153c4",
+        "memory_operations": 42,
+        "normalized_instructions_sha256": "976fac627fd58b6e51eb4aa4ab15e43a57b1b1a8e06d11814c0b3ca3e939c88c",
+        "sha256": "7920838426daf08323b4c05b09190d460a2f26d787733aaeb3b5d1892283dd7b",
+        "size": 244,
+        "stack": 96
+      },
+      "parent": {
+        "address": 53360,
+        "instructions": 110,
+        "memory_mnemonics_sha256": "ef01b54b1d65da34893b94717dfc283fa787be3df770d4e448d1a4c0a48153c4",
+        "memory_operations": 42,
+        "normalized_instructions_sha256": "976fac627fd58b6e51eb4aa4ab15e43a57b1b1a8e06d11814c0b3ca3e939c88c",
+        "sha256": "cb5905365e3f70214858350819fc1ae8cbb3b469c0f1297085a9df0daeb1d2f9",
+        "size": 244,
+        "stack": 96
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4join12activate_sta": {
+      "candidate": {
+        "address": 53480,
+        "instructions": 142,
+        "memory_mnemonics_sha256": "770a4b83eeb0face6b40bb0dd10daccb9fd22ed14b9e825d6dba916f4126478a",
+        "memory_operations": 45,
+        "normalized_instructions_sha256": "58cfdb4ca6fa96130f5e05669283e255739b9040d622ac22b8762863afdbe4b7",
+        "sha256": "b1af87241f6e494f901f4a6b6ba3dfd8339ca150050878fdf6329e08febe2542",
+        "size": 340,
+        "stack": 80
+      },
+      "parent": {
+        "address": 53604,
+        "instructions": 142,
+        "memory_mnemonics_sha256": "770a4b83eeb0face6b40bb0dd10daccb9fd22ed14b9e825d6dba916f4126478a",
+        "memory_operations": 45,
+        "normalized_instructions_sha256": "58cfdb4ca6fa96130f5e05669283e255739b9040d622ac22b8762863afdbe4b7",
+        "sha256": "a04ad73b7bf0727824b16224f49de9fd60946d0685da79b311cc2872e9609988",
+        "size": 340,
+        "stack": 80
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4join5reset": {
+      "candidate": {
+        "address": 53820,
+        "instructions": 62,
+        "memory_mnemonics_sha256": "64a01648c9053bf67bf1cce5d4ba5cdc6cbebbc8badd63b7c6154adaf866b050",
+        "memory_operations": 27,
+        "normalized_instructions_sha256": "250dedd8ecd0846dcbb0d7b5a9a55e0670c8ab2dd211dda142c8b3a3ef53f72c",
+        "sha256": "d928aa4b98984f2db74ac18f25ba71cca931feec3f520e8b53ad640180a03a80",
+        "size": 168,
+        "stack": 24
+      },
+      "parent": {
+        "address": 53944,
+        "instructions": 62,
+        "memory_mnemonics_sha256": "64a01648c9053bf67bf1cce5d4ba5cdc6cbebbc8badd63b7c6154adaf866b050",
+        "memory_operations": 27,
+        "normalized_instructions_sha256": "250dedd8ecd0846dcbb0d7b5a9a55e0670c8ab2dd211dda142c8b3a3ef53f72c",
+        "sha256": "4cb19ce99f4ed01b5f8af4dc318edbbea731c2640b8208127785490c52c84446",
+        "size": 168,
+        "stack": 24
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan14active_channel": {
+      "candidate": {
+        "address": 53988,
+        "instructions": 47,
+        "memory_mnemonics_sha256": "3aa0f06ace75cca11923cdfabe34f594aa89cbe8ee445e9a61ec7a095c376719",
+        "memory_operations": 14,
+        "normalized_instructions_sha256": "65748a934d8a1fc354cb31b0ab1ef6ced58dc8286d6691d51829c47731f48b05",
+        "sha256": "7a3b922362f5b5eaaf676b314c0ae0f8a2b9ab8051ae9281aac989008c07c7a3",
+        "size": 116,
+        "stack": 8
+      },
+      "parent": {
+        "address": 54112,
+        "instructions": 47,
+        "memory_mnemonics_sha256": "3aa0f06ace75cca11923cdfabe34f594aa89cbe8ee445e9a61ec7a095c376719",
+        "memory_operations": 14,
+        "normalized_instructions_sha256": "65748a934d8a1fc354cb31b0ab1ef6ced58dc8286d6691d51829c47731f48b05",
+        "sha256": "3423942e22dd8a410ac9a083fc7fe786f89ad9e50267456827d574fd077b0486",
+        "size": 116,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan14complete_probe": {
+      "candidate": {
+        "address": 54104,
+        "instructions": 90,
+        "memory_mnemonics_sha256": "be873f0be1243c8639c4c5bc0c7c40bb822ed65aa7e879c66093e2d401196230",
+        "memory_operations": 41,
+        "normalized_instructions_sha256": "bb6213df8c886d644b3051db43bb1b9321fee05a1de002e732726c8890bfa908",
+        "sha256": "c1f9702522b2c043c9ddca162d74cc03373713d43bf8cafd889deb759611f2df",
+        "size": 220,
+        "stack": 32
+      },
+      "parent": {
+        "address": 54228,
+        "instructions": 90,
+        "memory_mnemonics_sha256": "be873f0be1243c8639c4c5bc0c7c40bb822ed65aa7e879c66093e2d401196230",
+        "memory_operations": 41,
+        "normalized_instructions_sha256": "bb6213df8c886d644b3051db43bb1b9321fee05a1de002e732726c8890bfa908",
+        "sha256": "fcc1bb362d28b86de363cd5526cfc495716aebb1439e9b68d207dcd51bd4033e",
+        "size": 220,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan15copy_probe_ssid": {
+      "candidate": {
+        "address": 54324,
+        "instructions": 73,
+        "memory_mnemonics_sha256": "99d321d8448ba034eb91539f0713abe0ef8560b0e8ebe073d8c706ffc9e620e4",
+        "memory_operations": 17,
+        "normalized_instructions_sha256": "ec114374c62a5d111102e84985ea515a2b745ee306c87f779f57564f548bb3b1",
+        "sha256": "c3049183f3291464e8b80cef1fe277b4ff52e63ffebc367e932b77099a89b6ab",
+        "size": 180,
+        "stack": 16
+      },
+      "parent": {
+        "address": 54448,
+        "instructions": 73,
+        "memory_mnemonics_sha256": "99d321d8448ba034eb91539f0713abe0ef8560b0e8ebe073d8c706ffc9e620e4",
+        "memory_operations": 17,
+        "normalized_instructions_sha256": "ec114374c62a5d111102e84985ea515a2b745ee306c87f779f57564f548bb3b1",
+        "sha256": "a0bf7d98ed2d75e2c806ed738fd0467dc6c7123c32b212e5801ac79f7bafe6e0",
+        "size": 180,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan23publish_scan_completion": {
+      "candidate": {
+        "address": 56524,
+        "instructions": 39,
+        "memory_mnemonics_sha256": "db543d914d0230d3bbe7371c68d0f10b153184e8423691ef04317e8283c338d1",
+        "memory_operations": 22,
+        "normalized_instructions_sha256": "f1cc8eecb6072c693ca710960d4ca401f6b6af57d11666c03553ec60bec7d429",
+        "sha256": "513d6f56e3e60dc35dea9529f0e3d63c07cc77c2c993bfcfab806bce3a6b15ae",
+        "size": 104,
+        "stack": 24
+      },
+      "parent": {
+        "address": 56648,
+        "instructions": 39,
+        "memory_mnemonics_sha256": "db543d914d0230d3bbe7371c68d0f10b153184e8423691ef04317e8283c338d1",
+        "memory_operations": 22,
+        "normalized_instructions_sha256": "f1cc8eecb6072c693ca710960d4ca401f6b6af57d11666c03553ec60bec7d429",
+        "sha256": "6cf27d24585d15eecb39bf1de18b5c8a153b79240ac3269353bfc1e5571f57da",
+        "size": 104,
+        "stack": 24
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan5begin": {
+      "candidate": {
+        "address": 54504,
+        "instructions": 237,
+        "memory_mnemonics_sha256": "20496e6534dc679734e51cab465974cb8c692710e8828ad32a1e466a3495e0b7",
+        "memory_operations": 97,
+        "normalized_instructions_sha256": "f45229d4a3dde015b6eda079238c27effe32d7414a6dcf9eb3997b0840db26e1",
+        "sha256": "3411ae9460f52fd260f0e7094cd77b3a76c3da2acce5cb07c7b348ca2b6177df",
+        "size": 552,
+        "stack": 88
+      },
+      "parent": {
+        "address": 54628,
+        "instructions": 237,
+        "memory_mnemonics_sha256": "20496e6534dc679734e51cab465974cb8c692710e8828ad32a1e466a3495e0b7",
+        "memory_operations": 97,
+        "normalized_instructions_sha256": "f45229d4a3dde015b6eda079238c27effe32d7414a6dcf9eb3997b0840db26e1",
+        "sha256": "5e1380ab85e966904023aca1254e9f38c84b4cd17b322ccd496432d78989741a",
+        "size": 552,
+        "stack": 88
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service": {
+      "candidate": {
+        "address": 55056,
+        "instructions": 548,
+        "memory_mnemonics_sha256": "38893c3963f1c89313a0e573b047f125dfb7d3539b414ee56db4af581c22964a",
+        "memory_operations": 240,
+        "normalized_instructions_sha256": "e15df862cadc294937722389fdfaf6d8ff7648efe98e73de9294a9c965107365",
+        "sha256": "593159f15e26a88da02e0a48c3897fe54d693ba4bc5352a5762b3dcb4765145d",
+        "size": 1320,
+        "stack": 48
+      },
+      "parent": {
+        "address": 55180,
+        "instructions": 548,
+        "memory_mnemonics_sha256": "38893c3963f1c89313a0e573b047f125dfb7d3539b414ee56db4af581c22964a",
+        "memory_operations": 240,
+        "normalized_instructions_sha256": "e15df862cadc294937722389fdfaf6d8ff7648efe98e73de9294a9c965107365",
+        "sha256": "c9aaeca297f946faa5d4207b4a615f19cf96a56cd99fc6e1dc8a4334d21b50f7",
+        "size": 1320,
+        "stack": 48
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio15diagnostic_word": {
+      "candidate": {
+        "address": 59068,
+        "instructions": 36,
+        "memory_mnemonics_sha256": "0b2471c9714ac44dd691326c5bd85cb5090ae4e1c9e370af9e6fb26bb64438f2",
+        "memory_operations": 9,
+        "normalized_instructions_sha256": "bfd1dc9b320ee52d8238be8b3115838490cdcb6df42782ce3588a2d6a22bb1c8",
+        "sha256": "46c57e1834961f35411b98b21cbeeca1a0863374461b0d2785004af02edda4f8",
+        "size": 76,
+        "stack": 16
+      },
+      "parent": {
+        "address": 59192,
+        "instructions": 36,
+        "memory_mnemonics_sha256": "0b2471c9714ac44dd691326c5bd85cb5090ae4e1c9e370af9e6fb26bb64438f2",
+        "memory_operations": 9,
+        "normalized_instructions_sha256": "bfd1dc9b320ee52d8238be8b3115838490cdcb6df42782ce3588a2d6a22bb1c8",
+        "sha256": "546adb0e8fa6f93df05729032f467301b61d108f52b78c2fd07075a83bc9ccdd",
+        "size": 76,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio15poll_indication": {
+      "candidate": {
+        "address": 56628,
+        "instructions": 384,
+        "memory_mnemonics_sha256": "3a049eee6ef8ac6c9e3e0a1c39baa379bd4b4272ecc061dcfcc6dfe886239e8a",
+        "memory_operations": 177,
+        "normalized_instructions_sha256": "98dc2b39580c45e514581cf1e67427ab18518019f95cfc4e522c4a97ea6f353c",
+        "sha256": "a74f5a953b7ec2b45d74e45e18e97295aba89b4c59b681becdcb556a31ea4465",
+        "size": 832,
+        "stack": 88
+      },
+      "parent": {
+        "address": 56752,
+        "instructions": 384,
+        "memory_mnemonics_sha256": "3a049eee6ef8ac6c9e3e0a1c39baa379bd4b4272ecc061dcfcc6dfe886239e8a",
+        "memory_operations": 177,
+        "normalized_instructions_sha256": "98dc2b39580c45e514581cf1e67427ab18518019f95cfc4e522c4a97ea6f353c",
+        "sha256": "0ba5683161f81b58950531c0e6c65ca7afbc15d2e7282066e176dc756b43d1f2",
+        "size": 832,
+        "stack": 88
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio16discard_one_idle": {
+      "candidate": {
+        "address": 56376,
+        "instructions": 22,
+        "memory_mnemonics_sha256": "9130b26a792ed26b563379d059c514740b04cf6b9785b9bece7202625216b0c9",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "31a1b40d793feb48ec0d18335322d2532f85aad08c224a8a366c51582be8c6e8",
+        "sha256": "accb2cb2939b931ffb0fad31b399f60c0a4c8184fa274a9efc23cf66e0a80564",
+        "size": 52,
+        "stack": 32
+      },
+      "parent": {
+        "address": 56500,
+        "instructions": 22,
+        "memory_mnemonics_sha256": "9130b26a792ed26b563379d059c514740b04cf6b9785b9bece7202625216b0c9",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "31a1b40d793feb48ec0d18335322d2532f85aad08c224a8a366c51582be8c6e8",
+        "sha256": "cef53603f71cd2e8ea139edec0ad2654e7f621504fb79180075b7c2b2ad02a07",
+        "size": 52,
+        "stack": 32
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio22resynchronize_consumer": {
+      "candidate": {
+        "address": 57460,
+        "instructions": 112,
+        "memory_mnemonics_sha256": "883e9eb76dde7989d14b91cefb5a6e26bec31c9f602f666213ed0bca2240e57d",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "7e585e9e8786f5c7752558647efcb8fe745b2644e82c0a282774b2980f60c558",
+        "sha256": "04e0b8f2b0c75f9e5b0205b8d28f1284af4a488e2620898d24ba8c09d0fc4a53",
+        "size": 256,
+        "stack": 28
+      },
+      "parent": {
+        "address": 57584,
+        "instructions": 112,
+        "memory_mnemonics_sha256": "883e9eb76dde7989d14b91cefb5a6e26bec31c9f602f666213ed0bca2240e57d",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "7e585e9e8786f5c7752558647efcb8fe745b2644e82c0a282774b2980f60c558",
+        "sha256": "07ef076bc2ee661568c84242cbf11f1aebc1e1fc629f6c37641c5db48e31b5ac",
+        "size": 256,
+        "stack": 28
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio7release": {
+      "candidate": {
+        "address": 28816,
+        "instructions": 138,
+        "memory_mnemonics_sha256": "422345679a84ac6643d124517d2057a333de73e96ad7167bda1ea0de23eb8174",
+        "memory_operations": 76,
+        "normalized_instructions_sha256": "40c54a1532e5b5058feac235cd0fbf3d951bfdbd8983115d3a4456705e942f82",
+        "sha256": "eace944b00e89e284c55bee620850e607730fbad6570ab8923d622e55cc03d4b",
+        "size": 332,
+        "stack": 96
+      },
+      "parent": {
+        "address": 28480,
+        "instructions": 138,
+        "memory_mnemonics_sha256": "422345679a84ac6643d124517d2057a333de73e96ad7167bda1ea0de23eb8174",
+        "memory_operations": 76,
+        "normalized_instructions_sha256": "40c54a1532e5b5058feac235cd0fbf3d951bfdbd8983115d3a4456705e942f82",
+        "sha256": "995b00fbfe5e922d2b573cc5baad070bf7874b5ebf34886f5994630c04c9f9d0",
+        "size": 332,
+        "stack": 96
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto16decrypt_rx_frame": {
+      "candidate": {
+        "address": 57716,
+        "instructions": 228,
+        "memory_mnemonics_sha256": "82fafceff981706fe492648df9f1471f92fd4e29b839a251f711340ead4c6c3f",
+        "memory_operations": 96,
+        "normalized_instructions_sha256": "eac01e6ecd148d3efa128557b63ec133758981b4e8e58d176cc73556a45a973e",
+        "sha256": "ca6b73366b26210947e56c9cd8a7267297e2e07349a6f01e652653af8a2d4529",
+        "size": 480,
+        "stack": 216
+      },
+      "parent": {
+        "address": 57840,
+        "instructions": 228,
+        "memory_mnemonics_sha256": "82fafceff981706fe492648df9f1471f92fd4e29b839a251f711340ead4c6c3f",
+        "memory_operations": 96,
+        "normalized_instructions_sha256": "eac01e6ecd148d3efa128557b63ec133758981b4e8e58d176cc73556a45a973e",
+        "sha256": "d4592eb34e3f851a785f09fc1f50c024b7d2a69631bf4aeeccebd4f2b46872da",
+        "size": 480,
+        "stack": 216
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto16encrypt_tx_frame": {
+      "candidate": {
+        "address": 33452,
+        "instructions": 268,
+        "memory_mnemonics_sha256": "1a14aaa64db1c9e3e4b97490e6a413e6b1abf43a8d4072f0d6df30924a3f743f",
+        "memory_operations": 125,
+        "normalized_instructions_sha256": "ef4b31c8d773be43b209cf943150b26cf0e70bb2b8b5317e1544cfb3651abeec",
+        "sha256": "6f3e65164f68e641fa1a85a53f458dd5e905ead8ddd7e7f06144bb249e334558",
+        "size": 564,
+        "stack": 232
+      },
+      "parent": {
+        "address": 33288,
+        "instructions": 268,
+        "memory_mnemonics_sha256": "1a14aaa64db1c9e3e4b97490e6a413e6b1abf43a8d4072f0d6df30924a3f743f",
+        "memory_operations": 125,
+        "normalized_instructions_sha256": "ef4b31c8d773be43b209cf943150b26cf0e70bb2b8b5317e1544cfb3651abeec",
+        "sha256": "24c988725da035e570218eb4d061b7df114df23d01d069ad7f0f4d786a9b8ced",
+        "size": 564,
+        "stack": 232
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto20hardware_ccm_context": {
+      "candidate": {
+        "address": 35180,
+        "instructions": 68,
+        "memory_mnemonics_sha256": "c524a78cc5eac7c769080728ad2a21acf8963f230491ad9eab8fc9c9b585da3e",
+        "memory_operations": 24,
+        "normalized_instructions_sha256": "5d63c636721ec0cad0dc814280d67ad1d4c00c65992ef4a53fa400785c81756b",
+        "sha256": "bc028f68c94545e20e671d6323e8a692cff03ee409b7bd831ef8c4e69ecec480",
+        "size": 144,
+        "stack": 40
+      },
+      "parent": {
+        "address": 35016,
+        "instructions": 68,
+        "memory_mnemonics_sha256": "c524a78cc5eac7c769080728ad2a21acf8963f230491ad9eab8fc9c9b585da3e",
+        "memory_operations": 24,
+        "normalized_instructions_sha256": "5d63c636721ec0cad0dc814280d67ad1d4c00c65992ef4a53fa400785c81756b",
+        "sha256": "635ef52b22ff921be96067247be9ebd54335aa6fd209bef4735006a2a139ad12",
+        "size": 144,
+        "stack": 40
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto21hardware_crypto_irq18": {
+      "candidate": {
+        "address": 61648,
+        "instructions": 16,
+        "memory_mnemonics_sha256": "d75dc1141e21dd0dd296e5c980dea4bfd29195637d11d1356e1bdcc7da7c8795",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "9914726644a09c66ba5ac0920b93d441bd179ef027eea8961b76a087730c795f",
+        "sha256": "0887459263bd6051531f201728eeae98796d0d5c365f5c6a41fe91188f8deb34",
+        "size": 48,
+        "stack": 8
+      },
+      "parent": {
+        "address": 61772,
+        "instructions": 16,
+        "memory_mnemonics_sha256": "d75dc1141e21dd0dd296e5c980dea4bfd29195637d11d1356e1bdcc7da7c8795",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "9914726644a09c66ba5ac0920b93d441bd179ef027eea8961b76a087730c795f",
+        "sha256": "38e3fc1b8779d451179867b9919d6d26d0f8cadf43da6dc92866673c5fdc93d7",
+        "size": 48,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto21hardware_crypto_irq20": {
+      "candidate": {
+        "address": 61696,
+        "instructions": 16,
+        "memory_mnemonics_sha256": "d75dc1141e21dd0dd296e5c980dea4bfd29195637d11d1356e1bdcc7da7c8795",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "9914726644a09c66ba5ac0920b93d441bd179ef027eea8961b76a087730c795f",
+        "sha256": "2d589b0612559024a85c671fc21f18414984e7ec0e20b5cb410aabd8f0570daf",
+        "size": 48,
+        "stack": 8
+      },
+      "parent": {
+        "address": 61820,
+        "instructions": 16,
+        "memory_mnemonics_sha256": "d75dc1141e21dd0dd296e5c980dea4bfd29195637d11d1356e1bdcc7da7c8795",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "9914726644a09c66ba5ac0920b93d441bd179ef027eea8961b76a087730c795f",
+        "sha256": "83d1c954280ac3532b9fd8cb8454cd913d689302d1d187f9704de8ca90bf95c8",
+        "size": 48,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto25decrypt_rx_frame_hardware": {
+      "candidate": {
+        "address": 58196,
+        "instructions": 403,
+        "memory_mnemonics_sha256": "3f010fd4af48e8c1c19190b485e8eed173dc5cc1396f61dab8d8e5bc008e88e8",
+        "memory_operations": 194,
+        "normalized_instructions_sha256": "b1aeb1c639ef345ad35634481eaf3487909b6a5dd353b27eccbe9a37b37aa33c",
+        "sha256": "e44ed915da9abeefff2ff1b76da379f29e3b5e9b87dce12bcf5baf437e301c3d",
+        "size": 872,
+        "stack": 168
+      },
+      "parent": {
+        "address": 58320,
+        "instructions": 403,
+        "memory_mnemonics_sha256": "3f010fd4af48e8c1c19190b485e8eed173dc5cc1396f61dab8d8e5bc008e88e8",
+        "memory_operations": 194,
+        "normalized_instructions_sha256": "b1aeb1c639ef345ad35634481eaf3487909b6a5dd353b27eccbe9a37b37aa33c",
+        "sha256": "725ed7010a6bbe1172584d9586d705e01093d42eb9f2bcf29daa648fdcbf2b90",
+        "size": 872,
+        "stack": 168
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto25encrypt_tx_frame_hardware": {
+      "candidate": {
+        "address": 34216,
+        "instructions": 445,
+        "memory_mnemonics_sha256": "a779452426cabbc8ffc68e791c99ed89fd4218c5db33834d03328f6328ed5b02",
+        "memory_operations": 226,
+        "normalized_instructions_sha256": "5cd85c2962133b00ef36210ceea70891c4678b777c69b0ed51a3764f52a01812",
+        "sha256": "639f850d2dd8115bb6761143bde8feb00b394c5c9a997aa491bd3206d04bcc8b",
+        "size": 964,
+        "stack": 168
+      },
+      "parent": {
+        "address": 34052,
+        "instructions": 445,
+        "memory_mnemonics_sha256": "a779452426cabbc8ffc68e791c99ed89fd4218c5db33834d03328f6328ed5b02",
+        "memory_operations": 226,
+        "normalized_instructions_sha256": "5cd85c2962133b00ef36210ceea70891c4678b777c69b0ed51a3764f52a01812",
+        "sha256": "d3d8ff84a9f0b52402d37e5f23b00d18c3ae7ecf171b563b9e2796aef614c213",
+        "size": 964,
+        "stack": 168
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto25hardware_aad_tail_command": {
+      "candidate": {
+        "address": 35324,
+        "instructions": 14,
+        "memory_mnemonics_sha256": "5a1fa3e7dbd925e7e1c31480a4f56b65b41a75caef141fad66450ba0f6b8eb96",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "fd5dac871943cbc936a8f0a70e4533b45bee36fa8aa4cc96e7315fa6cf72ee10",
+        "sha256": "d8888506d8e2749cf5c9d27f469a59e7eac460baef8be1660ba0f4a0ff110f07",
+        "size": 36,
+        "stack": 8
+      },
+      "parent": {
+        "address": 35160,
+        "instructions": 14,
+        "memory_mnemonics_sha256": "5a1fa3e7dbd925e7e1c31480a4f56b65b41a75caef141fad66450ba0f6b8eb96",
+        "memory_operations": 7,
+        "normalized_instructions_sha256": "fd5dac871943cbc936a8f0a70e4533b45bee36fa8aa4cc96e7315fa6cf72ee10",
+        "sha256": "9a9c8b50ec3bfde030c9c1aa6749e795574aacc1bf16bcb3d5882f8aefbadb49",
+        "size": 36,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto26run_hardware_ccmp_selftest": {
+      "candidate": {
+        "address": 59144,
+        "instructions": 668,
+        "memory_mnemonics_sha256": "8477fc7ec8fa0e69bc0772055a4e7b3e765de71ce974a46710a1a6eed599be26",
+        "memory_operations": 369,
+        "normalized_instructions_sha256": "b278ade57e36059d8f7d03cd4fd7f84836ab7688351bbbbddc51c5e05c940d3a",
+        "sha256": "e4a05ed94ca24319d85772f292b8fd12aa3830afe7faeada57674f0f80ec5f23",
+        "size": 1528,
+        "stack": 240
+      },
+      "parent": {
+        "address": 59268,
+        "instructions": 668,
+        "memory_mnemonics_sha256": "8477fc7ec8fa0e69bc0772055a4e7b3e765de71ce974a46710a1a6eed599be26",
+        "memory_operations": 369,
+        "normalized_instructions_sha256": "b278ade57e36059d8f7d03cd4fd7f84836ab7688351bbbbddc51c5e05c940d3a",
+        "sha256": "45b9986e9caef8245fc550904ec68e95d7a1f5fed9a3733cc9c8ffafc6393e24",
+        "size": 1528,
+        "stack": 240
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto7add_key": {
+      "candidate": {
+        "address": 60672,
+        "instructions": 118,
+        "memory_mnemonics_sha256": "e37bb3427c1cfaa54f4252bf38d513395f95ee324f3fc514f8a268c726e07eb2",
+        "memory_operations": 53,
+        "normalized_instructions_sha256": "f240bf2632ab0d115e085b90f67adea0fd8b6d647ab8e3b186c2f6bdda7c5cb5",
+        "sha256": "83e3bc49028f8c91f977d3e2d6da2ae5fca61de7aaf9f02b6dfd5d17bea2d8f3",
+        "size": 268,
+        "stack": 64
+      },
+      "parent": {
+        "address": 60796,
+        "instructions": 118,
+        "memory_mnemonics_sha256": "e37bb3427c1cfaa54f4252bf38d513395f95ee324f3fc514f8a268c726e07eb2",
+        "memory_operations": 53,
+        "normalized_instructions_sha256": "f240bf2632ab0d115e085b90f67adea0fd8b6d647ab8e3b186c2f6bdda7c5cb5",
+        "sha256": "07e13f236470c5b62764610cd673c4b39c0040cd9d451957412cce99285a560e",
+        "size": 268,
+        "stack": 64
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto9build_aad": {
+      "candidate": {
+        "address": 34016,
+        "instructions": 94,
+        "memory_mnemonics_sha256": "959a97227fa7b42009a1874b7712db01077bd55f0ca069fabe957f948fa01a8d",
+        "memory_operations": 37,
+        "normalized_instructions_sha256": "f1039c15ee1598e757cf84cb1f8ee9169add7b7bba5ffe87ab8586d4f540dc51",
+        "sha256": "cf4c62d00e0b6009022e38d89da51dbb4d59becfcf087f5e15f4ff03f16a26f8",
+        "size": 200,
+        "stack": 72
+      },
+      "parent": {
+        "address": 33852,
+        "instructions": 94,
+        "memory_mnemonics_sha256": "959a97227fa7b42009a1874b7712db01077bd55f0ca069fabe957f948fa01a8d",
+        "memory_operations": 37,
+        "normalized_instructions_sha256": "f1039c15ee1598e757cf84cb1f8ee9169add7b7bba5ffe87ab8586d4f540dc51",
+        "sha256": "8602fa65440c0c250bb13a6f814988f3037a9e2d45ed55422b5aa7f1fd2ebb9c",
+        "size": 200,
+        "stack": 72
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware8platform35register_post_activation_interrupts": {
+      "candidate": {
+        "address": 61532,
+        "instructions": 34,
+        "memory_mnemonics_sha256": "22daf6dce7889e3bf44d13403a26748606b8c2f43b77d231f873fe2db5eb7250",
+        "memory_operations": 20,
+        "normalized_instructions_sha256": "8041bd49f2a20d28f9cc5f3ada47d22bb8514022c670fef927a59828bc8dd28b",
+        "sha256": "136f28d5df79242e0c519d5d85bc9654d64e12c7d825dd177f3fdfbe558b9b3b",
+        "size": 92,
+        "stack": 16
+      },
+      "parent": {
+        "address": 61656,
+        "instructions": 34,
+        "memory_mnemonics_sha256": "22daf6dce7889e3bf44d13403a26748606b8c2f43b77d231f873fe2db5eb7250",
+        "memory_operations": 20,
+        "normalized_instructions_sha256": "8041bd49f2a20d28f9cc5f3ada47d22bb8514022c670fef927a59828bc8dd28b",
+        "sha256": "b874dff56611b7679bf4a7e646258904d3c08abdd36eef20e27d121ac28866f2",
+        "size": 92,
+        "stack": 16
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware9exception14panic_terminal": {
+      "candidate": {
+        "address": 61744,
+        "instructions": 17,
+        "memory_mnemonics_sha256": "f335f4e2428e7a37613bac498673db7999f0a9424820b96e760d56d811c4aa30",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "700f072eee967c989107fbacb978cfc1379fd8a17915473e198cbb447e2f976b",
+        "sha256": "2b9dca0c299307c64491940fbb364bdba8ef18e4c5d41c3f2bb1669601ea8297",
+        "size": 48,
+        "stack": 8
+      },
+      "parent": {
+        "address": 61868,
+        "instructions": 17,
+        "memory_mnemonics_sha256": "f335f4e2428e7a37613bac498673db7999f0a9424820b96e760d56d811c4aa30",
+        "memory_operations": 10,
+        "normalized_instructions_sha256": "700f072eee967c989107fbacb978cfc1379fd8a17915473e198cbb447e2f976b",
+        "sha256": "27ed7c4da4250df30fd02e91495a41b8d42c97bbf8930fc83e440524747e78cf",
+        "size": 48,
+        "stack": 8
+      }
+    },
+    "_RNvNtCsiHlLB2CErfM_14xr819_firmware9exception14publish_record": {
+      "candidate": {
+        "address": 61792,
+        "instructions": 69,
+        "memory_mnemonics_sha256": "d00361bd28cc6b7f309b3faea16bfe19ca1b8fab9912a0226f91fef308827755",
+        "memory_operations": 64,
+        "normalized_instructions_sha256": "f1370a31a44eecae65b2477be222fe6e7566882d93038887c63b68d345270f24",
+        "sha256": "fc5a0c41ac979e7a4395ab53b5fc36d779727a5478bd296d29755d584b653a94",
+        "size": 144,
+        "stack": 136
+      },
+      "parent": {
+        "address": 61916,
+        "instructions": 69,
+        "memory_mnemonics_sha256": "d00361bd28cc6b7f309b3faea16bfe19ca1b8fab9912a0226f91fef308827755",
+        "memory_operations": 64,
+        "normalized_instructions_sha256": "f1370a31a44eecae65b2477be222fe6e7566882d93038887c63b68d345270f24",
+        "sha256": "29c6b5f9fb96c8e60867d2e4af95e71f2c7803e609a0b65e00bd95acf63037dc",
+        "size": 144,
+        "stack": 136
+      }
+    },
+    "_RNvNtNtCsdLQv1dpAmAb_4core9panicking11panic_const23panic_const_div_by_zero": {
+      "candidate": {
+        "address": 7696,
+        "instructions": 5,
+        "memory_mnemonics_sha256": "405971f5f137d1099fff455aa6e2fa7e0f09209502d68c55a789a1ff827cf42d",
+        "memory_operations": 2,
+        "normalized_instructions_sha256": "789240986407ef7eb5329fa30ec1ad7054b1e6514b52eb2cdc0a22fb612cc876",
+        "sha256": "0c3c2e9ac6cf4ee3a9c95c7f1829f927fcd532e7a15a56468d4a181e90f7d826",
+        "size": 16,
+        "stack": 8
+      },
+      "parent": {
+        "address": 7624,
+        "instructions": 5,
+        "memory_mnemonics_sha256": "405971f5f137d1099fff455aa6e2fa7e0f09209502d68c55a789a1ff827cf42d",
+        "memory_operations": 2,
+        "normalized_instructions_sha256": "789240986407ef7eb5329fa30ec1ad7054b1e6514b52eb2cdc0a22fb612cc876",
+        "sha256": "fc72bf6cf8e5af748d9d55cca539376607290ba8990e4878a11ef903d997d307",
+        "size": 16,
+        "stack": 8
+      }
+    },
+    "_RNvNvNtCsiHlLB2CErfM_14xr819_firmware13configuration33populate_vendor_calibration_state13copy_u16_pair": {
+      "candidate": {
+        "address": 46726,
+        "instructions": 20,
+        "memory_mnemonics_sha256": "88b39da2ff6676dd86bc80a8021d40e6bf47d9fd480f0f793b7420bcf7b65d46",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "75866b297b91edb8c0c6fd3b1b87e6e12152abdd901b53d3098f1856580e417c",
+        "sha256": "2443b886d28de640e73c6332618f9975515dd20bebaab958f99ee62bb89930be",
+        "size": 40,
+        "stack": 16
+      },
+      "parent": {
+        "address": 46830,
+        "instructions": 20,
+        "memory_mnemonics_sha256": "88b39da2ff6676dd86bc80a8021d40e6bf47d9fd480f0f793b7420bcf7b65d46",
+        "memory_operations": 8,
+        "normalized_instructions_sha256": "75866b297b91edb8c0c6fd3b1b87e6e12152abdd901b53d3098f1856580e417c",
+        "sha256": "05e3101160278e2deafe4a84ca3f974ad9bd7c5023df7b936fb53b44d1fa8c62",
+        "size": 40,
+        "stack": 16
+      }
+    },
+    "_RNvNvNtCsiHlLB2CErfM_14xr819_firmware13configuration33populate_vendor_calibration_state16copy_u16_profile": {
+      "candidate": {
+        "address": 46676,
+        "instructions": 24,
+        "memory_mnemonics_sha256": "a9c524ea3bd7b6530a7da606126a81cf09045bdf49dcd66b0ce77c5a2c4be029",
+        "memory_operations": 5,
+        "normalized_instructions_sha256": "093f00e1ec9e36c432b7c56d2535912e0918d85e8322421026aaaa835a5ffa43",
+        "sha256": "fecc2669297b67e8e4e50f3005eb3a1f5c54f06fd4d5375ff4b4ab0cd7987d5b",
+        "size": 50,
+        "stack": 16
+      },
+      "parent": {
+        "address": 46780,
+        "instructions": 24,
+        "memory_mnemonics_sha256": "a9c524ea3bd7b6530a7da606126a81cf09045bdf49dcd66b0ce77c5a2c4be029",
+        "memory_operations": 5,
+        "normalized_instructions_sha256": "093f00e1ec9e36c432b7c56d2535912e0918d85e8322421026aaaa835a5ffa43",
+        "sha256": "8b8ceb95eb4bc0d425af55988cfc6b7cbaa75eb07b5550a84c1ed0d77fcefa64",
+        "size": 50,
+        "stack": 16
+      }
+    },
+    "rust_main": {
+      "candidate": {
+        "address": 636,
+        "instructions": 3012,
+        "memory_mnemonics_sha256": "32242199006790a6868bfc6bc6d70a0cbb6c3d403fd9a8b8e5d6de4a8f412733",
+        "memory_operations": 1479,
+        "normalized_instructions_sha256": "62245af9d556fa134513d3050bdbd923a1e1d8fe76b296da58add191f3131ffa",
+        "sha256": "d339a90620a3dc680ac049c9a9759ab9de4565382defab9429b45cba7f754adc",
+        "size": 7020,
+        "stack": 1552
+      },
+      "parent": {
+        "address": 636,
+        "instructions": 2986,
+        "memory_mnemonics_sha256": "866cdb84874214fb4a95dd0a02de62c6b63a981af52b640e8ced26ef33c4f3c0",
+        "memory_operations": 1470,
+        "normalized_instructions_sha256": "c53d56d35a26491842cf47086cf61f5a493ed3ffcd8ca1e9db0ab2052e392d94",
+        "sha256": "a6b341b2688c118816dad4867e72f7077fef4d151780e9e0d07ec6b347170352",
+        "size": 6948,
+        "stack": 1552
+      }
+    },
+    "xr819_exception_terminal": {
+      "candidate": {
+        "address": 61936,
+        "instructions": 5,
+        "memory_mnemonics_sha256": "405971f5f137d1099fff455aa6e2fa7e0f09209502d68c55a789a1ff827cf42d",
+        "memory_operations": 2,
+        "normalized_instructions_sha256": "0298d60da5b9175e0f00e98eab9cb46d3f75058967507b42c5d07558e837b291",
+        "sha256": "81dfe434bb7ea0daf98b2ef85e45af1c1e90b914896e663e97bd4853cfa7f747",
+        "size": 16,
+        "stack": 8
+      },
+      "parent": {
+        "address": 62060,
+        "instructions": 5,
+        "memory_mnemonics_sha256": "405971f5f137d1099fff455aa6e2fa7e0f09209502d68c55a789a1ff827cf42d",
+        "memory_operations": 2,
+        "normalized_instructions_sha256": "0298d60da5b9175e0f00e98eab9cb46d3f75058967507b42c5d07558e837b291",
+        "sha256": "aa424b44c564bd5d574ebc176a7e0cf28613afa21d71eb283fabcd0392f0e59b",
+        "size": 16,
+        "stack": 8
+      }
+    }
+  },
+  "common_symbol_count": 195,
+  "exact_memory_order": {
+    "Transport24publish_request_in_place": {
+      "candidate_operations": 38,
+      "candidate_sha256": "861fd82c26854c67aa07c68fec16d8bea42c76a2111d7191ad3c841a9ceb00fb",
+      "exact": true,
+      "parent_operations": 38,
+      "parent_sha256": "861fd82c26854c67aa07c68fec16d8bea42c76a2111d7191ad3c841a9ceb00fb"
+    },
+    "vendor_host_tx17free_host_context": {
+      "candidate_operations": 13,
+      "candidate_sha256": "b7204e30aaaca008f239317cd1a8e82f82e5e30a5f5152e6a539e7cc76bc1943",
+      "exact": true,
+      "parent_operations": 13,
+      "parent_sha256": "b7204e30aaaca008f239317cd1a8e82f82e5e30a5f5152e6a539e7cc76bc1943"
+    }
+  },
+  "irq_barrier": {
+    "candidate": [
+      [
+        "mrs",
+        "r0, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "mrs",
+        "r10, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r11"
+      ],
+      [
+        "mrs",
+        "r7, spsr"
+      ],
+      [
+        "mrs",
+        "r0, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "mrs",
+        "r1, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "mrs",
+        "r1, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r2"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ]
+    ],
+    "exact": true,
+    "parent": [
+      [
+        "mrs",
+        "r0, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "mrs",
+        "r10, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r11"
+      ],
+      [
+        "mrs",
+        "r7, spsr"
+      ],
+      [
+        "mrs",
+        "r0, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "mrs",
+        "r1, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ],
+      [
+        "mrs",
+        "r1, #psr"
+      ],
+      [
+        "msr",
+        "CPSR_c, r2"
+      ],
+      [
+        "msr",
+        "CPSR_c, r1"
+      ]
+    ]
+  },
+  "parent_only": {
+    "_RNvMs2_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch": {
+      "address": 26624,
+      "instructions": 224,
+      "memory_mnemonics_sha256": "56aa46ffc8f14d72561eec96ea229badb5382915963d1fcd8d09cdb8237aed6a",
+      "memory_operations": 122,
+      "normalized_instructions_sha256": "0d65d99c4b417df32a2c296c7f8dbba914af5429d16498c5c2bd9d194f8f15c2",
+      "sha256": "b1b7fcfbc3b5b07144ea51218027606ca4f8491102282af34dab8251d1dd8b05",
+      "size": 496,
+      "stack": 144
+    }
+  },
+  "parent_symbol_count": 196,
+  "parent_text_sha256": "db5a4f5bb914d7a3118390acf867c45872e29482f7f39db7a666aed60f7da3ed",
+  "required": {
+    "HostSchedulerReservation16publish_in_batch": {
+      "candidate": "_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch",
+      "candidate_record": {
+        "address": 11660,
+        "instructions": 217,
+        "memory_mnemonics_sha256": "ca0d732036e637c488184aabaecc31e55f55b1cdd7e35016fe96f8dfde5e9c4d",
+        "memory_operations": 118,
+        "normalized_instructions_sha256": "9eedbc7c923835c8139bc0625e4ce39717fe94a9b8d84dd0b8789eeafc61db2b",
+        "sha256": "e82f23ba3687371b35bdd4b5e92f2ee13000ee2b066f8d41541952f550829bc2",
+        "size": 472,
+        "stack": 144
+      },
+      "parent": "_RNvMs2_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch",
+      "parent_record": {
+        "address": 26624,
+        "instructions": 224,
+        "memory_mnemonics_sha256": "56aa46ffc8f14d72561eec96ea229badb5382915963d1fcd8d09cdb8237aed6a",
+        "memory_operations": 122,
+        "normalized_instructions_sha256": "0d65d99c4b417df32a2c296c7f8dbba914af5429d16498c5c2bd9d194f8f15c2",
+        "sha256": "b1b7fcfbc3b5b07144ea51218027606ca4f8491102282af34dab8251d1dd8b05",
+        "size": 496,
+        "stack": 144
+      }
+    },
+    "HostTxDriver13service_index": {
+      "candidate": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index",
+      "candidate_record": {
+        "address": 41804,
+        "instructions": 968,
+        "memory_mnemonics_sha256": "8944e362828532ec1ea01c8989638cb6f2d2d53fa20e3226c5ae25cd7dedc10e",
+        "memory_operations": 496,
+        "normalized_instructions_sha256": "f70c7f767c7a8fda76b22b23bf4610aadc34132383de312aecd11993bf555e0d",
+        "sha256": "483f65f6fb71d5f877e39cd03a6487acc2779750e63f069f1827f6819e37de7e",
+        "size": 2100,
+        "stack": 712
+      },
+      "parent": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index",
+      "parent_record": {
+        "address": 41908,
+        "instructions": 968,
+        "memory_mnemonics_sha256": "8944e362828532ec1ea01c8989638cb6f2d2d53fa20e3226c5ae25cd7dedc10e",
+        "memory_operations": 496,
+        "normalized_instructions_sha256": "f70c7f767c7a8fda76b22b23bf4610aadc34132383de312aecd11993bf555e0d",
+        "sha256": "3a377332850a8b549ef67f36715c424f84fd554daf2289f12f46cbea0a50d111",
+        "size": 2100,
+        "stack": 712
+      }
+    },
+    "HostTxDriver18confirmation_state": {
+      "candidate": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state",
+      "candidate_record": {
+        "address": 41640,
+        "instructions": 79,
+        "memory_mnemonics_sha256": "967621ab356b7a0745272a2c67ca586e03848dd90528a7c3889ac5fc7a3e54ef",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "e762996c256cc219d692f56b9c7c994a09e65d38a98fecd4568be387d5deee05",
+        "sha256": "87b9721e92f6e1707c05a6ec341705e4a48981984acb0896fc4630e3a4999489",
+        "size": 164,
+        "stack": 72
+      },
+      "parent": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state",
+      "parent_record": {
+        "address": 41740,
+        "instructions": 81,
+        "memory_mnemonics_sha256": "d8f87b5fc9b1b74614e842bbbf810bd1c8127eed24bc36173e9d14be50af6db9",
+        "memory_operations": 45,
+        "normalized_instructions_sha256": "a500464a50c2ea7774d6fd8d05fc4f61424085b90e9c797483af0b6109f91da1",
+        "sha256": "66e9f47e442c1ac2be8dc0b0c52909e049d73fdfcbdf81b57d141148d32e0342",
+        "size": 168,
+        "stack": 72
+      }
+    },
+    "HostTxDriver19finish_confirmation": {
+      "candidate": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation",
+      "candidate_record": {
+        "address": 31892,
+        "instructions": 37,
+        "memory_mnemonics_sha256": "b6dd89f29b42595dc12b52cdc9d28af68aead0d8ff43eb78c4a532fa4b71482e",
+        "memory_operations": 9,
+        "normalized_instructions_sha256": "6b52c356376ddde24b7349a0d2538e81a3d9e1ea942073bd5ffdf51e10e107e9",
+        "sha256": "a128e5a87822c48d7d24f7a58d86dfef4c528c56bcb29add8171a29454d96f76",
+        "size": 88,
+        "stack": 16
+      },
+      "parent": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation",
+      "parent_record": {
+        "address": 31628,
+        "instructions": 37,
+        "memory_mnemonics_sha256": "b6dd89f29b42595dc12b52cdc9d28af68aead0d8ff43eb78c4a532fa4b71482e",
+        "memory_operations": 9,
+        "normalized_instructions_sha256": "6b52c356376ddde24b7349a0d2538e81a3d9e1ea942073bd5ffdf51e10e107e9",
+        "sha256": "53c704fb0bbf1529e5d2dac7bef03426e4ee948350b21828c3d1b3e43199f134",
+        "size": 88,
+        "stack": 16
+      }
+    },
+    "HostTxDriver22cancelled_confirmation": {
+      "candidate": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation",
+      "candidate_record": {
+        "address": 35772,
+        "instructions": 82,
+        "memory_mnemonics_sha256": "c5b35452e8a9e1ea889c5e361b6c077ded4097b77cb43357f11160b11d4585a1",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "b6b552c1fbc6efaa1f76d0e675b9ee1972945e31b0defcec8855d0b8926508a3",
+        "sha256": "8c532ce82484638405107b863c468970bf99ba034099f26f8dd5830ec77e2ded",
+        "size": 192,
+        "stack": 48
+      },
+      "parent": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation",
+      "parent_record": {
+        "address": 35608,
+        "instructions": 82,
+        "memory_mnemonics_sha256": "c5b35452e8a9e1ea889c5e361b6c077ded4097b77cb43357f11160b11d4585a1",
+        "memory_operations": 43,
+        "normalized_instructions_sha256": "b6b552c1fbc6efaa1f76d0e675b9ee1972945e31b0defcec8855d0b8926508a3",
+        "sha256": "5b95bb81aae19d8ce31b5c5f08e5948679da6d5890d88caf55baf07a0c585971",
+        "size": 192,
+        "stack": 48
+      }
+    },
+    "HostTxDriver5admit": {
+      "candidate": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit",
+      "candidate_record": {
+        "address": 31980,
+        "instructions": 668,
+        "memory_mnemonics_sha256": "c0ea6b58d7bb118a6fa9132b85ab3ec6251671e71697a24c4641d219afeb7af3",
+        "memory_operations": 327,
+        "normalized_instructions_sha256": "1cc6db81dd53600eb60f6ddba4fb9e727571624106f7740d569befccfb00d57e",
+        "sha256": "3ae051c772172a3026a10904799fd068891cb081c7d56f6a7365fd39d56f9b0e",
+        "size": 1472,
+        "stack": 160
+      },
+      "parent": "_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit",
+      "parent_record": {
+        "address": 31776,
+        "instructions": 685,
+        "memory_mnemonics_sha256": "591601c81c93af731bc4438beda0f8b5937d8b65fbf1b213ab616500ff66e765",
+        "memory_operations": 338,
+        "normalized_instructions_sha256": "baec0dd830efdff62241d8a4b0cf585c09137c2f8994dd2ed4b8a78882b5d89d",
+        "sha256": "25249845348cb334a0d8c30da56b152f5562c5b9ee2e991dfdbbf0605060919d",
+        "size": 1512,
+        "stack": 160
+      }
+    },
+    "PreparedProbePublication6cancel": {
+      "candidate": "_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel",
+      "candidate_record": {
+        "address": 30812,
+        "instructions": 80,
+        "memory_mnemonics_sha256": "2005853f74b055cf35b6956a6db045434219dbebff7ac082d550cd42b921313c",
+        "memory_operations": 42,
+        "normalized_instructions_sha256": "dfa792e39f0323930f582196dfb8e815ff974865a8af65110b8760a708051f85",
+        "sha256": "3ebe6e8c95f97fdc4e0c49aaf27402fd8896ff24fb6a4f03f2b2ad2f037168a4",
+        "size": 180,
+        "stack": 112
+      },
+      "parent": "_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel",
+      "parent_record": {
+        "address": 30476,
+        "instructions": 91,
+        "memory_mnemonics_sha256": "783268371481447fe458d744cde1e6a1aa709229b49d8a6009576dd8c72b05bc",
+        "memory_operations": 45,
+        "normalized_instructions_sha256": "17bb0a803ad65046a6da2e749f38d16b8472978295b3592cdecf5c5709b1abe9",
+        "sha256": "aed5301a90fb6e9f5e34e26a34356368483ecb2ba5014505bb3f8870f2f7a156",
+        "size": 212,
+        "stack": 112
+      }
+    },
+    "Transport14enqueue_output": {
+      "candidate": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport14enqueue_output",
+      "candidate_record": {
+        "address": 29148,
+        "instructions": 53,
+        "memory_mnemonics_sha256": "5ff01c9a3897147fddd6e4cf779b49942410a486aee8c327671e635f6c781f1e",
+        "memory_operations": 26,
+        "normalized_instructions_sha256": "1e032ce9e64638f449fffa80e77ba067804fe3b541763b8ffee6b55174308f83",
+        "sha256": "4caeccb35ddcfa43ba4ae9f2a3f7e6555b02798b8d267b3faefae7fb2fbf2017",
+        "size": 120,
+        "stack": 40
+      },
+      "parent": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport14enqueue_output",
+      "parent_record": {
+        "address": 28812,
+        "instructions": 53,
+        "memory_mnemonics_sha256": "5ff01c9a3897147fddd6e4cf779b49942410a486aee8c327671e635f6c781f1e",
+        "memory_operations": 26,
+        "normalized_instructions_sha256": "1e032ce9e64638f449fffa80e77ba067804fe3b541763b8ffee6b55174308f83",
+        "sha256": "94e9f04c0bb79a5925e39600d22029b43d63948dd75fb1fa4ef82ec2313dafe3",
+        "size": 120,
+        "stack": 40
+      }
+    },
+    "Transport15release_request": {
+      "candidate": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport15release_request",
+      "candidate_record": {
+        "address": 28280,
+        "instructions": 31,
+        "memory_mnemonics_sha256": "98f9c5cd2cbbf8a689219e878e628e8a420e8a5b4b38d3638870a071b554a28b",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "52736734162fd8761c708607e2b9166e9123952b19d1235f2a8884e90614b861",
+        "sha256": "09a95caee7c11b9c28b397833ec9e44c696b8f93799ea24725492ed5e04d4475",
+        "size": 72,
+        "stack": 16
+      },
+      "parent": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport15release_request",
+      "parent_record": {
+        "address": 27944,
+        "instructions": 31,
+        "memory_mnemonics_sha256": "98f9c5cd2cbbf8a689219e878e628e8a420e8a5b4b38d3638870a071b554a28b",
+        "memory_operations": 11,
+        "normalized_instructions_sha256": "52736734162fd8761c708607e2b9166e9123952b19d1235f2a8884e90614b861",
+        "sha256": "94665dcc1ff6f64e9a639bc5ae4881b5231dac3c73bb4db5111463a92d518b56",
+        "size": 72,
+        "stack": 16
+      }
+    },
+    "Transport24publish_request_in_place": {
+      "candidate": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place",
+      "candidate_record": {
+        "address": 29344,
+        "instructions": 113,
+        "memory_mnemonics_sha256": "861fd82c26854c67aa07c68fec16d8bea42c76a2111d7191ad3c841a9ceb00fb",
+        "memory_operations": 38,
+        "normalized_instructions_sha256": "319d044edcd06e7967bd59ec8a2734856aaceff56560792000e968c3090e6c22",
+        "sha256": "a58920ffffc3c80cb9988b4a1770cd6457b468ea2c5bcb00725ecd5f2f2756b5",
+        "size": 272,
+        "stack": 56
+      },
+      "parent": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place",
+      "parent_record": {
+        "address": 29008,
+        "instructions": 113,
+        "memory_mnemonics_sha256": "861fd82c26854c67aa07c68fec16d8bea42c76a2111d7191ad3c841a9ceb00fb",
+        "memory_operations": 38,
+        "normalized_instructions_sha256": "319d044edcd06e7967bd59ec8a2734856aaceff56560792000e968c3090e6c22",
+        "sha256": "74357c6a349d9f9e1f23fb3f779d586e87b8d5b215647fca0350b52517f64a3e",
+        "size": 272,
+        "stack": 56
+      }
+    },
+    "Transport7publish": {
+      "candidate": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport7publish",
+      "candidate_record": {
+        "address": 29616,
+        "instructions": 39,
+        "memory_mnemonics_sha256": "25d49d211a7e44e36f1fe6548c84b3a0f0881238e4341c897cc8414180c62a79",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "1397191ab320f91b70c302a12a40bee1e2c94b91666aaa40a955242c9efc688c",
+        "sha256": "3c7a302e1f473ca459d9bd4e7bfa4cab2640756942d3f354ba626c2ede4f2222",
+        "size": 108,
+        "stack": 32
+      },
+      "parent": "_RNvMs5_NtCsiHlLB2CErfM_14xr819_firmware3hifNtB5_9Transport7publish",
+      "parent_record": {
+        "address": 29280,
+        "instructions": 39,
+        "memory_mnemonics_sha256": "25d49d211a7e44e36f1fe6548c84b3a0f0881238e4341c897cc8414180c62a79",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "1397191ab320f91b70c302a12a40bee1e2c94b91666aaa40a955242c9efc688c",
+        "sha256": "978489ae5e957c94e9e0830448d828a227b71c8acc83dde890bb74e362e1f8e1",
+        "size": 108,
+        "stack": 32
+      }
+    },
+    "rust_main": {
+      "candidate": "rust_main",
+      "candidate_record": {
+        "address": 636,
+        "instructions": 3012,
+        "memory_mnemonics_sha256": "32242199006790a6868bfc6bc6d70a0cbb6c3d403fd9a8b8e5d6de4a8f412733",
+        "memory_operations": 1479,
+        "normalized_instructions_sha256": "62245af9d556fa134513d3050bdbd923a1e1d8fe76b296da58add191f3131ffa",
+        "sha256": "d339a90620a3dc680ac049c9a9759ab9de4565382defab9429b45cba7f754adc",
+        "size": 7020,
+        "stack": 1552
+      },
+      "parent": "rust_main",
+      "parent_record": {
+        "address": 636,
+        "instructions": 2986,
+        "memory_mnemonics_sha256": "866cdb84874214fb4a95dd0a02de62c6b63a981af52b640e8ced26ef33c4f3c0",
+        "memory_operations": 1470,
+        "normalized_instructions_sha256": "c53d56d35a26491842cf47086cf61f5a493ed3ffcd8ca1e9db0ab2052e392d94",
+        "sha256": "a6b341b2688c118816dad4867e72f7077fef4d151780e9e0d07ec6b347170352",
+        "size": 6948,
+        "stack": 1552
+      }
+    },
+    "tx21prepare_probe_context": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context",
+      "candidate_record": {
+        "address": 46768,
+        "instructions": 308,
+        "memory_mnemonics_sha256": "e2af6380014c8751b79caffc9b4efdd95cd619998a19e59701810aaea3ec9000",
+        "memory_operations": 159,
+        "normalized_instructions_sha256": "518cdae7c9e3768b3de30c1285acca31327790c23ecd8ad4184592afcf10d397",
+        "sha256": "8645e515f4440f6690b41224d87911c0090eae39cd3769f1addaf62813eea82e",
+        "size": 664,
+        "stack": 88
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context",
+      "parent_record": {
+        "address": 46872,
+        "instructions": 308,
+        "memory_mnemonics_sha256": "e2af6380014c8751b79caffc9b4efdd95cd619998a19e59701810aaea3ec9000",
+        "memory_operations": 159,
+        "normalized_instructions_sha256": "518cdae7c9e3768b3de30c1285acca31327790c23ecd8ad4184592afcf10d397",
+        "sha256": "077c2c45b9572654dc85f45521128d6fa8e561eea684af5bd9951fa62dce8968",
+        "size": 664,
+        "stack": 88
+      }
+    },
+    "tx25prepare_host_frame_timing": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx25prepare_host_frame_timing",
+      "candidate_record": {
+        "address": 9136,
+        "instructions": 25,
+        "memory_mnemonics_sha256": "63cf9df3d7e5267e57ae5cbc60ba3b2f19e33a2416ac55e59ce07aff8b28e246",
+        "memory_operations": 6,
+        "normalized_instructions_sha256": "0ced14970e41c692e9a67702fbb8370fe341351ceb1ae64dd3c9c26abd9ab39b",
+        "sha256": "2c468f2d2e202d45ffffc877f058f4c7052467f0c5cbc96f0877262431e07270",
+        "size": 56,
+        "stack": 48
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx25prepare_host_frame_timing",
+      "parent_record": {
+        "address": 9064,
+        "instructions": 25,
+        "memory_mnemonics_sha256": "63cf9df3d7e5267e57ae5cbc60ba3b2f19e33a2416ac55e59ce07aff8b28e246",
+        "memory_operations": 6,
+        "normalized_instructions_sha256": "0ced14970e41c692e9a67702fbb8370fe341351ceb1ae64dd3c9c26abd9ab39b",
+        "sha256": "28f29b9fbb2025bc6eb3a29836eb0ad30dc3f3a1e4d7be2534b2d4ae84f0d02e",
+        "size": 56,
+        "stack": 48
+      }
+    },
+    "tx27prepare_context_publication": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication",
+      "candidate_record": {
+        "address": 47884,
+        "instructions": 183,
+        "memory_mnemonics_sha256": "873b106d0c3a9548eba88b0fdcfa8ea7c69d2095500c6a9c8e56c266789a58e4",
+        "memory_operations": 116,
+        "normalized_instructions_sha256": "9d55742026e8f1e5faa1b185ba64ceb7be31f161ff2627eebea177bfe09d6464",
+        "sha256": "f493ad65e4fba1151b35ce63e1389a408d4ab1cec9b20c149a982122fa61220f",
+        "size": 384,
+        "stack": 216
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication",
+      "parent_record": {
+        "address": 47988,
+        "instructions": 183,
+        "memory_mnemonics_sha256": "873b106d0c3a9548eba88b0fdcfa8ea7c69d2095500c6a9c8e56c266789a58e4",
+        "memory_operations": 116,
+        "normalized_instructions_sha256": "9d55742026e8f1e5faa1b185ba64ceb7be31f161ff2627eebea177bfe09d6464",
+        "sha256": "0f7787bb5fe3996f371d01a0a2782edf8dfb17ca7a2978f68d2dba76d02a330d",
+        "size": 384,
+        "stack": 216
+      }
+    },
+    "tx27release_wsm_context_address": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27release_wsm_context_address",
+      "candidate_record": {
+        "address": 30992,
+        "instructions": 56,
+        "memory_mnemonics_sha256": "aa9147027a18b638875da5b25db1b70f3f9108c345db228dcbfd3e2667286c3b",
+        "memory_operations": 20,
+        "normalized_instructions_sha256": "b4822da5824ce62717ebf1341814fd4f612bee33ddfb41e8375ac53ca96240e0",
+        "sha256": "f3869963e45e1b2795149ec3f803892f6476dc5a08780b9315ca502502b6c7f5",
+        "size": 140,
+        "stack": 24
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27release_wsm_context_address",
+      "parent_record": {
+        "address": 30688,
+        "instructions": 74,
+        "memory_mnemonics_sha256": "a284fbd34b884c10001f7c65e327efd82cb066bce4ae8dd51c57e246e9dc5eff",
+        "memory_operations": 35,
+        "normalized_instructions_sha256": "6f1c3ccee60bc9c96eede8e3b13a5e5177c0aa974e79cb9ab5082be54b639589",
+        "sha256": "d4e721ec0a3040d98ff4b0a1b8a899b60e720e8fd669f2a60b5634009f67149f",
+        "size": 180,
+        "stack": 32
+      }
+    },
+    "tx29emit_host_frame_descriptor_at": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx29emit_host_frame_descriptor_at",
+      "candidate_record": {
+        "address": 9192,
+        "instructions": 33,
+        "memory_mnemonics_sha256": "047e97cf7f02a11ed6411db1783344318104210ab6342781e14300acf5806474",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "75b9e0a321edbe4bf223d79ad7fcf731aae7895252ff63e798d1e8a255da4a9f",
+        "sha256": "d160899a67ebfca06c82857bcaa4209ad6c6ba3a6df1170e0fdfb76c64e6350f",
+        "size": 70,
+        "stack": 56
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx29emit_host_frame_descriptor_at",
+      "parent_record": {
+        "address": 9120,
+        "instructions": 33,
+        "memory_mnemonics_sha256": "047e97cf7f02a11ed6411db1783344318104210ab6342781e14300acf5806474",
+        "memory_operations": 12,
+        "normalized_instructions_sha256": "75b9e0a321edbe4bf223d79ad7fcf731aae7895252ff63e798d1e8a255da4a9f",
+        "sha256": "bbbfc42d007af0c2a8487270fb678fe62c8c81565d59c3d4456ccc494e655899",
+        "size": 70,
+        "stack": 56
+      }
+    },
+    "tx30emit_prepared_probe_descriptor": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx30emit_prepared_probe_descriptor",
+      "candidate_record": {
+        "address": 9364,
+        "instructions": 355,
+        "memory_mnemonics_sha256": "f37187591f217e4b289d78d1c51925f057588a188108f31fb092259c75643140",
+        "memory_operations": 150,
+        "normalized_instructions_sha256": "6fddbe824e5fe11c0d770cdb0debfaeb634b0ae5ca73ba55bb195ad076bf141e",
+        "sha256": "d262795799cc9ef85c94e3275bc3a02ac72496f184d815f73b72c9cced44a291",
+        "size": 752,
+        "stack": 112
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx30emit_prepared_probe_descriptor",
+      "parent_record": {
+        "address": 9296,
+        "instructions": 355,
+        "memory_mnemonics_sha256": "f37187591f217e4b289d78d1c51925f057588a188108f31fb092259c75643140",
+        "memory_operations": 150,
+        "normalized_instructions_sha256": "6fddbe824e5fe11c0d770cdb0debfaeb634b0ae5ca73ba55bb195ad076bf141e",
+        "sha256": "5d313da4c5253300678d996fc31e8786a62709772c118d33516acd3f0c2fa5ff",
+        "size": 752,
+        "stack": 112
+      }
+    },
+    "tx33release_unpublished_probe_context": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx33release_unpublished_probe_context",
+      "candidate_record": {
+        "address": 48268,
+        "instructions": 36,
+        "memory_mnemonics_sha256": "6faae11be673eabfde6299665ef95d2567d791618a8afaaf113d6d4872a592f7",
+        "memory_operations": 15,
+        "normalized_instructions_sha256": "79328e9f400cbff66dddfc3e136ed6b01a7b7d191b1e891654b93640244fde96",
+        "sha256": "88e14b17f821f5485d5ca267b0c48ad299e38488d968717a7ad22b47937bf184",
+        "size": 92,
+        "stack": 16
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx33release_unpublished_probe_context",
+      "parent_record": {
+        "address": 48372,
+        "instructions": 41,
+        "memory_mnemonics_sha256": "e1d990543ab9fed898c0ad43a5d49e64fc1691aa9500fdebf08a5bd45544c010",
+        "memory_operations": 18,
+        "normalized_instructions_sha256": "f2ddda87a9eadd51d7e7766853cf5d1e605ea429f3ad732e8acbd9c5787e5ac3",
+        "sha256": "75c0ee6b561ba6d22bd9d69f40ff2fa04fe4d735df4fb7f1b84b496102cfa850",
+        "size": 112,
+        "stack": 8
+      }
+    },
+    "tx37service_single_probe_runtime_inactive": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive",
+      "candidate_record": {
+        "address": 35964,
+        "instructions": 2498,
+        "memory_mnemonics_sha256": "e72ae12073fdaec03a82fe40028075a3f337f7a44f391d39d4f5eb8f5daff7d2",
+        "memory_operations": 1150,
+        "normalized_instructions_sha256": "29aff732bd6a1c89ec176bd103de9a3aaedd876629976a6106769a56fb72e8df",
+        "sha256": "1e01c2d03ab6f9127888b59bd2ace45b1779c93a8975a7bf44e7d850d666ca43",
+        "size": 5644,
+        "stack": 184
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive",
+      "parent_record": {
+        "address": 35948,
+        "instructions": 2551,
+        "memory_mnemonics_sha256": "0568527a752174892cf4901f803fc97acb479c86a54bba52825a58c03fe915f2",
+        "memory_operations": 1175,
+        "normalized_instructions_sha256": "b8a7d31c1890e04e592f690b07b5eff8254356fa21ef2173a210fa4b47c74f2a",
+        "sha256": "06b3322d3bffc560c7059b8ab3bd3a4de035bb032d73f059b79719837611c80a",
+        "size": 5760,
+        "stack": 184
+      }
+    },
+    "vendor_host_tx17free_host_context": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx17free_host_context",
+      "candidate_record": {
+        "address": 11372,
+        "instructions": 24,
+        "memory_mnemonics_sha256": "b7204e30aaaca008f239317cd1a8e82f82e5e30a5f5152e6a539e7cc76bc1943",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "ce3d22097974cb67e9bfcc4f10f0780b743839192f060255a39b927ad5c7bb35",
+        "sha256": "39d3f539b5a885a7908fecb88e798fbc02035ab7df1f49d8be95f042e429c32c",
+        "size": 60,
+        "stack": 16
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx17free_host_context",
+      "parent_record": {
+        "address": 31716,
+        "instructions": 24,
+        "memory_mnemonics_sha256": "b7204e30aaaca008f239317cd1a8e82f82e5e30a5f5152e6a539e7cc76bc1943",
+        "memory_operations": 13,
+        "normalized_instructions_sha256": "ce3d22097974cb67e9bfcc4f10f0780b743839192f060255a39b927ad5c7bb35",
+        "sha256": "4a78ee2d183786f38ae360ea7a7775f044bc3ed3c9ca6e85fbf8683856b340b2",
+        "size": 60,
+        "stack": 16
+      }
+    },
+    "vendor_host_tx21program_pipe_eligible": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx21program_pipe_eligible",
+      "candidate_record": {
+        "address": 43984,
+        "instructions": 228,
+        "memory_mnemonics_sha256": "accb4455c7f0804a3d66c6cb6be5e463e4e449309ecc78e083a92275127fe1a3",
+        "memory_operations": 87,
+        "normalized_instructions_sha256": "9a084284667056dfe6788d187a834a094618de1d777b72b6424cadc8c694337b",
+        "sha256": "f1b8f309a99f3efc9ed4a1d5e726a2bacc0e27c2ceb2d4cf8a12141bfc35c2c1",
+        "size": 480,
+        "stack": 56
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx21program_pipe_eligible",
+      "parent_record": {
+        "address": 44088,
+        "instructions": 228,
+        "memory_mnemonics_sha256": "accb4455c7f0804a3d66c6cb6be5e463e4e449309ecc78e083a92275127fe1a3",
+        "memory_operations": 87,
+        "normalized_instructions_sha256": "9a084284667056dfe6788d187a834a094618de1d777b72b6424cadc8c694337b",
+        "sha256": "f1b8f309a99f3efc9ed4a1d5e726a2bacc0e27c2ceb2d4cf8a12141bfc35c2c1",
+        "size": 480,
+        "stack": 56
+      }
+    },
+    "vendor_host_tx22release_pending_to_pas": {
+      "candidate": "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22release_pending_to_pas",
+      "candidate_record": {
+        "address": 44464,
+        "instructions": 165,
+        "memory_mnemonics_sha256": "cfe2ee2c1f101f2c21ca0a8b3755c5b6cb15b6514497d3ebd8d6a278f40adba7",
+        "memory_operations": 69,
+        "normalized_instructions_sha256": "dd0a4ea9df26270b7d6b701a416e2cf58a7cf2d4968d044f11f25f1a894e17b7",
+        "sha256": "749539ccc6377368a2da743d47ca2c3b5c6f2ee09d0f81445d73d69a39c0142b",
+        "size": 368,
+        "stack": 48
+      },
+      "parent": "_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22release_pending_to_pas",
+      "parent_record": {
+        "address": 44568,
+        "instructions": 165,
+        "memory_mnemonics_sha256": "cfe2ee2c1f101f2c21ca0a8b3755c5b6cb15b6514497d3ebd8d6a278f40adba7",
+        "memory_operations": 69,
+        "normalized_instructions_sha256": "dd0a4ea9df26270b7d6b701a416e2cf58a7cf2d4968d044f11f25f1a894e17b7",
+        "sha256": "50ae171b30a7a7e2313081be23762a75407ec27d6de818887feb1a79c4de81a0",
+        "size": 368,
+        "stack": 48
+      }
+    }
+  },
+  "schema": 1,
+  "unchanged_common_symbol_count": 81
+}
