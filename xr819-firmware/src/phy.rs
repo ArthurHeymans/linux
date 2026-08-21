@@ -1215,7 +1215,7 @@ pub unsafe fn lookup_channel_threshold(channel: u16) -> Result<i16, ChannelPower
         if profile > 1 {
             return Err(ChannelPowerError::InvalidThresholdTable);
         }
-        let descriptor = 0x0400_145c + profile * 8;
+        let descriptor = crate::dtcm::PHY_CHANNEL_THRESHOLD_DESCRIPTORS.get() + profile * 8;
         let count = usize::from(((descriptor + 1) as *const u8).read_volatile());
         if count > 64 {
             return Err(ChannelPowerError::InvalidThresholdTable);
@@ -1544,7 +1544,7 @@ pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), Gai
                 second_limit,
             )?)?;
 
-            let record = 0x0400_146c + slot * 0x10;
+            let record = crate::dtcm::PHY_GAIN_PROGRAMMING_RECORDS.get() + slot * 0x10;
             write_u8(record, rate);
             write_u16(record + 2, requested_offset as u16);
             write_u16(record + 4, result.selected_power as u16);

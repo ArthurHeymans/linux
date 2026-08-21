@@ -59,6 +59,7 @@ python3 tools/check-mac-runtime-accounting-layout.py
 python3 tools/check-mac-retry-hardware-state-layout.py
 python3 tools/check-mac-tx-queue-state-layout.py
 python3 tools/check-initialized-rate-policies-layout.py
+python3 tools/check-phy-descriptor-gain-records-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -122,6 +123,7 @@ python3 tools/check-mac-runtime-accounting-layout.py "$ELF"
 python3 tools/check-mac-retry-hardware-state-layout.py "$ELF"
 python3 tools/check-mac-tx-queue-state-layout.py "$ELF"
 python3 tools/check-initialized-rate-policies-layout.py "$ELF"
+python3 tools/check-phy-descriptor-gain-records-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -615,6 +617,15 @@ if [[ -n "${XR819_INITIALIZED_RATE_POLICIES_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_RATE_POLICIES_PARENT_ELF" "$ELF"
 else
   echo "== initialized-rate-policies codegen gate skipped: set XR819_INITIALIZED_RATE_POLICIES_PARENT_ELF to the qualified MAC-TX-queue-state ELF =="
+fi
+
+if [[ -n "${XR819_PHY_DESCRIPTOR_GAIN_RECORDS_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed PHY-descriptor-gain-records parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/phy-descriptor-gain-records-codegen-manifest.json \
+    "$XR819_PHY_DESCRIPTOR_GAIN_RECORDS_PARENT_ELF" "$ELF"
+else
+  echo "== PHY-descriptor-gain-records codegen gate skipped: set XR819_PHY_DESCRIPTOR_GAIN_RECORDS_PARENT_ELF to the qualified initialized-rate-policies ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

@@ -4489,3 +4489,30 @@ manifest  tools/initialized-rate-policies-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.82 PHY threshold descriptors and gain records
+
+The two `0x08`-byte channel-threshold descriptors at
+`0x0400145c..0x0400146c` and sixteen `0x10`-byte TX gain records at
+`0x0400146c..0x0400156c` are now exact initialized-image layouts. Descriptor
+fields name count, default threshold, and record pointer. Gain records name rate,
+requested offset, selected power, cleared/reserved fields, gain code, and RSSI
+value.
+
+Threshold lookup and all-slot gain programming now derive their roots from the
+physical layout after retaining the same profile/slot validation. Pointer loads,
+record strides, volatile widths, hardware publication order, and wrapping gain
+arithmetic remain unchanged. The linked image materializes only the gain-loop
+interior address `0x0400147a`; `tools/check-phy-descriptor-gain-records-layout.py`
+pins that address and decoded xref. The complete ELF and packed image remain
+byte-identical to the qualified initialized-rate-policies parent, so no hardware
+rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-descriptor-gain-final-check.log
+          fd18d2db810483c8e85faf51784467341488a37b6f3efc7be3d93c4aecbaf288
+manifest  tools/phy-descriptor-gain-records-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

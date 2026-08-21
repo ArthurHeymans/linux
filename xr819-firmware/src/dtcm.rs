@@ -131,7 +131,10 @@ struct InitializedVendorImage {
     ampdu_counters: AmpduTelemetryCounters,
     pre_control_words: OpaqueBytes<0x158>,
     control_words: InitializedControlWords,
-    pre_host_pas_ring: OpaqueBytes<0x138>,
+    pre_phy_channel_threshold_descriptors: OpaqueBytes<0x1c>,
+    phy_channel_threshold_descriptors: [PhyChannelThresholdDescriptor; 2],
+    phy_gain_programming_records: [PhyGainProgrammingRecord; 16],
+    pre_host_pas_ring: OpaqueBytes<0x0c>,
     host_pas_ring: HostPasRing,
     initialized_low_mac_prefix: LowMacGlobalPrefix,
     mac_pipe_records: [MacPipeRecord; 4],
@@ -181,6 +184,10 @@ struct AmpduTelemetryCounters {
     opaque_20: SharedU32,
     tx_retry_count: SharedU32,
 }
+#[repr(C, align(4))]
+struct PhyChannelThresholdDescriptor { opaque_00: SharedU8, count: SharedU8, default_threshold: SharedU16, records: SharedU32 }
+#[repr(C, align(4))]
+struct PhyGainProgrammingRecord { rate: SharedU8, opaque_01: SharedU8, requested_offset: SharedU16, selected_power: SharedU16, reserved_06: SharedU16, cleared_word: SharedU32, gain_code: SharedU16, rssi_value: SharedU16 }
 #[repr(C, align(4))]
 struct InitializedHifControl {
     queued_depth: SharedU32,
@@ -1696,6 +1703,10 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const PHY_CHANNEL_THRESHOLD_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_channel_threshold_descriptors));
+pub(crate) const fn phy_channel_threshold_descriptor(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(DtcmAddress::from_offset(PHY_CHANNEL_THRESHOLD_DESCRIPTORS.offset() + profile * core::mem::size_of::<PhyChannelThresholdDescriptor>())) } else { None } }
+pub(crate) const PHY_GAIN_PROGRAMMING_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_programming_records));
+pub(crate) const fn phy_gain_programming_record(slot: usize) -> Option<DtcmAddress> { if slot < 16 { Some(DtcmAddress::from_offset(PHY_GAIN_PROGRAMMING_RECORDS.offset() + slot * core::mem::size_of::<PhyGainProgrammingRecord>())) } else { None } }
 pub(crate) const INITIALIZED_RATE_POLICIES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_rate_policies));
 pub(crate) const fn initialized_rate_policy_word(policy: usize, word: usize) -> Option<DtcmAddress> { if policy < 2 && word < 5 { Some(DtcmAddress::from_offset(INITIALIZED_RATE_POLICIES.offset() + (policy * 5 + word) * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const MAC_TX_QUEUE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_tx_queue_state));
@@ -3200,7 +3211,20 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedControlWords, tsf_accumulator_low) == 0x10);
     assert!(core::mem::offset_of!(InitializedControlWords, timer_counter) == 0x1c);
     assert!(core::mem::offset_of!(InitializedVendorImage, control_words) == 0x1420);
-    assert!(core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) == 0x1440);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_phy_channel_threshold_descriptors) == 0x1440);
+    assert!(core::mem::offset_of!(InitializedVendorImage, phy_channel_threshold_descriptors) == 0x145c);
+    assert!(core::mem::size_of::<PhyChannelThresholdDescriptor>() == 0x08);
+    assert!(core::mem::offset_of!(PhyChannelThresholdDescriptor, count) == 0x01);
+    assert!(core::mem::offset_of!(PhyChannelThresholdDescriptor, default_threshold) == 0x02);
+    assert!(core::mem::offset_of!(PhyChannelThresholdDescriptor, records) == 0x04);
+    assert!(core::mem::offset_of!(InitializedVendorImage, phy_gain_programming_records) == 0x146c);
+    assert!(core::mem::size_of::<PhyGainProgrammingRecord>() == 0x10);
+    assert!(core::mem::offset_of!(PhyGainProgrammingRecord, requested_offset) == 0x02);
+    assert!(core::mem::offset_of!(PhyGainProgrammingRecord, selected_power) == 0x04);
+    assert!(core::mem::offset_of!(PhyGainProgrammingRecord, cleared_word) == 0x08);
+    assert!(core::mem::offset_of!(PhyGainProgrammingRecord, gain_code) == 0x0c);
+    assert!(core::mem::offset_of!(PhyGainProgrammingRecord, rssi_value) == 0x0e);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) == 0x156c);
     assert!(core::mem::offset_of!(InitializedVendorImage, host_pas_ring) == 0x1578);
     assert!(core::mem::size_of::<HostPasRing>() == 0x108);
     assert!(core::mem::offset_of!(HostPasRing, head) == 0x00);
@@ -3914,6 +3938,19 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_phy_descriptor_and_gain_record_addresses_are_exact() {
+        assert_eq!(PHY_CHANNEL_THRESHOLD_DESCRIPTORS.get(), 0x0400_145c);
+        assert_eq!(phy_channel_threshold_descriptor(0).unwrap().get(), 0x0400_145c);
+        assert_eq!(phy_channel_threshold_descriptor(1).unwrap().get(), 0x0400_1464);
+        assert!(phy_channel_threshold_descriptor(2).is_none());
+        assert_eq!(PHY_GAIN_PROGRAMMING_RECORDS.get(), 0x0400_146c);
+        assert_eq!(phy_gain_programming_record(0).unwrap().get(), 0x0400_146c);
+        assert_eq!(phy_gain_programming_record(15).unwrap().get(), 0x0400_155c);
+        assert_eq!(phy_gain_programming_record(15).unwrap().get() + 0x10, 0x0400_156c);
+        assert!(phy_gain_programming_record(16).is_none());
     }
 
     #[test]
