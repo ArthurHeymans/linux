@@ -6764,7 +6764,7 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
         );
 
         // `pas_txq_push_global(context + 0x54)` appends class-0 host frames.
-        let ring = 0x0400_1578_usize;
+        let ring = crate::dtcm::HOST_PAS_RING.get();
         let head = read_u32(ring) as u8 & 0x3f;
         let tail = read_u32(ring + 4) as u8 & 0x3f;
         let following = tail.wrapping_add(1) & 0x3f;

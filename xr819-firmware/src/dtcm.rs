@@ -129,7 +129,8 @@ struct InitializedVendorImage {
     ampdu_counters: AmpduTelemetryCounters,
     pre_control_words: OpaqueBytes<0x158>,
     control_words: InitializedControlWords,
-    pre_low_mac_root: OpaqueBytes<0x240>,
+    pre_host_pas_ring: OpaqueBytes<0x138>,
+    host_pas_ring: HostPasRing,
     initialized_low_mac_state: OpaqueBytes<0x94c>,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
@@ -175,6 +176,8 @@ struct InitializedHifControl {
     count_threshold: SharedU8,
     coalesce_delay: SharedU32,
 }
+#[repr(C, align(4))]
+struct HostPasRing { head: SharedU32, tail: SharedU32, slots: [SharedU32; 64] }
 #[repr(C, align(4))]
 struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
 #[repr(C, align(4))]
@@ -1656,6 +1659,11 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const HOST_PAS_RING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, host_pas_ring));
+pub(crate) const HOST_PAS_RING_HEAD: DtcmAddress = HOST_PAS_RING;
+pub(crate) const HOST_PAS_RING_TAIL: DtcmAddress = DtcmAddress::from_offset(HOST_PAS_RING.offset() + core::mem::offset_of!(HostPasRing, tail));
+pub(crate) const HOST_PAS_RING_SLOTS: DtcmAddress = DtcmAddress::from_offset(HOST_PAS_RING.offset() + core::mem::offset_of!(HostPasRing, slots));
+pub(crate) const fn host_pas_ring_slot(index: usize) -> Option<DtcmAddress> { if index < 64 { Some(DtcmAddress::from_offset(HOST_PAS_RING_SLOTS.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const IRQ_CALLBACK_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, irq_callbacks));
 pub(crate) const fn irq_callback(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(DtcmAddress::from_offset(IRQ_CALLBACK_TABLE.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const VISIBLE_COMPLETION_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, visible_completion_words));
@@ -3094,7 +3102,12 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedControlWords, tsf_accumulator_low) == 0x10);
     assert!(core::mem::offset_of!(InitializedControlWords, timer_counter) == 0x1c);
     assert!(core::mem::offset_of!(InitializedVendorImage, control_words) == 0x1420);
-    assert!(core::mem::offset_of!(InitializedVendorImage, pre_low_mac_root) == 0x1440);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) == 0x1440);
+    assert!(core::mem::offset_of!(InitializedVendorImage, host_pas_ring) == 0x1578);
+    assert!(core::mem::size_of::<HostPasRing>() == 0x108);
+    assert!(core::mem::offset_of!(HostPasRing, head) == 0x00);
+    assert!(core::mem::offset_of!(HostPasRing, tail) == 0x04);
+    assert!(core::mem::offset_of!(HostPasRing, slots) == 0x08);
     assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) == 0x1680);
     assert!(
         core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) + 0x7ec == 0x1e6c
@@ -3728,6 +3741,18 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_host_pas_ring_addresses_are_exact() {
+        assert_eq!(HOST_PAS_RING.get(), 0x0400_1578);
+        assert_eq!(HOST_PAS_RING_HEAD.get(), 0x0400_1578);
+        assert_eq!(HOST_PAS_RING_TAIL.get(), 0x0400_157c);
+        assert_eq!(HOST_PAS_RING_SLOTS.get(), 0x0400_1580);
+        assert_eq!(host_pas_ring_slot(0).unwrap().get(), 0x0400_1580);
+        assert_eq!(host_pas_ring_slot(63).unwrap().get(), 0x0400_167c);
+        assert_eq!(host_pas_ring_slot(63).unwrap().get() + 4, 0x0400_1680);
+        assert!(host_pas_ring_slot(64).is_none());
     }
 
     #[test]

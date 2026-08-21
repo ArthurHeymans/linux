@@ -4240,3 +4240,28 @@ manifest  tools/initialized-irq-callbacks-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.72 Host PAS scheduling ring
+
+The retained host PAS ring at `0x04001578..0x04001680` is now an exact
+`HostPasRing`: 32-bit head and tail cursors followed by 64 pointer words. The
+logical cursors remain masked to six bits by consumers; slot arithmetic remains
+unchecked after that equivalent validation.
+
+MAC startup, the translated class-0 scheduler, cancellation rollback,
+diagnostics, and host-driver ring maintenance now derive the root from the
+`InitializedVendorImage` layout. All volatile widths, compaction order, hole
+clearing, head/tail publication, and wrapping cursor arithmetic are unchanged.
+`tools/check-host-pas-ring-layout.py` pins the single linked root and its complete
+decoded xref multiset. The complete ELF and packed image remain byte-identical
+to the qualified initialized-IRQ-callbacks parent, so no hardware rerun is
+required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-host-pas-ring-final-check.log
+          c27e45999de02f6976ccc72c733ce233178728d370b9d4ecf952e2939bb1f0cb
+manifest  tools/host-pas-ring-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

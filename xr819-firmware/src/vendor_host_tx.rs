@@ -603,7 +603,7 @@ unsafe fn push_live_pas(
     _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     context: HostContextAddress,
 ) -> Result<(), PendingServiceError> {
-    const RING: u32 = 0x0400_1578;
+    const RING: u32 = crate::dtcm::HOST_PAS_RING.get() as u32;
     let old_tail = unsafe { read_live_u32(RING + 4) as u8 & 0x3f };
     let mut scan = unsafe { read_live_u32(RING) as u8 & 0x3f };
     let mut write = old_tail;
@@ -639,7 +639,7 @@ unsafe fn remove_live_pas(
     _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     context: HostContextAddress,
 ) -> Result<(), CancelError> {
-    const RING: u32 = 0x0400_1578;
+    const RING: u32 = crate::dtcm::HOST_PAS_RING.get() as u32;
     let target = context.pas().raw();
     let head = unsafe { read_live_u32(RING) as u8 & 0x3f };
     let tail = unsafe { read_live_u32(RING + 4) as u8 & 0x3f };
@@ -942,10 +942,10 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
     }
     let ac = unsafe { read_live_u8(pas + 0x0c) };
     let pipe = unsafe { read_live_u8(crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32 + u32::from(ac)) };
-    let ring_head = unsafe { read_live_u32(0x0400_1578) as u8 & 0x3f };
-    let ring_tail = unsafe { read_live_u32(0x0400_157c) as u8 & 0x3f };
+    let ring_head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
+    let ring_tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
     let mut slot = ring_head;
-    while slot != ring_tail && unsafe { read_live_u32(0x0400_1580 + u32::from(slot) * 4) } != pas {
+    while slot != ring_tail && unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(slot) * 4) } != pas {
         slot = slot.wrapping_add(1) & 0x3f;
     }
     SchedulerLiveDiagnostic {
@@ -1079,10 +1079,10 @@ impl HostSchedulerReservation {
                 write_live_u32(self.command + index as u32 * 4, word);
             }
             write_live_u32(
-                0x0400_1580 + u32::from(self.ring_slot) * 4,
+                crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(self.ring_slot) * 4,
                 self.context.pas().raw(),
             );
-            write_live_u32(0x0400_1578, u32::from(self.original_ring_head));
+            write_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32, u32::from(self.original_ring_head));
         }
         retained.phase = HostTxPhase::PasQueued;
         true
@@ -1130,11 +1130,11 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     }
     let ac = unsafe { read_live_u8(pas + 0x0c) };
     let pipe = unsafe { read_live_u8(crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32 + u32::from(ac)) };
-    let head = unsafe { read_live_u32(0x0400_1578) as u8 & 0x3f };
-    let tail = unsafe { read_live_u32(0x0400_157c) as u8 & 0x3f };
+    let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
+    let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
     let mut ring_slot = head;
     while ring_slot != tail
-        && unsafe { read_live_u32(0x0400_1580 + u32::from(ring_slot) * 4) } != pas
+        && unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(ring_slot) * 4) } != pas
     {
         ring_slot = ring_slot.wrapping_add(1) & 0x3f;
     }
@@ -1179,12 +1179,12 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     }
 
     unsafe {
-        write_live_u32(0x0400_1580 + u32::from(ring_slot) * 4, 0);
+        write_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(ring_slot) * 4, 0);
         let mut new_head = head;
-        while new_head != tail && read_live_u32(0x0400_1580 + u32::from(new_head) * 4) == 0 {
+        while new_head != tail && read_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(new_head) * 4) == 0 {
             new_head = new_head.wrapping_add(1) & 0x3f;
         }
-        write_live_u32(0x0400_1578, u32::from(new_head));
+        write_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32, u32::from(new_head));
         // Vendor marks the first ordinary descriptor with bit 26 and every
         // later descriptor in the same scheduler batch with bit 27 before
         // `txp_build_pipe_descriptor(..., 0)`.
@@ -1212,8 +1212,8 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         write_live_u32(command + 8, 0xdc00_0000);
         if let Err(error) = crate::tx::emit_host_frame_descriptor_at(context.raw(), command + 0x0c)
         {
-            write_live_u32(0x0400_1580 + u32::from(ring_slot) * 4, pas);
-            write_live_u32(0x0400_1578, u32::from(head));
+            write_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(ring_slot) * 4, pas);
+            write_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32, u32::from(head));
             write_host_u32(context.control_bits(), original_control_bits);
             write_live_u32(slot_record, original_slot_header);
             write_live_u32(slot_record + 0x0c, original_slot_frame);

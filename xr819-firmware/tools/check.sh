@@ -49,6 +49,7 @@ python3 tools/check-duration-quantum-pointers-layout.py
 python3 tools/check-initialized-tx-rate-tables-layout.py
 python3 tools/check-initialized-completion-words-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
+python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -102,6 +103,7 @@ python3 tools/check-duration-quantum-pointers-layout.py "$ELF"
 python3 tools/check-initialized-tx-rate-tables-layout.py "$ELF"
 python3 tools/check-initialized-completion-words-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
+python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -505,6 +507,15 @@ if [[ -n "${XR819_INITIALIZED_IRQ_CALLBACKS_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_IRQ_CALLBACKS_PARENT_ELF" "$ELF"
 else
   echo "== initialized-IRQ-callbacks codegen gate skipped: set XR819_INITIALIZED_IRQ_CALLBACKS_PARENT_ELF to the qualified initialized-completion-words ELF =="
+fi
+
+if [[ -n "${XR819_HOST_PAS_RING_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed host-PAS-ring parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/host-pas-ring-codegen-manifest.json \
+    "$XR819_HOST_PAS_RING_PARENT_ELF" "$ELF"
+else
+  echo "== host-PAS-ring codegen gate skipped: set XR819_HOST_PAS_RING_PARENT_ELF to the qualified initialized-IRQ-callbacks ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

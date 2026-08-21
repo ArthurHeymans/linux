@@ -910,8 +910,8 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // 0x26a -> 0x52c.
         platform::prepare_mac_receive_hardware();
 
-        write_u32(0x0400_1578, 0);
-        write_u32(0x0400_157c, 0);
+        write_u32(crate::dtcm::HOST_PAS_RING_HEAD.get(), 0);
+        write_u32(crate::dtcm::HOST_PAS_RING_TAIL.get(), 0);
 
         let callback = inactive_startup_task as *const () as usize as u32 | 1;
         for index in [7_usize, 12, 11, 27, 13] {

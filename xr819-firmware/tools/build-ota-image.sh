@@ -41,6 +41,7 @@ python3 tools/check-duration-quantum-pointers-layout.py
 python3 tools/check-initialized-tx-rate-tables-layout.py
 python3 tools/check-initialized-completion-words-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
+python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -86,6 +87,7 @@ python3 tools/check-duration-quantum-pointers-layout.py "$ELF"
 python3 tools/check-initialized-tx-rate-tables-layout.py "$ELF"
 python3 tools/check-initialized-completion-words-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
+python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
