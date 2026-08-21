@@ -815,7 +815,7 @@ extern "C" fn rust_main() -> ! {
                         unsafe {
                             u32::from((xr819_firmware::dtcm::phy_profile0_ready().get() as *const u8).read_volatile())
                                 | (u32::from((xr819_firmware::dtcm::phy_auxiliary_state().get() as *const u8).read_volatile()) << 8)
-                                | (u32::from((0x0400_99c4 as *const u8).read_volatile()) << 16)
+                                | (u32::from((xr819_firmware::dtcm::phy_startup_observation().get() as *const u8).read_volatile()) << 16)
                                 | (u32::from((xr819_firmware::dtcm::phy_silicon_variant().get() as *const u8).read_volatile()) << 24)
                         },
                         scan_error,

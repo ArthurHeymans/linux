@@ -2993,3 +2993,43 @@ manifest  tools/phy-measurement-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.30 PHY channel cache and calibration controls
+
+The next `0x30` bytes of `PhyCoreState` are now an exact shared layout:
+
+```text
+0x040099ac +0x00 two u32 channel-configuration cache words
+           +0x18 u8 startup/diagnostic observation
+           +0x22 u16 retained channel
+           +0x24 u8 calibration state
+           +0x25 u8 calibration auxiliary state
+           +0x28 u32 retained control word
+           +0x2c u32 selected rate/configuration table pointer
+0x040099dc end
+```
+
+The two cache slots remain bounded, and the translated copy helper preserves its
+existing `slot <= 1` validation before using the unchecked typed constructor.
+Production PHY, configuration, scan, and startup-observation paths now derive
+these addresses from `dtcm.rs`. The extension diagnostic retains one explicit
+control-word read at `0x040099d4`.
+
+`tools/check-phy-channel-cache-layout.py` covers the complete block, rejects
+other production literals and synthesized base/stride forms, and pins eight
+linked literal words plus fourteen decoded literal-load xrefs. The complete ELF
+remains byte-identical to the qualified PHY-measurement parent, so no hardware
+rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-phy-channel-cache-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-channel-cache-final-check.log
+          f5f6ff96d8bdaff10a417ba2b28ad40dd6a65323e9641f4527a573c1fbf4a19c
+manifest  tools/phy-channel-cache-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

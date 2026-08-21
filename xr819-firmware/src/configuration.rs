@@ -296,7 +296,7 @@ unsafe fn populate_vendor_calibration_state() {
                         write_u8(0x0400_34c6 + index, value);
                     }
                     write_u8(0x0400_34f6, count as u8);
-                    write_u32(0x0400_99d8, 0x0400_34b0);
+                    write_u32(crate::dtcm::phy_table_pointer().get(), 0x0400_34b0);
                 }
             }
         }

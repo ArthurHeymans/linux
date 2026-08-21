@@ -33,6 +33,7 @@ python3 tools/check-hif-mic-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
+python3 tools/check-phy-channel-cache-layout.py
 python3 tools/check-host-context-layout.py
 python3 tools/check-peer-pipe-layout.py
 python3 tools/check-command-channel-overlay.py
@@ -60,6 +61,7 @@ python3 tools/check-hif-mic-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
+python3 tools/check-phy-channel-cache-layout.py "$ELF"
 python3 tools/check-host-context-layout.py "$ELF"
 python3 tools/check-peer-pipe-layout.py "$ELF"
 python3 tools/check-command-channel-overlay.py "$ELF"
@@ -219,6 +221,15 @@ if [[ -n "${XR819_PHY_MEASUREMENT_PARENT_ELF:-}" ]]; then
     "$XR819_PHY_MEASUREMENT_PARENT_ELF" "$ELF"
 else
   echo "== PHY-measurement codegen gate skipped: set XR819_PHY_MEASUREMENT_PARENT_ELF to the qualified PHY-profile ELF =="
+fi
+
+if [[ -n "${XR819_PHY_CHANNEL_CACHE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed PHY-channel-cache parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/phy-channel-cache-codegen-manifest.json \
+    "$XR819_PHY_CHANNEL_CACHE_PARENT_ELF" "$ELF"
+else
+  echo "== PHY-channel-cache codegen gate skipped: set XR819_PHY_CHANNEL_CACHE_PARENT_ELF to the qualified PHY-measurement ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

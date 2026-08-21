@@ -976,7 +976,7 @@ pub unsafe fn copy_channel_configuration_slot(slot: u8) {
     }
     unsafe {
         let value = (crate::dtcm::phy_measured_b().get() as *const u32).read_volatile();
-        write_u32(0x0400_99ac + usize::from(slot) * 4, value);
+        write_u32(crate::dtcm::phy_channel_cache_unchecked(usize::from(slot)).get(), value);
     }
 }
 
@@ -1245,7 +1245,7 @@ pub unsafe fn channel_tx_power_from_rate_table(
     second_column: bool,
 ) -> Result<i16, ChannelPowerError> {
     unsafe {
-        let table = (0x0400_99d8 as *const u32).read_volatile() as usize;
+        let table = (crate::dtcm::phy_table_pointer().get() as *const u32).read_volatile() as usize;
         if table == 0 {
             return Err(ChannelPowerError::InvalidRateTable);
         }
@@ -1596,7 +1596,7 @@ pub unsafe fn record_calibrated_channel(channel: u16) {
     unsafe {
         match (crate::dtcm::phy_profile().get() as *const u8).read_volatile() {
             0 if (crate::dtcm::phy_profile0_ready().get() as *const u8).read_volatile() == 1 => write_u16(crate::dtcm::phy_profile1_channel().get(), channel),
-            1 if (crate::dtcm::phy_profile1_ready().get() as *const u8).read_volatile() == 1 => write_u16(0x0400_99ce, channel),
+            1 if (crate::dtcm::phy_profile1_ready().get() as *const u8).read_volatile() == 1 => write_u16(crate::dtcm::phy_retained_channel().get(), channel),
             _ => {}
         }
     }
@@ -1848,7 +1848,7 @@ unsafe fn program_scan_receive_band() {
         write_u8(crate::dtcm::phy_profile().get(), 0);
         write_u8(crate::dtcm::phy_phase().get(), 2);
         write_u8(crate::dtcm::phy_calibration_stage().get(), 3);
-        write_u8(0x0400_99d0, 1);
+        write_u8(crate::dtcm::phy_calibration_state().get(), 1);
         program_mode2_band_hardware();
     }
 }
@@ -1950,8 +1950,8 @@ pub unsafe fn start_scan_stop_calibration_state() {
         (crate::dtcm::phy_calibration_stage().get() as *mut u8).write_volatile(1);
         if (crate::dtcm::phy_phase().get() as *const u8).read_volatile() == 3 {
             (crate::dtcm::phy_profile1_ready().get() as *mut u8).write_volatile(0);
-            (0x0400_99ce as *mut u16).write_volatile(100);
-            (0x0400_99d0 as *mut u8).write_volatile(1);
+            (crate::dtcm::phy_retained_channel().get() as *mut u16).write_volatile(100);
+            (crate::dtcm::phy_calibration_state().get() as *mut u8).write_volatile(1);
         }
     }
 }
@@ -2041,7 +2041,7 @@ unsafe fn begin_channel_transition(
         (crate::dtcm::phy_phase().get() as *const u8).read_volatile() == 2
             && (crate::dtcm::phy_profile().get() as *const u8).read_volatile() == 0
             && (crate::dtcm::phy_channel().get() as *const u16).read_volatile() == channel
-            && (0x0400_99d0 as *const u8).read_volatile() == 0
+            && (crate::dtcm::phy_calibration_state().get() as *const u8).read_volatile() == 0
     };
     if !same_mode_channel {
         unsafe {
@@ -2107,7 +2107,7 @@ unsafe fn begin_channel_transition(
     // First return from vendor `phy_cal_run_step_timed`: state 1, followed by
     // a 120-tick cooperative settle interval.
     unsafe {
-        write_u8(0x0400_99d0, 0);
+        write_u8(crate::dtcm::phy_calibration_state().get(), 0);
         write_u8(0x0400_1adc, 1);
     };
     Ok(ChannelTransitionResult {
@@ -4435,13 +4435,13 @@ pub unsafe fn initialize_mac_software_state() {
         write_u8(crate::dtcm::phy_measurement_control().get(), 0);
         write_u8(crate::dtcm::phy_silicon_variant().get(), detect_rf_silicon_variant());
         write_u8(crate::dtcm::phy_retained_state().get(), 0);
-        write_u16(0x0400_99ce, 100);
-        write_u8(0x0400_99d0, 1);
-        write_u8(0x0400_99d1, 0);
+        write_u16(crate::dtcm::phy_retained_channel().get(), 100);
+        write_u8(crate::dtcm::phy_calibration_state().get(), 1);
+        write_u8(crate::dtcm::phy_calibration_aux().get(), 0);
         write_u8(0x0400_99f4 + 0x14, 1);
 
         // Vendor 0x198f2 mode-zero state pointers.
-        write_u32(0x0400_99d8, 0x0400_34b0);
+        write_u32(crate::dtcm::phy_table_pointer().get(), 0x0400_34b0);
         write_u32(0x0400_99ec, 0x0400_1088);
         write_u32(0x0400_99f0, 0x0400_1098);
         write_u32(0x0400_99f4, u32::MAX);

@@ -711,7 +711,9 @@ struct PhyProfileState { state: SharedU8, opaque_01: SharedU8, profile: SharedU8
 #[repr(C, align(4))]
 struct PhyMeasurementState { frequency_khz: SharedU32, opaque_04: SharedU32, control_08: SharedU8, opaque_09: OpaqueBytes<0x05>, sample_width: SharedU16, offset_word: SharedU32, correction: SharedU16, opaque_16: SharedU8, override_value: SharedU8, silicon_variant: SharedU8, opaque_19: OpaqueBytes<0x03>, denominator: SharedU16, correction_offset: SharedU16, measured_a: SharedU32, measured_b: SharedU32, opaque_28: OpaqueBytes<0x0d>, retained_state: SharedU8, opaque_36: SharedU8, zero_select: SharedU8 }
 #[repr(C, align(4))]
-struct PhyCoreState { references: PhyCalibrationReferences, profile_state: PhyProfileState, measurement_state: PhyMeasurementState, opaque_70: OpaqueBytes<0x60> }
+struct PhyChannelCacheState { configuration_cache: [SharedU32; 2], opaque_08: OpaqueBytes<0x10>, startup_observation: SharedU8, opaque_19: OpaqueBytes<0x09>, retained_channel: SharedU16, calibration_state: SharedU8, calibration_aux: SharedU8, opaque_26: OpaqueBytes<0x02>, control_word: SharedU32, table_pointer: SharedU32 }
+#[repr(C, align(4))]
+struct PhyCoreState { references: PhyCalibrationReferences, profile_state: PhyProfileState, measurement_state: PhyMeasurementState, channel_cache_state: PhyChannelCacheState, opaque_a0: OpaqueBytes<0x30> }
 
 opaque_family!(
     /// Remaining PHY and unknown vendor-zeroed tail.
@@ -1547,6 +1549,16 @@ pub(crate) const fn phy_measured_a() -> DtcmAddress { phy_measurement_field(core
 pub(crate) const fn phy_measured_b() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, measured_b)) }
 pub(crate) const fn phy_retained_state() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, retained_state)) }
 pub(crate) const fn phy_zero_select() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, zero_select)) }
+pub(crate) const PHY_CHANNEL_CACHE_STATE: DtcmAddress = DtcmAddress::from_offset(0x99ac);
+const fn phy_channel_cache_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_CHANNEL_CACHE_STATE.offset() + offset) }
+pub(crate) const fn phy_channel_cache(slot: usize) -> Option<DtcmAddress> { if slot < 2 { Some(phy_channel_cache_unchecked(slot)) } else { None } }
+pub(crate) const fn phy_channel_cache_unchecked(slot: usize) -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, configuration_cache) + slot * core::mem::size_of::<SharedU32>()) }
+pub const fn phy_startup_observation() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, startup_observation)) }
+pub(crate) const fn phy_retained_channel() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, retained_channel)) }
+pub(crate) const fn phy_calibration_state() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, calibration_state)) }
+pub(crate) const fn phy_calibration_aux() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, calibration_aux)) }
+pub(crate) const fn phy_control_word() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, control_word)) }
+pub(crate) const fn phy_table_pointer() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, table_pointer)) }
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
 
@@ -2395,11 +2407,19 @@ const _: () = {
     assert!(core::mem::offset_of!(PhyMeasurementState, measured_b) == 0x24);
     assert!(core::mem::offset_of!(PhyMeasurementState, retained_state) == 0x35);
     assert!(core::mem::offset_of!(PhyMeasurementState, zero_select) == 0x37);
+    assert_type_layout!(PhyChannelCacheState, 0x30, 4);
+    assert!(core::mem::offset_of!(PhyChannelCacheState, startup_observation) == 0x18);
+    assert!(core::mem::offset_of!(PhyChannelCacheState, retained_channel) == 0x22);
+    assert!(core::mem::offset_of!(PhyChannelCacheState, calibration_state) == 0x24);
+    assert!(core::mem::offset_of!(PhyChannelCacheState, calibration_aux) == 0x25);
+    assert!(core::mem::offset_of!(PhyChannelCacheState, control_word) == 0x28);
+    assert!(core::mem::offset_of!(PhyChannelCacheState, table_pointer) == 0x2c);
     assert_type_layout!(PhyCoreState, 0xd0, 4);
     assert!(core::mem::offset_of!(PhyCoreState, references) == 0x00);
     assert!(core::mem::offset_of!(PhyCoreState, profile_state) == 0x10);
     assert!(core::mem::offset_of!(PhyCoreState, measurement_state) == 0x38);
-    assert!(core::mem::offset_of!(PhyCoreState, opaque_70) == 0x70);
+    assert!(core::mem::offset_of!(PhyCoreState, channel_cache_state) == 0x70);
+    assert!(core::mem::offset_of!(PhyCoreState, opaque_a0) == 0xa0);
     assert_type_layout!(PhyTail, 0x238, 4);
     assert_type_layout!(ResearchMargin, 0x3bc, 4);
     assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4);
@@ -2792,6 +2812,17 @@ mod tests {
         assert_eq!(phy_measured_b().get(), 0x0400_9998);
         assert_eq!(phy_retained_state().get(), 0x0400_99a9);
         assert_eq!(phy_zero_select().get() + 1, 0x0400_99ac);
+        assert_eq!(PHY_CHANNEL_CACHE_STATE.get(), 0x0400_99ac);
+        assert_eq!(phy_channel_cache(0).unwrap().get(), 0x0400_99ac);
+        assert_eq!(phy_channel_cache(1).unwrap().get(), 0x0400_99b0);
+        assert!(phy_channel_cache(2).is_none());
+        assert_eq!(phy_startup_observation().get(), 0x0400_99c4);
+        assert_eq!(phy_retained_channel().get(), 0x0400_99ce);
+        assert_eq!(phy_calibration_state().get(), 0x0400_99d0);
+        assert_eq!(phy_calibration_aux().get(), 0x0400_99d1);
+        assert_eq!(phy_control_word().get(), 0x0400_99d4);
+        assert_eq!(phy_table_pointer().get(), 0x0400_99d8);
+        assert_eq!(phy_table_pointer().get() + 4, 0x0400_99dc);
     }
 
     #[test]
