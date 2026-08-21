@@ -3457,3 +3457,40 @@ manifest  tools/rf-initialization-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.42 Overlapping beacon IE-index views
+
+With the RF overlap represented separately, the two retained beacon IE indexes
+are now modeled as address-only views:
+
+```text
+0x04002578 u32 active-index selector
+0x0400257c index 0: u32 count plus 256 u16 offsets, logical size 0x204
+0x04002780 index 1: u32 count plus 256 u16 offsets, logical size 0x204
+0x04002984 logical end of index 1
+```
+
+`ie_index_build` bounds the count at 256 and alternates the current and prior
+indexes using the selector. These are not embedded owners: index 0 overlaps the
+accepted RF-initialization view, including its root at `0x04002730`. The APIs
+therefore expose only bounded addresses and preserve the underlying
+`PreConfigurationTables` bytes as opaque quarantine.
+
+`tools/check-beacon-ie-index-view.py` covers both logical indexes, treats the RF
+checker as a reviewed overlapping owner, and rejects other production literals
+or synthesized aliases. Its one linked literal and decoded xref are the shared
+RF root already reviewed in A.41. The complete ELF remains byte-identical to the
+qualified RF-initialization parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-beacon-ie-index-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-beacon-ie-index-final-check.log
+          66ff81148d8a1186b46026b6576f5d666d9da7720b5cf07598d8184e10d6a6e6
+manifest  tools/beacon-ie-index-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

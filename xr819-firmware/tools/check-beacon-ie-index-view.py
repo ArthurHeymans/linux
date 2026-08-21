@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for the overlapping RF-initialization view.
+"""Drift-evidence gates for overlapping beacon IE-index views.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RF_INITIALIZATION_RANGE = (0x04002684, 0x0400276C)
+BEACON_IE_INDEX_RANGE = (0x04002578, 0x04002984)
 SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -57,8 +57,8 @@ OWNER_FILES = {
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "RF_INITIALIZATION_BASE",
-    "RF_INITIALIZATION_STRIDE",
+    "BEACON_IE_INDEX_BASE",
+    "BEACON_IE_INDEX_STRIDE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
@@ -190,7 +190,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return RF_INITIALIZATION_RANGE[0] <= value < RF_INITIALIZATION_RANGE[1]
+    return BEACON_IE_INDEX_RANGE[0] <= value < BEACON_IE_INDEX_RANGE[1]
 
 
 def check_source() -> None:
@@ -212,14 +212,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: RF-initialization literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: beacon-IE-index literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized RF-initialization form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized beacon-IE-index form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"RF INITIALIZATION SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"BEACON IE INDEX SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -290,9 +290,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("RF INITIALIZATION LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("BEACON IE INDEX LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "RF INITIALIZATION LINKED DRIFT-EVIDENCE GATE PASSED "
+        "BEACON IE INDEX LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -311,4 +311,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"RF-initialization drift gate failed: {error}")
+        raise SystemExit(f"beacon-IE-index drift gate failed: {error}")

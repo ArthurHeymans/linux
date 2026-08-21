@@ -166,6 +166,10 @@ struct TemplateFrameDescriptor { kind_00: SharedU8, flags_01: SharedU8, opaque_0
 /// view crosses beacon/filter storage and therefore is not embedded as an owner.
 #[repr(C, align(4))]
 struct RfInitializationObservedLayout { control_minus_ac: SharedU32, opaque_04: OpaqueBytes<0x04>, control_minus_a4: SharedU32, opaque_0c: OpaqueBytes<0x08>, table_minus_98: SharedU32, table_minus_94: SharedU32, control_minus_90: SharedU32, opaque_20: OpaqueBytes<0x38>, negative_words: [SharedU32; 7], opaque_74: OpaqueBytes<0x38>, root_prefix: OpaqueBytes<0x14>, table_14: SharedU32, table_18: SharedU32, table_1c: SharedU32, table_20: SharedU32, pointer_24: SharedU32, opaque_d4: OpaqueBytes<0x08>, control_30: SharedU32, opaque_e0: OpaqueBytes<0x04>, pointer_38: SharedU32 }
+/// One logical beacon IE-offset index. Two observed starts overlap the RF view,
+/// so this type is address schema only and is not embedded as physical ownership.
+#[repr(C, align(4))]
+struct BeaconIeOffsetIndexObservedLayout { count: SharedU32, offsets: [SharedU16; 256] }
 #[repr(C, align(4))]
 struct PreConfigurationTables { gain_source_records: [PhyGainSourceRecord; 22], opaque_084: OpaqueBytes<0x0d98>, template_descriptors: [TemplateFrameDescriptor; 2], opaque_e9c: OpaqueBytes<0x03e0> }
 #[repr(C)]
@@ -1387,6 +1391,9 @@ pub(crate) const PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset
 pub(crate) const fn phy_gain_source_record(index: usize) -> Option<DtcmAddress> { if index < 22 { Some(DtcmAddress::from_offset(PHY_GAIN_SOURCE_RECORDS.offset() + index * core::mem::size_of::<PhyGainSourceRecord>())) } else { None } }
 pub(crate) const RF_INITIALIZATION_VIEW: DtcmAddress = DtcmAddress::from_offset(0x2684);
 pub(crate) const RF_INITIALIZATION_ROOT: DtcmAddress = DtcmAddress::from_offset(0x2730);
+pub(crate) const BEACON_IE_INDEX_SELECTOR: DtcmAddress = DtcmAddress::from_offset(0x2578);
+pub(crate) const fn beacon_ie_index(index: usize) -> Option<DtcmAddress> { match index { 0 => Some(DtcmAddress::from_offset(0x257c)), 1 => Some(DtcmAddress::from_offset(0x2780)), _ => None } }
+pub(crate) const fn beacon_ie_offset(index: usize, entry: usize) -> Option<DtcmAddress> { if entry >= 256 { return None; } match beacon_ie_index(index) { Some(base) => Some(DtcmAddress::from_offset(base.offset() + core::mem::offset_of!(BeaconIeOffsetIndexObservedLayout, offsets) + entry * core::mem::size_of::<SharedU16>())), None => None } }
 pub(crate) const TEMPLATE_FRAME_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(0x3050);
 pub(crate) const fn template_frame_descriptor(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(TEMPLATE_FRAME_DESCRIPTORS.offset() + index * core::mem::size_of::<TemplateFrameDescriptor>())) } else { None } }
 pub(crate) const SDD_CONFIGURATION_TABLES: DtcmAddress = DtcmAddress::from_offset(0x34b0);
@@ -2127,6 +2134,8 @@ const _: () = {
     assert_type_layout!(PhyGainSourceRecord, 0x06, 2);
     assert!(core::mem::offset_of!(PhyGainSourceRecord, lower) == 0x02);
     assert!(core::mem::offset_of!(PhyGainSourceRecord, upper) == 0x04);
+    assert_type_layout!(BeaconIeOffsetIndexObservedLayout, 0x204, 4);
+    assert!(core::mem::offset_of!(BeaconIeOffsetIndexObservedLayout, offsets) == 0x04);
     assert_type_layout!(RfInitializationObservedLayout, 0xe8, 4);
     assert!(core::mem::offset_of!(RfInitializationObservedLayout, table_minus_98) == 0x14);
     assert!(core::mem::offset_of!(RfInitializationObservedLayout, negative_words) == 0x58);
@@ -2918,6 +2927,19 @@ mod tests {
         assert_eq!(phy_gain_source_record(21).unwrap().get(), 0x0400_22b2);
         assert!(phy_gain_source_record(22).is_none());
         assert_eq!(phy_gain_source_record(21).unwrap().get() + 6, 0x0400_22b8);
+    }
+
+    #[test]
+    fn beacon_ie_index_view_addresses_are_exact() {
+        assert_eq!(BEACON_IE_INDEX_SELECTOR.get(), 0x0400_2578);
+        assert_eq!(beacon_ie_index(0).unwrap().get(), 0x0400_257c);
+        assert_eq!(beacon_ie_index(1).unwrap().get(), 0x0400_2780);
+        assert!(beacon_ie_index(2).is_none());
+        assert_eq!(beacon_ie_offset(0, 0).unwrap().get(), 0x0400_2580);
+        assert_eq!(beacon_ie_offset(0, 255).unwrap().get(), 0x0400_277e);
+        assert_eq!(beacon_ie_offset(1, 255).unwrap().get(), 0x0400_2982);
+        assert!(beacon_ie_offset(0, 256).is_none());
+        assert_eq!(beacon_ie_offset(1, 255).unwrap().get() + 2, 0x0400_2984);
     }
 
     #[test]

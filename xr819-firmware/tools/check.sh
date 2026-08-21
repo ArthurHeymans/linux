@@ -30,6 +30,7 @@ python3 tools/check-scheduler-support-layout.py
 python3 tools/check-phy-gain-source-layout.py
 python3 tools/check-template-descriptor-layout.py
 python3 tools/check-rf-initialization-view.py
+python3 tools/check-beacon-ie-index-view.py
 python3 tools/check-sdd-profile-layout.py
 python3 tools/check-wake-context-layout.py
 python3 tools/check-low-mac-pas-layout.py
@@ -68,6 +69,7 @@ python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-phy-gain-source-layout.py "$ELF"
 python3 tools/check-template-descriptor-layout.py "$ELF"
 python3 tools/check-rf-initialization-view.py "$ELF"
+python3 tools/check-beacon-ie-index-view.py "$ELF"
 python3 tools/check-sdd-profile-layout.py "$ELF"
 python3 tools/check-wake-context-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
@@ -340,6 +342,15 @@ if [[ -n "${XR819_RF_INITIALIZATION_PARENT_ELF:-}" ]]; then
     "$XR819_RF_INITIALIZATION_PARENT_ELF" "$ELF"
 else
   echo "== RF-initialization codegen gate skipped: set XR819_RF_INITIALIZATION_PARENT_ELF to the qualified context-completion ELF =="
+fi
+
+if [[ -n "${XR819_BEACON_IE_INDEX_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed beacon-IE-index parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/beacon-ie-index-codegen-manifest.json \
+    "$XR819_BEACON_IE_INDEX_PARENT_ELF" "$ELF"
+else
+  echo "== beacon-IE-index codegen gate skipped: set XR819_BEACON_IE_INDEX_PARENT_ELF to the qualified RF-initialization ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

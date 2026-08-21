@@ -25,6 +25,7 @@ python3 tools/check-scheduler-support-layout.py
 python3 tools/check-phy-gain-source-layout.py
 python3 tools/check-template-descriptor-layout.py
 python3 tools/check-rf-initialization-view.py
+python3 tools/check-beacon-ie-index-view.py
 python3 tools/check-sdd-profile-layout.py
 python3 tools/check-wake-context-layout.py
 python3 tools/check-vif-timer-layout.py
@@ -55,6 +56,7 @@ python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-phy-gain-source-layout.py "$ELF"
 python3 tools/check-template-descriptor-layout.py "$ELF"
 python3 tools/check-rf-initialization-view.py "$ELF"
+python3 tools/check-beacon-ie-index-view.py "$ELF"
 python3 tools/check-sdd-profile-layout.py "$ELF"
 python3 tools/check-wake-context-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
