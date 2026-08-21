@@ -127,7 +127,7 @@ struct InitializedVendorImage {
     hif_control: InitializedHifControl,
     irq_callbacks: [SharedU32; 32],
     pre_ampdu_counters: OpaqueBytes<0x64>,
-    ampdu_counters: OpaqueBytes<0x28>,
+    ampdu_counters: AmpduTelemetryCounters,
     pre_control_words: OpaqueBytes<0x158>,
     control_words: OpaqueBytes<0x20>,
     pre_low_mac_root: OpaqueBytes<0x240>,
@@ -135,6 +135,19 @@ struct InitializedVendorImage {
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
+}
+#[repr(C, align(4))]
+struct AmpduTelemetryCounters {
+    tx_error_frames: SharedU32,
+    tx_counted_frames: SharedU32,
+    tx_duration_low: SharedU32,
+    tx_duration_high: SharedU32,
+    rx_management_0: SharedU32,
+    rx_management_1: SharedU32,
+    rx_management_2: SharedU32,
+    rx_management_3: SharedU32,
+    opaque_20: SharedU32,
+    tx_retry_count: SharedU32,
 }
 #[repr(C, align(4))]
 struct InitializedHifControl {
@@ -1619,6 +1632,14 @@ pub(crate) const fn initialized_hif_pending_threshold() -> DtcmAddress { initial
 pub(crate) const fn initialized_hif_ring_depth_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, ring_depth_threshold)) }
 pub(crate) const fn initialized_hif_count_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, count_threshold)) }
 pub(crate) const fn initialized_hif_coalesce_delay() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, coalesce_delay)) }
+pub(crate) const AMPDU_TELEMETRY_COUNTERS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, ampdu_counters));
+const fn ampdu_telemetry_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(AMPDU_TELEMETRY_COUNTERS.offset() + offset) }
+pub(crate) const fn ampdu_tx_error_frames() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_error_frames)) }
+pub(crate) const fn ampdu_tx_counted_frames() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_counted_frames)) }
+pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_low)) }
+pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
+pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
+pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
 pub const SCHEDULER_EVENT_ROOT: DtcmAddress = DtcmAddress::from_offset(0x1fd4);
 pub(crate) const RUNTIME_REGISTER_BACKOFF_STATE: DtcmAddress = DtcmAddress::from_offset(0x2078);
 const fn runtime_register_backoff_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(RUNTIME_REGISTER_BACKOFF_STATE.offset() + offset) }
@@ -3010,6 +3031,15 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedHifControl, coalesce_delay) == 0x0c);
     assert!(core::mem::offset_of!(InitializedVendorImage, hif_control) == 0x11ac);
     assert!(core::mem::offset_of!(InitializedVendorImage, irq_callbacks) == 0x11bc);
+    assert_type_layout!(AmpduTelemetryCounters, 0x28, 4);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, tx_error_frames) == 0x00);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, tx_counted_frames) == 0x04);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_low) == 0x08);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high) == 0x0c);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) == 0x10);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_3) == 0x1c);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, opaque_20) == 0x20);
+    assert!(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count) == 0x24);
     assert!(core::mem::offset_of!(InitializedVendorImage, ampdu_counters) == 0x12a0);
     assert!(core::mem::offset_of!(InitializedVendorImage, control_words) == 0x1420);
     assert!(core::mem::offset_of!(InitializedVendorImage, pre_low_mac_root) == 0x1440);
@@ -3646,6 +3676,19 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_ampdu_telemetry_addresses_are_exact() {
+        assert_eq!(AMPDU_TELEMETRY_COUNTERS.get(), 0x0400_12a0);
+        assert_eq!(ampdu_tx_error_frames().get(), 0x0400_12a0);
+        assert_eq!(ampdu_tx_counted_frames().get(), 0x0400_12a4);
+        assert_eq!(ampdu_tx_duration_low().get(), 0x0400_12a8);
+        assert_eq!(ampdu_tx_duration_high().get(), 0x0400_12ac);
+        assert_eq!(ampdu_rx_management(0).unwrap().get(), 0x0400_12b0);
+        assert_eq!(ampdu_rx_management(3).unwrap().get(), 0x0400_12bc);
+        assert!(ampdu_rx_management(4).is_none());
+        assert_eq!(ampdu_tx_retry_count().get(), 0x0400_12c4);
     }
 
     #[test]

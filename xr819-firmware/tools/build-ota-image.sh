@@ -34,6 +34,7 @@ python3 tools/check-vif-timer-layout.py
 python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
 python3 tools/check-initialized-hif-control-layout.py
+python3 tools/check-ampdu-telemetry-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -72,6 +73,7 @@ python3 tools/check-vif-timer-layout.py "$ELF"
 python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
 python3 tools/check-initialized-hif-control-layout.py "$ELF"
+python3 tools/check-ampdu-telemetry-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"

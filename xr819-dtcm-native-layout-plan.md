@@ -4066,3 +4066,28 @@ manifest  tools/initialized-hif-control-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.65 Initialized A-MPDU telemetry
+
+The initialized `0x28`-byte island at `0x040012a0..0x040012c8` is now an exact
+telemetry record. Its first four words hold TX error/count accounting and a
+64-bit accumulated duration. Four management-RX counters follow. The word at
+`+0x20` remains semantically unresolved but structurally shared, and the final
+word is the retained TX retry counter.
+
+The completion path updates the TX count/duration quartet, management RX updates
+the four middle counters, and pipe retry handling increments the final word.
+Bounded address APIs expose the four-counter management array without creating
+references. `tools/check-ampdu-telemetry-layout.py` pins the source range, one
+linked base literal, two decoded xrefs, and exact-parent codegen. The complete
+ELF remains byte-identical to the qualified initialized-HIF-control parent, so
+no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-ampdu-telemetry-final-check.log
+          fc5aef2925921581135857fbb8cfd03c1fd2a87fa1fc88078a973f68bb96a632
+manifest  tools/ampdu-telemetry-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
