@@ -24,6 +24,7 @@ cargo +nightly test --features vendor-host-tx-diagnostics
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
+python3 tools/check-scheduler-support-layout.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
 python3 tools/check-host-context-layout.py
@@ -44,6 +45,7 @@ python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/pack-sectioned-elf.py "$ELF" "$PACKED"
 python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-scheduler-event-layout.py "$ELF"
+python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-host-context-layout.py "$ELF"
@@ -142,6 +144,15 @@ if [[ -n "${XR819_SCHEDULER_EVENT_PARENT_ELF:-}" ]]; then
     "$XR819_SCHEDULER_EVENT_PARENT_ELF" "$ELF"
 else
   echo "== scheduler-event codegen gate skipped: set XR819_SCHEDULER_EVENT_PARENT_ELF to the qualified peer-pipe ELF =="
+fi
+
+if [[ -n "${XR819_SCHEDULER_SUPPORT_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed scheduler-support parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/scheduler-support-codegen-manifest.json \
+    "$XR819_SCHEDULER_SUPPORT_PARENT_ELF" "$ELF"
+else
+  echo "== scheduler-support codegen gate skipped: set XR819_SCHEDULER_SUPPORT_PARENT_ELF to the qualified scheduler-event ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

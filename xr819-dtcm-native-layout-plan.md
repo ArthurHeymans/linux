@@ -303,7 +303,7 @@ The dense initialized image also contains opaque tables and code pointers. It mu
 
 **Ranges:** primarily `0x04001fcc..0x04002018`, `0x0400218c..0x04002234`, plus timer objects embedded in VIF/PS/scan records.
 
-**Known fields/shape:** the shared `SchedulerExclusionState` at `0x04001fcc` contains two exclusion words. `SchedulerEventIsland` spans `0x04001fd4..0x04002018` and names pending events, runtime flags, startup/analog/remap observations, three analog words, and the intrusive timer-list head while leaving unresolved bytes opaque. `ClockParameters` is `0x28` bytes at `0x0400218c`. The scheduler handler table is 32 code pointers at `0x040021b4`.
+**Known fields/shape:** the shared `SchedulerExclusionState` at `0x04001fcc` contains two exclusion words. `SchedulerEventIsland` spans `0x04001fd4..0x04002018` and names pending events, runtime flags, startup/analog/remap observations, three analog words, and the intrusive timer-list head while leaving unresolved bytes opaque. `ClockParameterIsland` is an exact `0x28`-byte TSF snapshot/conversion record at `0x0400218c`. The scheduler handler table is 32 bounded code-pointer words at `0x040021b4`. Retained timer objects use the common `0x14`-byte `TimerEntry` shape: next, previous-link, deadline, callback, and context.
 
 **Readers/writers:** `sched_main_loop`, `evt_flags_set/clear`, `timer_start`, `timer_cancel`, `sched_arm_next_timer`, `task_22bc`, `mac_irq_handler`, HIF send/defer paths, MIC completion, scan/JOIN, channel switch, measurement, BA, power save, PHY tasks, and current Rust scheduler helpers. The literal-pool report found dozens of independent pointers resolving to `0x04001fd4`.
 
@@ -1274,8 +1274,8 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 | ---: | ---: | --- | --- |
 | `0x0000` | `0x2078` | `InitializedVendorImage` | retained vendor COPY image, including tables, callbacks, AES data, and opaque initialized words |
 | `0x2078` | `0x114` | `RuntimePrefix` | early vendor-zeroed context/backoff/debug state |
-| `0x218c` | `0x28` | `ClockParameterIsland` | exact clock-parameter island |
-| `0x21b4` | `0x80` | `SchedulerHandlerTable` | 32 shared raw callback words |
+| `0x218c` | `0x28` | `ClockParameterIsland` | typed TSF snapshots, counter cache, conversion controls, and correction offset |
+| `0x21b4` | `0x80` | `SchedulerHandlerTable` | 32 bounded shared raw callback words |
 | `0x2234` | `0x127c` | `PreConfigurationTables` | PHY/template/beacon/filter state |
 | `0x34b0` | `0x130` | `SddConfigurationTables` | SDD-derived channel/gain/profile tables |
 | `0x35e0` | `0x90` | `WakeContextState` | mixed wake/context state |
@@ -2663,6 +2663,65 @@ packed    /tmp/xr819-scheduler-event-layout.bin
 checks    /tmp/xr819-scheduler-event-final-check.log
           91917c4f24d452b2d2597a767ed0250185adf883c9cc801910b1e3ab4586f3d8
 manifest  tools/scheduler-event-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.23 Clock/TSF state, scheduler handlers, and timer schema
+
+The scheduler support range `0x0400218c..0x04002234` now has exact typed
+layouts:
+
+```text
+ClockParameterIsland 0x0400218c..0x040021b4
+  +0x04 u32 MAC clock snapshot
+  +0x08 u32 beacon/counter snapshot
+  +0x0c u32 hardware counter cache
+  +0x14 u32 conversion factor
+  +0x1c u8  conversion mode
+  +0x24 u32 correction offset
+
+SchedulerHandlerTable 0x040021b4..0x04002234
+  32 shared raw callback words, stride 4
+```
+
+`sched_main_loop` consumes the handler table in reverse mask-bit order using
+`clz`, and `sched_register_task` writes the selected entry. Rust startup's five
+callback installations now use a bounded typed address constructor while
+preserving their exact indices and write order. Callback values remain raw code
+addresses because retained vendor tasks are still production reachable.
+
+The common retained timer object is now encoded as `TimerEntry`:
+
+```text
++0x00 u32 next
++0x04 u32 previous-link pointer
++0x08 u32 deadline
++0x0c u32 callback
++0x10 u32 callback context
+size 0x14
+```
+
+JOIN, BA-session, BA-periodic, and BA-transition timer fields use this structural
+type. This does not grant safe references or exclusive ownership; scheduler and
+interrupt paths mutate the intrusive links and callbacks remain mixed native
+and vendor addresses.
+
+`tools/check-scheduler-support-layout.py` covers the full clock/handler range,
+rejects production literals and synthesized base/stride forms, and pins two
+linked literal words plus two decoded literal-load xrefs. The complete ELF
+remains byte-identical to the qualified scheduler-event parent, so no hardware
+rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-scheduler-support-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-scheduler-support-final-check.log
+          9e6754f2846170cde03642025f3bd063d688dbbce8c747ea346bd1012adbe83c
+manifest  tools/scheduler-support-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

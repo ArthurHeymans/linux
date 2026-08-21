@@ -143,11 +143,12 @@ opaque_family!(
     RuntimePrefix,
     0x114
 );
-opaque_family!(
-    /// Exact clock-parameter island. Individual fields remain vendor-shared.
-    ClockParameterIsland,
-    0x28
-);
+#[repr(C, align(4))]
+struct ClockParameterIsland { opaque_00: SharedU32, mac_clock_snapshot: SharedU32, beacon_counter_snapshot: SharedU32, hardware_counter_cache: SharedU32, opaque_10: SharedU32, conversion_factor: SharedU32, opaque_18: SharedU32, conversion_mode: SharedU8, opaque_1d: OpaqueBytes<0x03>, opaque_20: SharedU32, correction_offset: SharedU32 }
+
+/// Common retained intrusive timer entry initialized by `timer_entry_init`.
+#[repr(C, align(4))]
+struct TimerEntry { next: SharedU32, previous_link: SharedU32, deadline: SharedU32, callback: SharedU32, context: SharedU32 }
 
 /// Reverse-indexed scheduler/IRQ callback words. Values are quarantined raw
 /// addresses because not every callback target has native Rust ownership.
@@ -585,7 +586,7 @@ struct LinkAndSequenceState {
 }
 #[repr(C, align(4))]
 struct JoinScanControl { schedule_word: SharedU32, schedule_deadline: SharedU32, beacon_timer_active: SharedU8, beacon_interface: SharedU8, opaque_0a: OpaqueBytes<0x02>, channel_owner: SharedU32, opaque_10: OpaqueBytes<0x04>, channel_use_state: SharedU32, alternate_channel_owner: SharedU32, opaque_1c: OpaqueBytes<0x04>,
-    join_timer: OpaqueBytes<0x14>, join_status: SharedU16, start_state: SharedU8, interface_state: SharedU8, response_status: SharedU32, request_word: SharedU32 }
+    join_timer: TimerEntry, join_status: SharedU16, start_state: SharedU8, interface_state: SharedU8, response_status: SharedU32, request_word: SharedU32 }
 #[repr(C, align(4))]
 struct WsmResponseScratch {
     scan_control: OpaqueBytes<0x0c>, request_pointers: [SharedU32; 30],
@@ -615,13 +616,13 @@ struct LmcMessage { kind: SharedU8, flags: SharedU8, opaque_02: OpaqueBytes<0x02
 #[repr(C, align(4))]
 struct LmcMessages { records: [LmcMessage; LMC_MESSAGE_COUNT] }
 #[repr(C, align(4))]
-struct BaSession { activity: SharedU32, peer_mac: [SharedU8; 6], tid: SharedU8, interface: SharedU8, opaque_0c: OpaqueBytes<0x06>, timeout_1024us: SharedU16, timer: OpaqueBytes<0x14> }
+struct BaSession { activity: SharedU32, peer_mac: [SharedU8; 6], tid: SharedU8, interface: SharedU8, opaque_0c: OpaqueBytes<0x06>, timeout_1024us: SharedU16, timer: TimerEntry }
 #[repr(C, align(4))]
 struct BaSessions { records: [BaSession; 4] }
 
 #[repr(C, align(4))]
 struct BaLinkEventState { ba_deferred_action: SharedU8, ba_deferred_interface: SharedU8, opaque_02: OpaqueBytes<0x01>, periodic_timer_enabled: SharedU8,
-    periodic_timer: OpaqueBytes<0x14>, transition_timer: OpaqueBytes<0x14>, current_network_flags: SharedU8, accumulated_network_flags: SharedU8,
+    periodic_timer: TimerEntry, transition_timer: TimerEntry, current_network_flags: SharedU8, accumulated_network_flags: SharedU8,
     changed_network_flags: SharedU8, opaque_2f: OpaqueBytes<0x01> }
 
 
@@ -1919,6 +1920,23 @@ pub(crate) const fn scheduler_analog_word(index: usize) -> Option<DtcmAddress> {
     } else { None }
 }
 pub(crate) const fn scheduler_timer_list_head() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, timer_list_head)) }
+pub(crate) const fn scheduler_handler(index: usize) -> Option<DtcmAddress> {
+    if index < 32 { Some(scheduler_handler_unchecked(index)) } else { None }
+}
+/// Forms a handler slot after the caller has established `index < 32`.
+pub(crate) const fn scheduler_handler_unchecked(index: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, scheduler_handlers)
+            + core::mem::offset_of!(SchedulerHandlerTable, handlers)
+            + index * core::mem::size_of::<SharedU32>(),
+    )
+}
+#[cfg(test)]
+const fn clock_parameter_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, clock_parameters) + offset,
+    )
+}
 
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
@@ -1932,6 +1950,18 @@ const _: () = {
     assert_type_layout!(InitializedVendorImage, 0x2078, 4);
     assert_type_layout!(RuntimePrefix, 0x114, 4);
     assert_type_layout!(ClockParameterIsland, 0x28, 4);
+    assert!(core::mem::offset_of!(ClockParameterIsland, mac_clock_snapshot) == 0x04);
+    assert!(core::mem::offset_of!(ClockParameterIsland, beacon_counter_snapshot) == 0x08);
+    assert!(core::mem::offset_of!(ClockParameterIsland, hardware_counter_cache) == 0x0c);
+    assert!(core::mem::offset_of!(ClockParameterIsland, conversion_factor) == 0x14);
+    assert!(core::mem::offset_of!(ClockParameterIsland, conversion_mode) == 0x1c);
+    assert!(core::mem::offset_of!(ClockParameterIsland, correction_offset) == 0x24);
+    assert_type_layout!(TimerEntry, 0x14, 4);
+    assert!(core::mem::offset_of!(TimerEntry, next) == 0x00);
+    assert!(core::mem::offset_of!(TimerEntry, previous_link) == 0x04);
+    assert!(core::mem::offset_of!(TimerEntry, deadline) == 0x08);
+    assert!(core::mem::offset_of!(TimerEntry, callback) == 0x0c);
+    assert!(core::mem::offset_of!(TimerEntry, context) == 0x10);
     assert_type_layout!(SchedulerHandlerTable, 0x80, 4);
     assert_type_layout!(PreConfigurationTables, 0x127c, 4);
     assert_type_layout!(SddConfigurationTables, 0x130, 4);
@@ -2575,6 +2605,19 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn clock_parameters_and_scheduler_handlers_are_exact() {
+        assert_eq!(clock_parameter_field(core::mem::offset_of!(ClockParameterIsland, mac_clock_snapshot)).get(), 0x0400_2190);
+        assert_eq!(clock_parameter_field(core::mem::offset_of!(ClockParameterIsland, hardware_counter_cache)).get(), 0x0400_2198);
+        assert_eq!(clock_parameter_field(core::mem::offset_of!(ClockParameterIsland, conversion_factor)).get(), 0x0400_21a0);
+        assert_eq!(clock_parameter_field(core::mem::offset_of!(ClockParameterIsland, conversion_mode)).get(), 0x0400_21a8);
+        assert_eq!(clock_parameter_field(core::mem::offset_of!(ClockParameterIsland, correction_offset)).get(), 0x0400_21b0);
+        assert_eq!(scheduler_handler(0).unwrap().get(), 0x0400_21b4);
+        assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
+        assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
+        assert!(scheduler_handler(32).is_none());
     }
 
     #[test]

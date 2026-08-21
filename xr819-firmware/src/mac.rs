@@ -915,7 +915,7 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
 
         let callback = inactive_startup_task as *const () as usize as u32 | 1;
         for index in [7_usize, 12, 11, 27, 13] {
-            write_u32(0x0400_21b4 + index * 4, callback);
+            write_u32(crate::dtcm::scheduler_handler_unchecked(index).get(), callback);
         }
         // The timer objects are initialized below, but their intrusive-list
         // root is separate retained DTCM state. Leaving it untouched makes the
