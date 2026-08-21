@@ -578,16 +578,16 @@ struct LinkAndSequenceState {
     internal_link_bitmap: SharedU16,
     opaque_tail: OpaqueBytes<0x06>,
 }
-opaque_family!(
-    /// JOIN/scan timer and control objects.
-    JoinScanControl,
-    0x40
-);
-opaque_family!(
-    /// WSM response, scan, indication scratch, and related control.
-    WsmResponseScratch,
-    0xa0
-);
+#[repr(C, align(4))]
+struct JoinScanControl { schedule_word: SharedU32, schedule_deadline: SharedU32, beacon_timer_active: SharedU8, beacon_interface: SharedU8, opaque_0a: OpaqueBytes<0x02>, channel_owner: SharedU32, opaque_10: OpaqueBytes<0x04>, channel_use_state: SharedU32, alternate_channel_owner: SharedU32, opaque_1c: OpaqueBytes<0x04>,
+    join_timer: OpaqueBytes<0x14>, join_status: SharedU16, start_state: SharedU8, interface_state: SharedU8, response_status: SharedU32, request_word: SharedU32 }
+#[repr(C, align(4))]
+struct WsmResponseScratch {
+    scan_control: OpaqueBytes<0x0c>, request_pointers: [SharedU32; 30],
+    request_status_prefix: [SharedU8; 28],
+}
+
+
 /// BA/LMC request accounting and protocol flags shared with retained code.
 #[repr(C, align(4))]
 struct BaLmcHeader {
@@ -1759,6 +1759,38 @@ const fn accumulated_network_flags() -> DtcmAddress { ba_link_event_field(core::
 #[cfg(test)]
 const fn changed_network_flags() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, changed_network_flags)) }
 
+#[cfg(test)]
+const fn join_scan_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(core::mem::offset_of!(DtcmLayout, join_scan_control) + offset)
+}
+#[cfg(test)]
+const fn join_timer() -> DtcmAddress { join_scan_field(core::mem::offset_of!(JoinScanControl, join_timer)) }
+#[cfg(test)]
+const fn join_status() -> DtcmAddress { join_scan_field(core::mem::offset_of!(JoinScanControl, join_status)) }
+#[cfg(test)]
+const fn join_interface_state() -> DtcmAddress { join_scan_field(core::mem::offset_of!(JoinScanControl, interface_state)) }
+
+#[cfg(test)]
+const fn lmc_request_pointer(index: usize) -> Option<DtcmAddress> {
+    if index < 30 {
+        Some(DtcmAddress::from_offset_unchecked(
+            core::mem::offset_of!(DtcmLayout, wsm_response_scratch)
+                + core::mem::offset_of!(WsmResponseScratch, request_pointers)
+                + index * core::mem::size_of::<SharedU32>(),
+        ))
+    } else { None }
+}
+#[cfg(test)]
+const fn lmc_request_status(index: usize) -> Option<DtcmAddress> {
+    if index < 30 {
+        Some(DtcmAddress::from_offset_unchecked(
+            core::mem::offset_of!(DtcmLayout, wsm_response_scratch)
+                + core::mem::offset_of!(WsmResponseScratch, request_status_prefix)
+                + index,
+        ))
+    } else { None }
+}
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -1950,7 +1982,23 @@ const _: () = {
     assert!(core::mem::offset_of!(LinkAndSequenceState, internal_link_bitmap) == 0x218);
     assert!(core::mem::offset_of!(LinkAndSequenceState, opaque_tail) == 0x21a);
     assert_type_layout!(JoinScanControl, 0x40, 4);
+    assert!(core::mem::offset_of!(JoinScanControl, schedule_word) == 0x00);
+    assert!(core::mem::offset_of!(JoinScanControl, schedule_deadline) == 0x04);
+    assert!(core::mem::offset_of!(JoinScanControl, beacon_timer_active) == 0x08);
+    assert!(core::mem::offset_of!(JoinScanControl, beacon_interface) == 0x09);
+    assert!(core::mem::offset_of!(JoinScanControl, channel_owner) == 0x0c);
+    assert!(core::mem::offset_of!(JoinScanControl, channel_use_state) == 0x14);
+    assert!(core::mem::offset_of!(JoinScanControl, alternate_channel_owner) == 0x18);
+    assert!(core::mem::offset_of!(JoinScanControl, join_timer) == 0x20);
+    assert!(core::mem::offset_of!(JoinScanControl, join_status) == 0x34);
+    assert!(core::mem::offset_of!(JoinScanControl, start_state) == 0x36);
+    assert!(core::mem::offset_of!(JoinScanControl, interface_state) == 0x37);
+    assert!(core::mem::offset_of!(JoinScanControl, response_status) == 0x38);
+    assert!(core::mem::offset_of!(JoinScanControl, request_word) == 0x3c);
     assert_type_layout!(WsmResponseScratch, 0xa0, 4);
+    assert!(core::mem::offset_of!(WsmResponseScratch, scan_control) == 0x00);
+    assert!(core::mem::offset_of!(WsmResponseScratch, request_pointers) == 0x0c);
+    assert!(core::mem::offset_of!(WsmResponseScratch, request_status_prefix) == 0x84);
     assert_type_layout!(BaLmcHeader, 0x20, 4);
     assert!(core::mem::offset_of!(BaLmcHeader, request_slot_index) == 0x02);
     assert!(core::mem::offset_of!(BaLmcHeader, pending_request_count) == 0x03);
@@ -2354,6 +2402,21 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn join_scan_and_lmc_request_addresses_follow_decoded_layout() {
+        assert_eq!(join_timer().get(), 0x0400_89f8);
+        assert_eq!(join_status().get(), 0x0400_8a0c);
+        assert_eq!(join_interface_state().get(), 0x0400_8a0f);
+        assert_eq!(lmc_request_pointer(0).unwrap().get(), 0x0400_8a24);
+        assert_eq!(lmc_request_pointer(29).unwrap().get(), 0x0400_8a98);
+        assert_eq!(lmc_request_status(0).unwrap().get(), 0x0400_8a9c);
+        assert_eq!(lmc_request_status(27).unwrap().get(), 0x0400_8ab7);
+        assert_eq!(lmc_request_status(28).unwrap().get(), 0x0400_8ab8);
+        assert_eq!(lmc_request_status(29).unwrap().get(), 0x0400_8ab9);
+        assert!(lmc_request_pointer(30).is_none());
+        assert!(lmc_request_status(30).is_none());
     }
 
     #[test]

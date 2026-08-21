@@ -2426,3 +2426,55 @@ manifest  tools/ba-link-event-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.18 JOIN/scan control and LMC request ring
+
+The adjacent range `0x040089d8..0x04008ab8` now has two structural shared
+layouts.
+
+`JoinScanControl` at `0x040089d8..0x04008a18` contains:
+
+```text
++0x00/+0x04 scheduler word/deadline
++0x08/+0x09 beacon timer active/interface
++0x0c channel owner
++0x14 channel-use state
++0x18 alternate channel owner
++0x20 0x14-byte JOIN timer
++0x34 JOIN status
++0x36 start state
++0x37 interface state
++0x38 response status
++0x3c request word
+```
+
+`WsmResponseScratch` at `0x04008a18..0x04008ab8` contains a `0x0c` scan/control
+prefix followed by thirty request pointers at `0x04008a24..0x04008a9c` and the
+first twenty-eight request-status bytes at `0x04008a9c..0x04008ab8`.
+The logical thirty-byte status ring crosses the old family boundary: status
+bytes 28 and 29 are the first two bytes at `0x04008ab8..0x04008aba`, before the
+producer and consumer cursors at `0x04008aba` and `0x04008abb`. This overlap is
+now documented explicitly rather than treating the boundary as ownership.
+
+The decoded shape follows beacon timer selection, channel-use registration,
+JOIN/start/scan transitions, and the LMC request enqueue/collect/confirm paths.
+All state remains retained-vendor/timer owned and no safe complete-record
+references are created.
+
+`tools/check-join-scan-layout.py` rejects production literals and synthesized
+JOIN timer or LMC ring roots outside `dtcm.rs`. The linked Rust image contains
+no literal or decoded literal-load xrefs into this range. The complete ELF is
+byte-identical to the qualified parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-join-scan-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-join-scan-final-check.log
+          a656b9089d29788967ee7e0e28e282e7bdcff625a07a544ebe743268e30d9b03
+manifest  tools/join-scan-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

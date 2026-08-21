@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for typed BA/LMC/pending state.
+"""Drift-evidence gates for typed JOIN/scan and LMC request state.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,12 +21,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BA_LMC_PENDING_RANGE = (0x04008AB8, 0x04008E78)
-SYNTHESIZED = {
-    0x8AB8, 0x8AD3, 0x8AD8, 0x8ADC, 0x8AE0, 0x8AE3,
-    0x8B20, 0x8B24, 0x8B2C, 0x8B95, 0x8BA8, 0x8BAB,
-    0x8BAC, 0x8BB8, 0x8E78,
-}
+JOIN_SCAN_RANGE = (0x040089D8, 0x04008AB8)
+SYNTHESIZED = {0x89D8, 0x89F8, 0x8A0C, 0x8A18, 0x8A24, 0x8A9C, 0x8AB8}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx",
@@ -39,39 +35,20 @@ OWNER_FILES = {
     "tools/check-link-sequence-layout.py",
     "tools/check-ba-lmc-pending-layout.py",
     "tools/check-ba-session-layout.py",
+    "tools/check-ba-link-event-layout.py",
     "tools/check-join-scan-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "BA_LMC_BASE",
-    "PENDING_BASE",
-    "PENDING_QUEUE",
-    "LMC_MESSAGE_BASE",
-    "LMC_MESSAGE_RING",
-    "RADIO_OWNER_BASE",
+    "JOIN_SCAN_BASE",
+    "JOIN_TIMER_BASE",
+    "LMC_REQUEST_POINTER_BASE",
+    "LMC_REQUEST_STATUS_BASE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {
-        0x04008AD8: 2,
-        0x04008AE0: 1,
-        0x04008AE3: 1,
-        0x04008B20: 2,
-        0x04008B95: 2,
-    }
-)
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
-    {
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04008AD8): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22remove_pending_context', 0x04008AD8): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04008AE3): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04008B95): 4,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3vif12activate_sta', 0x04008B20): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3vif8teardown', 0x04008B20): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4join12activate_sta', 0x04008AE0): 1,
-    }
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:
@@ -194,7 +171,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return BA_LMC_PENDING_RANGE[0] <= value < BA_LMC_PENDING_RANGE[1]
+    return JOIN_SCAN_RANGE[0] <= value < JOIN_SCAN_RANGE[1]
 
 
 def check_source() -> None:
@@ -216,14 +193,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: BA/LMC/pending literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: JOIN/scan literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized BA/LMC/pending form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized JOIN/scan form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"BA/LMC/PENDING SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"JOIN/SCAN SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -294,9 +271,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("BA/LMC/PENDING LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("JOIN/SCAN LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "BA/LMC/PENDING LINKED DRIFT-EVIDENCE GATE PASSED "
+        "JOIN/SCAN LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -315,4 +292,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"BA/LMC/pending drift gate failed: {error}")
+        raise SystemExit(f"JOIN/scan drift gate failed: {error}")

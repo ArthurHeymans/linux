@@ -33,6 +33,7 @@ OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-host-context-layout.py",
     "tools/check-link-sequence-layout.py",
+    "tools/check-join-scan-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
