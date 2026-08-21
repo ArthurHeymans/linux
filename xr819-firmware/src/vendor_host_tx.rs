@@ -273,32 +273,35 @@ pub fn classify_header(
 
 #[cfg(target_arch = "arm")]
 unsafe fn assign_sequence_number(context: HostContextAddress, frame_address: u32, tid: u8) {
-    const LINK_MAP_COUNT: u32 = 0x0400_87cc;
-    const SEQUENCE_BASE: u32 = 0x0400_8890;
-
     let interface = unsafe { read_host_u8(context.interface()) };
     let host_link = unsafe { read_host_u8(context.host_link()) };
     let mut internal_link = crate::vif::internal_link(interface).unwrap_or(0) as u8;
     if host_link != 0 {
-        let count = unsafe { (LINK_MAP_COUNT as *const u16).read_volatile() };
+        let count = unsafe {
+            crate::dtcm::shared_ptr::<u16>(crate::dtcm::link_map_entry_count()).read_volatile()
+        };
         let mut index = 0_u16;
         while index < count {
-            let entry = crate::dtcm::LINK_SEQUENCE_ROOT.get() as u32 + u32::from(index) * 0x0c;
-            if unsafe { read_live_u8(entry + 0x19) } == interface
-                && unsafe { read_live_u8(entry + 0x18) } == host_link
+            let entry = crate::dtcm::link_map_entry_unchecked(usize::from(index));
+            if unsafe { read_live_u8(entry.interface().get() as u32) } == interface
+                && unsafe { read_live_u8(entry.host_link().get() as u32) } == host_link
             {
-                internal_link = unsafe { read_live_u8(entry + 0x1a) };
+                internal_link = unsafe { read_live_u8(entry.internal_link().get() as u32) };
                 break;
             }
             index += 1;
         }
     }
-    let sequence_address = SEQUENCE_BASE + u32::from(internal_link) * 0x20 + u32::from(tid) * 2;
-    let sequence = unsafe { (sequence_address as *const u16).read_volatile() };
+    let sequence_address = crate::dtcm::link_sequence_counter_unchecked(
+        usize::from(internal_link),
+        usize::from(tid),
+    );
+    let sequence = unsafe { crate::dtcm::shared_ptr::<u16>(sequence_address).read_volatile() };
     unsafe {
         (frame_address.wrapping_add(0x16) as *mut u16).write_volatile(sequence);
         write_host_u16(context.sequence_number(), sequence >> 4);
-        (sequence_address as *mut u16).write_volatile(sequence.wrapping_add(0x10) & 0xfff0);
+        crate::dtcm::shared_ptr::<u16>(sequence_address)
+            .write_volatile(sequence.wrapping_add(0x10) & 0xfff0);
     }
 }
 
@@ -504,7 +507,6 @@ macro_rules! observe_normal_power_save_release {
 /// release the frame toward PAS scheduling.
 #[cfg(target_arch = "arm")]
 unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
-    const LINK_STATE: u32 = 0x0400_87b8;
     let pas = context.pas().raw();
     let interface = unsafe { read_live_u8(pas + 0x69) };
     if interface > 2 {
@@ -552,16 +554,20 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
     let awake = power_save.awake_links;
     let buffered = power_save.buffered_links;
     if awake & link_bit == 0 && buffered & link_bit == 0 {
-        if unsafe { read_live_u16(LINK_STATE + 0x16) } & link_bit != 0 { return false; }
+        let blocked_links = crate::dtcm::link_release_blocked_links().get() as u32;
+        if unsafe { read_live_u16(blocked_links) } & link_bit != 0 { return false; }
         if crate::vif::allowed_links(interface).unwrap_or(0) & link_bit == 0 { return false; }
-        let count = unsafe { read_live_u16(LINK_STATE + 0x14) };
+        let count = unsafe { read_live_u16(crate::dtcm::link_map_entry_count().get() as u32) };
         let mut index = 0_u16;
         while index < count {
-            let entry = LINK_STATE + u32::from(index) * 0x0c;
-            if unsafe { read_live_u8(pas + 0x6b) } == unsafe { read_live_u8(entry + 0x18) } {
+            let entry = crate::dtcm::link_map_entry_unchecked(usize::from(index));
+            if unsafe { read_live_u8(pas + 0x6b) }
+                == unsafe { read_live_u8(entry.host_link().get() as u32) }
+            {
+                let release_flags = entry.release_flags().get() as u32;
                 unsafe {
-                    write_live_u8(entry + 0x1c, read_live_u8(entry + 0x1c) | 2);
-                    write_live_u16(LINK_STATE + 0x16, read_live_u16(LINK_STATE + 0x16) | link_bit);
+                    write_live_u8(release_flags, read_live_u8(release_flags) | 2);
+                    write_live_u16(blocked_links, read_live_u16(blocked_links) | link_bit);
                 }
             }
             index += 1;

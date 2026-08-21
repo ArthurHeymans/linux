@@ -408,6 +408,11 @@ pub struct HifRequestAddress(u32);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PacketRamAddress(u32);
 
+/// Address of one fixed-DTCM host-link mapping record.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinkMapEntryAddress(DtcmAddress);
+
 /// The decoded `ctx+0x54` PAS/frame-node overlay.
 ///
 /// Names are limited to fields exercised by translated Rust or directly
@@ -540,11 +545,39 @@ struct HostContextFreeList {
     adjacent_state: SharedU32,
 }
 
-opaque_family!(
-    /// Link state, link-map entries, and per-link/TID sequence storage.
-    LinkAndSequenceState,
-    0x220
-);
+pub const LINK_MAP_ENTRY_COUNT: usize = 16;
+pub const INTERNAL_LINK_SLOT_COUNT: usize = 10;
+pub const LINK_TID_COUNT: usize = 16;
+
+/// Header shared by host-link mapping and PAS release gating.
+#[repr(C, align(4))]
+struct LinkMapHeader {
+    opaque_00: OpaqueBytes<0x14>,
+    entry_count: SharedU16,           // +0x14
+    release_blocked_links: SharedU16, // +0x16
+}
+
+/// One host-link to internal-link mapping record.
+#[repr(C, align(4))]
+struct LinkMapEntry {
+    host_link: SharedU8,        // +0x00
+    interface: SharedU8,        // +0x01
+    internal_link: SharedU8,    // +0x02
+    inactivity: SharedU8,       // +0x03
+    release_flags: SharedU8,    // +0x04
+    auxiliary_flags: SharedU8,  // +0x05
+    mac_address: [SharedU8; 6], // +0x06
+}
+
+/// Link-map records, ten internal-link/TID sequence rows, and allocation state.
+#[repr(C, align(4))]
+struct LinkAndSequenceState {
+    header: LinkMapHeader,
+    entries: [LinkMapEntry; LINK_MAP_ENTRY_COUNT],
+    sequences: [[SharedU16; LINK_TID_COUNT]; INTERNAL_LINK_SLOT_COUNT],
+    internal_link_bitmap: SharedU16,
+    opaque_tail: OpaqueBytes<0x06>,
+}
 opaque_family!(
     /// JOIN/scan timer and control objects.
     JoinScanControl,
@@ -1320,6 +1353,105 @@ pub const HOST_TX_CONTEXTS: DtcmAddress = DtcmAddress::from_offset(0x5a24);
 pub const COMMAND_CHANNEL_SWITCH_OVERLAY: DtcmAddress = DtcmAddress::from_offset(0x8594);
 pub const HOST_TX_CONTEXT_FREE_HEAD: DtcmAddress = HOST_CONTEXT_FREE_HEAD;
 pub const LINK_SEQUENCE_ROOT: DtcmAddress = DtcmAddress::from_offset(0x87b8);
+
+const fn link_state_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, link_and_sequence) + offset,
+    )
+}
+
+pub(crate) const fn link_map_entry_count() -> DtcmAddress {
+    link_state_field(
+        core::mem::offset_of!(LinkAndSequenceState, header)
+            + core::mem::offset_of!(LinkMapHeader, entry_count),
+    )
+}
+
+pub(crate) const fn link_release_blocked_links() -> DtcmAddress {
+    link_state_field(
+        core::mem::offset_of!(LinkAndSequenceState, header)
+            + core::mem::offset_of!(LinkMapHeader, release_blocked_links),
+    )
+}
+
+pub(crate) const fn link_map_entry(index: usize) -> Option<LinkMapEntryAddress> {
+    if index < LINK_MAP_ENTRY_COUNT {
+        Some(link_map_entry_unchecked(index))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves vendor count-driven record arithmetic.
+pub(crate) const fn link_map_entry_unchecked(index: usize) -> LinkMapEntryAddress {
+    LinkMapEntryAddress(link_state_field(
+        core::mem::offset_of!(LinkAndSequenceState, entries)
+            + index * core::mem::size_of::<LinkMapEntry>(),
+    ))
+}
+
+impl LinkMapEntryAddress {
+    const fn field(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+
+    pub(crate) const fn host_link(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LinkMapEntry, host_link))
+    }
+    pub(crate) const fn interface(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LinkMapEntry, interface))
+    }
+    pub(crate) const fn internal_link(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LinkMapEntry, internal_link))
+    }
+    pub(crate) const fn inactivity(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LinkMapEntry, inactivity))
+    }
+    pub(crate) const fn release_flags(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LinkMapEntry, release_flags))
+    }
+    pub(crate) const fn auxiliary_flags(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LinkMapEntry, auxiliary_flags))
+    }
+    pub(crate) const fn mac_byte(self, index: usize) -> Option<DtcmAddress> {
+        if index < 6 {
+            Some(self.field(core::mem::offset_of!(LinkMapEntry, mac_address) + index))
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) const fn link_sequence_counter(
+    internal_link: usize,
+    tid: usize,
+) -> Option<DtcmAddress> {
+    if internal_link < INTERNAL_LINK_SLOT_COUNT && tid < LINK_TID_COUNT {
+        Some(link_sequence_counter_unchecked(internal_link, tid))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves vendor internal-link/TID address arithmetic.
+pub(crate) const fn link_sequence_counter_unchecked(
+    internal_link: usize,
+    tid: usize,
+) -> DtcmAddress {
+    link_state_field(
+        core::mem::offset_of!(LinkAndSequenceState, sequences)
+            + internal_link * core::mem::size_of::<[SharedU16; LINK_TID_COUNT]>()
+            + tid * core::mem::size_of::<SharedU16>(),
+    )
+}
+
+pub(crate) const fn internal_link_bitmap() -> DtcmAddress {
+    link_state_field(core::mem::offset_of!(
+        LinkAndSequenceState,
+        internal_link_bitmap
+    ))
+}
+
 pub const TALA_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(0x8f48);
 pub const CONTEXT_COMPLETION_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x8f6c);
 pub const INTERNAL_CONTEXT_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x906c);
@@ -1605,7 +1737,23 @@ const _: () = {
     assert_type_layout!(HostContextFreeList, 0x8, 4);
     assert!(core::mem::offset_of!(HostContextFreeList, free_head) == 0x00);
     assert!(core::mem::offset_of!(HostContextFreeList, adjacent_state) == 0x04);
+    assert_type_layout!(LinkMapHeader, 0x18, 4);
+    assert!(core::mem::offset_of!(LinkMapHeader, entry_count) == 0x14);
+    assert!(core::mem::offset_of!(LinkMapHeader, release_blocked_links) == 0x16);
+    assert_type_layout!(LinkMapEntry, 0x0c, 4);
+    assert!(core::mem::offset_of!(LinkMapEntry, host_link) == 0x00);
+    assert!(core::mem::offset_of!(LinkMapEntry, interface) == 0x01);
+    assert!(core::mem::offset_of!(LinkMapEntry, internal_link) == 0x02);
+    assert!(core::mem::offset_of!(LinkMapEntry, inactivity) == 0x03);
+    assert!(core::mem::offset_of!(LinkMapEntry, release_flags) == 0x04);
+    assert!(core::mem::offset_of!(LinkMapEntry, auxiliary_flags) == 0x05);
+    assert!(core::mem::offset_of!(LinkMapEntry, mac_address) == 0x06);
     assert_type_layout!(LinkAndSequenceState, 0x220, 4);
+    assert!(core::mem::offset_of!(LinkAndSequenceState, header) == 0x000);
+    assert!(core::mem::offset_of!(LinkAndSequenceState, entries) == 0x018);
+    assert!(core::mem::offset_of!(LinkAndSequenceState, sequences) == 0x0d8);
+    assert!(core::mem::offset_of!(LinkAndSequenceState, internal_link_bitmap) == 0x218);
+    assert!(core::mem::offset_of!(LinkAndSequenceState, opaque_tail) == 0x21a);
     assert_type_layout!(JoinScanControl, 0x40, 4);
     assert_type_layout!(WsmResponseScratch, 0xa0, 4);
     assert_type_layout!(BaLmcHeader, 0x20, 4);
@@ -1933,6 +2081,36 @@ mod tests {
         }
         assert!(context.rate_try(3).is_none());
         assert_eq!(context.expected_frame_state().raw(), crate::packet_ram::host_frame_state(7) as u32);
+    }
+
+    #[test]
+    fn link_map_and_sequence_addresses_follow_the_decoded_layout() {
+        let first = link_map_entry(0).unwrap();
+        let last = link_map_entry(LINK_MAP_ENTRY_COUNT - 1).unwrap();
+        assert_eq!(LINK_SEQUENCE_ROOT.get(), 0x0400_87b8);
+        assert_eq!(link_map_entry_count().get(), 0x0400_87cc);
+        assert_eq!(link_release_blocked_links().get(), 0x0400_87ce);
+        assert_eq!(first.host_link().get(), 0x0400_87d0);
+        assert_eq!(first.interface().get(), 0x0400_87d1);
+        assert_eq!(first.internal_link().get(), 0x0400_87d2);
+        assert_eq!(first.inactivity().get(), 0x0400_87d3);
+        assert_eq!(first.release_flags().get(), 0x0400_87d4);
+        assert_eq!(first.auxiliary_flags().get(), 0x0400_87d5);
+        assert_eq!(first.mac_byte(0).unwrap().get(), 0x0400_87d6);
+        assert_eq!(first.mac_byte(5).unwrap().get(), 0x0400_87db);
+        assert_eq!(last.host_link().get(), 0x0400_8884);
+        assert_eq!(last.mac_byte(5).unwrap().get(), 0x0400_888f);
+        assert!(link_map_entry(LINK_MAP_ENTRY_COUNT).is_none());
+        assert!(first.mac_byte(6).is_none());
+
+        assert_eq!(link_sequence_counter(0, 0).unwrap().get(), 0x0400_8890);
+        assert_eq!(link_sequence_counter(0, 15).unwrap().get(), 0x0400_88ae);
+        assert_eq!(link_sequence_counter(9, 0).unwrap().get(), 0x0400_89b0);
+        assert_eq!(link_sequence_counter(9, 15).unwrap().get(), 0x0400_89ce);
+        assert!(link_sequence_counter(10, 0).is_none());
+        assert!(link_sequence_counter(0, 16).is_none());
+        assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
+        assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
     }
 
     #[test]

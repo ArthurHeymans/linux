@@ -26,6 +26,7 @@ python3 tools/check-address-literals.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
 python3 tools/check-host-context-layout.py
+python3 tools/check-link-sequence-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
 echo "== arm build and stack check: feature-free firmware =="
@@ -37,12 +38,22 @@ python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-host-context-layout.py "$ELF"
+python3 tools/check-link-sequence-layout.py "$ELF"
 
 if [[ -n "${XR819_PARENT_ELF:-}" ]]; then
   echo "== complete reviewed exact-parent text-symbol delta gate =="
   python3 tools/check-hot-codegen.py "$XR819_PARENT_ELF" "$ELF"
 else
   echo "== exact-parent hot-code gate skipped: set XR819_PARENT_ELF to the fixed-layout parent ELF =="
+fi
+
+if [[ -n "${XR819_LINK_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed link/sequence parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/link-sequence-codegen-manifest.json \
+    "$XR819_LINK_PARENT_ELF" "$ELF"
+else
+  echo "== link/sequence codegen gate skipped: set XR819_LINK_PARENT_ELF to the qualified host-context ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

@@ -19,8 +19,10 @@ python3 tools/check-rust-main-stack.py "$ELF"
 python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/check-address-literals.py
 python3 tools/check-low-mac-pas-layout.py
+python3 tools/check-link-sequence-layout.py
 python3 tools/pack-sectioned-elf.py "$ELF" "$OUT"
 python3 tools/check-dtcm-layout.py "$ELF" "$OUT"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
+python3 tools/check-link-sequence-layout.py "$ELF"
 
 echo "features=none"

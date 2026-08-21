@@ -2215,3 +2215,63 @@ manifest  tools/host-context-codegen-manifest.json
 ```
 
 The host-context migration is hardware-qualified.
+
+### A.14 Link-map and sequence-state semantic layout
+
+The fixed-DTCM range `0x040087b8..0x040089d8` is now represented by one
+`LinkAndSequenceState` quarantine layout rather than an opaque byte family. The
+layout follows the decoded vendor capacities and exact computed accesses:
+
+```text
+0x040087b8..0x040087d0  LinkMapHeader
+  +0x14 u16 entry_count
+  +0x16 u16 release_blocked_links
+0x040087d0..0x04008890  16 LinkMapEntry records, stride 0x0c
+  +0x00 host_link
+  +0x01 interface
+  +0x02 internal_link
+  +0x03 inactivity
+  +0x04 release_flags
+  +0x05 auxiliary_flags
+  +0x06 six-byte peer MAC
+0x04008890..0x040089d0  10 x 16 volatile u16 sequence counters
+0x040089d0..0x040089d2  internal-link allocation bitmap
+0x040089d2..0x040089d8  unresolved tail
+```
+
+The ten internal-link rows and sixteen TIDs exactly preserve
+`0x04008890 + internal_link * 0x20 + tid * 2`. Vendor `link_slot_alloc`
+iterates slots `0..9`, treats slot 9 as its exhausted/reserved result, clears
+sixteen counters for allocated slots other than 9, and stores allocation state
+in the bitmap at `0x040089d0`. The host-link map separately allows sixteen
+records and host link IDs below 15; these remain distinct ID spaces.
+
+Current Rust sequence assignment and PAS release gating now derive count,
+record fields, sequence counters, blocked-link state, and record flags from the
+typed layout. Count-driven loops deliberately use unchecked address views to
+preserve the parent's behavior if shared state is corrupt; no safe references
+are created to retained-vendor state. BA/LMC and pending-list state beginning at
+`0x04008ab8` remains opaque and outside this slice.
+
+`tools/check-link-sequence-layout.py` rejects direct or synthesized family
+addresses outside `dtcm.rs` and pins reviewed linked literals/xrefs. The
+complete parent/candidate text-symbol inventory is pinned by
+`tools/link-sequence-codegen-manifest.json`. All 197 sized text symbols retain identical bytes and instruction streams
+relative to the qualified host-context parent. The complete ELF and packed
+firmware image are also byte-for-byte identical, so `.data`, stack bounds,
+IRQ/barrier ordering, packet/MMIO behavior, and all anonymous metadata remain
+unchanged. No new hardware run is required for an image already qualified under
+the host-context campaign.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-link-sequence-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-link-final-check.log
+          2a6ed95f0c79219baa61a483f09e43d80d8c6846a254283611c69cc7769fbccd
+manifest  tools/link-sequence-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

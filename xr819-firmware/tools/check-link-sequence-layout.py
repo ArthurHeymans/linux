@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for the typed host-context family and coupled roots.
+"""Drift-evidence gates for typed link-map and sequence state.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,9 +21,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST_CONTEXT_RANGE = (0x04005A24, 0x04008544)
-COUPLED_RANGE = (0x04008798, 0x040087B8)
-SYNTHESIZED = {0x5A24, 0x8544, 0x8798, 0x87B0, 0x87B8}
+LINK_SEQUENCE_RANGE = (0x040087B8, 0x040089D8)
+SYNTHESIZED = {0x87B8, 0x87CC, 0x87CE, 0x87D0, 0x8890, 0x89D0, 0x89D8}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx",
@@ -35,31 +34,26 @@ OWNER_FILES = {
     "tools/check-host-context-layout.py",
     "tools/check-link-sequence-layout.py",
 }
-# Generic DTCM packer-policy fixture, not a host-context consumer.
-ALLOWED_SOURCE_LITERALS = {"tools/test-pack-sectioned-elf.py": {0x04008000}}
+ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "HOST_CONTEXT_BASE",
-    "HOST_CONTEXT_STRIDE",
-    "HOST_CONTEXT_SIZE",
-    "HOST_FREE_HEAD",
-    "WSM_TX_CONTEXT_BASE",
-    "WSM_TX_CONTEXT_FREE_HEAD",
+    "LINK_STATE_BASE",
+    "LINK_MAP_BASE",
+    "LINK_MAP_COUNT",
+    "SEQUENCE_BASE",
+    "LINK_SEQUENCE_BASE",
+    "INTERNAL_LINK_BITMAP",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {
-        0x04005A24: 1,
-        0x040083D4: 1,
-        0x040087B0: 3,
-    }
+    {0x040087CE: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04005A24): 1,
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040083D4): 1,
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040087B0): 8,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx17free_host_context', 0x040087B0): 1,
+        (
+            '_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx21program_pipe_eligible',
+            0x040087CE,
+        ): 1,
     }
 )
 
@@ -184,7 +178,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return HOST_CONTEXT_RANGE[0] <= value < HOST_CONTEXT_RANGE[1] or COUPLED_RANGE[0] <= value < COUPLED_RANGE[1]
+    return LINK_SEQUENCE_RANGE[0] <= value < LINK_SEQUENCE_RANGE[1]
 
 
 def check_source() -> None:
@@ -206,14 +200,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: host-context literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: link/sequence literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized host-context form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized link/sequence form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"HOST CONTEXT SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"LINK/SEQUENCE SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -284,9 +278,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("HOST CONTEXT LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("LINK/SEQUENCE LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "HOST CONTEXT LINKED DRIFT-EVIDENCE GATE PASSED "
+        "LINK/SEQUENCE LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -305,4 +299,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"host-context drift gate failed: {error}")
+        raise SystemExit(f"link/sequence drift gate failed: {error}")
