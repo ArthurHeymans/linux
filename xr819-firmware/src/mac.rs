@@ -942,15 +942,15 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
 
 unsafe fn reset_lmc_pool() {
     unsafe {
-        write_u32(0x0400_8620, 0);
-        write_u32(0x0400_861c, 0);
+        write_u32(crate::dtcm::encryption_generation().get(), 0);
+        write_u32(crate::dtcm::encryption_free_head().get(), 0);
         let mut head = 0_u32;
         for block in [packet_ram::lmc_anchor(0), packet_ram::lmc_anchor(1)] {
             write_u32(block, 0);
             write_u32(block + 0x18, head);
             write_u32(block + 0xf4, block as u32 + 0x1c);
             head = block as u32;
-            write_u32(0x0400_861c, head);
+            write_u32(crate::dtcm::encryption_free_head().get(), head);
         }
     }
 }

@@ -1288,7 +1288,7 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 | `0x5a24` | `0x2b20` | `HostTxContexts` | 30 opaque host contexts at stride `0x170` |
 | `0x8544` | `0x50` | `PreCommandQuarantine` | occupied pre-command bytes |
 | `0x8594` | `0x84` | `CommandChannelSwitchOverlay` | one deliberately opaque overlay: command blob at `+0x00` and channel-switch view at `+0x64` overlap |
-| `0x8618` | `0x180` | `LmcControlRoots` | LMC/encryption/free-list control roots |
+| `0x8618` | `0x180` | `LmcControlRoots` | encryption free-list header plus first 31 duplicate-cache records; record 31 crosses into `0x8798` |
 | `0x8798` | `0x18` | `HostContextAccounting` | host-context/duplicate-cache accounting |
 | `0x87b0` | `0x8` | `HostContextFreeList` | shared free head plus unresolved adjacent word |
 | `0x87b8` | `0x220` | `LinkAndSequenceState` | link map/state and per-link/TID sequences |
@@ -2526,6 +2526,51 @@ packed    /tmp/xr819-command-channel-layout.bin
 checks    /tmp/xr819-command-channel-final-check.log
           6c43760f1b4fe15d34957055c0e5398b096511dc8ae265b44bf59c81497bcf7b
 manifest  tools/command-channel-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.20 LMC encryption roots and duplicate cache
+
+The range `0x04008618..0x04008798` now contains a typed shared header followed
+by the first 31 records of the receive duplicate cache:
+
+```text
+0x04008618 +0x00 u32 JOIN/beacon match state
+           +0x04 u32 encryption-context free-list head
+           +0x08 u32 encryption allocation generation
+0x04008624        duplicate-cache record 0
+record stride     0x0c
+record fields     +0x00 six-byte peer MAC
+                  +0x06 u16 identity/interface-sequence key
+                  +0x08 u32 context/discriminator
+```
+
+The logical duplicate cache has 32 records. Records 0 through 30 occupy
+`0x04008624..0x04008798`; record 31 begins at `0x04008798` and ends at
+`0x040087a4`, crossing into the following `HostContextAccounting` family. This
+computed overlap explains why the old `0x180` boundary could not imply
+exclusive ownership.
+
+The translated LMC pool reset now derives the encryption free-list head and
+generation addresses from `dtcm.rs` while preserving the exact publication
+sequence. Retained encryption allocation/free, JOIN/beacon matching, RX
+duplicate suppression, and invalidation paths continue to share the state.
+
+`tools/check-lmc-control-layout.py` covers the logical extent through
+`0x040087a4`, rejects production literals and synthesized base/stride forms,
+and pins one linked literal/xref. The complete ELF remains byte-identical to
+the qualified command/channel parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-lmc-control-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-lmc-control-final-check.log
+          0069ec6ee9825091de1d1a6d6aac7771d3704347133524e8291b626681728a30
+manifest  tools/lmc-control-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

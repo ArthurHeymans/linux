@@ -520,11 +520,11 @@ struct CommandChannelSwitchOverlay {
     join_mode: SharedU8, join_flags: SharedU8, saved_register_context: SharedU16, rate_configuration: SharedU32, scan_state: SharedU8, scan_flags: SharedU8, opaque_7a: OpaqueBytes<0x01>, tx_buffer_free_count: SharedU8, scan_word: SharedU32, tail_word: SharedU32,
 }
 
-opaque_family!(
-    /// LMC/encryption/free-list roots and mixed control state.
-    LmcControlRoots,
-    0x180
-);
+#[repr(C, align(4))]
+struct DuplicateCacheEntry { peer_mac: [SharedU8; 6], identity: SharedU16, context: SharedU32 }
+#[repr(C, align(4))]
+struct LmcControlRoots { join_match_state: SharedU32, encryption_free_head: SharedU32, encryption_generation: SharedU32, duplicate_cache_prefix: [DuplicateCacheEntry; 31] }
+
 /// Mixed accounting rooted at `0x04008798`.
 ///
 /// Only direct vendor consumers are named. The auxiliary free list is distinct
@@ -1825,6 +1825,31 @@ const fn command_overlay_tail() -> DtcmAddress {
     command_channel_field(core::mem::offset_of!(CommandChannelSwitchOverlay, tail_word))
 }
 
+const fn lmc_control_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, lmc_control_roots) + offset,
+    )
+}
+
+pub(crate) const fn encryption_free_head() -> DtcmAddress {
+    lmc_control_field(core::mem::offset_of!(LmcControlRoots, encryption_free_head))
+}
+
+pub(crate) const fn encryption_generation() -> DtcmAddress {
+    lmc_control_field(core::mem::offset_of!(LmcControlRoots, encryption_generation))
+}
+
+#[cfg(test)]
+const fn duplicate_cache_entry(index: usize) -> Option<DtcmAddress> {
+    if index < 32 {
+        Some(DtcmAddress::from_offset_unchecked(
+            core::mem::offset_of!(DtcmLayout, lmc_control_roots)
+                + core::mem::offset_of!(LmcControlRoots, duplicate_cache_prefix)
+                + index * core::mem::size_of::<DuplicateCacheEntry>(),
+        ))
+    } else { None }
+}
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -2005,7 +2030,15 @@ const _: () = {
     assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, tx_buffer_free_count) == 0x7b);
     assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, scan_word) == 0x7c);
     assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, tail_word) == 0x80);
+    assert_type_layout!(DuplicateCacheEntry, 0x0c, 4);
+    assert!(core::mem::offset_of!(DuplicateCacheEntry, peer_mac) == 0x00);
+    assert!(core::mem::offset_of!(DuplicateCacheEntry, identity) == 0x06);
+    assert!(core::mem::offset_of!(DuplicateCacheEntry, context) == 0x08);
     assert_type_layout!(LmcControlRoots, 0x180, 4);
+    assert!(core::mem::offset_of!(LmcControlRoots, join_match_state) == 0x00);
+    assert!(core::mem::offset_of!(LmcControlRoots, encryption_free_head) == 0x04);
+    assert!(core::mem::offset_of!(LmcControlRoots, encryption_generation) == 0x08);
+    assert!(core::mem::offset_of!(LmcControlRoots, duplicate_cache_prefix) == 0x0c);
     assert_type_layout!(HostContextAccounting, 0x18, 4);
     assert!(core::mem::offset_of!(HostContextAccounting, opaque_00) == 0x00);
     assert!(core::mem::offset_of!(HostContextAccounting, duplicate_cache_cursor) == 0x0c);
@@ -2452,6 +2485,17 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn encryption_roots_and_duplicate_cache_overlap_are_exact() {
+        assert_eq!(encryption_free_head().get(), 0x0400_861c);
+        assert_eq!(encryption_generation().get(), 0x0400_8620);
+        assert_eq!(duplicate_cache_entry(0).unwrap().get(), 0x0400_8624);
+        assert_eq!(duplicate_cache_entry(30).unwrap().get(), 0x0400_878c);
+        assert_eq!(duplicate_cache_entry(31).unwrap().get(), 0x0400_8798);
+        assert_eq!(duplicate_cache_entry(31).unwrap().get() + 0x0c, 0x0400_87a4);
+        assert!(duplicate_cache_entry(32).is_none());
     }
 
     #[test]
