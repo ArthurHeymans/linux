@@ -688,7 +688,7 @@ pub unsafe fn initialize_tx_pipe_state() {
         write_u32(SHARED + 0x20, 10);
         // Hardware ring cursor -> software slot translation used by the
         // vendor's nontrivial retry-retirement branch.
-        write_u32(0x0400_02d8, 0x0201_0003);
+        write_u32(crate::dtcm::QUEUE_PIPE_MAPPINGS.get(), 0x0201_0003);
     }
     // `txp_submit_to_pipe` emits a 0x20800000 descriptor command sourcing
     // one byte from this per-interface packet-SRAM metadata vector. Hardware
@@ -710,8 +710,8 @@ pub unsafe fn initialize_tx_pipe_state() {
     for (base, values) in [
         (0x0400_0194, &RATE_ENCODING[..]),
         (0x0400_01aa, &RATE_ATTRIBUTE[..]),
-        (0x0400_02dc, &[1_u8, 0, 2, 3][..]),
-        (0x0400_02e0, &[1_u8, 0, 2, 3][..]),
+        (crate::dtcm::QUEUE_TO_ACCESS_CATEGORY.get(), &[1_u8, 0, 2, 3][..]),
+        (crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get(), &[1_u8, 0, 2, 3][..]),
     ] {
         for (offset, value) in values.iter().copied().enumerate() {
             unsafe { write_u8(base + offset, value) };

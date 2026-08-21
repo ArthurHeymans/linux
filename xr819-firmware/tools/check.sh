@@ -44,6 +44,7 @@ python3 tools/check-hif-mic-layout.py
 python3 tools/check-initialized-hif-control-layout.py
 python3 tools/check-ampdu-telemetry-layout.py
 python3 tools/check-initialized-control-words-layout.py
+python3 tools/check-queue-pipe-mappings-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -92,6 +93,7 @@ python3 tools/check-hif-mic-layout.py "$ELF"
 python3 tools/check-initialized-hif-control-layout.py "$ELF"
 python3 tools/check-ampdu-telemetry-layout.py "$ELF"
 python3 tools/check-initialized-control-words-layout.py "$ELF"
+python3 tools/check-queue-pipe-mappings-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -450,6 +452,15 @@ if [[ -n "${XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF" "$ELF"
 else
   echo "== initialized-control-words codegen gate skipped: set XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF to the qualified A-MPDU-telemetry ELF =="
+fi
+
+if [[ -n "${XR819_QUEUE_PIPE_MAPPINGS_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed queue/pipe-mappings parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/queue-pipe-mappings-codegen-manifest.json \
+    "$XR819_QUEUE_PIPE_MAPPINGS_PARENT_ELF" "$ELF"
+else
+  echo "== queue/pipe-mappings codegen gate skipped: set XR819_QUEUE_PIPE_MAPPINGS_PARENT_ELF to the qualified initialized-control-words ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

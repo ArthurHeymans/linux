@@ -162,7 +162,7 @@ const PIPE_IRQ_TRIGGER: u32 = crate::platform::mac_register(0x0e98) as u32;
 const PIPE_QUANTUM_POINTERS: u32 = 0x0400_10d4;
 const PIPE_QUANTUM: u32 = 0x0000_0fff;
 const PIPE_BUSY: u32 = PIPE_RECORDS + 7;
-const QUEUE_BACKOFF_TABLE: u32 = 0x0400_02dc;
+const QUEUE_BACKOFF_TABLE: u32 = crate::dtcm::QUEUE_TO_ACCESS_CATEGORY.get() as u32; const ACCESS_CATEGORY_QUEUE_TABLE: u32 = crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32;
 const PIPE_STATUS_COUNTER: u32 = 0xfff0_1aa4;
 const PIPE_STATUS_ACCOUNTING: u32 = 0x0400_1f7c;
 const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
@@ -4665,7 +4665,7 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
             if flags & (1 << 15) == 0 {
                 backend.reset_backoff(
                     read_u8(frame.interface_address()),
-                    read_u8(0x0400_02dc + usize::from(pipe)),
+                    read_u8(QUEUE_BACKOFF_TABLE as usize + usize::from(pipe)),
                 );
             }
 
@@ -5177,7 +5177,7 @@ where
                             write_u8(message.completion_tid().get(), read_u8(context.tid_address()));
                             write_u8(message.completion_state().get(), read_u8(context.completion_byte_6c_address()));
                             let queue = usize::from(read_u8(context.access_category_address()));
-                            write_u8(message.completion_queue().get(), read_u8(0x0400_02e0 + queue));
+                            write_u8(message.completion_queue().get(), read_u8(ACCESS_CATEGORY_QUEUE_TABLE as usize + queue));
                             write_u16(message.completion_sequence().get(), read_u16(context.sequence_number_address()) << 4);
                             let header = read_u32(context.frame_address_address()) as usize;
                             write_u16(message.completion_mac_word(0).unwrap().get(), read_u16(header + 4));
@@ -5975,7 +5975,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         return 6;
     }
 
-    let queue = u32::from(mmio.read_u8(0x0400_02dc + u32::from(pipe)));
+    let queue = u32::from(mmio.read_u8(QUEUE_BACKOFF_TABLE + u32::from(pipe)));
     let mut quantum =
         u32::from(mmio.read_u16(pas.txop_limit_unchecked(queue as usize).get() as u32));
     let airtime = mmio.read_u32(frame + 0x48) & 0xffff;
@@ -6361,7 +6361,7 @@ pub unsafe fn prepare_probe_context(
         // pool value until that ROM/global state is translated; zero is not a
         // reference-faithful substitute once the context becomes live.
         ((context_address + 0x60) as *mut u8)
-            .write_volatile((0x0400_02dc as *const u8).read_volatile());
+            .write_volatile((QUEUE_BACKOFF_TABLE as *const u8).read_volatile());
         ((context_address + 0x61) as *mut u8).write_volatile(0);
 
         let header = ((context_address + 0x1c) as *const u32).read_volatile();
@@ -6803,7 +6803,7 @@ unsafe fn prepare_context_publication(
         let address = context.context as usize;
         let queue = ((address + 0x60) as *const u8).read_volatile();
         let pipe =
-            (0x0400_02e0_usize.wrapping_add(usize::from(queue)) as *const u8).read_volatile();
+            ((ACCESS_CATEGORY_QUEUE_TABLE as usize).wrapping_add(usize::from(queue)) as *const u8).read_volatile();
         if pipe >= 4 {
             release_unpublished_probe_context(context);
             return Err(ProbeBuildError::PipeStateUnavailable);
@@ -6917,7 +6917,7 @@ unsafe fn prepare_legacy_control_publication(
     }
     let queue = request.queue_id.min(3);
     unsafe {
-        let ac = (0x0400_02dc_usize.wrapping_add(usize::from(queue)) as *const u8).read_volatile();
+        let ac = ((QUEUE_BACKOFF_TABLE as usize).wrapping_add(usize::from(queue)) as *const u8).read_volatile();
         ((address + 0x60) as *mut u8).write_volatile(ac);
         ((address + 0x61) as *mut u8).write_volatile((request.flags & 0x0f) >> 1);
         ((address + 0x62) as *mut u8).write_volatile((request.flags & 0x7f) >> 4);
@@ -7017,7 +7017,7 @@ unsafe fn prepare_host_management_publication(
         // `ctx+0x60` is the vendor AC selected through the four-entry WSM
         // queue map, not the raw WSM queue ID. The adjacent bytes retain the
         // PTA priority and retry-policy selector packed in WSM TX flags.
-        let ac = (0x0400_02dc_usize.wrapping_add(usize::from(queue)) as *const u8).read_volatile();
+        let ac = ((QUEUE_BACKOFF_TABLE as usize).wrapping_add(usize::from(queue)) as *const u8).read_volatile();
         ((address + 0x60) as *mut u8).write_volatile(ac);
         ((address + 0x61) as *mut u8).write_volatile((request.flags & 0x0f) >> 1);
         ((address + 0x62) as *mut u8).write_volatile((request.flags & 0x7f) >> 4);
@@ -8491,7 +8491,7 @@ mod tests {
             0x55,
         );
         mmio.set(0x0400_1b04, 0x44);
-        mmio.set(0x0400_02dc, 1);
+        mmio.set(QUEUE_BACKOFF_TABLE, 1);
         mmio.set(
             crate::dtcm::pas_stride_view(0)
                 .unwrap()

@@ -114,8 +114,7 @@ struct InitializedVendorImage {
     /// not establish that every word is a complete callable entry.
     visible_completion_words: [SharedU32; 10],
     pre_ring_cursor_map: OpaqueBytes<0x50>,
-    ring_cursor_map: SharedU32,
-    pipe_status_maps: OpaqueBytes<0x8>,
+    queue_pipe_mappings: QueuePipeMappings,
     pre_command_dispatch: OpaqueBytes<0x42c>,
     command_dispatch: [SharedU32; 37],
     pre_aes_descriptors: OpaqueBytes<0x60>,
@@ -135,6 +134,12 @@ struct InitializedVendorImage {
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
+}
+#[repr(C, align(4))]
+struct QueuePipeMappings {
+    pipe_order: [SharedU8; 4],
+    queue_to_access_category: [SharedU8; 4],
+    access_category_to_queue: [SharedU8; 4],
 }
 #[repr(C, align(4))]
 struct InitializedControlWords {
@@ -1651,6 +1656,12 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const QUEUE_PIPE_MAPPINGS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, queue_pipe_mappings));
+pub(crate) const QUEUE_TO_ACCESS_CATEGORY: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, queue_to_access_category));
+pub(crate) const ACCESS_CATEGORY_TO_QUEUE: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, access_category_to_queue));
+pub(crate) const fn pipe_order_byte(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, pipe_order) + index)) } else { None } }
+pub(crate) const fn queue_to_access_category(queue: usize) -> Option<DtcmAddress> { if queue < 4 { Some(DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, queue_to_access_category) + queue)) } else { None } }
+pub(crate) const fn access_category_to_queue(access_category: usize) -> Option<DtcmAddress> { if access_category < 4 { Some(DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, access_category_to_queue) + access_category)) } else { None } }
 pub(crate) const INITIALIZED_CONTROL_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, control_words));
 const fn initialized_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(INITIALIZED_CONTROL_WORDS.offset() + offset) }
 pub(crate) const fn initialized_beacon_state() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, beacon_state)) }
@@ -3033,8 +3044,11 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedVendorImage, rate_encoding) == 0x0194);
     assert!(core::mem::offset_of!(InitializedVendorImage, rate_attributes) == 0x01aa);
     assert!(core::mem::offset_of!(InitializedVendorImage, visible_completion_words) == 0x0260);
-    assert!(core::mem::offset_of!(InitializedVendorImage, ring_cursor_map) == 0x02d8);
-    assert!(core::mem::offset_of!(InitializedVendorImage, pipe_status_maps) == 0x02dc);
+    assert_type_layout!(QueuePipeMappings, 0x0c, 4);
+    assert!(core::mem::offset_of!(QueuePipeMappings, pipe_order) == 0x00);
+    assert!(core::mem::offset_of!(QueuePipeMappings, queue_to_access_category) == 0x04);
+    assert!(core::mem::offset_of!(QueuePipeMappings, access_category_to_queue) == 0x08);
+    assert!(core::mem::offset_of!(InitializedVendorImage, queue_pipe_mappings) == 0x02d8);
     assert!(core::mem::offset_of!(InitializedVendorImage, command_dispatch) == 0x0710);
     assert!(core::mem::offset_of!(InitializedVendorImage, aes_transfer_descriptors) == 0x0804);
     assert!(core::mem::offset_of!(InitializedVendorImage, aes_mode1_microcode) == 0x0830);
@@ -3702,6 +3716,20 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_queue_pipe_mapping_addresses_are_exact() {
+        assert_eq!(QUEUE_PIPE_MAPPINGS.get(), 0x0400_02d8);
+        assert_eq!(pipe_order_byte(0).unwrap().get(), 0x0400_02d8);
+        assert_eq!(pipe_order_byte(3).unwrap().get(), 0x0400_02db);
+        assert_eq!(QUEUE_TO_ACCESS_CATEGORY.get(), 0x0400_02dc);
+        assert_eq!(queue_to_access_category(3).unwrap().get(), 0x0400_02df);
+        assert_eq!(ACCESS_CATEGORY_TO_QUEUE.get(), 0x0400_02e0);
+        assert_eq!(access_category_to_queue(3).unwrap().get(), 0x0400_02e3);
+        assert!(pipe_order_byte(4).is_none());
+        assert!(queue_to_access_category(4).is_none());
+        assert!(access_category_to_queue(4).is_none());
     }
 
     #[test]

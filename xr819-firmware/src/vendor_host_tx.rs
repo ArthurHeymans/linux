@@ -484,11 +484,7 @@ pub unsafe fn vendor_timer_now() -> u32 {
 
 #[cfg(target_arch = "arm")]
 unsafe fn vendor_timer() -> u32 {
-    unsafe {
-        read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(
-            crate::dtcm::initialized_timer_counter().get() as u32,
-        ))
-    }
+    unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(crate::dtcm::initialized_timer_counter().get() as u32)) }
 }
 
 #[allow(unused_macros)]
@@ -945,7 +941,7 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
         }
     }
     let ac = unsafe { read_live_u8(pas + 0x0c) };
-    let pipe = unsafe { read_live_u8(0x0400_02e0 + u32::from(ac)) };
+    let pipe = unsafe { read_live_u8(crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32 + u32::from(ac)) };
     let ring_head = unsafe { read_live_u32(0x0400_1578) as u8 & 0x3f };
     let ring_tail = unsafe { read_live_u32(0x0400_157c) as u8 & 0x3f };
     let mut slot = ring_head;
@@ -1133,7 +1129,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         candidate += 1;
     }
     let ac = unsafe { read_live_u8(pas + 0x0c) };
-    let pipe = unsafe { read_live_u8(0x0400_02e0 + u32::from(ac)) };
+    let pipe = unsafe { read_live_u8(crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32 + u32::from(ac)) };
     let head = unsafe { read_live_u32(0x0400_1578) as u8 & 0x3f };
     let tail = unsafe { read_live_u32(0x0400_157c) as u8 & 0x3f };
     let mut ring_slot = head;
@@ -1649,12 +1645,9 @@ pub unsafe fn admit_host_tx(
         Err(_) => return Err((buffer, HostAdmissionError::MalformedRequest)),
     };
     let queue = request.queue_id & 3;
-    let ac = unsafe { read_live_u8(0x0400_02dc + u32::from(queue)) };
-    let submit_timer = unsafe {
-        read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(
-            crate::dtcm::initialized_timer_counter().get() as u32,
-        ))
-    };
+    let ac = unsafe { read_live_u8(crate::dtcm::QUEUE_TO_ACCESS_CATEGORY.get() as u32 + u32::from(queue)) };
+    let submit_timer =
+        unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(crate::dtcm::initialized_timer_counter().get() as u32)) };
     let packet_id = request.packet_id;
     let metadata = HostTxMetadata {
         message_address: buffer.buffer_address(),

@@ -4116,3 +4116,28 @@ manifest  tools/initialized-control-words-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.67 Initialized queue/pipe mappings
+
+The initialized `0x0c` bytes at `0x040002d8..0x040002e4` are now an exact
+`QueuePipeMappings` record: four pipe-order bytes, four WSM queue-to-access-
+category bytes, and the reverse access-category-to-queue map.
+
+All production literals in MAC initialization, TX preparation/publication, and
+host-TX scheduling were replaced with bounded or base typed address APIs. The
+hot runtime additions and volatile byte accesses remain unchanged. An initial
+source rewrite shifted Rust panic-location line metadata and changed the full
+ELF despite identical executable symbols; restoring original source line counts
+recovered exact ELF identity. `tools/check-queue-pipe-mappings-layout.py` pins
+three linked literals and the complete decoded xref multiset. The complete ELF
+remains byte-identical to the qualified initialized-control-words parent, so no
+hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-queue-pipe-mappings-final-check.log
+          25d195dfdf4d2be9f6875980e2073d9c55e7d5b6723ee3e386fab94b5e784a5b
+manifest  tools/queue-pipe-mappings-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
