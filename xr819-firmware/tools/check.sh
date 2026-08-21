@@ -53,6 +53,7 @@ python3 tools/check-aes-transfer-class-layout.py
 python3 tools/check-phy-gain-register-write-lists-layout.py
 python3 tools/check-phy-init-register-write-lists-layout.py
 python3 tools/check-initialized-phy-gain-source-layout.py
+python3 tools/check-initialized-iq-calibration-gain-indices-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
@@ -123,6 +124,7 @@ python3 tools/check-aes-transfer-class-layout.py "$ELF"
 python3 tools/check-phy-gain-register-write-lists-layout.py "$ELF"
 python3 tools/check-phy-init-register-write-lists-layout.py "$ELF"
 python3 tools/check-initialized-phy-gain-source-layout.py "$ELF"
+python3 tools/check-initialized-iq-calibration-gain-indices-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
@@ -665,6 +667,15 @@ if [[ -n "${XR819_INITIALIZED_PHY_GAIN_SOURCE_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_PHY_GAIN_SOURCE_PARENT_ELF" "$ELF"
 else
   echo "== initialized-PHY-gain-source codegen gate skipped: set XR819_INITIALIZED_PHY_GAIN_SOURCE_PARENT_ELF to the qualified PHY-init-register-write-lists ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_IQ_CALIBRATION_GAIN_INDICES_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-IQ-calibration-gain-indices parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-iq-calibration-gain-indices-codegen-manifest.json \
+    "$XR819_INITIALIZED_IQ_CALIBRATION_GAIN_INDICES_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-IQ-calibration-gain-indices codegen gate skipped: set XR819_INITIALIZED_IQ_CALIBRATION_GAIN_INDICES_PARENT_ELF to the qualified initialized-PHY-gain-source ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

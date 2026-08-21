@@ -289,7 +289,9 @@ Within `0x04000000..0x04002078`:
 | `0x04000b60..0x04000c10` | two `0x58`-byte lists | initialized PHY gain register writes: ten ordered `{u32 address, u32 value}` pairs and a physical `{0xffffffff, 0xffffffff}` terminator pair per list |
 | `0x04000c60..0x04000ca6` | `0x46` bytes | opaque initialized prefix containing the unresolved sentinel-walk list |
 | `0x04000ca6..0x04000da8` | 43 records, stride `0x06` | initialized PHY gain sources: two overlapping 22-record address views; shared quarantine |
-| `0x04000da8..0x040010d4` | `0x32c` bytes | opaque initialized suffix; the separate root at its start is not decoded |
+| `0x04000da8..0x04000e18` | `0x70` bytes | opaque initialized suffix prefix; the separate root at its start is not decoded |
+| `0x04000e18..0x04000e48` | 12 `u32` | initialized IQ-calibration gain indices `1a,19,18,16,15,14,12,11,10,02,01,00`; shared quarantine |
+| `0x04000e48..0x040010d4` | `0x28c` bytes | opaque initialized suffix; `0x04000e48` is an excluded unchecked lookahead and distinct register-list root |
 | `0x040010d4..0x040010e4` | 4 `u32` | per-pipe duration-quantum MMIO pointers |
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
@@ -4798,5 +4800,59 @@ packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-initialized-phy-gain-source-final-check.log
           a9832ae063265d6882ffcf2885d0863e20051ce791b3c509085571058289028b
 manifest  tools/initialized-phy-gain-source-codegen-manifest.json
+```
+
+### A.89 Initialized IQ-calibration gain-index table
+
+The vendor COPY image initializes exactly twelve contiguous aligned `u32` words
+at `0x04000e18..0x04000e48`, represented by the private alignment-four
+`InitializedIqCalibrationGainIndices { entries: [SharedU32; 12] }`. Its size is
+`0x30`, `entries` starts at `+0x00`, and entry offsets are `+0x00`, `+0x04`,
+`+0x08`, `+0x0c`, `+0x10`, `+0x14`, `+0x18`, `+0x1c`, `+0x20`, `+0x24`, `+0x28`,
+and `+0x2c`. COPY values in order are `0x1a, 0x19, 0x18, 0x16, 0x15, 0x14,
+0x12, 0x11, 0x10, 0x02, 0x01, 0x00`.
+
+Retained `rf_compute_iq_gain_corr` indexes this root with four-byte stride for
+exactly twelve iterations. `rf_write_iq_corr_regs` reads its `u32` entries but
+performs an unchecked post-body lookahead at `0x04000e48`; that address is
+excluded from the table and remains opaque because it is also the distinct
+register-list root passed by `phy_cal_apply_substate`. `rf_calibrate_iq_dc`
+retains the root as reader/orchestrator. Vendor COPY is the only exact known
+writer, not evidence of immutability: generic HIF/debug memory mutation and
+vendor/IRQ/FIQ mutation remain possible. The duplicate values in
+`phy.rs::IQ_CALIBRATION_GAIN_INDICES` are evidence only; production users remain
+unchanged and do not read this DTCM view.
+
+`InitializedVendorImage` splits only the prior `0x32c` suffix as `0x70 + 0x30 +
+0x28c`: opaque `0x04000da8..0x04000e18`, the table, then opaque
+`0x04000e48..0x040010d4`. `duration_quantum_pointers` remains at
+`0x040010d4`, and the image remains `0x2078` bytes. This is a shared quarantine
+view with no immutability or ownership closure. The crate-private API derives
+the root with `offset_of!` and returns only a checked `DtcmAddress` for indices
+`0..12`; it exposes no pointer, reference, slice, iterator, value read/write,
+or entry-12/lookahead accessor.
+
+`tools/check-initialized-iq-calibration-gain-indices-layout.py` owns exactly
+`[0x04000e18, 0x04000e48)`. It masks Rust `cfg(test)`, permits only `dtcm.rs`
+and itself as source owners, rejects raw in-range or synthesized roots and
+alternate named base/root/count/stride forms elsewhere, and pins aligned linked
+literals plus decoded PC-relative xrefs by containing symbol. The reviewed
+linked counters are empty because no production consumer was added. This is
+drift evidence, not closure over computed, indirect, vendor, IRQ/FIQ, HIF, or
+debug accesses.
+
+Compile-time assertions and focused tests pin type size/alignment, entries
+field offset, the exact root, entries 0, 1, and 11, rejection of index 12, table
+end and opaque boundaries, the unchanged duration-pointer root, and the image
+size. Source/linked checks run in `check.sh` and `build-ota-image.sh`; the exact
+parent manifest requires no text-symbol, operation-order, IRQ/barrier, stack,
+or symbol-set drift. No hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-initialized-iq-calibration-gain-indices-check.log
+          b53a8f0151306a62218ea989c2f045d154495129e3110777956c7e0105a7c744
+manifest  tools/initialized-iq-calibration-gain-indices-codegen-manifest.json
 ```
 
