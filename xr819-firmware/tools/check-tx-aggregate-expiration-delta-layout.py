@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Source/linked drift evidence for the fixed measurement workspace.
+"""Source/linked drift evidence for the fixed TX aggregate expiration delta.
 
-This checker covers [0x040010f8, 0x04001160). It is evidence against source,
+This checker covers [0x04001160, 0x04001164). It is evidence against source,
 layout-inventory, aligned linked-literal, and decoded PC-relative-xref drift;
 it is not proof of ownership or consumer closure. Register-computed, indirect,
 generic HIF/debug, vendor, IRQ, and FIQ accesses remain outside its proof.
@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x040010F8, 0x040010F8 + 0x68)
+RANGE = (0x04001160, 0x04001164)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc",
@@ -26,51 +26,18 @@ SOURCE_EXTENSIONS = {
     ".ldh", ".x", ".toml", ".mk",
 }
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
-OWNER_FILES = {"src/dtcm.rs", "tools/check-measurement-workspace-layout.py"}
+OWNER_FILES = {"src/dtcm.rs", "tools/check-tx-aggregate-expiration-delta-layout.py"}
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 REQUIRED_INVENTORY = (
-    "#[repr(C, align(4))] struct MeasurementWorkspace",
-    "dwell_bound: SharedU16",
-    "opaque_02: OpaqueBytes<0x03>",
-    "measurement_type: SharedU8",
-    "opaque_06: OpaqueBytes<0x02>",
-    "completion_status: SharedU32",
-    "opaque_0c: OpaqueBytes<0x05>",
-    "dispatch_state: SharedU8",
-    "dispatch_argument: SharedU16",
-    "opaque_14: OpaqueBytes<0x04>",
-    "start_timestamp_words: [SharedU32; 2]",
-    "elapsed_timestamp_words: [SharedU32; 2]",
-    "scan_request_prefix: OpaqueBytes<0x01>",
-    "scan_request_mode: SharedU8",
-    "opaque_2a: OpaqueBytes<0x3e>",
-    "pre_measurement_workspace: OpaqueBytes<0x14>",
+    "#[repr(C, align(4))] struct TxAggregateExpirationDelta { value: SharedU32 }",
     "measurement_workspace: MeasurementWorkspace",
     "tx_aggregate_expiration_delta: TxAggregateExpirationDelta",
     "post_tx_aggregate_expiration_delta: OpaqueBytes<0x48>",
-    "pub(crate) const MEASUREMENT_WORKSPACE: DtcmAddress",
-    "pub(crate) const fn measurement_dwell_bound() -> DtcmAddress",
-    "pub(crate) const fn measurement_type() -> DtcmAddress",
-    "pub(crate) const fn measurement_completion_status() -> DtcmAddress",
-    "pub(crate) const fn measurement_dispatch_state() -> DtcmAddress",
-    "pub(crate) const fn measurement_dispatch_argument() -> DtcmAddress",
-    "pub(crate) const fn measurement_start_timestamp_word(index: usize) -> Option<DtcmAddress>",
-    "pub(crate) const fn measurement_elapsed_timestamp_word(index: usize) -> Option<DtcmAddress>",
-    "pub(crate) const fn measurement_scan_request() -> DtcmAddress",
-    "pub(crate) const fn measurement_scan_request_mode() -> DtcmAddress",
-    "assert_type_layout!(MeasurementWorkspace, 0x68, 4)",
-    "offset_of!(MeasurementWorkspace, dwell_bound) == 0x00",
-    "offset_of!(MeasurementWorkspace, measurement_type) == 0x05",
-    "offset_of!(MeasurementWorkspace, completion_status) == 0x08",
-    "offset_of!(MeasurementWorkspace, dispatch_state) == 0x11",
-    "offset_of!(MeasurementWorkspace, dispatch_argument) == 0x12",
-    "offset_of!(MeasurementWorkspace, start_timestamp_words) == 0x18",
-    "offset_of!(MeasurementWorkspace, elapsed_timestamp_words) == 0x20",
-    "offset_of!(MeasurementWorkspace, scan_request_prefix) == 0x28",
-    "offset_of!(MeasurementWorkspace, scan_request_mode) == 0x29",
-    "offset_of!(InitializedVendorImage, pre_measurement_workspace) == 0x10e4",
+    "pub(crate) const TX_AGGREGATE_EXPIRATION_DELTA: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tx_aggregate_expiration_delta));",
+    "assert_type_layout!(TxAggregateExpirationDelta, 0x04, 4)",
+    "offset_of!(TxAggregateExpirationDelta, value) == 0",
     "offset_of!(InitializedVendorImage, measurement_workspace) == 0x10f8",
     "offset_of!(InitializedVendorImage, tx_aggregate_expiration_delta) == 0x1160",
     "offset_of!(InitializedVendorImage, post_tx_aggregate_expiration_delta) == 0x1164",
@@ -80,9 +47,13 @@ REQUIRED_INVENTORY = (
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
 )
 FORBIDDEN_API = (
-    "measurement_workspace_ptr", "measurement_workspace_ref",
-    "measurement_workspace_mut", "measurement_workspace_offset",
-    "measurement_opaque", "measurement_workspace_bytes",
+    "tx_aggregate_expiration_delta_ptr", "tx_aggregate_expiration_delta_ref",
+    "tx_aggregate_expiration_delta_mut", "tx_aggregate_expiration_delta_offset",
+    "tx_aggregate_expiration_delta_value", "tx_aggregate_expiration_delta_read",
+    "tx_aggregate_expiration_delta_write", "tx_aggregate_expiration_delta_bytes",
+    "tx_aggregate_expiration_delta_slice", "tx_aggregate_expiration_delta_iter",
+    "tx_aggregate_expiration_delta_field", "tx_aggregate_expiration_delta_writer",
+    "tx_aggregate_expiration_delta_generic_offset",
 )
 
 
@@ -149,6 +120,21 @@ def check_source() -> None:
     forbidden = [item for item in FORBIDDEN_API if item in dtcm]
     failures = [f"src/dtcm.rs: missing reviewed inventory: {item}" for item in missing]
     failures += [f"src/dtcm.rs: forbidden broad/reference API: {item}" for item in forbidden]
+    address_declaration = REQUIRED_INVENTORY[4]
+    if dtcm.count(address_declaration) != 1:
+        failures.append("src/dtcm.rs: sole address declaration is not unique")
+    public_names = re.findall(
+        r"pub(?:\(crate\))?\s+(?:const\s+fn|const|fn|static|type|struct)\s+([A-Za-z0-9_]+)",
+        dtcm,
+    )
+    related_public_names = [
+        name for name in public_names if "tx_aggregate_expiration_delta" in name.lower()
+    ]
+    if related_public_names != ["TX_AGGREGATE_EXPIRATION_DELTA"]:
+        failures.append(
+            "src/dtcm.rs: unexpected TX aggregate expiration delta public API: "
+            f"{related_public_names!r}"
+        )
     for path in source_paths():
         relative = path.relative_to(ROOT).as_posix()
         if relative in OWNER_FILES:
@@ -166,13 +152,13 @@ def check_source() -> None:
             if len(token) >= 10 and in_range(value):
                 line = code.count("\n", 0, match.start()) + 1
                 failures.append(
-                    f"{relative}:{line}: measurement-workspace literal {match.group()} "
+                    f"{relative}:{line}: TX-aggregate-expiration-delta literal {match.group()} "
                     "is outside dtcm.rs"
                 )
     if failures:
         raise SystemExit("\n".join(failures))
     print(
-        "MEASUREMENT WORKSPACE SOURCE/LAYOUT DRIFT-EVIDENCE GATE PASSED "
+        "TX AGGREGATE EXPIRATION DELTA SOURCE/LAYOUT DRIFT-EVIDENCE GATE PASSED "
         f"files={len(source_paths())} inventory={len(REQUIRED_INVENTORY)}"
     )
 
@@ -225,12 +211,12 @@ def check_elf(path: Path, dump: bool) -> None:
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
         raise SystemExit(
-            "MEASUREMENT WORKSPACE LINKED DRIFT GATE FAILED\n"
+            "TX AGGREGATE EXPIRATION DELTA LINKED DRIFT GATE FAILED\n"
             f"literals expected={dict(ALLOWED_LINKED_LITERALS)!r} actual={dict(literals)!r}\n"
             f"xrefs expected={dict(ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     print(
-        "MEASUREMENT WORKSPACE LINKED-XREF DRIFT-EVIDENCE GATE PASSED "
+        "TX AGGREGATE EXPIRATION DELTA LINKED-XREF DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}; "
         "this is not ownership proof"
     )
@@ -249,4 +235,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"measurement-workspace drift gate failed: {error}")
+        raise SystemExit(f"TX-aggregate-expiration-delta drift gate failed: {error}")

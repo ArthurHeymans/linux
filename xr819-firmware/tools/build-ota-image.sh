@@ -47,6 +47,7 @@ python3 tools/check-phy-init-register-write-lists-layout.py
 python3 tools/check-initialized-phy-gain-source-layout.py
 python3 tools/check-initialized-iq-calibration-gain-indices-layout.py
 python3 tools/check-measurement-workspace-layout.py
+python3 tools/check-tx-aggregate-expiration-delta-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
@@ -111,6 +112,7 @@ python3 tools/check-phy-init-register-write-lists-layout.py "$ELF"
 python3 tools/check-initialized-phy-gain-source-layout.py "$ELF"
 python3 tools/check-initialized-iq-calibration-gain-indices-layout.py "$ELF"
 python3 tools/check-measurement-workspace-layout.py "$ELF"
+python3 tools/check-tx-aggregate-expiration-delta-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"

@@ -293,6 +293,7 @@ Within `0x04000000..0x04002078`:
 | `0x04000e18..0x04000e48` | 12 `u32` | initialized IQ-calibration gain indices `1a,19,18,16,15,14,12,11,10,02,01,00`; shared quarantine |
 | `0x04000e48..0x040010d4` | `0x28c` bytes | opaque initialized suffix; `0x04000e48` is an excluded unchecked lookahead and distinct register-list root |
 | `0x040010d4..0x040010e4` | 4 `u32` | per-pipe duration-quantum MMIO pointers |
+| `0x04001160..0x04001164` | one shared `u32` | fixed TX aggregate expiration delta; no known Rust consumer or writer |
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
 | `0x040012a0..0x040012c8` | `0x28` | exported AMPDU counters table |
@@ -1329,7 +1330,7 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 
 ### A.3 Semantic fields versus opaque storage
 
-High-confidence count/stride semantics are encoded for VIF records, host contexts, internal contexts, LMC messages, the scheduler table, and the exact TALA arrays. The power-save area is intentionally different: only the `0x208` family span and observed `0x104` address stride are retained, without asserting two owned records. `InitializedVendorImage` also asserts the documented initialized islands: duration timing at `0x0138`, rate encoding/attributes at `0x0194`/`0x01aa`, ten visible completion-related words at `0x0260`, ring/status maps at `0x02d8`/`0x02dc`, command dispatch at `0x0710`, AES descriptors/microcode at `0x0804`/`0x0830`, two PHY gain register-write lists at `0x0b60`/`0x0bb8`, duration-quantum pointers at `0x10d4`, HIF shadow at `0x11ac`, IRQ callbacks at `0x11bc`, AMPDU counters at `0x12a0`, control words at `0x1420`, the low-MAC initialized root at `0x1680`, retry/TALA anchors within that root, scheduler exclusion words at `0x1fcc`, and the event island at `0x1fd4`. TALA uses shared scalar wrappers at offsets `0x00`, `0x04`, `0x0c`, `0x14`, and `0x1c`. The internal pool retains its exact `free_head`/`contexts` split at offsets `0` and `4`.
+High-confidence count/stride semantics are encoded for VIF records, host contexts, internal contexts, LMC messages, the scheduler table, and the exact TALA arrays. The power-save area is intentionally different: only the `0x208` family span and observed `0x104` address stride are retained, without asserting two owned records. `InitializedVendorImage` also asserts the documented initialized islands: duration timing at `0x0138`, rate encoding/attributes at `0x0194`/`0x01aa`, ten visible completion-related words at `0x0260`, ring/status maps at `0x02d8`/`0x02dc`, command dispatch at `0x0710`, AES descriptors/microcode at `0x0804`/`0x0830`, two PHY gain register-write lists at `0x0b60`/`0x0bb8`, duration-quantum pointers at `0x10d4`, the TX aggregate expiration delta at `0x1160`, HIF shadow at `0x11ac`, IRQ callbacks at `0x11bc`, AMPDU counters at `0x12a0`, control words at `0x1420`, the low-MAC initialized root at `0x1680`, retry/TALA anchors within that root, scheduler exclusion words at `0x1fcc`, and the event island at `0x1fd4`. TALA uses shared scalar wrappers at offsets `0x00`, `0x04`, `0x0c`, `0x14`, and `0x1c`. The internal pool retains its exact `free_head`/`contexts` split at offsets `0` and `4`.
 
 Everything with unresolved internal extent or ownership is a private opaque family. In particular, the command/channel-switch overlap is one opaque overlay rather than two fields, and the historically overlapping HIF views are represented as one quarantine family. The power-save stride is asserted but no field API is provided because the decompilation's larger relative offsets remain ambiguous. Unknown ranges are represented only because the complete fixed ABI object necessarily spans them; no API names them as padding, free space, or allocatable capacity.
 
@@ -4884,11 +4885,12 @@ initializer or production consumer.
 | `+0x29` | volatile/shared `u8` | nested scan-request mode |
 | `+0x2a` | `0x3e` opaque bytes | undecoded nested request tail |
 
-The enclosing former `0xc8`-byte opaque field is split exactly as `0x14 + 0x68
-+ 0x4c`: opaque `0x040010e4..0x040010f8`, this workspace, and opaque
-`0x04001160..0x040011ac`. The first independently observed adjacent reference is
-`0x04001160` in `txq_build_aggregate_lists`, supporting that exclusive endpoint;
-the following initialized HIF/control field remains at `0x040011ac`.
+The enclosing former `0xc8`-byte opaque field was first split as `0x14 + 0x68
++ 0x4c`; the adjacent fixed slice now refines the suffix as one typed `0x04` word
+at `0x04001160..0x04001164` followed by opaque `0x04001164..0x040011ac`.
+The independently observed `0x04001160` reference in
+`txq_build_aggregate_lists` supports the workspace's exclusive endpoint; the
+following initialized HIF/control field remains at `0x040011ac`.
 `InitializedVendorImage`, `DtcmLayout`, and `SharedDtcmState` retain their exact
 sizes.
 
@@ -4925,5 +4927,58 @@ set drift. No hardware test was run.
 ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
 packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 manifest  tools/measurement-workspace-codegen-manifest.json
+```
+
+### A.91 Fixed TX aggregate expiration delta
+
+The initialized vendor COPY island at `0x04001160..0x04001164` is decoded as
+exactly one `#[repr(C, align(4))]` `TxAggregateExpirationDelta` containing one
+shared-quarantine `SharedU32` at offset zero. The decompilation retains the sole
+observed read in `txq_build_aggregate_lists` as
+`(piVar13[-5] - iVar4) + DAT_0000a6e8 < 0`; this establishes one 32-bit operand
+and its structural role. `/tmp/xr819-dtcm-refs.out:203` independently records
+`04001160,0000a404,txq_build_aggregate_lists,READ`. There is no known Rust
+consumer or writer, and no production code was added or translated.
+
+The address-only crate-private inventory consists solely of
+`TX_AGGREGATE_EXPIRATION_DELTA`, derived with `offset_of!` from the fixed
+initialized image. It exposes no pointer, reference, value, read/write, slice,
+iterator, count/stride, generic-offset, or interior-field API. `SharedU32`
+already supplies the `UnsafeCell<MaybeUninit<u32>>` quarantine representation;
+this does not establish immutable storage, exclusive Rust ownership, a larger
+TX record, a second element, or any extent beyond the one observed word.
+Vendor COPY initialization and register-computed, indirect, generic HIF/debug,
+vendor, IRQ, and FIQ mutation remain within the containment model, so no safe
+reference is created.
+
+The next independently referenced root is `0x04001164`, but its extent and
+semantics remain unresolved. Consequently `0x04001164..0x040011ac` stays exactly
+`OpaqueBytes<0x48>`, and initialized HIF control remains fixed at
+`0x040011ac`. The containing `InitializedVendorImage` remains size `0x2078` and
+alignment four. No bytes in the unresolved suffix, TALA relocation, or
+`0x04002984..0x04003050` are decoded by this slice.
+
+The retained subtraction and addition remain the vendor's unchecked/wrapping
+32-bit operations followed by the signed-negative comparison. MMIO, barrier,
+IRQ/FIQ, initialization, and request-ownership order and all 30 HIF inputs are
+unchanged because this is structural source-only decoding with no production
+consumer.
+
+`tools/check-tx-aggregate-expiration-delta-layout.py` covers exactly the
+half-open range `[0x04001160, 0x04001164)`. It gates full physical-address source
+literals outside `src/dtcm.rs` and itself, requires the exact struct, enclosing
+split, sole address constant, assertions, and global sizes, forbids broad or
+safe APIs, and pins empty aligned linked-literal and decoded PC-relative-xref
+multisets. This is drift evidence only; register-computed, indirect, generic
+HIF/debug, vendor, IRQ, and FIQ accesses remain outside its proof. Focused host
+tests pin the address, type shape and end, opaque suffix size/end, and complete
+initialized-image size. The checker runs in source and linked phases of both
+build gates, and the exact-parent manifest permits no codegen drift. No hardware
+test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+manifest  tools/tx-aggregate-expiration-delta-codegen-manifest.json
 ```
 

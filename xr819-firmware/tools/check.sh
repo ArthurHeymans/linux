@@ -55,6 +55,7 @@ python3 tools/check-phy-init-register-write-lists-layout.py
 python3 tools/check-initialized-phy-gain-source-layout.py
 python3 tools/check-initialized-iq-calibration-gain-indices-layout.py
 python3 tools/check-measurement-workspace-layout.py
+python3 tools/check-tx-aggregate-expiration-delta-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
@@ -127,6 +128,7 @@ python3 tools/check-phy-init-register-write-lists-layout.py "$ELF"
 python3 tools/check-initialized-phy-gain-source-layout.py "$ELF"
 python3 tools/check-initialized-iq-calibration-gain-indices-layout.py "$ELF"
 python3 tools/check-measurement-workspace-layout.py "$ELF"
+python3 tools/check-tx-aggregate-expiration-delta-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
@@ -687,6 +689,15 @@ if [[ -n "${XR819_MEASUREMENT_WORKSPACE_PARENT_ELF:-}" ]]; then
     "$XR819_MEASUREMENT_WORKSPACE_PARENT_ELF" "$ELF"
 else
   echo "== measurement-workspace codegen gate skipped: set XR819_MEASUREMENT_WORKSPACE_PARENT_ELF to the qualified initialized-IQ-gain-index ELF =="
+fi
+
+if [[ -n "${XR819_TX_AGGREGATE_EXPIRATION_DELTA_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed TX-aggregate-expiration-delta parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/tx-aggregate-expiration-delta-codegen-manifest.json \
+    "$XR819_TX_AGGREGATE_EXPIRATION_DELTA_PARENT_ELF" "$ELF"
+else
+  echo "== TX-aggregate-expiration-delta codegen gate skipped: set XR819_TX_AGGREGATE_EXPIRATION_DELTA_PARENT_ELF to the qualified measurement-workspace ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
