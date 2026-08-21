@@ -287,6 +287,9 @@ Within `0x04000000..0x04002078`:
 | `0x04000804...` | table | AES transfer-class descriptors; class 6 TX CCMP, class 7 RX CCMP |
 | `0x04000830..0x040009de` | `0x1ae` bytes | recovered AES mode-1 microcode, SHA-256 `211ad6ec...d881b4c` |
 | `0x04000b60..0x04000c10` | two `0x58`-byte lists | initialized PHY gain register writes: ten ordered `{u32 address, u32 value}` pairs and a physical `{0xffffffff, 0xffffffff}` terminator pair per list |
+| `0x04000c60..0x04000ca6` | `0x46` bytes | opaque initialized prefix containing the unresolved sentinel-walk list |
+| `0x04000ca6..0x04000da8` | 43 records, stride `0x06` | initialized PHY gain sources: two overlapping 22-record address views; shared quarantine |
+| `0x04000da8..0x040010d4` | `0x32c` bytes | opaque initialized suffix; the separate root at its start is not decoded |
 | `0x040010d4..0x040010e4` | 4 `u32` | per-pipe duration-quantum MMIO pointers |
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
@@ -620,6 +623,10 @@ The previous Rust `register_structs!` definitions gave `HifSoftwareState` size `
 **Initialization:** vendor COPY tables, vendor FILL zero, SDD-derived configuration, and substantial runtime PHY setup. The initialized COPY image also contains two adjacent gain register-write lists at `0x04000b60..0x04000c10`. Each has ten ordered 32-bit address/value pairs followed physically by `{0xffffffff, 0xffffffff}`. `phy_build_gain_tables` selects `0x04000b60` by default and `0x04000bb8` only for profile 1, then `reg_write_list_apply` loads each address and value as separate 32-bit words, emits one ordered 32-bit MMIO write, and advances eight bytes until the address sentinel. The second terminator word is not read.
 
 The default ordered pairs are `(0x0ab80400, 0x55f4282b)`, `(0x0ab80410, 0x0000003a)`, `(0x0ab80c20, 0x00000000)`, `(0x0aba803c, 0x77871f1b)`, `(0x0ab80404, 0x0010137a)`, `(0x0ab80414, 0x000000ab)`, `(0x0ab80418, 0x00000000)`, `(0x0ab8041c, 0x00080ea0)`, `(0x0abc8004, 0x00000109)`, and `(0x0aba8048, 0x031fd6f0)`, followed by `(0xffffffff, 0xffffffff)`. The profile-1 list is identical except its first value is `0x55f4292b` and its second value is `0x0000003b`, followed by the same remaining pairs and terminator. These data support only default versus profile-1 selection and ordered register writes.
+
+The initialized source island `0x04000ca6..0x04000da8` is the exact physical union of 43 six-byte records. Each record has a shared `u8` selector at `+0`, an opaque shared `u8` at `+1`, and shared `u16` storage at `+2` and `+4` that retained code interprets as signed 16-bit lower and upper values. `phy_build_gain_tables` makes exactly 22 copies from either source view: view 0 begins at `0x04000ca6`, view 1 begins 21 records later at `0x04000d24`, and therefore view 0 record 21 and view 1 record 0 share the same physical record. View numbers have no assigned profile semantics. Vendor COPY initializes the interval but does not establish immutability against HIF/debug/vendor/IRQ/FIQ mutation.
+
+The Rust representation leaves `0x04000c60..0x04000ca6` opaque, including the unresolved sentinel-walk list, and leaves `0x04000da8..0x040010d4` opaque. It exposes only checked addresses for 43 physical records and two overlapping 22-record views; it exposes no values, pointers, references, slices, iteration, writes, or profile meaning. The dedicated source/linked checker owns only the half-open initialized-source interval. Focused tests pin the record layout, overlap, boundaries, rejection cases, image size, and duration-pointer root. No production consumer or `phy.rs` constant changed.
 
 **Status:** mixed. The accepted migrations prove that small tuples can move only when all references are confined to translated code. They do not imply that the surrounding root can be moved. The initialized gain lists have no known runtime writer, but container COPY as the only evidenced initialization writer does not prove immutability: vendor, IRQ/FIQ, and debug paths can still observe or mutate shared DTCM quarantine.
 
@@ -4687,8 +4694,9 @@ semantically opaque physical `u32` at `+0x0c`, for size `0x10`. List 1 at
 for size `0x28`. List 2 at `0x04000c48` has two writes, sentinel at `+0x10`,
 and opaque word at `+0x14`, for size `0x18`. Each write retains the exact
 `{SharedU32 address, SharedU32 value}` representation and eight-byte stride.
-The remaining opaque suffix starts at `0x04000c60`, remains `0x474` bytes, and
-leaves the duration-quantum-pointer boundary unchanged at `0x040010d4`.
+At completion of this slice, the following `0x474` bytes remained opaque and
+the duration-quantum-pointer boundary stayed at `0x040010d4`. Appendix A.88
+subsequently decodes only `0x04000ca6..0x04000da8` within that interval.
 
 The vendor COPY image establishes these ordered source literals: list 0 has
 `0x0ab80108 = 0x00200300`; list 1 has `0x0ab8807c = 0x00000001`,
@@ -4732,8 +4740,8 @@ Focused host tests pin every root and normal entry, invalid list and entry
 indices, list adjacency, final structural end, and the unchanged duration
 pointer root. The focused test, source checker, complete software gate, Thumb
 release/linked checker, exact-parent codegen gate, and OTA packing passed
-without artifact drift. No hardware test was run. `0x04000c60` and everything
-through the next separately qualified slice remain opaque.
+without artifact drift. No hardware test was run. At this checkpoint `0x04000c60` onward remained
+opaque; Appendix A.88 later refines only the evidence-backed initialized island.
 
 ```text
 ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
@@ -4741,5 +4749,54 @@ packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-phy-init-register-write-lists-final-check.log
           c486edf9a0570d86f35c8ac7ad6acd0bc2bc74a62966f30b35dd5f25536da7f1
 manifest  tools/phy-init-register-write-lists-codegen-manifest.json
+```
+
+### A.88 Initialized overlapping PHY gain-source records
+
+The initialized COPY interval `0x04000ca6..0x04000da8` is represented as exactly
+43 private `InitializedPhyGainSourceRecord` values (`0x102` bytes). Each
+alignment-two, six-byte record contains `selector: SharedU8` at `+0x00`, an
+opaque `SharedU8` at `+0x01`, and `lower: SharedU16` and `upper: SharedU16` at
+`+0x02` and `+0x04`. Retained `phy_build_gain_tables` reads the latter two
+fields as signed 16-bit values; the Rust quarantine does not expose values.
+
+Two logical 22-record views overlap by one record: view 0 starts at
+`0x04000ca6`, view 1 starts at `0x04000d24` (`21 * 6` bytes later), and view 0
+record 21 is physically identical to view 1 record 0. Their final physical
+record starts at `0x04000da2` and ends at `0x04000da8`. View numbers have no
+assigned profile semantics. Vendor COPY is the evidenced initializer, not
+proof of immutability; vendor, HIF/debug, IRQ, and FIQ mutation remain possible.
+
+`InitializedVendorImage` preserves its `0x2078` size by splitting the former
+`0x474` opaque region into an opaque `0x46`-byte prefix, the typed `0x102`-byte
+union, and an opaque `0x32c`-byte suffix. Thus `0x04000c60..0x04000ca6` and
+`0x04000da8..0x040010d4` remain opaque, and `duration_quantum_pointers` remains
+at `0x040010d4`. The separate root at `0x04000da8` is not absorbed.
+
+The crate-private API is address-only and derives its root with `offset_of!`.
+It checks physical index `< 43` and logical `view < 2 && index < 22`, computing
+the latter as physical index `view * 21 + index`. It provides no pointer,
+reference, slice, iterator, value, write, opaque-byte, or profile accessor.
+No production consumer changed.
+
+`tools/check-initialized-phy-gain-source-layout.py` owns exactly the half-open
+range `[0x04000ca6, 0x04000da8)`, masks Rust `cfg(test)` items, rejects raw and
+synthesized roots/boundaries and alternate base/root/view-stride/record-stride
+forms outside its two trusted owner files, and pins aligned linked literals and
+decoded PC-relative xrefs by containing symbol. Both reviewed linked manifests
+are empty. Source-only and linked checks are integrated into `check.sh` and
+`build-ota-image.sh`. Focused tests pin physical records 0, 21, and 42, both
+view endpoints and their shared record, all rejection boundaries, type layout,
+image size, and the unchanged duration-pointer address. Exact-parent codegen is
+recorded in `tools/initialized-phy-gain-source-codegen-manifest.json`; it
+requires no text-symbol, memory-order, IRQ/barrier, stack, or symbol-set drift.
+No hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-initialized-phy-gain-source-final-check.log
+          a9832ae063265d6882ffcf2885d0863e20051ce791b3c509085571058289028b
+manifest  tools/initialized-phy-gain-source-codegen-manifest.json
 ```
 

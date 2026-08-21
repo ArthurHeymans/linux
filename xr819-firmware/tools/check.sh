@@ -52,6 +52,7 @@ python3 tools/check-tkip-sbox-layout.py
 python3 tools/check-aes-transfer-class-layout.py
 python3 tools/check-phy-gain-register-write-lists-layout.py
 python3 tools/check-phy-init-register-write-lists-layout.py
+python3 tools/check-initialized-phy-gain-source-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
@@ -121,6 +122,7 @@ python3 tools/check-tkip-sbox-layout.py "$ELF"
 python3 tools/check-aes-transfer-class-layout.py "$ELF"
 python3 tools/check-phy-gain-register-write-lists-layout.py "$ELF"
 python3 tools/check-phy-init-register-write-lists-layout.py "$ELF"
+python3 tools/check-initialized-phy-gain-source-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
@@ -654,6 +656,15 @@ if [[ -n "${XR819_PHY_INIT_REGISTER_WRITE_LISTS_PARENT_ELF:-}" ]]; then
     "$XR819_PHY_INIT_REGISTER_WRITE_LISTS_PARENT_ELF" "$ELF"
 else
   echo "== PHY-init-register-write-lists codegen gate skipped: set XR819_PHY_INIT_REGISTER_WRITE_LISTS_PARENT_ELF to the qualified PHY-gain-register-write-lists ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_PHY_GAIN_SOURCE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-PHY-gain-source parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-phy-gain-source-codegen-manifest.json \
+    "$XR819_INITIALIZED_PHY_GAIN_SOURCE_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-PHY-gain-source codegen gate skipped: set XR819_INITIALIZED_PHY_GAIN_SOURCE_PARENT_ELF to the qualified PHY-init-register-write-lists ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
