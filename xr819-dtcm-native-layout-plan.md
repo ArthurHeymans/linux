@@ -583,7 +583,7 @@ The previous Rust `register_structs!` definitions gave `HifSoftwareState` size `
 
 **Readers/writers remaining:** vendor HIF init/send/receive/defer/confirm functions, high-TCM MIB/debug code, AES/deferred transfer completion, and MIC queue functions around `0x04009928`. Current Rust HIF no longer needs these fixed CPU bookkeeping records, but untranslated code may still touch them.
 
-**Status:** historical typed quarantine. Do not reintroduce these into a native DTCM layout. The final migration should delete their consumers, not recreate them in a new DTCM struct.
+**Status:** exact fixed-address shared quarantine. The retained HIF/MIC queues are structurally described only to preserve pointer/ring contracts and prevent false free-space claims; they are not restored as native Rust ownership. The final migration should delete retained consumers rather than relocate these historical bookkeeping records.
 
 ### 4.10 PHY/RF/calibration family
 
@@ -1306,9 +1306,9 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 | `0x9080` | `0x454` | `InternalContextPoolState` | free head plus three typed opaque `0x170` contexts |
 | `0x94d4` | `0x208` | `PowerSaveFamily` | one opaque family; `0x104` is retained only as an observed address/view stride with uncertain extent and overlap semantics |
 | `0x96dc` | `0x44` | `PowerSaveHifBoundary` | occupied PS/HIF boundary |
-| `0x9720` | `0x34` | `HifBufferState` | HIF buffer/free-list/deferred roots |
-| `0x9754` | `0x1d4` | `LegacyHifSoftwareState` | deliberately opaque historical HIF/ring family |
-| `0x9928` | `0x14` | `MicCompletionState` | MIC/HIF completion state |
+| `0x9720` | `0x34` | `HifBufferState` | host-message free ring plus pending/completed transfer queue |
+| `0x9754` | `0x1d4` | `LegacyHifSoftwareState` | coalesce timer, RX buffers, 64-entry TX queue, and transport roots |
+| `0x9928` | `0x14` | `MicCompletionState` | MIC pending/completed transfer queue |
 | `0x993c` | `0xd0` | `PhyCoreState` | PHY/RF/calibration/channel/gain core |
 | `0x9a0c` | `0x238` | `PhyTail` | remaining PHY and unknown vendor-zeroed tail |
 | `0x9c44` | `0x3bc` | `ResearchMargin` | occupied quarantine beyond the vendor zero-fill endpoint |
@@ -2814,6 +2814,58 @@ packed    /tmp/xr819-power-save-layout.bin
 checks    /tmp/xr819-power-save-final-check.log
           faa980a9d55e460c64c8b987a7102e4cac4c3c4bf711750c86f96e2fda9b16b6
 manifest  tools/power-save-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.26 Retained HIF and MIC queue state
+
+The range `0x04009720..0x0400993c` now has exact shared layouts:
+
+```text
+HifBufferState 0x04009720..0x04009754
+  +0x00 producer / +0x04 consumer
+  +0x08 four host-message buffer pointers
+  +0x1c active transfer state
+  +0x20/+0x24 pending head/tail
+  +0x28/+0x2c completed/deferred head/tail
+  +0x30 control word
+
+LegacyHifSoftwareState 0x04009754..0x04009928
+  +0x00 mode
+  +0x04 pending/credit count
+  +0x08 coalesce count
+  +0x0c TimerEntry
+  +0x20 32 RX buffer pointers
+  +0xa0 RX consumer / +0xa4 RX state
+  +0xa8 64-entry software TX pointer queue
+  +0x1a8/+0x1ac TX producer/consumer
+  +0x1cc/+0x1d0 sequence/transport state
+
+MicCompletionState 0x04009928..0x0400993c
+  active, pending head/tail, completed head/tail
+```
+
+The HIF and MIC queue controls share the same five-word
+`DeferredTransferQueue` shape. This describes intrusive pointer publication and
+completion ordering without creating references or claiming ownership over
+request-embedded links mutated by retained scheduler and interrupt paths.
+
+`tools/check-hif-mic-layout.py` covers the complete retained range. The linked
+image contains three aligned in-range words but no decoded literal-load xrefs;
+these are pinned as drift evidence rather than treated as proven consumers. The
+complete ELF remains byte-identical to the qualified power-save parent, so no
+hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-hif-mic-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-hif-mic-final-check.log
+          6aebbf9735d677d4c6167a7d10d31bd0ab9dcd36f95b9925bdcd7e66acfb3447
+manifest  tools/hif-mic-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

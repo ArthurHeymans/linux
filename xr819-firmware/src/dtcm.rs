@@ -693,22 +693,17 @@ opaque_family!(
     PowerSaveHifBoundary,
     0x44
 );
-opaque_family!(
-    /// HIF buffer/free-list and deferred-transfer roots.
-    HifBufferState,
-    0x34
-);
-opaque_family!(
-    /// Historical HIF software/ring state. Previous decoded views overlap, so
-    /// this candidate intentionally exposes one opaque family only.
-    LegacyHifSoftwareState,
-    0x1d4
-);
-opaque_family!(
-    /// MIC/HIF completion queue state.
-    MicCompletionState,
-    0x14
-);
+#[repr(C, align(4))]
+struct HostMessageFreeRing { producer: SharedU32, consumer: SharedU32, entries: [SharedU32; 4] }
+#[repr(C, align(4))]
+struct DeferredTransferQueue { active: SharedU32, pending_head: SharedU32, pending_tail: SharedU32, completed_head: SharedU32, completed_tail: SharedU32 }
+#[repr(C, align(4))]
+struct HifBufferState { host_message_ring: HostMessageFreeRing, opaque_18: SharedU32, transfer_queue: DeferredTransferQueue, control_word: SharedU32 }
+#[repr(C, align(4))]
+struct LegacyHifSoftwareState { mode: SharedU32, pending_count: SharedU32, coalesce_count: SharedU32, coalesce_timer: TimerEntry, rx_buffers: [SharedU32; 32], rx_consumer: SharedU32, rx_state: SharedU32, tx_queue: [SharedU32; 64], tx_producer: SharedU32, tx_consumer: SharedU32, opaque_1b0: OpaqueBytes<0x1c>, sequence_state: SharedU32, transport_state: SharedU32 }
+#[repr(C, align(4))]
+struct MicCompletionState { queue: DeferredTransferQueue }
+
 opaque_family!(
     /// PHY/RF/calibration/channel/gain core with mixed native/vendor history.
     PhyCoreState,
@@ -1497,7 +1492,19 @@ fn power_save_extension_field(interface: usize, offset: usize) -> Option<DtcmAdd
     power_save_observed_field(interface, offset)
 }
 pub const HIF_BUFFER_STATE: DtcmAddress = DtcmAddress::from_offset(0x9720);
+#[cfg(test)]
+const fn hif_buffer_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset(HIF_BUFFER_STATE.offset() + offset)
+}
+#[cfg(test)]
+const fn legacy_hif_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset(core::mem::offset_of!(DtcmLayout, legacy_hif_software_state) + offset)
+}
 pub const MIC_COMPLETION_STATE: DtcmAddress = DtcmAddress::from_offset(0x9928);
+#[cfg(test)]
+const fn mic_completion_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset(MIC_COMPLETION_STATE.offset() + offset)
+}
 pub const PHY_STATE: DtcmAddress = DtcmAddress::from_offset(0x993c);
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
@@ -2297,8 +2304,25 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, threshold_136) == 0x136);
     assert_type_layout!(PowerSaveFamily, 0x208, 4);
     assert_type_layout!(PowerSaveHifBoundary, 0x44, 4);
+    assert_type_layout!(HostMessageFreeRing, 0x18, 4);
+    assert!(core::mem::offset_of!(HostMessageFreeRing, entries) == 0x08);
+    assert_type_layout!(DeferredTransferQueue, 0x14, 4);
+    assert!(core::mem::offset_of!(DeferredTransferQueue, pending_head) == 0x04);
+    assert!(core::mem::offset_of!(DeferredTransferQueue, pending_tail) == 0x08);
+    assert!(core::mem::offset_of!(DeferredTransferQueue, completed_head) == 0x0c);
+    assert!(core::mem::offset_of!(DeferredTransferQueue, completed_tail) == 0x10);
     assert_type_layout!(HifBufferState, 0x34, 4);
+    assert!(core::mem::offset_of!(HifBufferState, transfer_queue) == 0x1c);
+    assert!(core::mem::offset_of!(HifBufferState, control_word) == 0x30);
     assert_type_layout!(LegacyHifSoftwareState, 0x1d4, 4);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, coalesce_timer) == 0x0c);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, rx_buffers) == 0x20);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, rx_consumer) == 0xa0);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, tx_queue) == 0xa8);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, tx_producer) == 0x1a8);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, tx_consumer) == 0x1ac);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, sequence_state) == 0x1cc);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, transport_state) == 0x1d0);
     assert_type_layout!(MicCompletionState, 0x14, 4);
     assert_type_layout!(PhyCoreState, 0xd0, 4);
     assert_type_layout!(PhyTail, 0x238, 4);
@@ -2656,6 +2680,25 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn hif_and_mic_queue_layouts_follow_retained_roots() {
+        assert_eq!(hif_buffer_field(core::mem::offset_of!(HifBufferState, host_message_ring)).get(), 0x0400_9720);
+        assert_eq!(hif_buffer_field(core::mem::offset_of!(HifBufferState, host_message_ring) + core::mem::offset_of!(HostMessageFreeRing, entries)).get(), 0x0400_9728);
+        assert_eq!(hif_buffer_field(core::mem::offset_of!(HifBufferState, transfer_queue)).get(), 0x0400_973c);
+        assert_eq!(hif_buffer_field(core::mem::offset_of!(HifBufferState, control_word)).get(), 0x0400_9750);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, mode)).get(), 0x0400_9754);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, coalesce_timer)).get(), 0x0400_9760);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, rx_buffers)).get(), 0x0400_9774);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, rx_consumer)).get(), 0x0400_97f4);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, tx_queue)).get(), 0x0400_97fc);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, tx_producer)).get(), 0x0400_98fc);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, tx_consumer)).get(), 0x0400_9900);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, sequence_state)).get(), 0x0400_9920);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, transport_state)).get() + 4, 0x0400_9928);
+        assert_eq!(mic_completion_field(core::mem::offset_of!(MicCompletionState, queue)).get(), 0x0400_9928);
+        assert_eq!(mic_completion_field(core::mem::size_of::<MicCompletionState>()).get(), 0x0400_993c);
     }
 
     #[test]
