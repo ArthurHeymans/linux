@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-POWER_SAVE_RANGE = (0x040094D4, 0x04009710)
+POWER_SAVE_RANGE = (0x040094D4, 0x04009720)
 SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -43,6 +43,7 @@ OWNER_FILES = {
     "tools/check-scheduler-event-layout.py",
     "tools/check-scheduler-support-layout.py",
     "tools/check-power-save-layout.py",
+    "tools/check-hif-mic-layout.py",
     "tools/check-internal-context-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {

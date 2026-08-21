@@ -753,9 +753,9 @@ pub(crate) struct InternalContextPoolState {
 }
 
 /// Overlapping address schema used by retained per-interface power-save code.
-/// Its `0x138` extent deliberately exceeds the observed `0x104` view stride.
+/// Its `0x13c` extent deliberately exceeds the observed `0x104` view stride.
 #[repr(C, align(4))]
-struct PowerSaveObservedLayout { opaque_000: OpaqueBytes<0x2a>, global_sleep_state: SharedU8, opaque_02b: OpaqueBytes<0x05>, global_timer_duration: SharedU32, opaque_034: OpaqueBytes<0x0c>, mode: SharedU8, opaque_041: OpaqueBytes<0x03>, flags: SharedU16, opaque_046: OpaqueBytes<0x0e>, pending: SharedU32, opaque_058: OpaqueBytes<0x02>, queue_mask: SharedU16, opaque_05c: OpaqueBytes<0x14>, timers: [TimerEntry; 7], state_fc: SharedU8, opaque_0fd: OpaqueBytes<0x1b>, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, opaque_124: OpaqueBytes<0x04>, interval_128: SharedU32, opaque_12c: OpaqueBytes<0x08>, counter_134: SharedU16, threshold_136: SharedU16 }
+struct PowerSaveObservedLayout { opaque_000: OpaqueBytes<0x2a>, global_sleep_state: SharedU8, opaque_02b: OpaqueBytes<0x05>, global_timer_duration: SharedU32, opaque_034: OpaqueBytes<0x0c>, mode: SharedU8, opaque_041: OpaqueBytes<0x03>, flags: SharedU16, opaque_046: OpaqueBytes<0x0e>, pending: SharedU32, opaque_058: OpaqueBytes<0x02>, queue_mask: SharedU16, opaque_05c: OpaqueBytes<0x14>, timers: [TimerEntry; 7], state_fc: SharedU8, opaque_0fd: OpaqueBytes<0x1b>, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, opaque_124: OpaqueBytes<0x04>, interval_128: SharedU32, opaque_12c: OpaqueBytes<0x08>, counter_134: SharedU16, threshold_136: SharedU16, scan_completion_138: SharedU16, sleep_vote_count_13a: SharedU16 }
 
 /// Physical `0x104` prefix at each observed power-save view start. The logical
 /// view continues past this prefix and overlaps the next physical prefix.
@@ -781,8 +781,8 @@ struct PowerSavePhysicalPrefix {
 #[repr(C, align(4))]
 struct PowerSaveFamily { physical_prefixes: [PowerSavePhysicalPrefix; 2] }
 
-/// Physical PS/HIF boundary. Its first `0x34` bytes are the extension tail of
-/// logical power-save view 1; only the final `0x10` bytes remain opaque.
+/// Physical PS/HIF boundary. Its first `0x38` bytes are the extension tail of
+/// logical power-save view 1; the final word is retained beacon/TIM state.
 #[repr(C, align(4))]
 struct PowerSaveHifBoundary {
     opaque_00: OpaqueBytes<0x14>,
@@ -794,7 +794,10 @@ struct PowerSaveHifBoundary {
     opaque_28: OpaqueBytes<0x08>,
     counter_30: SharedU16,
     threshold_32: SharedU16,
-    opaque_34: OpaqueBytes<0x10>,
+    scan_completion_34: SharedU16,
+    sleep_vote_count_36: SharedU16,
+    opaque_38: OpaqueBytes<0x08>,
+    beacon_tim_state_40: SharedU32,
 }
 #[repr(C, align(4))]
 struct HostMessageFreeRing { producer: SharedU32, consumer: SharedU32, entries: [SharedU32; 4] }
@@ -1750,6 +1753,16 @@ pub(crate) const fn power_save_global_sleep_state() -> DtcmAddress {
 pub(crate) const fn power_save_global_timer_duration() -> DtcmAddress {
     DtcmAddress::from_offset(POWER_SAVE_FAMILY.offset() + core::mem::offset_of!(PowerSaveObservedLayout, global_timer_duration))
 }
+pub(crate) fn power_save_scan_completion(interface: usize) -> Option<DtcmAddress> {
+    power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, scan_completion_138))
+}
+pub(crate) fn power_save_sleep_vote_count(interface: usize) -> Option<DtcmAddress> {
+    power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, sleep_vote_count_13a))
+}
+pub(crate) const POWER_SAVE_BEACON_TIM_STATE: DtcmAddress = DtcmAddress::from_offset(
+    core::mem::offset_of!(DtcmLayout, power_save_hif_boundary)
+        + core::mem::offset_of!(PowerSaveHifBoundary, beacon_tim_state_40),
+);
 #[cfg(test)]
 fn power_save_extension_field(interface: usize, offset: usize) -> Option<DtcmAddress> {
     power_save_observed_field(interface, offset)
@@ -2692,7 +2705,7 @@ const _: () = {
     assert!(INTERNAL_TX_CONTEXT_RESULT_OFFSET == 0x70);
     assert!(INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET == 0xc4);
     assert_type_layout!(InternalContextPoolState, 0x454, 4);
-    assert_type_layout!(PowerSaveObservedLayout, 0x138, 4);
+    assert_type_layout!(PowerSaveObservedLayout, 0x13c, 4);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, global_sleep_state) == 0x02a);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, global_timer_duration) == 0x030);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, mode) == 0x040);
@@ -2706,6 +2719,8 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, interval_128) == 0x128);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, counter_134) == 0x134);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, threshold_136) == 0x136);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, scan_completion_138) == 0x138);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, sleep_vote_count_13a) == 0x13a);
     assert_type_layout!(PowerSavePhysicalPrefix, 0x104, 4);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, global_sleep_state) == 0x02a);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, global_timer_duration) == 0x030);
@@ -2722,7 +2737,9 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, interval_24) == 0x24);
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, counter_30) == 0x30);
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, threshold_32) == 0x32);
-    assert!(core::mem::offset_of!(PowerSaveHifBoundary, opaque_34) == 0x34);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, scan_completion_34) == 0x34);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, sleep_vote_count_36) == 0x36);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, beacon_tim_state_40) == 0x40);
     assert_type_layout!(HostMessageFreeRing, 0x18, 4);
     assert!(core::mem::offset_of!(HostMessageFreeRing, entries) == 0x08);
     assert_type_layout!(DeferredTransferQueue, 0x14, 4);
@@ -3394,6 +3411,10 @@ mod tests {
         assert_eq!(power_save_extension_field(0, core::mem::offset_of!(PowerSaveObservedLayout, duration_118)).unwrap().get(), 0x0400_95ec);
         assert_eq!(power_save_extension_field(1, core::mem::offset_of!(PowerSaveObservedLayout, duration_118)).unwrap().get(), 0x0400_96f0);
         assert_eq!(power_save_extension_field(1, core::mem::offset_of!(PowerSaveObservedLayout, threshold_136)).unwrap().get() + 2, 0x0400_9710);
+        assert_eq!(power_save_scan_completion(1).unwrap().get(), 0x0400_9710);
+        assert_eq!(power_save_sleep_vote_count(1).unwrap().get(), 0x0400_9712);
+        assert_eq!(POWER_SAVE_BEACON_TIM_STATE.get(), 0x0400_971c);
+        assert_eq!(POWER_SAVE_BEACON_TIM_STATE.get() + 4, HIF_BUFFER_STATE.get());
     }
 
     #[test]

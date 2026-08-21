@@ -261,7 +261,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x0400906c..0x04009080` | `0x14` physical | final five completion-ring words plus internal-context prefix overlay | Shared opaque backing |
 | `0x04009080..0x040094d4` | `0x454` | typed internal TX context pool with initializer fields in three `0x170` records | High exact linker-owned fixed quarantine |
 | `0x040094d4..0x040096dc` | `0x208` | opaque power-save family; observed address stride `0x104` | High base/family span and visible stride; record extent/count/overlap semantics remain uncertain |
-| `0x040096dc..0x04009720` | `0x44` | unknown/PS-HIF boundary | Unknown, not allocatable |
+| `0x040096dc..0x04009720` | `0x44` | typed power-save extension and beacon/TIM boundary state | High for decoded fields; small interior gaps remain opaque |
 | `0x04009720..0x04009754` | `0x34` | HIF buffer/free-list and deferred-transfer roots | Medium |
 | `0x04009754..0x04009928` | `0x1d4` | historical vendor HIF software/ring state; Rust owners now live in ITCM | High historical shape; fixed bytes remain quarantine for untranslated code |
 | `0x04009928..0x0400993c` | `0x14` | MIC/HIF completion queue state | Medium; untranslated MIC path |
@@ -3863,5 +3863,28 @@ ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
 packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-internal-prefix-backing-final-check.log
           66eacc129d474a6c71b031e3c346d611af0a71cad105a7319157ce5885557b52
+```
+
+### A.56 Complete power-save/HIF boundary
+
+Retained `ps_try_enter_sleep_all` proves two additional halfwords at logical
+power-save offsets `+0x138/+0x13a`. The first carries the scan-completion value
+passed when all interfaces enter the terminal sleep state; the second is the
+per-view sleep-vote count accumulated across active interfaces. For interface
+1 these map to physical `0x04009710` and `0x04009712`.
+
+The final boundary word at `0x0400971c` is retained beacon/TIM state: beacon
+processing writes it and TBTT wake scheduling reads the surrounding state.
+`PowerSaveObservedLayout` now extends through `+0x13c`, while the physical
+`PowerSaveHifBoundary` names both halfwords and the final word with only the
+interior `0x8` bytes left opaque. The power-save drift gate now covers through
+the exact HIF root at `0x04009720`. The complete ELF remains byte-identical to
+the qualified internal-prefix-backing parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-final-tail-check.log
+          9abf06c98c45731ee2676d5d6f61e85e632e780b778d0a164d05061ea40bea4e
 ```
 
