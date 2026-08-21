@@ -4022,3 +4022,23 @@ checks    /tmp/xr819-power-save-wake-schedule-final-check.log
           7aac0a8c19cc7f720f49f92b212559b626719a68378a109c723279dff10b7480
 ```
 
+### A.63 Power-save interval and error tail
+
+The final unresolved words in the logical power-save tail are now typed. The
+word at `+0x124` is retained PM/mode control; `+0x12c` is the maximum backoff
+used by interval growth; `+0x130` is the last-beacon timestamp. The mode-error
+report latch at `+0x13c` prevents duplicate event `0x0805` indications.
+
+The logical view is now `0x140` bytes including alignment padding. For interface
+1, the error latch maps to physical `0x04009714` inside the PS/HIF boundary,
+which is represented there as the same shared byte. Exact tests pin both view
+instances. The complete ELF remains byte-identical to the qualified wake-
+scheduling parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-interval-tail-final-check.log
+          b2f6f5daa2a8c691e980c37b71b33b010acd080cb837b94a1305725a24f58911
+```
+

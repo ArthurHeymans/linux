@@ -753,9 +753,9 @@ pub(crate) struct InternalContextPoolState {
 }
 
 /// Overlapping address schema used by retained per-interface power-save code.
-/// Its `0x13c` extent deliberately exceeds the observed `0x104` view stride.
+/// Its `0x140` aligned extent deliberately exceeds the observed `0x104` view stride.
 #[repr(C, align(4))]
-struct PowerSaveObservedLayout { wake_stats_phase: SharedU8, wake_stats_flag_01: SharedU8, wake_stats_flag_02: SharedU8, opaque_003: OpaqueBytes<0x03>, wake_duration: SharedU16, wake_register_min: SharedU32, wake_register_sum: SharedU32, wake_register_max: SharedU32, wake_elapsed_min: SharedU32, wake_elapsed_sum: SharedU32, wake_elapsed_max: SharedU32, tx_completion_state: SharedU32, next_tbtt: SharedU32, doze_state: SharedU8, requested_pm_mode: SharedU8, global_sleep_state: SharedU8, wake_stats_counter: SharedU8, opaque_02c: SharedU8, resume_state: SharedU8, opaque_02e: OpaqueBytes<0x02>, global_timer_duration: SharedU32, beacon_timing_reference: SharedU32, join_state_word: SharedU32, wake_lead_time: SharedU32, mode: SharedU8, active: SharedU8, tx_pending_state: SharedU8, timer_state: SharedU8, flags: SharedU16, sleep_transition_flags: SharedU16, wake_stats_timestamp: SharedU32, backoff_adjustment: SharedU32, reset_state: SharedU8, beacon_timing_valid: SharedU8, pending_control_kind: SharedU8, uapsd_state: SharedU8, pending: SharedU32, pending_flags: SharedU8, wake_reason: SharedU8, queue_mask: SharedU16, tx_followup_state: SharedU32, uapsd_interval: SharedU32, uapsd_timeout: SharedU32, uapsd_configuration: SharedU32, uapsd_restart_value: SharedU32, timers: [TimerEntry; 7], state_fc: SharedU8, tx_completion_pending: SharedU8, beacon_rx_state: SharedU8, beacon_rate: SharedU8, wake_timer_delay: SharedU32, beacon_airtime: SharedU32, pre_tbtt_offset: SharedU32, beacon_interval: SharedU16, backoff_interval: SharedU16, next_wake_deadline: SharedU32, tx_completion_state_114: SharedU8, wake_timer_active: SharedU8, opaque_116: SharedU8, beacon_timing_adjusted: SharedU8, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, opaque_124: OpaqueBytes<0x04>, interval_128: SharedU32, opaque_12c: OpaqueBytes<0x08>, counter_134: SharedU16, threshold_136: SharedU16, scan_completion_138: SharedU16, sleep_vote_count_13a: SharedU16 }
+struct PowerSaveObservedLayout { wake_stats_phase: SharedU8, wake_stats_flag_01: SharedU8, wake_stats_flag_02: SharedU8, opaque_003: OpaqueBytes<0x03>, wake_duration: SharedU16, wake_register_min: SharedU32, wake_register_sum: SharedU32, wake_register_max: SharedU32, wake_elapsed_min: SharedU32, wake_elapsed_sum: SharedU32, wake_elapsed_max: SharedU32, tx_completion_state: SharedU32, next_tbtt: SharedU32, doze_state: SharedU8, requested_pm_mode: SharedU8, global_sleep_state: SharedU8, wake_stats_counter: SharedU8, opaque_02c: SharedU8, resume_state: SharedU8, opaque_02e: OpaqueBytes<0x02>, global_timer_duration: SharedU32, beacon_timing_reference: SharedU32, join_state_word: SharedU32, wake_lead_time: SharedU32, mode: SharedU8, active: SharedU8, tx_pending_state: SharedU8, timer_state: SharedU8, flags: SharedU16, sleep_transition_flags: SharedU16, wake_stats_timestamp: SharedU32, backoff_adjustment: SharedU32, reset_state: SharedU8, beacon_timing_valid: SharedU8, pending_control_kind: SharedU8, uapsd_state: SharedU8, pending: SharedU32, pending_flags: SharedU8, wake_reason: SharedU8, queue_mask: SharedU16, tx_followup_state: SharedU32, uapsd_interval: SharedU32, uapsd_timeout: SharedU32, uapsd_configuration: SharedU32, uapsd_restart_value: SharedU32, timers: [TimerEntry; 7], state_fc: SharedU8, tx_completion_pending: SharedU8, beacon_rx_state: SharedU8, beacon_rate: SharedU8, wake_timer_delay: SharedU32, beacon_airtime: SharedU32, pre_tbtt_offset: SharedU32, beacon_interval: SharedU16, backoff_interval: SharedU16, next_wake_deadline: SharedU32, tx_completion_state_114: SharedU8, wake_timer_active: SharedU8, opaque_116: SharedU8, beacon_timing_adjusted: SharedU8, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, mode_control_124: SharedU32, interval_128: SharedU32, maximum_backoff_12c: SharedU32, last_beacon_timestamp_130: SharedU32, counter_134: SharedU16, threshold_136: SharedU16, scan_completion_138: SharedU16, sleep_vote_count_13a: SharedU16, ps_mode_error_reported_13c: SharedU8, opaque_13d: OpaqueBytes<0x03> }
 
 /// Physical `0x104` prefix at each observed power-save view start. The logical
 /// view continues past this prefix and overlaps the next physical prefix.
@@ -831,7 +831,8 @@ struct PowerSaveHifBoundary {
     threshold_32: SharedU16,
     scan_completion_34: SharedU16,
     sleep_vote_count_36: SharedU16,
-    opaque_38: OpaqueBytes<0x08>,
+    ps_mode_error_reported_38: SharedU8,
+    opaque_39: OpaqueBytes<0x07>,
     beacon_tim_state_40: SharedU32,
 }
 #[repr(C, align(4))]
@@ -1805,6 +1806,10 @@ pub(crate) fn power_save_beacon_interval(interface: usize) -> Option<DtcmAddress
 pub(crate) fn power_save_next_wake_deadline(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, next_wake_deadline)) }
 pub(crate) fn power_save_wake_timer_active(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, wake_timer_active)) }
 pub(crate) fn power_save_beacon_timing_adjusted(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, beacon_timing_adjusted)) }
+pub(crate) fn power_save_mode_control(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, mode_control_124)) }
+pub(crate) fn power_save_maximum_backoff(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, maximum_backoff_12c)) }
+pub(crate) fn power_save_last_beacon_timestamp(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, last_beacon_timestamp_130)) }
+pub(crate) fn power_save_ps_mode_error_reported(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, ps_mode_error_reported_13c)) }
 pub(crate) fn power_save_timer(interface: usize, timer: usize) -> Option<DtcmAddress> {
     if timer < 7 {
         power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, timers) + timer * core::mem::size_of::<TimerEntry>())
@@ -2768,7 +2773,7 @@ const _: () = {
     assert!(INTERNAL_TX_CONTEXT_RESULT_OFFSET == 0x70);
     assert!(INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET == 0xc4);
     assert_type_layout!(InternalContextPoolState, 0x454, 4);
-    assert_type_layout!(PowerSaveObservedLayout, 0x13c, 4);
+    assert_type_layout!(PowerSaveObservedLayout, 0x140, 4);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, wake_duration) == 0x006);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, wake_register_min) == 0x008);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, wake_elapsed_max) == 0x01c);
@@ -2817,11 +2822,15 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, beacon_timing_adjusted) == 0x117);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, duration_118) == 0x118);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, duration_120) == 0x120);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, mode_control_124) == 0x124);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, interval_128) == 0x128);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, maximum_backoff_12c) == 0x12c);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, last_beacon_timestamp_130) == 0x130);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, counter_134) == 0x134);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, threshold_136) == 0x136);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, scan_completion_138) == 0x138);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, sleep_vote_count_13a) == 0x13a);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, ps_mode_error_reported_13c) == 0x13c);
     assert_type_layout!(PowerSavePhysicalPrefix, 0x104, 4);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, wake_duration) == 0x006);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, wake_register_min) == 0x008);
@@ -2870,6 +2879,7 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, threshold_32) == 0x32);
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, scan_completion_34) == 0x34);
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, sleep_vote_count_36) == 0x36);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, ps_mode_error_reported_38) == 0x38);
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, beacon_tim_state_40) == 0x40);
     assert_type_layout!(HostMessageFreeRing, 0x18, 4);
     assert!(core::mem::offset_of!(HostMessageFreeRing, entries) == 0x08);
@@ -3588,6 +3598,11 @@ mod tests {
         assert_eq!(power_save_extension_field(0, core::mem::offset_of!(PowerSaveObservedLayout, duration_118)).unwrap().get(), 0x0400_95ec);
         assert_eq!(power_save_extension_field(1, core::mem::offset_of!(PowerSaveObservedLayout, duration_118)).unwrap().get(), 0x0400_96f0);
         assert_eq!(power_save_extension_field(1, core::mem::offset_of!(PowerSaveObservedLayout, threshold_136)).unwrap().get() + 2, 0x0400_9710);
+        assert_eq!(power_save_mode_control(0).unwrap().get(), 0x0400_95f8);
+        assert_eq!(power_save_maximum_backoff(0).unwrap().get(), 0x0400_9600);
+        assert_eq!(power_save_last_beacon_timestamp(0).unwrap().get(), 0x0400_9604);
+        assert_eq!(power_save_ps_mode_error_reported(0).unwrap().get(), 0x0400_9610);
+        assert_eq!(power_save_ps_mode_error_reported(1).unwrap().get(), 0x0400_9714);
         assert_eq!(power_save_scan_completion(1).unwrap().get(), 0x0400_9710);
         assert_eq!(power_save_sleep_vote_count(1).unwrap().get(), 0x0400_9712);
         assert_eq!(POWER_SAVE_BEACON_TIM_STATE.get(), 0x0400_971c);
