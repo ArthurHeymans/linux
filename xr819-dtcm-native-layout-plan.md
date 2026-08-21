@@ -227,7 +227,9 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x0400218c..0x040021b4` | `0x28` | `ClockParameters` record | High shape from `register_structs!`; shared/timer-owned |
 | `0x040021b4..0x04002234` | `0x80` | 32-entry scheduler handler table | High, `32 * 4`; contains code pointers |
 | `0x04002234..0x040022b8` | `0x84` | typed 22-record PHY gain-source table | High structural confidence from retained builder loop |
-| `0x040022b8..0x040034b0` | `0x11f8` | template/beacon/filter tables and opaque BSS | Medium islands, unknown aggregate extent |
+| `0x040022b8..0x04003050` | `0xd98` | beacon/filter state and opaque BSS | Medium islands, unknown aggregate extent |
+| `0x04003050..0x040030d0` | `0x80` | typed two-record template descriptor table | High structural confidence from retained initializer |
+| `0x040030d0..0x040034b0` | `0x3e0` | template backing and opaque BSS | Medium islands, overlapping pointer evidence |
 | `0x040034b0..0x040035e0` | `0x130` | typed SDD-derived channel/gain/profile tables | High structural confidence; shared quarantine |
 | `0x040035e0..0x04003670` | `0x90` | typed wake clock words and 32 response pointers | High structural confidence; shared quarantine |
 | `0x04003670..0x04003674` | `0x4` | typed duration-source halfwords | High |
@@ -3284,6 +3286,39 @@ packed    /tmp/xr819-phy-gain-source-layout.bin
 checks    /tmp/xr819-phy-gain-source-final-check.log
           2cb74b000a41cbb0c97c825e3a4f8a9e86914f1cfe7f8e962fc3575250de1c38
 manifest  tools/phy-gain-source-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.37 Template-frame descriptors
+
+The retained template initializer proves two `0x40`-byte descriptors at
+`0x04003050..0x040030d0`. Each descriptor contains seven typed template-kind
+bytes, associated flags and lengths, and five raw pointer words at offsets
+`+0x04`, `+0x0c`, `+0x2c`, `+0x34`, and `+0x3c`. Bytes not written by the
+initializer remain explicit opaque fields within the record.
+
+The two records are structurally identical and selected with a bounded index.
+Their pointer targets remain raw shared addresses because several backing areas
+and beacon/filter consumers overlap or are not yet decoded. No production Rust
+path currently accesses the descriptor records directly.
+
+`tools/check-template-descriptor-layout.py` covers the complete table and
+rejects production literals or synthesized base/stride forms outside
+`dtcm.rs`. The current Rust ELF has no linked in-range literal or decoded xref;
+the retained initializer remains the layout evidence. The complete ELF remains
+byte-identical to the qualified PHY-gain-source parent, so no hardware rerun is
+required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-template-descriptor-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-template-descriptor-final-check.log
+          f7e038e473e021960d6fa07999a25eaf11e17d7badf779ed3a1e0347072fb7c4
+manifest  tools/template-descriptor-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

@@ -159,7 +159,9 @@ struct SchedulerHandlerTable {
 #[repr(C, align(2))]
 struct PhyGainSourceRecord { selector: SharedU8, opaque_01: SharedU8, lower: SharedU16, upper: SharedU16 }
 #[repr(C, align(4))]
-struct PreConfigurationTables { gain_source_records: [PhyGainSourceRecord; 22], opaque_084: OpaqueBytes<0x11f8> }
+struct TemplateFrameDescriptor { kind_00: SharedU8, flags_01: SharedU8, opaque_02: OpaqueBytes<0x02>, buffer_04: SharedU32, kind_08: SharedU8, flags_09: SharedU8, opaque_0a: OpaqueBytes<0x02>, pointer_0c: SharedU32, kind_10: SharedU8, flags_11: SharedU8, length_12: SharedU16, opaque_14: OpaqueBytes<0x04>, kind_18: SharedU8, flags_19: SharedU8, length_1a: SharedU16, opaque_1c: OpaqueBytes<0x04>, kind_20: SharedU8, flags_21: SharedU8, length_22: SharedU16, opaque_24: OpaqueBytes<0x04>, kind_28: SharedU8, flags_29: SharedU8, opaque_2a: OpaqueBytes<0x02>, pointer_2c: SharedU32, kind_30: SharedU8, opaque_31: OpaqueBytes<0x03>, pointer_34: SharedU32, kind_38: SharedU8, flags_39: SharedU8, length_3a: SharedU16, pointer_3c: SharedU32 }
+#[repr(C, align(4))]
+struct PreConfigurationTables { gain_source_records: [PhyGainSourceRecord; 22], opaque_084: OpaqueBytes<0x0d98>, template_descriptors: [TemplateFrameDescriptor; 2], opaque_e9c: OpaqueBytes<0x03e0> }
 #[repr(C)]
 struct SddChannelRecord { bytes: [SharedU8; 3] }
 #[repr(C, align(2))]
@@ -1367,6 +1369,8 @@ pub const CLOCK_PARAMETERS: DtcmAddress = DtcmAddress::from_offset(0x218c);
 pub const SCHEDULER_HANDLER_TABLE: DtcmAddress = DtcmAddress::from_offset(0x21b4);
 pub(crate) const PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x2234);
 pub(crate) const fn phy_gain_source_record(index: usize) -> Option<DtcmAddress> { if index < 22 { Some(DtcmAddress::from_offset(PHY_GAIN_SOURCE_RECORDS.offset() + index * core::mem::size_of::<PhyGainSourceRecord>())) } else { None } }
+pub(crate) const TEMPLATE_FRAME_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(0x3050);
+pub(crate) const fn template_frame_descriptor(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(TEMPLATE_FRAME_DESCRIPTORS.offset() + index * core::mem::size_of::<TemplateFrameDescriptor>())) } else { None } }
 pub(crate) const SDD_CONFIGURATION_TABLES: DtcmAddress = DtcmAddress::from_offset(0x34b0);
 const fn sdd_profile_field(profile: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(SDD_CONFIGURATION_TABLES.offset().wrapping_add(profile.wrapping_mul(core::mem::size_of::<SddProfileBank>())).wrapping_add(offset)) }
 pub(crate) const fn sdd_profile(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(sdd_profile_unchecked(profile)) } else { None } }
@@ -2097,9 +2101,17 @@ const _: () = {
     assert_type_layout!(PhyGainSourceRecord, 0x06, 2);
     assert!(core::mem::offset_of!(PhyGainSourceRecord, lower) == 0x02);
     assert!(core::mem::offset_of!(PhyGainSourceRecord, upper) == 0x04);
+    assert_type_layout!(TemplateFrameDescriptor, 0x40, 4);
+    assert!(core::mem::offset_of!(TemplateFrameDescriptor, buffer_04) == 0x04);
+    assert!(core::mem::offset_of!(TemplateFrameDescriptor, pointer_0c) == 0x0c);
+    assert!(core::mem::offset_of!(TemplateFrameDescriptor, pointer_2c) == 0x2c);
+    assert!(core::mem::offset_of!(TemplateFrameDescriptor, pointer_34) == 0x34);
+    assert!(core::mem::offset_of!(TemplateFrameDescriptor, pointer_3c) == 0x3c);
     assert_type_layout!(PreConfigurationTables, 0x127c, 4);
     assert!(core::mem::offset_of!(PreConfigurationTables, gain_source_records) == 0x000);
     assert!(core::mem::offset_of!(PreConfigurationTables, opaque_084) == 0x084);
+    assert!(core::mem::offset_of!(PreConfigurationTables, template_descriptors) == 0xe1c);
+    assert!(core::mem::offset_of!(PreConfigurationTables, opaque_e9c) == 0xe9c);
     assert_type_layout!(SddChannelRecord, 0x03, 1);
     assert_type_layout!(SddProfileBank, 0x92, 2);
     assert!(core::mem::offset_of!(SddProfileBank, channel_records) == 0x16);
@@ -2860,6 +2872,15 @@ mod tests {
         assert_eq!(phy_gain_source_record(21).unwrap().get(), 0x0400_22b2);
         assert!(phy_gain_source_record(22).is_none());
         assert_eq!(phy_gain_source_record(21).unwrap().get() + 6, 0x0400_22b8);
+    }
+
+    #[test]
+    fn template_frame_descriptor_addresses_are_exact() {
+        assert_eq!(TEMPLATE_FRAME_DESCRIPTORS.get(), 0x0400_3050);
+        assert_eq!(template_frame_descriptor(0).unwrap().get(), 0x0400_3050);
+        assert_eq!(template_frame_descriptor(1).unwrap().get(), 0x0400_3090);
+        assert!(template_frame_descriptor(2).is_none());
+        assert_eq!(template_frame_descriptor(1).unwrap().get() + 0x40, 0x0400_30d0);
     }
 
     #[test]
