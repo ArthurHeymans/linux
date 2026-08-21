@@ -23,8 +23,8 @@ pub const INTERNAL_TX_CONTEXT_SIZE: usize = 0x170;
 pub const INTERNAL_TX_CONTEXT_COUNT: usize = 3;
 pub(crate) const INTERNAL_TX_CONTEXT_NEXT_FREE_OFFSET: usize = core::mem::offset_of!(InternalTxContext, next_free);
 pub(crate) const INTERNAL_TX_CONTEXT_HEADER_80211_OFFSET: usize = core::mem::offset_of!(InternalTxContext, header_80211);
-pub(crate) const INTERNAL_TX_CONTEXT_RESULT_OFFSET: usize = core::mem::offset_of!(InternalTxContext, result);
-pub(crate) const INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET: usize = core::mem::offset_of!(InternalTxContext, cipher_buffer);
+pub(crate) const INTERNAL_TX_CONTEXT_RESULT_OFFSET: usize = core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, terminal_status);
+pub(crate) const INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET: usize = core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, cipher_buffer);
 pub const HOST_TX_CONTEXT_SIZE: usize = 0x170;
 pub const HOST_TX_CONTEXT_COUNT: usize = 30;
 pub const VIF_RECORD_SIZE: usize = 0x3b0;
@@ -682,16 +682,63 @@ opaque_family!(
 /// One exact internal TX context record. It remains quarantine because retained
 /// teardown and diagnostics can mutate the same bytes.
 #[repr(C, align(4))]
+struct InternalPasContext {
+    frame_address: SharedU32,
+    control_bits: SharedU32,
+    frame_length: SharedU16,
+    frame_control: SharedU16,
+    access_category: SharedU8,
+    request_flag_rate_bits: SharedU8,
+    retry_policy: SharedU8,
+    tx_rate: SharedU8,
+    expiry_time: SharedU32,
+    completion_timestamp: SharedU32,
+    scheduler_timestamp: SharedU32,
+    terminal_status: SharedU16,
+    try_count: SharedU16,
+    opaque_20: OpaqueBytes<0x0c>,
+    ownership_bits: SharedU32,
+    opaque_30: OpaqueBytes<0x06>,
+    duration: SharedU16,
+    opaque_38: OpaqueBytes<0x04>,
+    descriptor_state: SharedU32,
+    opaque_40: OpaqueBytes<0x0c>,
+    frame_state_address: SharedU32,
+    auxiliary_state: SharedU16,
+    tid: SharedU8,
+    insertion_mode: SharedU8,
+    sequence_number: SharedU16,
+    retry_rate: SharedU8,
+    byte_57: SharedU8,
+    opaque_58: OpaqueBytes<0x11>,
+    interface: SharedU8,
+    duration_slot: SharedU8,
+    host_link: SharedU8,
+    completion_byte_6c: SharedU8,
+    opaque_6d: OpaqueBytes<0x03>,
+    cipher_buffer: SharedU32,
+    qos_control: SharedU16,
+    cipher_class: SharedU8,
+    opaque_77: OpaqueBytes<0x05>,
+    word_7c: SharedU16,
+    opaque_7e: OpaqueBytes<0x02>,
+}
+#[repr(C, align(4))]
 pub(crate) struct InternalTxContext {
     opaque_00: SharedU32,
     next_free: SharedU32,
     opaque_08: OpaqueBytes<0x14>,
     header_80211: SharedU32,
-    opaque_20: OpaqueBytes<0x50>,
-    result: SharedU16,
-    opaque_72: OpaqueBytes<0x52>,
-    cipher_buffer: SharedU32,
-    opaque_c8: OpaqueBytes<0xa8>,
+    completion_status: SharedU32,
+    rate_copy: SharedU8,
+    saved_status: SharedU8,
+    completion_flags: SharedU16,
+    opaque_28: OpaqueBytes<0x24>,
+    optional_pipe_object: SharedU32,
+    opaque_50: OpaqueBytes<0x03>,
+    completion_class: SharedU8,
+    pas: InternalPasContext,
+    opaque_d4: OpaqueBytes<0x9c>,
 }
 
 /// Existing typed internal TX pool, now embedded in the complete DTCM layout.
@@ -2488,7 +2535,20 @@ const _: () = {
     assert!(core::mem::offset_of!(ContextCompletionPrefix, free_state) == 0x10);
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
+    assert_type_layout!(InternalPasContext, 0x80, 4);
+    assert!(core::mem::offset_of!(InternalPasContext, completion_timestamp) == 0x14);
+    assert!(core::mem::offset_of!(InternalPasContext, terminal_status) == 0x1c);
+    assert!(core::mem::offset_of!(InternalPasContext, ownership_bits) == 0x2c);
+    assert!(core::mem::offset_of!(InternalPasContext, descriptor_state) == 0x3c);
+    assert!(core::mem::offset_of!(InternalPasContext, frame_state_address) == 0x4c);
+    assert!(core::mem::offset_of!(InternalPasContext, interface) == 0x69);
+    assert!(core::mem::offset_of!(InternalPasContext, cipher_buffer) == 0x70);
     assert_type_layout!(InternalTxContext, INTERNAL_TX_CONTEXT_SIZE, 4);
+    assert!(core::mem::offset_of!(InternalTxContext, completion_status) == 0x20);
+    assert!(core::mem::offset_of!(InternalTxContext, optional_pipe_object) == 0x4c);
+    assert!(core::mem::offset_of!(InternalTxContext, completion_class) == 0x53);
+    assert!(core::mem::offset_of!(InternalTxContext, pas) == 0x54);
+    assert!(core::mem::offset_of!(InternalTxContext, opaque_d4) == 0xd4);
     assert!(INTERNAL_TX_CONTEXT_NEXT_FREE_OFFSET == 0x04);
     assert!(INTERNAL_TX_CONTEXT_HEADER_80211_OFFSET == 0x1c);
     assert!(INTERNAL_TX_CONTEXT_RESULT_OFFSET == 0x70);

@@ -3611,3 +3611,31 @@ manifest  tools/internal-context-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.46 Internal TX PAS and completion fields
+
+The internal context records now encode the same translated completion/PAS
+field contract previously expressed only by raw offsets in `ContextAddress`.
+The outer record names completion state through `+0x53`; an exact `0x80`-byte
+`InternalPasContext` begins at `+0x54` and names frame/control/rate fields,
+timestamps, terminal status, retry count, ownership, duration, descriptor
+state, frame-state address, sequence metadata, interface/link bytes, the
+internal cipher-buffer pointer at outer `+0xc4`, and the retained crypto tail.
+
+This is structural shared quarantine, not a claim that host and internal
+contexts have identical ownership. In particular, the internal cipher pointer
+occupies bytes that remain opaque in the host PAS schema. The final
+`+0xd4..+0x170` context tail remains opaque for unresolved encryption and
+aggregation overlays.
+
+All compile-time offsets match the existing translated raw-address contract.
+No generated symbol, ELF byte, or packed-image byte changes, so the existing
+internal-context source/linked/codegen gates and hardware qualification remain
+valid.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-internal-context-pas-final-check.log
+          99fd1e1eda6222d08bc7e34fe56e7f7fc2b2266c69abe14da4f46027355a8899
+```
+
