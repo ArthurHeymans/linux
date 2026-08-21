@@ -50,6 +50,7 @@ python3 tools/check-mac-phy-command-state-layout.py
 python3 tools/check-mac-runtime-accounting-layout.py
 python3 tools/check-mac-retry-hardware-state-layout.py
 python3 tools/check-mac-tx-queue-state-layout.py
+python3 tools/check-initialized-rate-policies-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -104,6 +105,7 @@ python3 tools/check-mac-phy-command-state-layout.py "$ELF"
 python3 tools/check-mac-runtime-accounting-layout.py "$ELF"
 python3 tools/check-mac-retry-hardware-state-layout.py "$ELF"
 python3 tools/check-mac-tx-queue-state-layout.py "$ELF"
+python3 tools/check-initialized-rate-policies-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"

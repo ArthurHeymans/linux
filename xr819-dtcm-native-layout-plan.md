@@ -4466,3 +4466,26 @@ manifest  tools/mac-tx-queue-state-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.81 Initialized retained rate policies
+
+The two five-word policy records at `0x04000200..0x04000228` are now an exact
+`InitializedRatePolicies` layout. Startup copies these immutable initialized
+words into the first two retained PAS policy records before queue scheduling is
+allowed.
+
+Both copy loops now derive their source from the initialized-image layout while
+preserving the original five-word bounds, destination order, and volatile
+32-bit reads/writes. The compiler folds both policy roots into one linked base;
+`tools/check-initialized-rate-policies-layout.py` pins that root and both decoded
+uses. The complete ELF and packed image remain byte-identical to the qualified
+MAC-TX-queue-state parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-initialized-rate-policy-final-check.log
+          7f4ec38f25e327bfd1ca10712c96e1f4f51acd271496e98bf600e003d3dc90ee
+manifest  tools/initialized-rate-policies-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

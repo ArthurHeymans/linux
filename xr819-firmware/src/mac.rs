@@ -845,13 +845,13 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         for word in 0..5 {
             write_u32(
                 crate::dtcm::rate_policy_word_unchecked(0, word).get(),
-                read_u32(0x0400_0200 + word * 4),
+                read_u32(crate::dtcm::INITIALIZED_RATE_POLICIES.get() + word * 4),
             );
         }
         for word in 0..5 {
             write_u32(
                 crate::dtcm::rate_policy_word_unchecked(1, word).get(),
-                read_u32(0x0400_0214 + word * 4),
+                read_u32(crate::dtcm::INITIALIZED_RATE_POLICIES.get() + 0x14 + word * 4),
             );
         }
 

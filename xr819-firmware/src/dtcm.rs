@@ -109,7 +109,9 @@ struct InitializedVendorImage {
     pre_rate_tables: OpaqueBytes<0x48>,
     rate_encoding: [SharedU8; 22],
     rate_attributes: [SharedU8; 22],
-    pre_completion_callback_words: OpaqueBytes<0xa0>,
+    pre_initialized_rate_policies: OpaqueBytes<0x40>,
+    initialized_rate_policies: InitializedRatePolicies,
+    pre_completion_callback_words: OpaqueBytes<0x38>,
     /// Ten visible words in the qualified initialized island. The evidence does
     /// not establish that every word is a complete callable entry.
     visible_completion_words: [SharedU32; 10],
@@ -147,6 +149,8 @@ struct InitializedVendorImage {
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
 }
+#[repr(C, align(4))]
+struct InitializedRatePolicies { policies: [[SharedU32; 5]; 2] }
 #[repr(C, align(4))]
 struct QueuePipeMappings {
     pipe_order: [SharedU8; 4],
@@ -1692,6 +1696,8 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const INITIALIZED_RATE_POLICIES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_rate_policies));
+pub(crate) const fn initialized_rate_policy_word(policy: usize, word: usize) -> Option<DtcmAddress> { if policy < 2 && word < 5 { Some(DtcmAddress::from_offset(INITIALIZED_RATE_POLICIES.offset() + (policy * 5 + word) * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const MAC_TX_QUEUE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_tx_queue_state));
 pub(crate) const MAC_TX_QUEUE_HEAD: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, head));
 pub(crate) const MAC_TX_QUEUE_TAIL: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, tail));
@@ -3150,6 +3156,11 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedVendorImage, tx_duration_timing) == 0x0138);
     assert!(core::mem::offset_of!(InitializedVendorImage, rate_encoding) == 0x0194);
     assert!(core::mem::offset_of!(InitializedVendorImage, rate_attributes) == 0x01aa);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_initialized_rate_policies) == 0x01c0);
+    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_rate_policies) == 0x0200);
+    assert!(core::mem::size_of::<InitializedRatePolicies>() == 0x28);
+    assert!(core::mem::offset_of!(InitializedRatePolicies, policies) == 0x00);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_completion_callback_words) == 0x0228);
     assert!(core::mem::offset_of!(InitializedVendorImage, visible_completion_words) == 0x0260);
     assert_type_layout!(QueuePipeMappings, 0x0c, 4);
     assert!(core::mem::offset_of!(QueuePipeMappings, pipe_order) == 0x00);
@@ -3903,6 +3914,18 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_rate_policy_word_addresses_are_exact() {
+        assert_eq!(INITIALIZED_RATE_POLICIES.get(), 0x0400_0200);
+        assert_eq!(initialized_rate_policy_word(0, 0).unwrap().get(), 0x0400_0200);
+        assert_eq!(initialized_rate_policy_word(0, 4).unwrap().get(), 0x0400_0210);
+        assert_eq!(initialized_rate_policy_word(1, 0).unwrap().get(), 0x0400_0214);
+        assert_eq!(initialized_rate_policy_word(1, 4).unwrap().get(), 0x0400_0224);
+        assert_eq!(initialized_rate_policy_word(1, 4).unwrap().get() + 4, 0x0400_0228);
+        assert!(initialized_rate_policy_word(2, 0).is_none());
+        assert!(initialized_rate_policy_word(0, 5).is_none());
     }
 
     #[test]
