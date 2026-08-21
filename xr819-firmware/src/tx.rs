@@ -172,7 +172,7 @@ const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
 const PIPE_RETRY_HARDWARE_STATE: u32 = 0x0400_1e6c;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
-const PIPE_RETRY_RATE_MAP: u32 = 0x0400_1aec;
+const PIPE_RETRY_RATE_MAP: u32 = crate::dtcm::MAC_RETRY_RATE_MAP.get() as u32;
 const PIPE_RETRY_TIMING_TABLE: u32 = crate::dtcm::TX_DURATION_TIMING_TABLE.get() as u32;
 const PAS_ACK_TIMING_TABLE: usize = crate::dtcm::LOW_MAC_SHORT_AIRTIME_TABLE.get();
 const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
@@ -2105,7 +2105,7 @@ pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, 
         if plan.service_status_0e_side_effects {
             write_u32(0x0400_1d50, read_u32(PIPE_RECORDS as usize + 0x14));
             let _ = backend.find_rx_frame_by_subtype(0x80);
-            if read_u32(0x0400_1ae8) != 0 {
+            if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
                 let control = read_u32(crate::dtcm::MAC_BEACON_CONTROL.get()) & !1;
                 write_u32(crate::dtcm::MAC_BEACON_CONTROL.get(), control);
                 write_u32(crate::platform::mac_register(0x0a00), control);
@@ -4889,7 +4889,7 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
             backend.timer_start((state + 0xe8) as u32, read_u32(state + 0x118));
         }
 
-        if read_u32(0x0400_1ae8) != 0 {
+        if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
             if read_u8(crate::dtcm::power_save_global_sleep_state().get()) < 3 {
                 return;
             }
@@ -5565,7 +5565,7 @@ pub unsafe fn service_mac_irq_count_status(event_type: u8) {
         if event_type != 0x19 {
             return;
         }
-        if read_u32(0x0400_1ae8) != 0 {
+        if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
             write_u32(crate::dtcm::LOW_MAC_BAND_BITS.get(), 1);
         }
         write_u8(PIPE_RECORDS as usize + 6, 1);
@@ -5964,12 +5964,12 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let interface = u32::from(mmio.read_u8(frame + 0x69));
     let pas = crate::dtcm::pas_stride_view_unchecked(interface as usize);
     let edca_slot_timing = mmio.read_u32(pas.packed_aifs().get() as u32);
-    if mmio.read_u32(0x0400_1b04) != edca_slot_timing {
+    if mmio.read_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get() as u32) != edca_slot_timing {
         mmio.write_u32(
             crate::platform::mac_register(0x0e64) as u32,
             edca_slot_timing,
         );
-        mmio.write_u32(0x0400_1b04, edca_slot_timing);
+        mmio.write_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get() as u32, edca_slot_timing);
     }
     if publication_bisect_reached(6) {
         return 6;
@@ -8490,7 +8490,7 @@ mod tests {
                 .get() as u32,
             0x55,
         );
-        mmio.set(0x0400_1b04, 0x44);
+        mmio.set(crate::dtcm::MAC_EDCA_SLOT_TIMING.get() as u32, 0x44);
         mmio.set(QUEUE_BACKOFF_TABLE, 1);
         mmio.set(
             crate::dtcm::pas_stride_view(0)

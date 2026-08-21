@@ -1858,7 +1858,7 @@ unsafe fn publish_completed_receive_state() {
         // The active channel path leaves the PHY controller running at
         // 0x0ac80064 == 1. Writing 0x10 here is vendor radio-stop behavior.
         write_u8(crate::dtcm::phy_calibration_stage().get(), 3);
-        write_u8(0x0400_1adc, 2);
+        write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
 
         let mut state = (crate::dtcm::phy_retained_state().get() as *const u8).read_volatile();
         if state != 5 {
@@ -2108,7 +2108,7 @@ unsafe fn begin_channel_transition(
     // a 120-tick cooperative settle interval.
     unsafe {
         write_u8(crate::dtcm::phy_calibration_state().get(), 0);
-        write_u8(0x0400_1adc, 1);
+        write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 1);
     };
     Ok(ChannelTransitionResult {
         divider,
@@ -2128,7 +2128,7 @@ unsafe fn finish_channel_transition(
     unsafe {
         // Preserve vendor wake ordering: full MAC reinitialization can set the
         // channel-reprogram flag consumed immediately afterward.
-        if (0x0400_1ade as *const u8).read_volatile() != 0 {
+        if (crate::dtcm::MAC_WAKE_RESTORE_PENDING.get() as *const u8).read_volatile() != 0 {
             crate::mac::reinitialize_after_wake(calibration_max_polls)
                 .map_err(ChannelTransitionError::MacWake)?;
         }
@@ -2136,7 +2136,7 @@ unsafe fn finish_channel_transition(
         let value = status.read_volatile();
         if value & 1 != 0 {
             status.write_volatile(value & !1);
-        } else if value & 4 == 0 && (0x0400_1add as *const u8).read_volatile() != 0 {
+        } else if value & 4 == 0 && (crate::dtcm::MAC_WAKE_TRANSITION_PENDING.get() as *const u8).read_volatile() != 0 {
             crate::mac::reprogram_after_channel();
         }
         publish_completed_receive_state();
@@ -4429,8 +4429,8 @@ pub unsafe fn initialize_mac_software_state() {
         // internally gated body of `mac_reinit_after_wake`. They sit below the
         // vendor BSS range cleared by `initialize_runtime_state`, so initialize
         // them explicitly before any cooperative channel transition.
-        write_u8(0x0400_1add, 0);
-        write_u8(0x0400_1ade, 0);
+        write_u8(crate::dtcm::MAC_WAKE_TRANSITION_PENDING.get(), 0);
+        write_u8(crate::dtcm::MAC_WAKE_RESTORE_PENDING.get(), 0);
 
         write_u8(crate::dtcm::phy_measurement_control().get(), 0);
         write_u8(crate::dtcm::phy_silicon_variant().get(), detect_rf_silicon_variant());

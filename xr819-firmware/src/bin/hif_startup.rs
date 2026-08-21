@@ -811,7 +811,7 @@ extern "C" fn rust_main() -> ! {
                         dwell_arm,
                         dwell_deadline,
                         dwell_now,
-                        unsafe { (0x0400_1ae4 as *const u32).read_volatile() },
+                        unsafe { (xr819_firmware::dtcm::MAC_WAKE_MODE.get() as *const u32).read_volatile() },
                         unsafe {
                             u32::from((xr819_firmware::dtcm::phy_profile0_ready().get() as *const u8).read_volatile())
                                 | (u32::from((xr819_firmware::dtcm::phy_auxiliary_state().get() as *const u8).read_volatile()) << 8)

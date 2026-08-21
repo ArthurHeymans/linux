@@ -53,6 +53,7 @@ python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
 python3 tools/check-low-mac-global-prefix-layout.py
 python3 tools/check-mac-beacon-state-layout.py
+python3 tools/check-mac-wake-runtime-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -110,6 +111,7 @@ python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
 python3 tools/check-low-mac-global-prefix-layout.py "$ELF"
 python3 tools/check-mac-beacon-state-layout.py "$ELF"
+python3 tools/check-mac-wake-runtime-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -549,6 +551,15 @@ if [[ -n "${XR819_MAC_BEACON_STATE_PARENT_ELF:-}" ]]; then
     "$XR819_MAC_BEACON_STATE_PARENT_ELF" "$ELF"
 else
   echo "== MAC-beacon-state codegen gate skipped: set XR819_MAC_BEACON_STATE_PARENT_ELF to the qualified low-MAC-global-prefix ELF =="
+fi
+
+if [[ -n "${XR819_MAC_WAKE_RUNTIME_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed MAC-wake-runtime parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/mac-wake-runtime-codegen-manifest.json \
+    "$XR819_MAC_WAKE_RUNTIME_PARENT_ELF" "$ELF"
+else
+  echo "== MAC-wake-runtime codegen gate skipped: set XR819_MAC_WAKE_RUNTIME_PARENT_ELF to the qualified MAC-beacon-state ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

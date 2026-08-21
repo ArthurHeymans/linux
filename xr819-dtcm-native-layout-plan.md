@@ -4340,3 +4340,29 @@ manifest  tools/mac-beacon-state-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.76 MAC wake runtime state
+
+The `0x48` bytes at `0x04001ac0..0x04001b08` are now an exact
+`MacWakeRuntimeState`. It contains the retained timer at `+0x08`, PHY and wake
+transition bytes, saved MAC mode, wake control, 22-byte retry-rate map, and EDCA
+slot-timing cache. Four leading/interior words and bytes remain explicit opaque
+quarantine where semantics are not proven.
+
+MAC wake/reconfiguration, PHY transitions, TX duration/retry selection,
+power-save event handling, EDCA publication, VIF configuration, and the startup
+diagnostic now derive their addresses from this physical layout. Timer setup,
+volatile widths, wrapping rate indexes, and wake/event ordering remain unchanged.
+`tools/check-mac-wake-runtime-layout.py` pins seven linked interior addresses and
+the complete decoded xref multiset. The complete ELF and packed image remain
+byte-identical to the qualified MAC-beacon-state parent, so no hardware rerun is
+required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-wake-runtime-final-check.log
+          08b9edf0fe593e153d6419c558f3ae86169e42dcb395c6ea40b147a5056a13d7
+manifest  tools/mac-wake-runtime-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

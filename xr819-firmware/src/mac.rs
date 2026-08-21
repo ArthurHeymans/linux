@@ -3,7 +3,7 @@
 use crate::{packet_ram, platform, radio};
 
 const SHARED: usize = crate::dtcm::LOW_MAC_GLOBAL.get();
-const WAKE: usize = 0x0400_1ac0;
+const WAKE: usize = crate::dtcm::MAC_WAKE_RUNTIME_STATE.get();
 
 #[inline(always)]
 fn packet_offset(address: usize) -> u32 {
@@ -461,7 +461,7 @@ pub unsafe fn prepare_scan_context(channel: u16) {
         write_u32(scan_pas.basic_rate_bits().get(), 1);
         // Base 0x07e3b85c plus the non-matching temporary-record mask
         // 0x00100502 from the vendor scan path.
-        write_u32(0x0400_1ae4, 0x07f3_bd5e);
+        write_u32(crate::dtcm::MAC_WAKE_MODE.get(), 0x07f3_bd5e);
     }
 }
 
@@ -520,7 +520,7 @@ pub unsafe fn program_scan_station_mode() {
         write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
         write_u32(crate::platform::mac_register(0x0204), 0x0019_8000);
-        write_u32(crate::platform::mac_register(0x0200), read_u32(0x0400_1ae4));
+        write_u32(crate::platform::mac_register(0x0200), read_u32(crate::dtcm::MAC_WAKE_MODE.get()));
         write_u32(crate::platform::mac_register(0x0310), 0x7800_0000);
     }
 }
@@ -557,7 +557,7 @@ unsafe fn active_station_mode_word() -> u32 {
 pub unsafe fn program_joined_station_mode() {
     unsafe {
         let mode = active_station_mode_word();
-        write_u32(0x0400_1ae4, mode);
+        write_u32(crate::dtcm::MAC_WAKE_MODE.get(), mode);
         write_u32(crate::dtcm::MAC_BEACON_SELECTOR.get(), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
@@ -760,7 +760,7 @@ pub unsafe fn finish_unjoined_scan_radio_stop() {
     unsafe {
         write_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get(), 0);
         write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
-        write_u8(0x0400_1adc, 2);
+        write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
         write_u8(SHARED + 0x0a, 0);
         write_u8(SHARED + 0x0b, 0);
         write_u8(0x0400_1d12, 0);
@@ -839,7 +839,7 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // Vendor initialized DTCM supplies zero for the EDCA hardware cache
         // and the optional contention-window override controls. Rebuilt code
         // consumes all three, so reconstruct them explicitly.
-        write_u32(0x0400_1b04, 0);
+        write_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get(), 0);
         write_u32(crate::dtcm::pas_backoff_override_enabled().get(), 0);
         write_u32(crate::dtcm::pas_backoff_override_window().get(), 0);
         for word in 0..5 {
@@ -922,13 +922,13 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // first timer insertion follow stale firmware pointers and corrupt the
         // cooperative scheduler before a TX confirmation can reach the host.
         write_u32(crate::dtcm::scheduler_timer_list_head().get(), 0);
-        for object in [0x0400_1d18, 0x0400_1ac8] {
+        for object in [0x0400_1d18, crate::dtcm::MAC_WAKE_TIMER.get()] {
             write_u32(object + 0x0c, callback);
             write_u32(object + 0x10, 0);
             write_u32(object + 4, 0);
         }
         write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
-        write_u8(0x0400_1adc, 2);
+        write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
 
         for pipe in 0..4 {
             let state = SHARED + 0xa0 + pipe * 0x6c;

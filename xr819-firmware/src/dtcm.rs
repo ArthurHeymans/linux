@@ -135,7 +135,8 @@ struct InitializedVendorImage {
     mac_pipe_records: [MacPipeRecord; 4],
     pre_mac_beacon_state: OpaqueBytes<0x1b0>,
     mac_beacon_state: MacBeaconState,
-    initialized_low_mac_tail: OpaqueBytes<0x50c>,
+    mac_wake_runtime_state: MacWakeRuntimeState,
+    initialized_low_mac_tail: OpaqueBytes<0x4c4>,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
@@ -190,6 +191,8 @@ struct MacPipeSlot { state_word: SharedU32, opaque_04: OpaqueBytes<0x08>, frame:
 struct MacPipeRecord { current_slot: SharedU8, opaque_01: OpaqueBytes<0x02>, state: SharedU8, opaque_04: SharedU32, hardware_ring: SharedU32, slots: [MacPipeSlot; 4] }
 #[repr(C, align(4))]
 struct MacBeaconState { opaque_00: OpaqueBytes<0x08>, response_commands: [SharedU32; 2], opaque_10: OpaqueBytes<0x18>, state: SharedU32, secondary_command: SharedU32, control: SharedU32, selector: SharedU32, mode: SharedU8, opaque_39: OpaqueBytes<0x03>, completion_word: SharedU32 }
+#[repr(C, align(4))]
+struct MacWakeRuntimeState { opaque_00: OpaqueBytes<0x08>, timer: TimerEntry, phy_state: SharedU8, transition_pending: SharedU8, restore_pending: SharedU8, opaque_1f: SharedU8, opaque_20: SharedU32, mode: SharedU32, control: SharedU32, retry_rate_map: [SharedU8; 22], opaque_42: OpaqueBytes<0x02>, edca_slot_timing: SharedU32 }
 #[repr(C, align(4))]
 struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
 #[repr(C, align(4))]
@@ -1671,6 +1674,15 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const MAC_WAKE_RUNTIME_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_wake_runtime_state));
+pub(crate) const MAC_WAKE_TIMER: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, timer));
+pub(crate) const MAC_WAKE_PHY_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, phy_state));
+pub(crate) const MAC_WAKE_TRANSITION_PENDING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, transition_pending));
+pub(crate) const MAC_WAKE_RESTORE_PENDING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, restore_pending));
+pub const MAC_WAKE_MODE: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, mode));
+pub(crate) const MAC_WAKE_CONTROL: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, control));
+pub(crate) const MAC_RETRY_RATE_MAP: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, retry_rate_map));
+pub(crate) const MAC_EDCA_SLOT_TIMING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, edca_slot_timing));
 pub(crate) const MAC_BEACON_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_beacon_state));
 pub(crate) const MAC_BEACON_RESPONSE_COMMANDS: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, response_commands));
 pub(crate) const fn mac_beacon_response_command(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(MAC_BEACON_RESPONSE_COMMANDS.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
@@ -3164,7 +3176,17 @@ const _: () = {
     assert!(core::mem::offset_of!(MacBeaconState, selector) == 0x34);
     assert!(core::mem::offset_of!(MacBeaconState, mode) == 0x38);
     assert!(core::mem::offset_of!(MacBeaconState, completion_word) == 0x3c);
-    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x1ac0);
+    assert!(core::mem::offset_of!(InitializedVendorImage, mac_wake_runtime_state) == 0x1ac0);
+    assert!(core::mem::size_of::<MacWakeRuntimeState>() == 0x48);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, timer) == 0x08);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, phy_state) == 0x1c);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, transition_pending) == 0x1d);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, restore_pending) == 0x1e);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, mode) == 0x24);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, control) == 0x28);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, retry_rate_map) == 0x2c);
+    assert!(core::mem::offset_of!(MacWakeRuntimeState, edca_slot_timing) == 0x44);
+    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x1b08);
     assert!(
         core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) + 0x7ec == 0x1e6c
     );
@@ -3797,6 +3819,21 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_mac_wake_runtime_addresses_are_exact() {
+        assert_eq!(MAC_WAKE_RUNTIME_STATE.get(), 0x0400_1ac0);
+        assert_eq!(MAC_WAKE_TIMER.get(), 0x0400_1ac8);
+        assert_eq!(MAC_WAKE_PHY_STATE.get(), 0x0400_1adc);
+        assert_eq!(MAC_WAKE_TRANSITION_PENDING.get(), 0x0400_1add);
+        assert_eq!(MAC_WAKE_RESTORE_PENDING.get(), 0x0400_1ade);
+        assert_eq!(MAC_WAKE_MODE.get(), 0x0400_1ae4);
+        assert_eq!(MAC_WAKE_CONTROL.get(), 0x0400_1ae8);
+        assert_eq!(MAC_RETRY_RATE_MAP.get(), 0x0400_1aec);
+        assert_eq!(MAC_RETRY_RATE_MAP.get() + 22, 0x0400_1b02);
+        assert_eq!(MAC_EDCA_SLOT_TIMING.get(), 0x0400_1b04);
+        assert_eq!(MAC_EDCA_SLOT_TIMING.get() + 4, 0x0400_1b08);
     }
 
     #[test]
