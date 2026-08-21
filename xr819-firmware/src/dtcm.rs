@@ -129,12 +129,23 @@ struct InitializedVendorImage {
     pre_ampdu_counters: OpaqueBytes<0x64>,
     ampdu_counters: AmpduTelemetryCounters,
     pre_control_words: OpaqueBytes<0x158>,
-    control_words: OpaqueBytes<0x20>,
+    control_words: InitializedControlWords,
     pre_low_mac_root: OpaqueBytes<0x240>,
     initialized_low_mac_state: OpaqueBytes<0x94c>,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
+}
+#[repr(C, align(4))]
+struct InitializedControlWords {
+    beacon_state: SharedU32,
+    rx_indication_state: SharedU32,
+    tsf_resync_state: SharedU32,
+    random_lfsr: SharedU32,
+    tsf_accumulator_low: SharedU32,
+    opaque_14: SharedU32,
+    opaque_18: SharedU32,
+    timer_counter: SharedU32,
 }
 #[repr(C, align(4))]
 struct AmpduTelemetryCounters {
@@ -1640,6 +1651,14 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const INITIALIZED_CONTROL_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, control_words));
+const fn initialized_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(INITIALIZED_CONTROL_WORDS.offset() + offset) }
+pub(crate) const fn initialized_beacon_state() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, beacon_state)) }
+pub(crate) const fn initialized_rx_indication_state() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, rx_indication_state)) }
+pub(crate) const fn initialized_tsf_resync_state() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, tsf_resync_state)) }
+pub(crate) const fn initialized_random_lfsr() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, random_lfsr)) }
+pub(crate) const fn initialized_tsf_accumulator_low() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, tsf_accumulator_low)) }
+pub(crate) const fn initialized_timer_counter() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, timer_counter)) }
 pub const SCHEDULER_EVENT_ROOT: DtcmAddress = DtcmAddress::from_offset(0x1fd4);
 pub(crate) const RUNTIME_REGISTER_BACKOFF_STATE: DtcmAddress = DtcmAddress::from_offset(0x2078);
 const fn runtime_register_backoff_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(RUNTIME_REGISTER_BACKOFF_STATE.offset() + offset) }
@@ -3041,6 +3060,13 @@ const _: () = {
     assert!(core::mem::offset_of!(AmpduTelemetryCounters, opaque_20) == 0x20);
     assert!(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count) == 0x24);
     assert!(core::mem::offset_of!(InitializedVendorImage, ampdu_counters) == 0x12a0);
+    assert_type_layout!(InitializedControlWords, 0x20, 4);
+    assert!(core::mem::offset_of!(InitializedControlWords, beacon_state) == 0x00);
+    assert!(core::mem::offset_of!(InitializedControlWords, rx_indication_state) == 0x04);
+    assert!(core::mem::offset_of!(InitializedControlWords, tsf_resync_state) == 0x08);
+    assert!(core::mem::offset_of!(InitializedControlWords, random_lfsr) == 0x0c);
+    assert!(core::mem::offset_of!(InitializedControlWords, tsf_accumulator_low) == 0x10);
+    assert!(core::mem::offset_of!(InitializedControlWords, timer_counter) == 0x1c);
     assert!(core::mem::offset_of!(InitializedVendorImage, control_words) == 0x1420);
     assert!(core::mem::offset_of!(InitializedVendorImage, pre_low_mac_root) == 0x1440);
     assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) == 0x1680);
@@ -3676,6 +3702,18 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_control_word_addresses_are_exact() {
+        assert_eq!(INITIALIZED_CONTROL_WORDS.get(), 0x0400_1420);
+        assert_eq!(initialized_beacon_state().get(), 0x0400_1420);
+        assert_eq!(initialized_rx_indication_state().get(), 0x0400_1424);
+        assert_eq!(initialized_tsf_resync_state().get(), 0x0400_1428);
+        assert_eq!(initialized_random_lfsr().get(), 0x0400_142c);
+        assert_eq!(initialized_tsf_accumulator_low().get(), 0x0400_1430);
+        assert_eq!(initialized_timer_counter().get(), 0x0400_143c);
+        assert_eq!(initialized_timer_counter().get() + 4, 0x0400_1440);
     }
 
     #[test]

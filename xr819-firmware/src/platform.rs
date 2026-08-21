@@ -97,7 +97,7 @@ const PLATFORM_CONTROL_BASE: usize = 0x0ac8_0000;
 const BOOT_STATE_BASE: usize = crate::dtcm::SCHEDULER_EVENT_ROOT.get();
 const CLOCK_PARAMETERS_BASE: usize = crate::dtcm::CLOCK_PARAMETERS.get();
 const INTERRUPT_ROUTING_BASE: usize = 0x0abb_0000;
-const HOST_DOWNLOAD_STATE: usize = 0x0400_1428;
+const HOST_DOWNLOAD_STATE: usize = crate::dtcm::initialized_tsf_resync_state().get();
 const HIF_SHARED_BASE: usize = 0x0ab0_0100;
 const IRQ_CALLBACK_TABLE: usize = 0x0400_11bc;
 const VENDOR_BSS_START: usize = crate::dtcm::VENDOR_BSS_START.get();
@@ -267,9 +267,9 @@ pub fn initialize_runtime_state() {
         // The vendor container's initialized-SRAM segment supplies the zero
         // observed by 0x164bc at 0x04001428. Our flat custom image omits that
         // segment, so reproduce its loader effect before entering startup.
-        (0x0400_1428 as *mut u32).write_volatile(0);
+        (crate::dtcm::initialized_tsf_resync_state().get() as *mut u32).write_volatile(0);
         crate::tx::initialize_retry_random_state();
-        (0x0400_1430 as *mut u32).write_volatile(0);
+        (crate::dtcm::initialized_tsf_accumulator_low().get() as *mut u32).write_volatile(0);
     }
 }
 
@@ -391,7 +391,7 @@ pub fn prepare_memory_and_interrupts() {
         .set(((INTERRUPT_CONTROLLER_BASE as u32) << 9).wrapping_add(0));
     interrupts
         .enable
-        .set(unsafe { (0x0400_1430 as *const u32).read_volatile() });
+        .set(unsafe { (crate::dtcm::initialized_tsf_accumulator_low().get() as *const u32).read_volatile() });
     interrupts.control.set(1);
 
     clock.mask_44.set(clock.mask_44.get() & 0x7fff_f777);

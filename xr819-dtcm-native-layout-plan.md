@@ -4091,3 +4091,28 @@ manifest  tools/ampdu-telemetry-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.66 Initialized beacon, TSF, random, and timer controls
+
+The initialized words at `0x04001420..0x04001440` are now an exact eight-word
+record. Proven fields include beacon state, RX-indication state, TSF resync
+state, the firmware random LFSR, the low TSF accumulator word, and the retained
+timer counter. The two words at `+0x14/+0x18` remain structurally typed but
+semantically unresolved.
+
+Production literals for `0x04001428`, `0x0400142c`, `0x04001430`, and
+`0x0400143c` were migrated in platform, scan, TX, and host-TX code to narrow
+`dtcm.rs` address APIs while preserving volatile access and exact arithmetic.
+`tools/check-initialized-control-words-layout.py` pins the complete source range,
+three linked TSF-state literals, thirteen timer-counter literals, their decoded
+xref multiset, and exact-parent codegen. The complete ELF remains byte-identical
+to the qualified A-MPDU-telemetry parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-initialized-control-final-check.log
+          324781b52c562d545b9cf104ea8eec2f76c38b654862a1a296b0d556bab1071b
+manifest  tools/initialized-control-words-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

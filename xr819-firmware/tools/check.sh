@@ -43,6 +43,7 @@ python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
 python3 tools/check-initialized-hif-control-layout.py
 python3 tools/check-ampdu-telemetry-layout.py
+python3 tools/check-initialized-control-words-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -90,6 +91,7 @@ python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
 python3 tools/check-initialized-hif-control-layout.py "$ELF"
 python3 tools/check-ampdu-telemetry-layout.py "$ELF"
+python3 tools/check-initialized-control-words-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -439,6 +441,15 @@ if [[ -n "${XR819_AMPDU_TELEMETRY_PARENT_ELF:-}" ]]; then
     "$XR819_AMPDU_TELEMETRY_PARENT_ELF" "$ELF"
 else
   echo "== A-MPDU-telemetry codegen gate skipped: set XR819_AMPDU_TELEMETRY_PARENT_ELF to the qualified initialized-HIF-control ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-control-words parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-control-words-codegen-manifest.json \
+    "$XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-control-words codegen gate skipped: set XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF to the qualified A-MPDU-telemetry ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

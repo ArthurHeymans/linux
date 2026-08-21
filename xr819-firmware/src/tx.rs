@@ -152,7 +152,7 @@ impl SharedCompletionRing {
 #[cfg(not(all(target_arch = "arm", target_feature = "thumb-mode")))]
 const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get() as usize;
 #[cfg(not(target_arch = "arm"))]
-const PIPE_RETRY_RANDOM_STATE: u32 = 0x0400_142c;
+const PIPE_RETRY_RANDOM_STATE: u32 = crate::dtcm::initialized_random_lfsr().get() as u32;
 const PIPE_RECORDS: u32 = 0x0400_1680;
 const CURRENT_PIPE: u32 = 0x0400_1f78;
 const CURRENT_PIPE_RECORD: u32 = CURRENT_PIPE + 0x0c;
@@ -2920,7 +2920,7 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
         }
         let duration = if duration as i32 >= 0 { duration } else { 0 };
         let deadline = read_u32(0x0ac0_0004)
-            .wrapping_add(read_u32(0x0400_143c))
+            .wrapping_add(read_u32(crate::dtcm::initialized_timer_counter().get()))
             .wrapping_add(duration);
         if publication_bisect_reached(5) {
             return 5;

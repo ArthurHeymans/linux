@@ -50,7 +50,7 @@ fn vendor_timer() -> u32 {
     unsafe {
         (0x0ac0_0004 as *const u32)
             .read_volatile()
-            .wrapping_add((0x0400_143c as *const u32).read_volatile())
+            .wrapping_add((crate::dtcm::initialized_timer_counter().get() as *const u32).read_volatile())
     }
 }
 
