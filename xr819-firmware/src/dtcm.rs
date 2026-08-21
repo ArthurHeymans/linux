@@ -136,7 +136,9 @@ struct InitializedVendorImage {
     pre_mac_beacon_state: OpaqueBytes<0x1b0>,
     mac_beacon_state: MacBeaconState,
     mac_wake_runtime_state: MacWakeRuntimeState,
-    initialized_low_mac_tail: OpaqueBytes<0x4c4>,
+    pre_mac_phy_command_state: OpaqueBytes<0x208>,
+    mac_phy_command_state: MacPhyCommandState,
+    initialized_low_mac_tail: OpaqueBytes<0x270>,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
@@ -193,6 +195,8 @@ struct MacPipeRecord { current_slot: SharedU8, opaque_01: OpaqueBytes<0x02>, sta
 struct MacBeaconState { opaque_00: OpaqueBytes<0x08>, response_commands: [SharedU32; 2], opaque_10: OpaqueBytes<0x18>, state: SharedU32, secondary_command: SharedU32, control: SharedU32, selector: SharedU32, mode: SharedU8, opaque_39: OpaqueBytes<0x03>, completion_word: SharedU32 }
 #[repr(C, align(4))]
 struct MacWakeRuntimeState { opaque_00: OpaqueBytes<0x08>, timer: TimerEntry, phy_state: SharedU8, transition_pending: SharedU8, restore_pending: SharedU8, opaque_1f: SharedU8, opaque_20: SharedU32, mode: SharedU32, control: SharedU32, retry_rate_map: [SharedU8; 22], opaque_42: OpaqueBytes<0x02>, edca_slot_timing: SharedU32 }
+#[repr(C, align(4))]
+struct MacPhyCommandState { opaque_00: OpaqueBytes<0x02>, radio_stop_state: SharedU8, opaque_03: SharedU8, sideband_capture: SharedU32, timer: TimerEntry, operation_state: SharedU32, operation_command: SharedU8, opaque_21: OpaqueBytes<0x07>, operation_output_state: SharedU8, opaque_29: OpaqueBytes<0x03>, operation_timeout: SharedU32, dispatch_command: [SharedU8; 8], dispatch_output_state: SharedU8, dispatch_output_flags: SharedU8, opaque_3a: OpaqueBytes<0x02>, dispatch_output_timeout: SharedU32, completion_status: SharedU32, opaque_44: SharedU32, interface: SharedU8, opaque_49: OpaqueBytes<0x03> }
 #[repr(C, align(4))]
 struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
 #[repr(C, align(4))]
@@ -1674,6 +1678,19 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const MAC_PHY_COMMAND_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_phy_command_state));
+pub(crate) const MAC_RADIO_STOP_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, radio_stop_state));
+pub(crate) const MAC_SIDEBAND_CAPTURE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, sideband_capture));
+pub(crate) const MAC_PHY_OPERATION_TIMER: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, timer));
+pub(crate) const MAC_PHY_OPERATION_ROOT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + 0x10);
+pub(crate) const MAC_PHY_OPERATION_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_state));
+pub(crate) const MAC_PHY_OPERATION_COMMAND: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_command));
+pub(crate) const MAC_PHY_OPERATION_OUTPUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_output_state));
+pub(crate) const MAC_PHY_OPERATION_TIMEOUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_timeout));
+pub(crate) const MAC_PHY_DISPATCH_COMMAND: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_command));
+pub(crate) const MAC_PHY_DISPATCH_OUTPUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_output_state));
+pub(crate) const MAC_PHY_COMPLETION_STATUS: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, completion_status));
+pub(crate) const MAC_PHY_INTERFACE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, interface));
 pub(crate) const MAC_WAKE_RUNTIME_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_wake_runtime_state));
 pub(crate) const MAC_WAKE_TIMER: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, timer));
 pub(crate) const MAC_WAKE_PHY_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, phy_state));
@@ -3186,7 +3203,22 @@ const _: () = {
     assert!(core::mem::offset_of!(MacWakeRuntimeState, control) == 0x28);
     assert!(core::mem::offset_of!(MacWakeRuntimeState, retry_rate_map) == 0x2c);
     assert!(core::mem::offset_of!(MacWakeRuntimeState, edca_slot_timing) == 0x44);
-    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x1b08);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_phy_command_state) == 0x1b08);
+    assert!(core::mem::offset_of!(InitializedVendorImage, mac_phy_command_state) == 0x1d10);
+    assert!(core::mem::size_of::<MacPhyCommandState>() == 0x4c);
+    assert!(core::mem::offset_of!(MacPhyCommandState, radio_stop_state) == 0x02);
+    assert!(core::mem::offset_of!(MacPhyCommandState, sideband_capture) == 0x04);
+    assert!(core::mem::offset_of!(MacPhyCommandState, timer) == 0x08);
+    assert!(core::mem::offset_of!(MacPhyCommandState, operation_state) == 0x1c);
+    assert!(core::mem::offset_of!(MacPhyCommandState, operation_command) == 0x20);
+    assert!(core::mem::offset_of!(MacPhyCommandState, operation_output_state) == 0x28);
+    assert!(core::mem::offset_of!(MacPhyCommandState, operation_timeout) == 0x2c);
+    assert!(core::mem::offset_of!(MacPhyCommandState, dispatch_command) == 0x30);
+    assert!(core::mem::offset_of!(MacPhyCommandState, dispatch_output_state) == 0x38);
+    assert!(core::mem::offset_of!(MacPhyCommandState, dispatch_output_timeout) == 0x3c);
+    assert!(core::mem::offset_of!(MacPhyCommandState, completion_status) == 0x40);
+    assert!(core::mem::offset_of!(MacPhyCommandState, interface) == 0x48);
+    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x1d5c);
     assert!(
         core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) + 0x7ec == 0x1e6c
     );
@@ -3819,6 +3851,24 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_mac_phy_command_addresses_are_exact() {
+        assert_eq!(MAC_PHY_COMMAND_STATE.get(), 0x0400_1d10);
+        assert_eq!(MAC_RADIO_STOP_STATE.get(), 0x0400_1d12);
+        assert_eq!(MAC_SIDEBAND_CAPTURE.get(), 0x0400_1d14);
+        assert_eq!(MAC_PHY_OPERATION_TIMER.get(), 0x0400_1d18);
+        assert_eq!(MAC_PHY_OPERATION_ROOT.get(), 0x0400_1d20);
+        assert_eq!(MAC_PHY_OPERATION_STATE.get(), 0x0400_1d2c);
+        assert_eq!(MAC_PHY_OPERATION_COMMAND.get(), 0x0400_1d30);
+        assert_eq!(MAC_PHY_OPERATION_OUTPUT.get(), 0x0400_1d38);
+        assert_eq!(MAC_PHY_OPERATION_TIMEOUT.get(), 0x0400_1d3c);
+        assert_eq!(MAC_PHY_DISPATCH_COMMAND.get(), 0x0400_1d40);
+        assert_eq!(MAC_PHY_DISPATCH_OUTPUT.get(), 0x0400_1d48);
+        assert_eq!(MAC_PHY_COMPLETION_STATUS.get(), 0x0400_1d50);
+        assert_eq!(MAC_PHY_INTERFACE.get(), 0x0400_1d58);
+        assert_eq!(MAC_PHY_COMMAND_STATE.get() + 0x4c, 0x0400_1d5c);
     }
 
     #[test]

@@ -4366,3 +4366,30 @@ manifest  tools/mac-wake-runtime-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.77 MAC PHY command state
+
+The `0x4c` bytes at `0x04001d10..0x04001d5c` are now an exact
+`MacPhyCommandState`. It covers the radio-stop byte, FIQ sideband capture,
+retained operation timer, operation state/command/output/timeout, dispatch
+command and output blocks, completion status, and interface byte. Unresolved
+interior words and bytes remain explicit opaque quarantine.
+
+MAC startup/radio-stop, PHY channel completion, command-1/2/3/7 dispatch,
+operation timer management, pipe event handling, and sideband capture now derive
+their addresses from the physical layout. The overlapping `0x04001d20` logical
+operation root remains explicit while the backing record is modeled once.
+Volatile widths, callback initialization, timer ordering, and command-state
+transitions remain unchanged. `tools/check-mac-phy-command-state-layout.py` pins
+five linked interior addresses and their complete decoded xrefs. The complete
+ELF and packed image remain byte-identical to the qualified MAC-wake-runtime
+parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-phy-command-final-check.log
+          e83cbbeacefb6f55b698888a6ea56aca4e354c6e18acbcf413b836087b2b4b66
+manifest  tools/mac-phy-command-state-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

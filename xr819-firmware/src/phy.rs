@@ -1865,11 +1865,11 @@ unsafe fn publish_completed_receive_state() {
             state = 3;
             write_u8(crate::dtcm::phy_retained_state().get(), state);
         }
-        write_u8(0x0400_1d30, 1);
-        write_u32(0x0400_1d2c, u32::from(state));
-        write_u8(0x0400_1d38, state);
-        write_u32(0x0400_1d3c, 0x0098_9680);
-        write_u8(0x0400_1d41, 0);
+        write_u8(crate::dtcm::MAC_PHY_OPERATION_COMMAND.get(), 1);
+        write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), u32::from(state));
+        write_u8(crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get(), state);
+        write_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get(), 0x0098_9680);
+        write_u8(crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get() + 1, 0);
 
         let runtime_flags = crate::dtcm::scheduler_runtime_flags().get();
         let keep_awake = (runtime_flags as *const u32).read_volatile();

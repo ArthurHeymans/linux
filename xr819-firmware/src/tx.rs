@@ -2103,7 +2103,7 @@ pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, 
             write_u32(0xfff0_1aa0, read_u32(0xfff0_1aa0).wrapping_add(1));
         }
         if plan.service_status_0e_side_effects {
-            write_u32(0x0400_1d50, read_u32(PIPE_RECORDS as usize + 0x14));
+            write_u32(crate::dtcm::MAC_PHY_COMPLETION_STATUS.get(), read_u32(PIPE_RECORDS as usize + 0x14));
             let _ = backend.find_rx_frame_by_subtype(0x80);
             if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
                 let control = read_u32(crate::dtcm::MAC_BEACON_CONTROL.get()) & !1;
@@ -4401,8 +4401,8 @@ pub trait PipeSuccessEffects: PipeSlotCompletionEffects {
 pub unsafe fn dispatch_phy_command_3() {
     unsafe {
         debug_assert_eq!(phy_dispatch_switch_target(3), 0x0001_6fa0);
-        let command = 0x0400_1d40_usize;
-        let output = 0x0400_1d48_usize;
+        let command = crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get();
+        let output = crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get();
         let global_state = crate::dtcm::phy_retained_state().get();
         write_u8(command, 3);
         if read_u8(global_state) == 4 {
@@ -4426,8 +4426,8 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
         trace_tx_stage(TX_TRACE_PHY2);
         trace_tx_value(0x28, u32::from(secondary));
         debug_assert_eq!(phy_dispatch_switch_target(2), 0x0001_6f92);
-        let command = 0x0400_1d40_usize;
-        let output = 0x0400_1d48_usize;
+        let command = crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get();
+        let output = crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get();
         let global_state = crate::dtcm::phy_retained_state().get();
         write_u8(command, 2);
         write_u8(command + 1, secondary);
@@ -4460,7 +4460,7 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
 pub unsafe fn start_phy_operation_1() -> u8 {
     unsafe {
         debug_assert_eq!(phy_dispatch_switch_target(1), 0x0001_6f8c);
-        let state = 0x0400_1d20_usize;
+        let state = crate::dtcm::MAC_PHY_OPERATION_ROOT.get();
         let output = state + 0x18;
         let global_state = crate::dtcm::phy_retained_state().get();
         write_u8(state + 0x10, 1);
@@ -4704,9 +4704,9 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
             );
         }
         write_u8(0x0400_1f8c + usize::from(pipe), 0);
-        if read_u32(0x0400_1d2c) == 4 {
+        if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 4 {
             dispatch_phy_command_3();
-            write_u32(0x0400_1d2c, 2);
+            write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), 2);
             raise_scheduler_bits(1 << 18);
         }
     }
@@ -4743,11 +4743,11 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         write_u8(slot + 3, 2);
         let frame_node = FrameNodeAddress::new(read_u32(slot + 0x0c));
         let context = frame_node.context();
-        if read_u32(0x0400_1d2c) == 3 {
+        if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 3 {
             let secondary = read_u8(crate::dtcm::RATE_ENCODING_TABLE.get() + usize::from(read_u8(context.tx_rate_address())));
             dispatch_phy_command_2(secondary);
-            if read_u8(0x0400_1d48) == 4 {
-                write_u32(0x0400_1d2c, 4);
+            if read_u8(crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get()) == 4 {
+                write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), 4);
             } else {
                 raise_scheduler_bits(1 << 18);
             }
@@ -4832,7 +4832,7 @@ pub trait PowerSaveCompletionEffects {
 }
 
 fn phy_operation_7_timer() -> (u32, u32) {
-    (0x0400_1d18, 0x0098_9680)
+    (crate::dtcm::MAC_PHY_OPERATION_TIMER.get() as u32, 0x0098_9680)
 }
 
 fn phy_dispatch_switch_target(command: u8) -> u32 {
@@ -4851,7 +4851,7 @@ fn phy_dispatch_switch_target(command: u8) -> u32 {
 pub unsafe fn start_phy_operation_7<B: PowerSaveCompletionEffects>(backend: &mut B) {
     unsafe {
         debug_assert_eq!(phy_dispatch_switch_target(7), 0x0001_6fb6);
-        let state = 0x0400_1d20_usize;
+        let state = crate::dtcm::MAC_PHY_OPERATION_ROOT.get();
         write_u8(state + 0x10, 7);
         write_u8(state + 0x21, 0);
         write_u8(state + 0x18, 1);
@@ -5569,7 +5569,7 @@ pub unsafe fn service_mac_irq_count_status(event_type: u8) {
             write_u32(crate::dtcm::LOW_MAC_BAND_BITS.get(), 1);
         }
         write_u8(PIPE_RECORDS as usize + 6, 1);
-        let interface = usize::from(read_u8(0x0400_1d58));
+        let interface = usize::from(read_u8(crate::dtcm::MAC_PHY_INTERFACE.get()));
         write_u8(
             PIPE_RECORDS as usize + 0x0c,
             read_u8(
@@ -5616,7 +5616,7 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
 pub unsafe fn service_mac_sideband() {
     unsafe {
         let captured = (0x0ab8_0c50 as *const u32).read_volatile();
-        (0x0400_1d14 as *mut u32).write_volatile(captured);
+        (crate::dtcm::MAC_SIDEBAND_CAPTURE.get() as *mut u32).write_volatile(captured);
         let counter = 0xfff0_1a9c as *mut u32;
         counter.write_volatile(counter.read_volatile().wrapping_add(1));
         raise_scheduler_bits(1 << 19);
@@ -7371,7 +7371,7 @@ pub fn probe_runtime_quiescent() -> bool {
 #[cfg(target_arch = "arm")]
 pub unsafe fn stop_phy_operation_7() {
     unsafe {
-        let state = 0x0400_1d20_usize;
+        let state = crate::dtcm::MAC_PHY_OPERATION_ROOT.get();
         write_u8(state + 0x10, 7);
         write_u8(state + 0x21, 0);
         write_u8(state + 0x18, 1);
@@ -9006,7 +9006,7 @@ mod tests {
         assert_eq!(lmc_message_address(15), 0x0400_8e4c);
         assert_eq!(lmc_vif_address(0), 0x0400_3e98);
         assert_eq!(lmc_vif_address(2), 0x0400_45f8);
-        assert_eq!(phy_operation_7_timer(), (0x0400_1d18, 0x0098_9680));
+        assert_eq!(phy_operation_7_timer(), (crate::dtcm::MAC_PHY_OPERATION_TIMER.get() as u32, 0x0098_9680));
         assert_eq!(phy_dispatch_switch_target(2), 0x0001_6f92);
         assert_eq!(phy_dispatch_switch_target(3), 0x0001_6fa0);
         assert_eq!(phy_dispatch_switch_target(7), 0x0001_6fb6);
