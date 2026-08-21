@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for overlapping power-save timer/control views.
+"""Drift-evidence gates for the internal TX context pool.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-POWER_SAVE_RANGE = (0x040094D4, 0x04009710)
+INTERNAL_CONTEXT_RANGE = (0x04009080, 0x040094D4)
 SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -43,27 +43,39 @@ OWNER_FILES = {
     "tools/check-scheduler-event-layout.py",
     "tools/check-scheduler-support-layout.py",
     "tools/check-power-save-layout.py",
+    "tools/check-hif-mic-layout.py",
+    "tools/check-phy-reference-layout.py",
+    "tools/check-phy-profile-layout.py",
+    "tools/check-phy-measurement-layout.py",
+    "tools/check-phy-channel-cache-layout.py",
+    "tools/check-phy-table-control-layout.py",
+    "tools/check-runtime-register-backoff-layout.py",
+    "tools/check-debug-console-layout.py",
+    "tools/check-context-completion-layout.py",
     "tools/check-internal-context-layout.py",
+    "tools/check-dtcm-layout.py",
+    "tools/check-power-save-layout.py",
+    "link-main-low.x",
 }
-ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {
-    "link-main-low.x": {0x040094D4},
-    "tools/check-dtcm-layout.py": {0x040094D4},
-}
+ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "POWER_SAVE_BASE",
-    "POWER_SAVE_STRIDE",
-    "POWER_SAVE_TIMER_BASE",
+    "INTERNAL_CONTEXT_BASE",
+    "INTERNAL_CONTEXT_STRIDE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x040094FE: 2, 0x04009504: 2, 0x04009608: 1}
+    {0x04009080: 8}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x040094FE): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009504): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009608): 1,
+        ('_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel', 0x04009080): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context', 0x04009080): 5,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx24initialize_internal_pool', 0x04009080): 3,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26service_host_management_tx', 0x04009080): 4,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27release_wsm_context_address', 0x04009080): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx33release_unpublished_probe_context', 0x04009080): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009080): 1,
     }
 )
 
@@ -188,7 +200,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return POWER_SAVE_RANGE[0] <= value < POWER_SAVE_RANGE[1]
+    return INTERNAL_CONTEXT_RANGE[0] <= value < INTERNAL_CONTEXT_RANGE[1]
 
 
 def check_source() -> None:
@@ -210,14 +222,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: power-save literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: internal-context literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized power-save form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized internal-context form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"POWER SAVE SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"INTERNAL CONTEXT SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -288,9 +300,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("POWER SAVE LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("INTERNAL CONTEXT LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "POWER SAVE LINKED DRIFT-EVIDENCE GATE PASSED "
+        "INTERNAL CONTEXT LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -309,4 +321,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"power-save drift gate failed: {error}")
+        raise SystemExit(f"internal-context drift gate failed: {error}")

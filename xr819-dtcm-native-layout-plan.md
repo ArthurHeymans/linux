@@ -258,7 +258,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04008f6c..0x04008f80` | `0x14` | typed completion/context accounting anchor | High structural confidence; byte/halfword shared quarantine |
 | `0x04008f80..0x0400906c` | `0xec` | unknown | Unknown, not allocatable |
 | `0x0400906c..0x04009080` | `0x14` | internal-context global/header prefix | Medium; free head is reached at base `+0x14` |
-| `0x04009080..0x040094d4` | `0x454` | typed internal TX context pool: head + three `0x170` records | High exact linker-owned fixed quarantine |
+| `0x04009080..0x040094d4` | `0x454` | typed internal TX context pool with initializer fields in three `0x170` records | High exact linker-owned fixed quarantine |
 | `0x040094d4..0x040096dc` | `0x208` | opaque power-save family; observed address stride `0x104` | High base/family span and visible stride; record extent/count/overlap semantics remain uncertain |
 | `0x040096dc..0x04009720` | `0x44` | unknown/PS-HIF boundary | Unknown, not allocatable |
 | `0x04009720..0x04009754` | `0x34` | HIF buffer/free-list and deferred-transfer roots | Medium |
@@ -3571,6 +3571,43 @@ packed    /tmp/xr819-template-backing-layout.bin
 checks    /tmp/xr819-template-backing-final-check.log
           2f67cf4e8740e28ec9a02d3851a406cc602476241115652233f31873d622d7a3
 manifest  tools/template-backing-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.45 Internal TX context initializer fields
+
+Each of the three fixed `0x170`-byte internal TX contexts now names the fields
+proven by `tx_ctx_pool_init`:
+
+```text
+context +0x04 u32 next-free link
+        +0x1c u32 802.11 header pointer
+        +0x70 u16 result/status value
+        +0xc4 u32 cipher-buffer pointer
+```
+
+All intervening and trailing bytes remain opaque within the exact record size.
+Translated pool initialization derives the four offsets with `offset_of!`
+constants while preserving the original four source lines, unchecked pointer
+arithmetic, volatile widths, write order, and free-list construction. The pool
+still consists of one free head followed by exactly three records.
+
+`tools/check-internal-context-layout.py` covers
+`0x04009080..0x040094d4`, retains the reviewed linker and DTCM-check ownership
+fixtures, and pins eight linked base literals plus sixteen decoded xrefs. The
+complete ELF remains byte-identical to the qualified template-backing parent,
+so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-internal-context-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-internal-context-final-check.log
+          459ad69e761d55064bcb3cc64e1b499623b6cb9af87670fbf11c3fe7fd0c66a2
+manifest  tools/internal-context-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

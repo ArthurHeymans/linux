@@ -7477,10 +7477,10 @@ pub unsafe fn initialize_internal_pool() {
         for index in 0..TX_CONTEXT_COUNT {
             let context = internal_context_address(index);
             let buffer = packet_ram::internal_tx_buffer(index);
-            ((context + 0x1c) as *mut u32).write_volatile((buffer + 0x40) as u32);
-            ((context + 0xc4) as *mut u32).write_volatile((buffer + 0x20) as u32);
-            ((context + 0x70) as *mut u16).write_volatile(0x00ff);
-            ((context + 0x04) as *mut u32).write_volatile(previous);
+            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_HEADER_80211_OFFSET) as *mut u32).write_volatile((buffer + 0x40) as u32);
+            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET) as *mut u32).write_volatile((buffer + 0x20) as u32);
+            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_RESULT_OFFSET) as *mut u16).write_volatile(0x00ff);
+            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_NEXT_FREE_OFFSET) as *mut u32).write_volatile(previous);
             previous = context as u32;
         }
         internal_context_free_head().write_volatile(previous);

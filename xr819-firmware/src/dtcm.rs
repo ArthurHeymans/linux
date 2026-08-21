@@ -21,6 +21,10 @@ pub const DTCM_STATE_END: usize = DTCM_STATE_BASE + DTCM_STATE_SIZE;
 
 pub const INTERNAL_TX_CONTEXT_SIZE: usize = 0x170;
 pub const INTERNAL_TX_CONTEXT_COUNT: usize = 3;
+pub(crate) const INTERNAL_TX_CONTEXT_NEXT_FREE_OFFSET: usize = core::mem::offset_of!(InternalTxContext, next_free);
+pub(crate) const INTERNAL_TX_CONTEXT_HEADER_80211_OFFSET: usize = core::mem::offset_of!(InternalTxContext, header_80211);
+pub(crate) const INTERNAL_TX_CONTEXT_RESULT_OFFSET: usize = core::mem::offset_of!(InternalTxContext, result);
+pub(crate) const INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET: usize = core::mem::offset_of!(InternalTxContext, cipher_buffer);
 pub const HOST_TX_CONTEXT_SIZE: usize = 0x170;
 pub const HOST_TX_CONTEXT_COUNT: usize = 30;
 pub const VIF_RECORD_SIZE: usize = 0x3b0;
@@ -679,7 +683,15 @@ opaque_family!(
 /// teardown and diagnostics can mutate the same bytes.
 #[repr(C, align(4))]
 pub(crate) struct InternalTxContext {
-    storage: OpaqueBytes<INTERNAL_TX_CONTEXT_SIZE>,
+    opaque_00: SharedU32,
+    next_free: SharedU32,
+    opaque_08: OpaqueBytes<0x14>,
+    header_80211: SharedU32,
+    opaque_20: OpaqueBytes<0x50>,
+    result: SharedU16,
+    opaque_72: OpaqueBytes<0x52>,
+    cipher_buffer: SharedU32,
+    opaque_c8: OpaqueBytes<0xa8>,
 }
 
 /// Existing typed internal TX pool, now embedded in the complete DTCM layout.
@@ -2477,6 +2489,10 @@ const _: () = {
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
     assert_type_layout!(InternalTxContext, INTERNAL_TX_CONTEXT_SIZE, 4);
+    assert!(INTERNAL_TX_CONTEXT_NEXT_FREE_OFFSET == 0x04);
+    assert!(INTERNAL_TX_CONTEXT_HEADER_80211_OFFSET == 0x1c);
+    assert!(INTERNAL_TX_CONTEXT_RESULT_OFFSET == 0x70);
+    assert!(INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET == 0xc4);
     assert_type_layout!(InternalContextPoolState, 0x454, 4);
     assert_type_layout!(PowerSaveObservedLayout, 0x138, 4);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, global_sleep_state) == 0x02a);

@@ -56,6 +56,7 @@ python3 tools/check-ba-lmc-pending-layout.py
 python3 tools/check-ba-session-layout.py
 python3 tools/check-ba-link-event-layout.py
 python3 tools/check-context-completion-layout.py
+python3 tools/check-internal-context-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
 echo "== arm build and stack check: feature-free firmware =="
@@ -97,6 +98,7 @@ python3 tools/check-ba-lmc-pending-layout.py "$ELF"
 python3 tools/check-ba-session-layout.py "$ELF"
 python3 tools/check-ba-link-event-layout.py "$ELF"
 python3 tools/check-context-completion-layout.py "$ELF"
+python3 tools/check-internal-context-layout.py "$ELF"
 
 if [[ -n "${XR819_PARENT_ELF:-}" ]]; then
   echo "== complete reviewed exact-parent text-symbol delta gate =="
@@ -373,6 +375,15 @@ if [[ -n "${XR819_TEMPLATE_BACKING_PARENT_ELF:-}" ]]; then
     "$XR819_TEMPLATE_BACKING_PARENT_ELF" "$ELF"
 else
   echo "== template-backing codegen gate skipped: set XR819_TEMPLATE_BACKING_PARENT_ELF to the qualified beacon-filter-storage ELF =="
+fi
+
+if [[ -n "${XR819_INTERNAL_CONTEXT_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed internal-context parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/internal-context-codegen-manifest.json \
+    "$XR819_INTERNAL_CONTEXT_PARENT_ELF" "$ELF"
+else
+  echo "== internal-context codegen gate skipped: set XR819_INTERNAL_CONTEXT_PARENT_ELF to the qualified template-backing ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
