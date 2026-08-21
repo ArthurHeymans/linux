@@ -3801,3 +3801,26 @@ manifest  tools/pre-vif-header-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.53 Physical power-save view prefixes
+
+The physical `0x208`-byte `PowerSaveFamily` is now represented as two exact
+`0x104`-byte prefixes at the observed per-interface view starts. Each prefix
+names the proven sleep state, global timer duration, mode/flags, pending and
+queue-mask fields, seven embedded timers, and the state byte at `+0xfc`.
+Opaque gaps remain explicit.
+
+These prefixes do not truncate the logical power-save views. Each logical view
+continues through `+0x138`; view 0 therefore overlaps physical prefix 1, and
+view 1 continues into the typed PS/HIF boundary from A.51. The physical type
+records the backing layout without asserting exclusive ownership or independent
+record lifetimes. Exact tests tie the second physical prefix to logical view 1.
+The complete ELF remains byte-identical to the qualified pre-VIF parent, so no
+hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-prefix-final-check.log
+          c25015f4783b10a1da9c1a04fa2265af142ac9a1204e73fbf9213355afd72fb9
+```
+

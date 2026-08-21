@@ -754,13 +754,29 @@ pub(crate) struct InternalContextPoolState {
 #[repr(C, align(4))]
 struct PowerSaveObservedLayout { opaque_000: OpaqueBytes<0x2a>, global_sleep_state: SharedU8, opaque_02b: OpaqueBytes<0x05>, global_timer_duration: SharedU32, opaque_034: OpaqueBytes<0x0c>, mode: SharedU8, opaque_041: OpaqueBytes<0x03>, flags: SharedU16, opaque_046: OpaqueBytes<0x0e>, pending: SharedU32, opaque_058: OpaqueBytes<0x02>, queue_mask: SharedU16, opaque_05c: OpaqueBytes<0x14>, timers: [TimerEntry; 7], state_fc: SharedU8, opaque_0fd: OpaqueBytes<0x1b>, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, opaque_124: OpaqueBytes<0x04>, interval_128: SharedU32, opaque_12c: OpaqueBytes<0x08>, counter_134: SharedU16, threshold_136: SharedU16 }
 
-opaque_family!(
-    /// One occupied `0x208` power-save family. Per-interface calculations use
-    /// an observed `0x104` stride, but larger relative accesses may be interior
-    /// or overlapping views, so no record partition or ownership shape is asserted.
-    PowerSaveFamily,
-    0x208
-);
+/// Physical `0x104` prefix at each observed power-save view start. The logical
+/// view continues past this prefix and overlaps the next physical prefix.
+#[repr(C, align(4))]
+struct PowerSavePhysicalPrefix {
+    opaque_000: OpaqueBytes<0x2a>,
+    global_sleep_state: SharedU8,
+    opaque_02b: OpaqueBytes<0x05>,
+    global_timer_duration: SharedU32,
+    opaque_034: OpaqueBytes<0x0c>,
+    mode: SharedU8,
+    opaque_041: OpaqueBytes<0x03>,
+    flags: SharedU16,
+    opaque_046: OpaqueBytes<0x0e>,
+    pending: SharedU32,
+    opaque_058: OpaqueBytes<0x02>,
+    queue_mask: SharedU16,
+    opaque_05c: OpaqueBytes<0x14>,
+    timers: [TimerEntry; 7],
+    state_fc: SharedU8,
+    opaque_0fd: OpaqueBytes<0x07>,
+}
+#[repr(C, align(4))]
+struct PowerSaveFamily { physical_prefixes: [PowerSavePhysicalPrefix; 2] }
 
 /// Physical PS/HIF boundary. Its first `0x34` bytes are the extension tail of
 /// logical power-save view 1; only the final `0x10` bytes remain opaque.
@@ -2685,6 +2701,15 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, interval_128) == 0x128);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, counter_134) == 0x134);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, threshold_136) == 0x136);
+    assert_type_layout!(PowerSavePhysicalPrefix, 0x104, 4);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, global_sleep_state) == 0x02a);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, global_timer_duration) == 0x030);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, mode) == 0x040);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, flags) == 0x044);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, pending) == 0x054);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, queue_mask) == 0x05a);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, timers) == 0x070);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, state_fc) == 0x0fc);
     assert_type_layout!(PowerSaveFamily, 0x208, 4);
     assert_type_layout!(PowerSaveHifBoundary, 0x44, 4);
     assert!(core::mem::offset_of!(PowerSaveHifBoundary, duration_14) == 0x14);
@@ -3350,6 +3375,8 @@ mod tests {
 
     #[test]
     fn power_save_timer_views_preserve_overlapping_extents() {
+        assert_eq!(core::mem::offset_of!(PowerSaveFamily, physical_prefixes), 0);
+        assert_eq!(POWER_SAVE_FAMILY.get() + core::mem::size_of::<PowerSavePhysicalPrefix>(), power_save_observed_view(1).unwrap().get());
         assert_eq!(power_save_global_sleep_state().get(), 0x0400_94fe);
         assert_eq!(power_save_global_timer_duration().get(), 0x0400_9504);
         assert_eq!(power_save_timer(0, 0).unwrap().get(), 0x0400_9544);
