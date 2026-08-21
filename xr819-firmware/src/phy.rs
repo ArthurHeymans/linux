@@ -1933,7 +1933,7 @@ pub unsafe fn advance_awake_station_tx() -> bool {
         if retained_state != 0 {
             crate::mac::reprogram_after_channel();
         }
-        write_u8(0x0400_9945, 0);
+        write_u8(crate::dtcm::phy_scale_i_byte_unchecked(1).get(), 0);
         if state == 3 && !set_packet_receive_enabled(true, 100_000) {
             return false;
         }
@@ -4278,10 +4278,10 @@ unsafe fn run_iq_calibration_core(
         scale_q: final_iteration.scale_q,
     };
     unsafe {
-        write_u32(0x0400_993c, references.coefficient_i as u32);
-        write_u32(0x0400_9940, references.coefficient_q as u32);
-        write_u32(0x0400_9944, references.scale_i as u32);
-        write_u32(0x0400_9948, references.scale_q as u32);
+        write_u32(crate::dtcm::phy_coefficient_i().get(), references.coefficient_i as u32);
+        write_u32(crate::dtcm::phy_coefficient_q().get(), references.coefficient_q as u32);
+        write_u32(crate::dtcm::phy_scale_i().get(), references.scale_i as u32);
+        write_u32(crate::dtcm::phy_scale_q().get(), references.scale_q as u32);
         write_u8(profile_base + 0x10, 1);
     }
 

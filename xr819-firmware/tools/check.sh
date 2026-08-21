@@ -30,6 +30,7 @@ python3 tools/check-vif-layout.py
 python3 tools/check-vif-timer-layout.py
 python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
+python3 tools/check-phy-reference-layout.py
 python3 tools/check-host-context-layout.py
 python3 tools/check-peer-pipe-layout.py
 python3 tools/check-command-channel-overlay.py
@@ -54,6 +55,7 @@ python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
 python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
+python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-host-context-layout.py "$ELF"
 python3 tools/check-peer-pipe-layout.py "$ELF"
 python3 tools/check-command-channel-overlay.py "$ELF"
@@ -186,6 +188,15 @@ if [[ -n "${XR819_HIF_MIC_PARENT_ELF:-}" ]]; then
     "$XR819_HIF_MIC_PARENT_ELF" "$ELF"
 else
   echo "== HIF/MIC codegen gate skipped: set XR819_HIF_MIC_PARENT_ELF to the qualified power-save ELF =="
+fi
+
+if [[ -n "${XR819_PHY_REFERENCE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed PHY-reference parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/phy-reference-codegen-manifest.json \
+    "$XR819_PHY_REFERENCE_PARENT_ELF" "$ELF"
+else
+  echo "== PHY-reference codegen gate skipped: set XR819_PHY_REFERENCE_PARENT_ELF to the qualified HIF/MIC ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

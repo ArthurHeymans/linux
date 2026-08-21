@@ -704,11 +704,11 @@ struct LegacyHifSoftwareState { mode: SharedU32, pending_count: SharedU32, coale
 #[repr(C, align(4))]
 struct MicCompletionState { queue: DeferredTransferQueue }
 
-opaque_family!(
-    /// PHY/RF/calibration/channel/gain core with mixed native/vendor history.
-    PhyCoreState,
-    0xd0
-);
+#[repr(C, align(4))]
+struct PhyCalibrationReferences { coefficient_i: SharedU32, coefficient_q: SharedU32, scale_i: SharedU32, scale_q: SharedU32 }
+#[repr(C, align(4))]
+struct PhyCoreState { references: PhyCalibrationReferences, opaque_10: OpaqueBytes<0xc0> }
+
 opaque_family!(
     /// Remaining PHY and unknown vendor-zeroed tail.
     PhyTail,
@@ -1506,6 +1506,15 @@ const fn mic_completion_field(offset: usize) -> DtcmAddress {
     DtcmAddress::from_offset(MIC_COMPLETION_STATE.offset() + offset)
 }
 pub const PHY_STATE: DtcmAddress = DtcmAddress::from_offset(0x993c);
+const fn phy_reference_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset(PHY_STATE.offset() + core::mem::offset_of!(PhyCoreState, references) + offset)
+}
+pub(crate) const fn phy_coefficient_i() -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, coefficient_i)) }
+pub(crate) const fn phy_coefficient_q() -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, coefficient_q)) }
+pub(crate) const fn phy_scale_i() -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_i)) }
+pub(crate) const fn phy_scale_i_byte(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(phy_scale_i_byte_unchecked(index)) } else { None } }
+pub(crate) const fn phy_scale_i_byte_unchecked(index: usize) -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_i) + index) }
+pub(crate) const fn phy_scale_q() -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_q)) }
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
 
@@ -2324,7 +2333,14 @@ const _: () = {
     assert!(core::mem::offset_of!(LegacyHifSoftwareState, sequence_state) == 0x1cc);
     assert!(core::mem::offset_of!(LegacyHifSoftwareState, transport_state) == 0x1d0);
     assert_type_layout!(MicCompletionState, 0x14, 4);
+    assert_type_layout!(PhyCalibrationReferences, 0x10, 4);
+    assert!(core::mem::offset_of!(PhyCalibrationReferences, coefficient_i) == 0x00);
+    assert!(core::mem::offset_of!(PhyCalibrationReferences, coefficient_q) == 0x04);
+    assert!(core::mem::offset_of!(PhyCalibrationReferences, scale_i) == 0x08);
+    assert!(core::mem::offset_of!(PhyCalibrationReferences, scale_q) == 0x0c);
     assert_type_layout!(PhyCoreState, 0xd0, 4);
+    assert!(core::mem::offset_of!(PhyCoreState, references) == 0x00);
+    assert!(core::mem::offset_of!(PhyCoreState, opaque_10) == 0x10);
     assert_type_layout!(PhyTail, 0x238, 4);
     assert_type_layout!(ResearchMargin, 0x3bc, 4);
     assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4);
@@ -2680,6 +2696,17 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn phy_calibration_reference_words_are_exact() {
+        assert_eq!(phy_coefficient_i().get(), 0x0400_993c);
+        assert_eq!(phy_coefficient_q().get(), 0x0400_9940);
+        assert_eq!(phy_scale_i().get(), 0x0400_9944);
+        assert_eq!(phy_scale_i_byte(1).unwrap().get(), 0x0400_9945);
+        assert!(phy_scale_i_byte(4).is_none());
+        assert_eq!(phy_scale_q().get(), 0x0400_9948);
+        assert_eq!(phy_scale_q().get() + 4, 0x0400_994c);
     }
 
     #[test]

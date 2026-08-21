@@ -23,6 +23,7 @@ python3 tools/check-scheduler-support-layout.py
 python3 tools/check-vif-timer-layout.py
 python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
+python3 tools/check-phy-reference-layout.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-peer-pipe-layout.py
 python3 tools/check-command-channel-overlay.py
@@ -39,6 +40,7 @@ python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
 python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
+python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-peer-pipe-layout.py "$ELF"
 python3 tools/check-command-channel-overlay.py "$ELF"

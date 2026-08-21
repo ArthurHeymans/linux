@@ -592,7 +592,7 @@ The previous Rust `register_structs!` definitions gave `HifSoftwareState` size `
 **Known fields:** many byte/halfword/word fields in `src/phy.rs`; selected examples:
 
 ```text
-0x0400993c..0x04009948    IQ reference coefficients/scales
+0x0400993c..0x0400994c    four IQ reference coefficient/scale words; byte 0x9945 is independently observed
 0x0400994c...             shared PHY state root
 0x04009974                channel frequency kHz
 0x0400998c                silicon variant / calibration family
@@ -1309,7 +1309,7 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 | `0x9720` | `0x34` | `HifBufferState` | host-message free ring plus pending/completed transfer queue |
 | `0x9754` | `0x1d4` | `LegacyHifSoftwareState` | coalesce timer, RX buffers, 64-entry TX queue, and transport roots |
 | `0x9928` | `0x14` | `MicCompletionState` | MIC pending/completed transfer queue |
-| `0x993c` | `0xd0` | `PhyCoreState` | PHY/RF/calibration/channel/gain core |
+| `0x993c` | `0xd0` | `PhyCoreState` | typed four-word calibration-reference prefix plus retained PHY/RF core |
 | `0x9a0c` | `0x238` | `PhyTail` | remaining PHY and unknown vendor-zeroed tail |
 | `0x9c44` | `0x3bc` | `ResearchMargin` | occupied quarantine beyond the vendor zero-fill endpoint |
 
@@ -2866,6 +2866,45 @@ packed    /tmp/xr819-hif-mic-layout.bin
 checks    /tmp/xr819-hif-mic-final-check.log
           6aebbf9735d677d4c6167a7d10d31bd0ab9dcd36f95b9925bdcd7e66acfb3447
 manifest  tools/hif-mic-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.27 PHY calibration reference prefix
+
+The first `0x10` bytes of `PhyCoreState` are now an exact shared layout:
+
+```text
+0x0400993c u32 coefficient I
+0x04009940 u32 coefficient Q
+0x04009944 u32 scale I
+0x04009948 u32 scale Q
+0x0400994c end
+```
+
+The translated IQ-calibration path now derives all four word addresses from
+`dtcm.rs`. Byte `0x04009945`, inside the scale-I word, is also independently
+written by retained PHY reset logic, so the typed API exposes a bounded byte
+overlay rather than pretending the word is observed only atomically.
+
+The words remain shared with retained RF calibration consumers and cannot move
+independently. No references are created over the volatile state.
+
+`tools/check-phy-reference-layout.py` covers the exact prefix, rejects
+production literals and synthesized base/stride forms, and pins two linked
+literal words plus three decoded literal-load xrefs. The complete ELF remains
+byte-identical to the qualified HIF/MIC parent, so no hardware rerun is
+required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-phy-reference-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-reference-final-check.log
+          08774d2e2a39a15976b0e6e31f0af39b5e346d80f6daf95f75a91227df25ba6c
+manifest  tools/phy-reference-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
