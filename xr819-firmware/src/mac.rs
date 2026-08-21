@@ -820,7 +820,7 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // retry/drain control word before any PAS work can become runnable.
         // DTCM is retained across firmware downloads, so relying on BSS-style
         // zero initialization leaves stale control bits that block TX forever.
-        write_u32(0x0400_1e6c, 0);
+        write_u32(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get(), 0);
 
         // 0x152 -> 0x10024: collapse producer, consumer, scan, and release.
         let producer = read_u32(crate::platform::mac_register(0x0604));

@@ -138,7 +138,9 @@ struct InitializedVendorImage {
     mac_wake_runtime_state: MacWakeRuntimeState,
     pre_mac_phy_command_state: OpaqueBytes<0x208>,
     mac_phy_command_state: MacPhyCommandState,
-    pre_mac_runtime_accounting: OpaqueBytes<0x21c>,
+    pre_mac_retry_hardware_state: OpaqueBytes<0x110>,
+    mac_retry_hardware_state: MacRetryHardwareState,
+    pre_mac_runtime_accounting: OpaqueBytes<0x108>,
     mac_runtime_accounting: MacRuntimeAccountingState,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
@@ -198,6 +200,8 @@ struct MacBeaconState { opaque_00: OpaqueBytes<0x08>, response_commands: [Shared
 struct MacWakeRuntimeState { opaque_00: OpaqueBytes<0x08>, timer: TimerEntry, phy_state: SharedU8, transition_pending: SharedU8, restore_pending: SharedU8, opaque_1f: SharedU8, opaque_20: SharedU32, mode: SharedU32, control: SharedU32, retry_rate_map: [SharedU8; 22], opaque_42: OpaqueBytes<0x02>, edca_slot_timing: SharedU32 }
 #[repr(C, align(4))]
 struct MacPhyCommandState { opaque_00: OpaqueBytes<0x02>, radio_stop_state: SharedU8, opaque_03: SharedU8, sideband_capture: SharedU32, timer: TimerEntry, operation_state: SharedU32, operation_command: SharedU8, opaque_21: OpaqueBytes<0x07>, operation_output_state: SharedU8, opaque_29: OpaqueBytes<0x03>, operation_timeout: SharedU32, dispatch_command: [SharedU8; 8], dispatch_output_state: SharedU8, dispatch_output_flags: SharedU8, opaque_3a: OpaqueBytes<0x02>, dispatch_output_timeout: SharedU32, completion_status: SharedU32, opaque_44: SharedU32, interface: SharedU8, opaque_49: OpaqueBytes<0x03> }
+#[repr(C, align(4))]
+struct MacRetryHardwareState { control: SharedU8, opaque_01: OpaqueBytes<0x03> }
 #[repr(C, align(4))]
 struct SoftwareRecordNode { next: SharedU32, packet_record: SharedU32 }
 #[repr(C, align(4))]
@@ -1685,6 +1689,7 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const MAC_RETRY_HARDWARE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_retry_hardware_state));
 pub(crate) const MAC_RUNTIME_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_runtime_accounting));
 pub(crate) const MAC_CURRENT_PIPE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_pipe));
 pub(crate) const MAC_STATUS_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, status_accounting));
@@ -3237,7 +3242,11 @@ const _: () = {
     assert!(core::mem::offset_of!(MacPhyCommandState, dispatch_output_timeout) == 0x3c);
     assert!(core::mem::offset_of!(MacPhyCommandState, completion_status) == 0x40);
     assert!(core::mem::offset_of!(MacPhyCommandState, interface) == 0x48);
-    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_runtime_accounting) == 0x1d5c);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_retry_hardware_state) == 0x1d5c);
+    assert!(core::mem::offset_of!(InitializedVendorImage, mac_retry_hardware_state) == 0x1e6c);
+    assert!(core::mem::size_of::<MacRetryHardwareState>() == 0x04);
+    assert!(core::mem::offset_of!(MacRetryHardwareState, control) == 0x00);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_runtime_accounting) == 0x1e70);
     assert!(core::mem::offset_of!(InitializedVendorImage, mac_runtime_accounting) == 0x1f78);
     assert!(core::mem::size_of::<SoftwareRecordNode>() == 0x08);
     assert!(core::mem::size_of::<SoftwareRecordFreeList>() == 0x24);
@@ -3884,6 +3893,12 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_mac_retry_hardware_state_address_is_exact() {
+        assert_eq!(MAC_RETRY_HARDWARE_STATE.get(), 0x0400_1e6c);
+        assert_eq!(MAC_RETRY_HARDWARE_STATE.get() + 4, 0x0400_1e70);
     }
 
     #[test]

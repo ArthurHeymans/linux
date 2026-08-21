@@ -4420,3 +4420,27 @@ manifest  tools/mac-runtime-accounting-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.79 MAC retry hardware state
+
+The retained word at `0x04001e6c..0x04001e70` is now an exact
+`MacRetryHardwareState`. The low byte is the scheduler/retry hardware gate; the
+remaining three bytes stay opaque because only the startup word clear proves
+their physical occupation.
+
+MAC startup, host scheduling diagnostics and admission, event draining, and the
+retry-control update now derive the address from the initialized-image layout.
+The startup 32-bit clear and runtime byte accesses remain deliberately distinct,
+preserving the retained mixed-width contract. `tools/check-mac-retry-hardware-state-layout.py`
+pins the linked root and its complete decoded xrefs. The complete ELF and packed
+image remain byte-identical to the qualified MAC-runtime-accounting parent, so
+no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-retry-hardware-final-check.log
+          6e5d37ed228726b1d51aaff4c06b7c95447079e76398914f96dff9b6b4d15249
+manifest  tools/mac-retry-hardware-state-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

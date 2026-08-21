@@ -169,7 +169,7 @@ const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
 // `txp_pipe_advance_slot` acknowledges with `-((0x1110 << pipe) + 0x10)`, which
 // is a different lane from the `0x100 << pipe` publication ownership mask.
 const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
-const PIPE_RETRY_HARDWARE_STATE: u32 = 0x0400_1e6c;
+const PIPE_RETRY_HARDWARE_STATE: u32 = crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const PIPE_RETRY_RATE_MAP: u32 = crate::dtcm::MAC_RETRY_RATE_MAP.get() as u32;
@@ -5672,10 +5672,10 @@ fn mac_drain_tail_transition(control: u8, hardware_idle: bool, pipes_idle: bool)
 /// Event servicing must own DTCM scheduler state and MAC MMIO.
 pub unsafe fn service_mac_event_drain_tail() {
     unsafe {
-        let control = (0x0400_1e6c as *mut u8).read_volatile();
+        let control = (crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as *mut u8).read_volatile();
         let next = mac_drain_tail_transition(control, mac_hardware_idle(), mac_pipe_records_idle());
         if let Some(next) = next {
-            (0x0400_1e6c as *mut u8).write_volatile(next);
+            (crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as *mut u8).write_volatile(next);
             raise_scheduler_bits(1 << 31);
         }
     }
