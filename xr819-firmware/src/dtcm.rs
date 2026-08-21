@@ -717,11 +717,14 @@ struct PhyTableControlState { opaque_00: OpaqueBytes<0x10>, table_a: SharedU32, 
 #[repr(C, align(4))]
 struct PhyCoreState { references: PhyCalibrationReferences, profile_state: PhyProfileState, measurement_state: PhyMeasurementState, channel_cache_state: PhyChannelCacheState, table_control_state: PhyTableControlState }
 
-opaque_family!(
-    /// Remaining PHY and unknown vendor-zeroed tail.
-    PhyTail,
-    0x238
-);
+#[repr(C, align(4))]
+struct PhyIqCalibrationSlot { axis_a: SharedU32, axis_b: SharedU32, opaque_08: OpaqueBytes<0x08> }
+#[repr(C, align(4))]
+struct PhyIqCalibrationPage { opaque_00: OpaqueBytes<0x14>, slots: [PhyIqCalibrationSlot; 12], opaque_d4: OpaqueBytes<0x2c> }
+#[repr(C, align(4))]
+struct PhyIqCalibrationResults { opaque_00: OpaqueBytes<0x14>, values: [SharedU32; 9] }
+#[repr(C, align(4))]
+struct PhyTail { calibration_pages: [PhyIqCalibrationPage; 2], results: PhyIqCalibrationResults }
 opaque_family!(
     /// Bytes beyond the vendor zero-fill endpoint. They remain occupied
     /// research quarantine and are never exposed as spare capacity.
@@ -1569,6 +1572,10 @@ pub(crate) const fn phy_state_scale() -> DtcmAddress { phy_table_control_field(c
 pub(crate) const fn phy_threshold() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, threshold)) }
 pub(crate) const fn phy_extended_settle() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, extended_settle)) }
 pub(crate) const fn phy_table_control() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, control_2d)) }
+pub(crate) const PHY_IQ_CALIBRATION_STATE: DtcmAddress = DtcmAddress::from_offset(0x9a0c);
+pub(crate) const fn phy_iq_calibration_slot(page: usize, slot: usize) -> Option<DtcmAddress> { if page < 2 && slot < 12 { Some(phy_iq_calibration_slot_unchecked(page, slot)) } else { None } }
+pub(crate) const fn phy_iq_calibration_slot_unchecked(page: usize, slot: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_IQ_CALIBRATION_STATE.offset() + page * core::mem::size_of::<PhyIqCalibrationPage>() + core::mem::offset_of!(PhyIqCalibrationPage, slots) + slot * core::mem::size_of::<PhyIqCalibrationSlot>()) }
+pub(crate) const fn phy_iq_calibration_result(index: usize) -> Option<DtcmAddress> { if index < 9 { Some(DtcmAddress::from_offset(PHY_IQ_CALIBRATION_STATE.offset() + core::mem::offset_of!(PhyTail, results) + core::mem::offset_of!(PhyIqCalibrationResults, values) + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
 
@@ -2437,7 +2444,15 @@ const _: () = {
     assert!(core::mem::offset_of!(PhyCoreState, measurement_state) == 0x38);
     assert!(core::mem::offset_of!(PhyCoreState, channel_cache_state) == 0x70);
     assert!(core::mem::offset_of!(PhyCoreState, table_control_state) == 0xa0);
+    assert_type_layout!(PhyIqCalibrationSlot, 0x10, 4);
+    assert_type_layout!(PhyIqCalibrationPage, 0x100, 4);
+    assert!(core::mem::offset_of!(PhyIqCalibrationPage, slots) == 0x14);
+    assert!(core::mem::offset_of!(PhyIqCalibrationPage, opaque_d4) == 0xd4);
+    assert_type_layout!(PhyIqCalibrationResults, 0x38, 4);
+    assert!(core::mem::offset_of!(PhyIqCalibrationResults, values) == 0x14);
     assert_type_layout!(PhyTail, 0x238, 4);
+    assert!(core::mem::offset_of!(PhyTail, calibration_pages) == 0x00);
+    assert!(core::mem::offset_of!(PhyTail, results) == 0x200);
     assert_type_layout!(ResearchMargin, 0x3bc, 4);
     assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4);
     assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4);
@@ -2848,6 +2863,17 @@ mod tests {
         assert_eq!(phy_extended_settle().get(), 0x0400_9a08);
         assert_eq!(phy_table_control().get(), 0x0400_9a09);
         assert_eq!(phy_table_control().get() + 3, 0x0400_9a0c);
+        assert_eq!(PHY_IQ_CALIBRATION_STATE.get(), 0x0400_9a0c);
+        assert_eq!(phy_iq_calibration_slot(0, 0).unwrap().get(), 0x0400_9a20);
+        assert_eq!(phy_iq_calibration_slot(0, 11).unwrap().get(), 0x0400_9ad0);
+        assert_eq!(phy_iq_calibration_slot(1, 0).unwrap().get(), 0x0400_9b20);
+        assert_eq!(phy_iq_calibration_slot(1, 11).unwrap().get(), 0x0400_9bd0);
+        assert!(phy_iq_calibration_slot(2, 0).is_none());
+        assert!(phy_iq_calibration_slot(0, 12).is_none());
+        assert_eq!(phy_iq_calibration_result(0).unwrap().get(), 0x0400_9c20);
+        assert_eq!(phy_iq_calibration_result(8).unwrap().get(), 0x0400_9c40);
+        assert!(phy_iq_calibration_result(9).is_none());
+        assert_eq!(phy_iq_calibration_result(8).unwrap().get() + 4, 0x0400_9c44);
     }
 
     #[test]

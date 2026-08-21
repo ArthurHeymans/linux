@@ -259,8 +259,8 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04009720..0x04009754` | `0x34` | HIF buffer/free-list and deferred-transfer roots | Medium |
 | `0x04009754..0x04009928` | `0x1d4` | historical vendor HIF software/ring state; Rust owners now live in ITCM | High historical shape; fixed bytes remain quarantine for untranslated code |
 | `0x04009928..0x0400993c` | `0x14` | MIC/HIF completion queue state | Medium; untranslated MIC path |
-| `0x0400993c..0x04009a0c` | `0xd0` | PHY/RF/calibration/channel/gain state | High family root, incomplete typed layout; mixed fixed/native history |
-| `0x04009a0c..0x04009c44` | `0x238` | PHY tail and unknown BSS | Low-medium; not allocatable |
+| `0x0400993c..0x04009a0c` | `0xd0` | typed PHY/RF/calibration/channel/gain state | High structural confidence; shared quarantine |
+| `0x04009a0c..0x04009c44` | `0x238` | typed two-page IQ-calibration workspace and result words | High structural confidence from vendor loop; semantics remain shared quarantine |
 | `0x04009c44..0x0400a000` | `0x3bc` | outside vendor fill; research margin only | Unknown, not allocatable |
 | `0x0400a000..0x0400a500` | `0x500` | exception stacks | Outside proposed layout |
 | `0x0400a500..0x0400c000` | `0x1b00` | system stack | Outside proposed layout |
@@ -3072,6 +3072,54 @@ packed    /tmp/xr819-phy-table-control-layout.bin
 checks    /tmp/xr819-phy-table-control-final-check.log
           fbdd98c82f377b443c66696764c97abe0fc986c229e7cb85e79bfe3e7cd9a276
 manifest  tools/phy-table-control-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.32 PHY IQ-calibration workspace
+
+The former opaque `PhyTail` at `0x04009a0c..0x04009c44` is now an exact
+structural workspace derived from the retained `rf_calibrate_iq_dc` loop:
+
+```text
+0x04009a0c page 0, size 0x100
+  +0x14       12 slots, stride 0x10
+    slot +0x00 u32 axis-A value
+         +0x04 u32 axis-B value
+         +0x08 8 opaque bytes
+  +0xd4       0x2c opaque page suffix
+0x04009b0c page 1, identical size and slot layout
+0x04009c0c result block, size 0x38
+  +0x14       nine u32 result/control words
+0x04009c44 end
+```
+
+The vendor loop advances its working index by two, multiplies it by eight, and
+therefore addresses twelve slots at a `0x10` stride. Its second coefficient bank
+uses the same offsets at `base + 0x100`; final writes occupy `base + 0x214`
+through `base + 0x234`. Bytes not covered by those proven accesses remain opaque
+inside each page rather than being treated as spare capacity.
+
+No production Rust code currently accesses these slots directly, so this change
+adds only bounded structural address constructors and layout assertions. The
+archived vendor reference report remains the semantic evidence; the linked Rust
+image contains only one in-range endpoint literal in `rust_main`.
+
+`tools/check-phy-iq-calibration-layout.py` covers the complete block, rejects
+production literals and synthesized base/stride forms outside `dtcm.rs`, and
+pins that linked endpoint literal and decoded xref. The complete ELF remains
+byte-identical to the qualified PHY-table-control parent, so no hardware rerun
+is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-phy-iq-calibration-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-iq-calibration-final-check.log
+          3539bf7e7f74d4877b6aae9ea38a92a627c5c24a22eded0c0716e6f6c6b75595
+manifest  tools/phy-iq-calibration-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
