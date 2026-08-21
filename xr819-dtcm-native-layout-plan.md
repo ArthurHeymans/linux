@@ -254,7 +254,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04008e78..0x04008f18` | `0xa0` | unknown | Unknown, not allocatable |
 | `0x04008f18..0x04008f48` | `0x30` | BA/link/event/timer state | Medium |
 | `0x04008f48..0x04008f6c` | `0x24` | TALA accounting, exact qualified layout | High shape; address-changing migration rejected |
-| `0x04008f6c..0x04008f80` | `0x14` | context/completion accounting root and counters | High anchors, mixed ownership; includes fixed writer at `0x04008f71` |
+| `0x04008f6c..0x04008f80` | `0x14` | typed completion/context accounting anchor | High structural confidence; byte/halfword shared quarantine |
 | `0x04008f80..0x0400906c` | `0xec` | unknown | Unknown, not allocatable |
 | `0x0400906c..0x04009080` | `0x14` | internal-context global/header prefix | Medium; free head is reached at base `+0x14` |
 | `0x04009080..0x040094d4` | `0x454` | typed internal TX context pool: head + three `0x170` records | High exact linker-owned fixed quarantine |
@@ -3360,6 +3360,48 @@ packed    /tmp/xr819-debug-console-layout.bin
 checks    /tmp/xr819-debug-console-final-check.log
           f05e41df5ba3f8492fb7d0f4992363393fc38461f0e23fbef62be1c689e89f73
 manifest  tools/debug-console-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.39 Context-completion accounting prefix
+
+The `0x14` bytes immediately following TALA are now an exact shared layout:
+
+```text
+0x04008f6c +0x00 u32 root word
+           +0x04 u8 external-context count
+           +0x05 u8 class-0 internal-context count
+           +0x06 u16 retained state
+           +0x08 u16 allocation state
+           +0x0a u16 pending/completion count
+           +0x0c u32 coalescing state
+           +0x10 u32 free/teardown state
+0x04008f80 end
+```
+
+The retained allocation, free, completion, power-save, and HIF coalescing paths
+prove the mixed byte, halfword, and word accesses. Translated TX now derives the
+class-0 count byte from the field layout rather than adding five to the family
+base. No safe aggregate reference is exposed because retained writers remain
+reachable.
+
+`tools/check-context-completion-layout.py` covers the whole prefix and rejects
+production literals or synthesized aliases outside `dtcm.rs`. The current Rust
+ELF has no standalone in-range linked literal or decoded xref because the byte
+address is synthesized from adjacent roots. The complete ELF remains
+byte-identical to the qualified debug-console parent, so no hardware rerun is
+required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-context-completion-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-context-completion-final-check.log
+          ac6797d6135d82193deb7bb48f8bc72dc34996091d579d4078cab4a1f1a58b39
+manifest  tools/context-completion-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

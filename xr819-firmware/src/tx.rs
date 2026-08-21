@@ -16,7 +16,7 @@ const FRAME_NODE_OFFSET: u32 = 0x54;
 // The class-0 allocation counter remains in the untranslated vendor
 // accounting record. Its independently decoded non-class-0 counter, probe
 // sequence, PAS accounting, and completed-frame FIFO are native Rust state.
-const CLASS0_INTERNAL_CONTEXTS: usize = crate::dtcm::CONTEXT_COMPLETION_PREFIX.get() + 5;
+const CLASS0_INTERNAL_CONTEXTS: usize = crate::dtcm::class0_internal_context_count().get();
 const COMPLETION_RING_CAPACITY: usize = 64;
 
 #[inline(always)]

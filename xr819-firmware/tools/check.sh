@@ -51,6 +51,7 @@ python3 tools/check-join-scan-layout.py
 python3 tools/check-ba-lmc-pending-layout.py
 python3 tools/check-ba-session-layout.py
 python3 tools/check-ba-link-event-layout.py
+python3 tools/check-context-completion-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
 echo "== arm build and stack check: feature-free firmware =="
@@ -87,6 +88,7 @@ python3 tools/check-join-scan-layout.py "$ELF"
 python3 tools/check-ba-lmc-pending-layout.py "$ELF"
 python3 tools/check-ba-session-layout.py "$ELF"
 python3 tools/check-ba-link-event-layout.py "$ELF"
+python3 tools/check-context-completion-layout.py "$ELF"
 
 if [[ -n "${XR819_PARENT_ELF:-}" ]]; then
   echo "== complete reviewed exact-parent text-symbol delta gate =="
@@ -318,6 +320,15 @@ if [[ -n "${XR819_DEBUG_CONSOLE_PARENT_ELF:-}" ]]; then
     "$XR819_DEBUG_CONSOLE_PARENT_ELF" "$ELF"
 else
   echo "== debug-console codegen gate skipped: set XR819_DEBUG_CONSOLE_PARENT_ELF to the qualified template-descriptor ELF =="
+fi
+
+if [[ -n "${XR819_CONTEXT_COMPLETION_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed context-completion parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/context-completion-codegen-manifest.json \
+    "$XR819_CONTEXT_COMPLETION_PARENT_ELF" "$ELF"
+else
+  echo "== context-completion codegen gate skipped: set XR819_CONTEXT_COMPLETION_PARENT_ELF to the qualified debug-console ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

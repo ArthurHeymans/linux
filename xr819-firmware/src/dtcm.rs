@@ -642,7 +642,14 @@ struct TalaAccounting {
 /// internal-context count; nearby bytes have mixed and negative-offset users.
 #[repr(C, align(4))]
 struct ContextCompletionPrefix {
-    storage: OpaqueBytes<0x14>,
+    root: SharedU32,
+    external_count: SharedU8,
+    class0_count: SharedU8,
+    opaque_06: SharedU16,
+    allocation_state: SharedU16,
+    pending_count: SharedU16,
+    coalesce_state: SharedU32,
+    free_state: SharedU32,
 }
 
 opaque_family!(
@@ -1504,6 +1511,8 @@ pub(crate) const fn internal_link_bitmap() -> DtcmAddress {
 
 pub const TALA_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(0x8f48);
 pub const CONTEXT_COMPLETION_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x8f6c);
+const fn context_completion_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(CONTEXT_COMPLETION_PREFIX.offset() + offset) }
+pub(crate) const fn class0_internal_context_count() -> DtcmAddress { context_completion_field(core::mem::offset_of!(ContextCompletionPrefix, class0_count)) }
 pub const INTERNAL_CONTEXT_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x906c);
 pub const INTERNAL_CONTEXT_POOL: DtcmAddress = DtcmAddress::from_offset(0x9080);
 pub const POWER_SAVE_FAMILY: DtcmAddress = DtcmAddress::from_offset(0x94d4);
@@ -2421,6 +2430,12 @@ const _: () = {
     assert!(core::mem::offset_of!(BaLinkEventState, changed_network_flags) == 0x2e);
     assert_type_layout!(TalaAccounting, 0x24, 4);
     assert_type_layout!(ContextCompletionPrefix, 0x14, 4);
+    assert!(core::mem::offset_of!(ContextCompletionPrefix, external_count) == 0x04);
+    assert!(core::mem::offset_of!(ContextCompletionPrefix, class0_count) == 0x05);
+    assert!(core::mem::offset_of!(ContextCompletionPrefix, allocation_state) == 0x08);
+    assert!(core::mem::offset_of!(ContextCompletionPrefix, pending_count) == 0x0a);
+    assert!(core::mem::offset_of!(ContextCompletionPrefix, coalesce_state) == 0x0c);
+    assert!(core::mem::offset_of!(ContextCompletionPrefix, free_state) == 0x10);
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
     assert_type_layout!(InternalTxContext, INTERNAL_TX_CONTEXT_SIZE, 4);
@@ -2874,6 +2889,13 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn context_completion_prefix_addresses_are_exact() {
+        assert_eq!(CONTEXT_COMPLETION_PREFIX.get(), 0x0400_8f6c);
+        assert_eq!(class0_internal_context_count().get(), 0x0400_8f71);
+        assert_eq!(CONTEXT_COMPLETION_PREFIX.get() + 0x14, 0x0400_8f80);
     }
 
     #[test]
