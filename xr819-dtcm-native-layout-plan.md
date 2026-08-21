@@ -227,7 +227,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x0400218c..0x040021b4` | `0x28` | `ClockParameters` record | High shape from `register_structs!`; shared/timer-owned |
 | `0x040021b4..0x04002234` | `0x80` | 32-entry scheduler handler table | High, `32 * 4`; contains code pointers |
 | `0x04002234..0x040034b0` | `0x127c` | PHY/template/beacon/filter tables and opaque BSS | Medium islands, unknown aggregate extent |
-| `0x040034b0..0x040035e0` | `0x130` | SDD-derived channel/gain/profile tables | Medium-high fields; layout populated by `configuration.rs` |
+| `0x040034b0..0x040035e0` | `0x130` | typed SDD-derived channel/gain/profile tables | High structural confidence; shared quarantine |
 | `0x040035e0..0x04003670` | `0x90` | wake/context state and unknown | Low-medium |
 | `0x04003670..0x04003674` | `0x4` | retained duration-source halfwords | High addresses; semantics incomplete; fixed quarantine |
 | `0x04003674..0x04003678` | `0x4` | unknown | Unknown, not allocatable |
@@ -3159,6 +3159,53 @@ packed    /tmp/xr819-runtime-register-backoff-layout.bin
 checks    /tmp/xr819-runtime-register-backoff-final-check.log
           e5fcdbdc522a67ee66dd160cdd6ccb91374e4b3575a6d30d3a2320c2576e1556
 manifest  tools/runtime-register-backoff-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.34 SDD profile and gain tables
+
+The complete `0x130`-byte SDD configuration family is now structurally typed as
+two `0x92`-byte profile banks plus a retained `0x0c`-byte tail:
+
+```text
+profile +0x00 11 u16 rate limits
+        +0x16 16 three-byte channel records
+        +0x46 u8 channel-record count
+        +0x48 i16 AGC correction
+        +0x4a i16 calibration coefficient
+        +0x4c two i16 conversion values
+        +0x50 two i16 RSSI coefficients
+        +0x54 11 i16 per-rate RSSI scales
+        +0x6a 0x28 retained bytes
+profile 0: 0x040034b0
+profile 1: 0x04003542
+family end: 0x040035e0
+```
+
+Four gain coefficients at `0x040035ac..0x040035b4` are represented as a narrow
+address view into the proven retained suffix of profile one rather than as a
+second overlapping owner. Production SDD retention and PHY gain computation
+now derive profile, channel-record, coefficient, and rate-scale addresses from
+`dtcm.rs`. The unchecked constructors preserve the original validated profile,
+rate, count, and record arithmetic with wrapping operations, avoiding checked
+arithmetic or division in the generated firmware path.
+
+`tools/check-sdd-profile-layout.py` covers the whole family, retains reviewed
+extension-probe fixtures, rejects other production literals and synthesized
+base/stride forms, and pins six linked literal words plus nine decoded
+literal-load xrefs. The complete ELF remains byte-identical to the qualified
+runtime-register/backoff parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-sdd-profile-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-sdd-profile-final-check.log
+          3ceed21dce86ef3025df4352891ca61775cc457597c8f0a9221621595680255b
+manifest  tools/sdd-profile-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

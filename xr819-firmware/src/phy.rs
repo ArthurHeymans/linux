@@ -1473,9 +1473,9 @@ unsafe fn gain_computation_input(
         if profile > 1 {
             return Err(GainProgrammingError::InvalidProfile);
         }
-        let bank = 0x0400_34b0 + usize::from(profile) * 0x92;
+        let bank = crate::dtcm::sdd_profile_unchecked(usize::from(profile)).get();
         let rate = rate.min(10);
-        let coefficient_base = 0x0400_35ac + usize::from(profile) * 4;
+        let coefficient_base = crate::dtcm::sdd_gain_coefficient_unchecked(usize::from(profile) * 2).get();
         Ok(GainComputationInput {
             rate,
             first_limit,
@@ -1484,13 +1484,13 @@ unsafe fn gain_computation_input(
             gain_coefficient_a: i32::from((coefficient_base as *const u16).read_volatile()),
             gain_coefficient_b: i32::from(((coefficient_base + 2) as *const u16).read_volatile()),
             rssi_rate_scale: i32::from(
-                ((bank + 0x54 + usize::from(rate) * 2) as *const i16).read_volatile(),
+                (crate::dtcm::sdd_rssi_rate_scale_unchecked(usize::from(profile), usize::from(rate)).get() as *const i16).read_volatile(),
             ),
-            rssi_temperature_coefficient: i32::from(((bank + 0x4a) as *const i16).read_volatile()),
-            rssi_divisor_coefficient: i32::from(((bank + 0x4c) as *const i16).read_volatile()),
-            rssi_multiplier_coefficient: i32::from(((bank + 0x4e) as *const i16).read_volatile()),
-            rssi_denominator: i32::from(((bank + 0x50) as *const i16).read_volatile()),
-            rssi_offset: i32::from(((bank + 0x52) as *const i16).read_volatile()),
+            rssi_temperature_coefficient: i32::from((crate::dtcm::sdd_calibration_coefficient_unchecked(usize::from(profile)).get() as *const i16).read_volatile()),
+            rssi_divisor_coefficient: i32::from((crate::dtcm::sdd_conversion_value_unchecked(usize::from(profile), 0).get() as *const i16).read_volatile()),
+            rssi_multiplier_coefficient: i32::from((crate::dtcm::sdd_conversion_value_unchecked(usize::from(profile), 1).get() as *const i16).read_volatile()),
+            rssi_denominator: i32::from((crate::dtcm::sdd_rssi_coefficient_unchecked(usize::from(profile), 0).get() as *const i16).read_volatile()),
+            rssi_offset: i32::from((crate::dtcm::sdd_rssi_coefficient_unchecked(usize::from(profile), 1).get() as *const i16).read_volatile()),
             measured_a: (crate::dtcm::phy_measured_a().get() as *const i32).read_volatile(),
             measured_b: (crate::dtcm::phy_measured_b().get() as *const i32).read_volatile(),
             analog_enabled: i32::from((crate::dtcm::scheduler_analog_enabled().get() as *const i16).read_volatile()),
@@ -1530,7 +1530,7 @@ pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), Gai
             return Err(GainProgrammingError::InvalidProfile);
         }
         let requested_offset = gain_div(power_tenths_dbm.wrapping_shl(4), 10)?;
-        let first_table = 0x0400_34b0 + usize::from(profile) * 0x92;
+        let first_table = crate::dtcm::sdd_profile_unchecked(usize::from(profile)).get();
         for slot in 0..16usize {
             let rate = (slot as u8).min(10);
             let rate_limit =
@@ -4441,7 +4441,7 @@ pub unsafe fn initialize_mac_software_state() {
         write_u8(crate::dtcm::phy_extended_settle().get(), 1);
 
         // Vendor 0x198f2 mode-zero state pointers.
-        write_u32(crate::dtcm::phy_table_pointer().get(), 0x0400_34b0);
+        write_u32(crate::dtcm::phy_table_pointer().get(), crate::dtcm::SDD_CONFIGURATION_TABLES.get() as u32);
         write_u32(crate::dtcm::phy_calibration_table_a().get(), 0x0400_1088);
         write_u32(crate::dtcm::phy_calibration_table_b().get(), 0x0400_1098);
         write_u32(crate::dtcm::phy_state_scale().get(), u32::MAX);
@@ -4464,7 +4464,7 @@ pub unsafe fn initialize_mac_software_state() {
 /// preparation; channel policy remains inactive while callbacks are diagnostic
 /// stubs.
 unsafe fn build_mode0_gain_tables() {
-    let correction = unsafe { (0x0400_34f8 as *const i16).read_volatile() };
+    let correction = unsafe { (crate::dtcm::sdd_agc_correction_unchecked(0).get() as *const i16).read_volatile() };
     let mut table = [0; 80];
     build_rate_table(&MODE0_CALIBRATION_ANCHORS, correction, &mut table);
     for (index, value) in table.iter().copied().enumerate() {

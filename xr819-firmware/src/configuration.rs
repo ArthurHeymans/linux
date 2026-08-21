@@ -260,31 +260,31 @@ unsafe fn populate_vendor_calibration_state() {
         }
 
         // Annotated callbacks 0x17626 and 0x17646.
-        copy_u16_profile(0xe3, 0x0400_34b0);
-        copy_u16_profile(0xe4, 0x0400_3542);
-        copy_u16_profile(0x48, 0x0400_3504);
-        copy_u16_profile(0x49, 0x0400_3596);
+        copy_u16_profile(0xe3, crate::dtcm::sdd_profile_unchecked(0).get());
+        copy_u16_profile(0xe4, crate::dtcm::sdd_profile_unchecked(1).get());
+        copy_u16_profile(0x48, crate::dtcm::sdd_rssi_rate_scale_unchecked(0, 0).get());
+        copy_u16_profile(0x49, crate::dtcm::sdd_rssi_rate_scale_unchecked(1, 0).get());
 
         // Reference handlers 0x1774a: signed AGC threshold correction for
         // profile zero/one, consumed by `phy_build_gain_tables`.
-        copy_u16_value(0xe0, 0x0400_34f8);
-        copy_u16_value(0xe1, 0x0400_358a);
+        copy_u16_value(0xe0, crate::dtcm::sdd_agc_correction_unchecked(0).get());
+        copy_u16_value(0xe1, crate::dtcm::sdd_agc_correction_unchecked(1).get());
 
         // Exact type-3 SDD callbacks at 0x176e2..0x177d4. These coefficients
         // are consumed directly by `phy_lookup_gain_pair` and
         // `phy_compute_rssi`; leaving them zero produces invalid TX-gain words.
-        copy_u16_value(0x20, 0x0400_35ac);
-        copy_u16_value(0x21, 0x0400_35b0);
-        copy_u16_value(0x22, 0x0400_35ae);
-        copy_u16_value(0x23, 0x0400_35b2);
-        copy_u16_pair(0x40, 0x0400_3500);
-        copy_u16_pair(0x41, 0x0400_3592);
-        copy_u16_value(0x42, 0x0400_34fa);
-        copy_u16_value(0x43, 0x0400_358c);
+        copy_u16_value(0x20, crate::dtcm::sdd_gain_coefficient_unchecked(0).get());
+        copy_u16_value(0x21, crate::dtcm::sdd_gain_coefficient_unchecked(2).get());
+        copy_u16_value(0x22, crate::dtcm::sdd_gain_coefficient_unchecked(1).get());
+        copy_u16_value(0x23, crate::dtcm::sdd_gain_coefficient_unchecked(3).get());
+        copy_u16_pair(0x40, crate::dtcm::sdd_rssi_coefficient_unchecked(0, 0).get());
+        copy_u16_pair(0x41, crate::dtcm::sdd_rssi_coefficient_unchecked(1, 0).get());
+        copy_u16_value(0x42, crate::dtcm::sdd_calibration_coefficient_unchecked(0).get());
+        copy_u16_value(0x43, crate::dtcm::sdd_calibration_coefficient_unchecked(1).get());
         // At configuration time the vendor ADC conversion normally lacks
         // live samples and falls back to the first two SDD halfwords.
-        copy_u16_pair(0x46, 0x0400_34fc);
-        copy_u16_pair(0x47, 0x0400_358e);
+        copy_u16_pair(0x46, crate::dtcm::sdd_conversion_value_unchecked(0, 0).get());
+        copy_u16_pair(0x47, crate::dtcm::sdd_conversion_value_unchecked(1, 0).get());
 
         // Annotated callback 0x17668: count plus three-byte channel records.
         if let Some(data) = find_sdd_element(0xec) {
@@ -293,10 +293,10 @@ unsafe fn populate_vendor_calibration_state() {
                 let records_len = count.saturating_mul(3);
                 if count <= u8::MAX as usize && data.len() >= 2 + records_len {
                     for (index, value) in data[2..2 + records_len].iter().copied().enumerate() {
-                        write_u8(0x0400_34c6 + index, value);
+                        write_u8(crate::dtcm::sdd_channel_byte_unchecked(0, index).get(), value);
                     }
-                    write_u8(0x0400_34f6, count as u8);
-                    write_u32(crate::dtcm::phy_table_pointer().get(), 0x0400_34b0);
+                    write_u8(crate::dtcm::sdd_channel_count_unchecked(0).get(), count as u8);
+                    write_u32(crate::dtcm::phy_table_pointer().get(), crate::dtcm::SDD_CONFIGURATION_TABLES.get() as u32);
                 }
             }
         }
@@ -308,10 +308,10 @@ unsafe fn populate_vendor_calibration_state() {
                 let records_len = count.saturating_mul(2);
                 if count <= u8::MAX as usize && data.len() >= 2 + records_len {
                     for (index, record) in data[2..2 + records_len].chunks_exact(2).enumerate() {
-                        write_u8(0x0400_3558 + index * 3, record[0]);
-                        write_u8(0x0400_3559 + index * 3, record[1]);
+                        write_u8(crate::dtcm::sdd_channel_byte_unchecked(1, index * 3).get(), record[0]);
+                        write_u8(crate::dtcm::sdd_channel_byte_unchecked(1, index * 3 + 1).get(), record[1]);
                     }
-                    write_u8(0x0400_3588, count as u8);
+                    write_u8(crate::dtcm::sdd_channel_count_unchecked(1).get(), count as u8);
                 }
             }
         }

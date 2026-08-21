@@ -161,11 +161,12 @@ opaque_family!(
     PreConfigurationTables,
     0x127c
 );
-opaque_family!(
-    /// SDD-derived channel, gain, and profile tables populated by startup.
-    SddConfigurationTables,
-    0x130
-);
+#[repr(C)]
+struct SddChannelRecord { bytes: [SharedU8; 3] }
+#[repr(C, align(2))]
+struct SddProfileBank { rate_limits: [SharedU16; 11], channel_records: [SddChannelRecord; 16], channel_count: SharedU8, opaque_47: SharedU8, agc_correction: SharedU16, calibration_coefficient: SharedU16, conversion_pair: [SharedU16; 2], rssi_coefficients: [SharedU16; 2], rssi_rate_scales: [SharedU16; 11], opaque_6a: OpaqueBytes<0x28> }
+#[repr(C, align(4))]
+struct SddConfigurationTables { profiles: [SddProfileBank; 2], opaque_124: OpaqueBytes<0x0c> }
 opaque_family!(
     /// Wake/context state whose exact field partition is not yet decoded.
     WakeContextState,
@@ -1371,6 +1372,21 @@ pub(crate) const fn pas_backoff_override_enabled() -> DtcmAddress { runtime_regi
 pub(crate) const fn pas_backoff_override_window() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window)) }
 pub const CLOCK_PARAMETERS: DtcmAddress = DtcmAddress::from_offset(0x218c);
 pub const SCHEDULER_HANDLER_TABLE: DtcmAddress = DtcmAddress::from_offset(0x21b4);
+pub(crate) const SDD_CONFIGURATION_TABLES: DtcmAddress = DtcmAddress::from_offset(0x34b0);
+const fn sdd_profile_field(profile: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(SDD_CONFIGURATION_TABLES.offset().wrapping_add(profile.wrapping_mul(core::mem::size_of::<SddProfileBank>())).wrapping_add(offset)) }
+pub(crate) const fn sdd_profile(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(sdd_profile_unchecked(profile)) } else { None } }
+pub(crate) const fn sdd_profile_unchecked(profile: usize) -> DtcmAddress { sdd_profile_field(profile, 0) }
+pub(crate) const fn sdd_rate_limit_unchecked(profile: usize, rate: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, rate_limits).wrapping_add(rate.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
+pub(crate) const fn sdd_channel_record_byte_unchecked(profile: usize, record: usize, byte: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, channel_records).wrapping_add(record.wrapping_mul(core::mem::size_of::<SddChannelRecord>())).wrapping_add(byte)) }
+pub(crate) const fn sdd_channel_byte_unchecked(profile: usize, index: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, channel_records).wrapping_add(index)) }
+pub(crate) const fn sdd_channel_count(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(sdd_channel_count_unchecked(profile)) } else { None } }
+pub(crate) const fn sdd_channel_count_unchecked(profile: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, channel_count)) }
+pub(crate) const fn sdd_agc_correction_unchecked(profile: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, agc_correction)) }
+pub(crate) const fn sdd_calibration_coefficient_unchecked(profile: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, calibration_coefficient)) }
+pub(crate) const fn sdd_conversion_value_unchecked(profile: usize, index: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, conversion_pair).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
+pub(crate) const fn sdd_rssi_coefficient_unchecked(profile: usize, index: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, rssi_coefficients).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
+pub(crate) const fn sdd_rssi_rate_scale_unchecked(profile: usize, rate: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, rssi_rate_scales).wrapping_add(rate.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
+pub(crate) const fn sdd_gain_coefficient_unchecked(index: usize) -> DtcmAddress { sdd_profile_field(1, core::mem::offset_of!(SddProfileBank, opaque_6a).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
 pub const LOW_MAC_PAS_ROOT: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET);
 pub const VIF_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x3e98);
 pub const VIF_RECORD_END: usize = VIF_RECORDS.get() + VIF_RECORD_COUNT * VIF_RECORD_SIZE;
@@ -2079,7 +2095,19 @@ const _: () = {
     assert!(core::mem::offset_of!(TimerEntry, context) == 0x10);
     assert_type_layout!(SchedulerHandlerTable, 0x80, 4);
     assert_type_layout!(PreConfigurationTables, 0x127c, 4);
+    assert_type_layout!(SddChannelRecord, 0x03, 1);
+    assert_type_layout!(SddProfileBank, 0x92, 2);
+    assert!(core::mem::offset_of!(SddProfileBank, channel_records) == 0x16);
+    assert!(core::mem::offset_of!(SddProfileBank, channel_count) == 0x46);
+    assert!(core::mem::offset_of!(SddProfileBank, agc_correction) == 0x48);
+    assert!(core::mem::offset_of!(SddProfileBank, calibration_coefficient) == 0x4a);
+    assert!(core::mem::offset_of!(SddProfileBank, conversion_pair) == 0x4c);
+    assert!(core::mem::offset_of!(SddProfileBank, rssi_coefficients) == 0x50);
+    assert!(core::mem::offset_of!(SddProfileBank, rssi_rate_scales) == 0x54);
+    assert!(core::mem::offset_of!(SddProfileBank, opaque_6a) == 0x6a);
     assert_type_layout!(SddConfigurationTables, 0x130, 4);
+    assert!(core::mem::offset_of!(SddConfigurationTables, profiles) == 0x00);
+    assert!(core::mem::offset_of!(SddConfigurationTables, opaque_124) == 0x124);
     assert_type_layout!(WakeContextState, 0x90, 4);
     assert_type_layout!(DurationSources, 0x4, 4);
     assert_type_layout!(PreLowMacWord, 0x4, 4);
@@ -2817,6 +2845,29 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn sdd_profile_addresses_are_exact() {
+        assert_eq!(SDD_CONFIGURATION_TABLES.get(), 0x0400_34b0);
+        assert_eq!(sdd_profile(0).unwrap().get(), 0x0400_34b0);
+        assert_eq!(sdd_profile(1).unwrap().get(), 0x0400_3542);
+        assert!(sdd_profile(2).is_none());
+        assert_eq!(sdd_rate_limit_unchecked(0, 10).get(), 0x0400_34c4);
+        assert_eq!(sdd_channel_record_byte_unchecked(0, 0, 0).get(), 0x0400_34c6);
+        assert_eq!(sdd_channel_count(0).unwrap().get(), 0x0400_34f6);
+        assert_eq!(sdd_agc_correction_unchecked(0).get(), 0x0400_34f8);
+        assert_eq!(sdd_calibration_coefficient_unchecked(0).get(), 0x0400_34fa);
+        assert_eq!(sdd_conversion_value_unchecked(0, 0).get(), 0x0400_34fc);
+        assert_eq!(sdd_rssi_coefficient_unchecked(0, 0).get(), 0x0400_3500);
+        assert_eq!(sdd_rssi_rate_scale_unchecked(0, 0).get(), 0x0400_3504);
+        assert_eq!(sdd_channel_record_byte_unchecked(1, 0, 0).get(), 0x0400_3558);
+        assert_eq!(sdd_channel_count(1).unwrap().get(), 0x0400_3588);
+        assert_eq!(sdd_agc_correction_unchecked(1).get(), 0x0400_358a);
+        assert_eq!(sdd_rssi_rate_scale_unchecked(1, 0).get(), 0x0400_3596);
+        assert_eq!(sdd_gain_coefficient_unchecked(0).get(), 0x0400_35ac);
+        assert_eq!(sdd_gain_coefficient_unchecked(3).get(), 0x0400_35b2);
+        assert_eq!(SDD_CONFIGURATION_TABLES.get() + 0x130, 0x0400_35e0);
     }
 
     #[test]

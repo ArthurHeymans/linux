@@ -26,6 +26,7 @@ python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-scheduler-support-layout.py
+python3 tools/check-sdd-profile-layout.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
 python3 tools/check-vif-timer-layout.py
@@ -57,6 +58,7 @@ python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-scheduler-event-layout.py "$ELF"
 python3 tools/check-runtime-register-backoff-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
+python3 tools/check-sdd-profile-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
@@ -263,6 +265,15 @@ if [[ -n "${XR819_RUNTIME_REGISTER_BACKOFF_PARENT_ELF:-}" ]]; then
     "$XR819_RUNTIME_REGISTER_BACKOFF_PARENT_ELF" "$ELF"
 else
   echo "== runtime-register/backoff codegen gate skipped: set XR819_RUNTIME_REGISTER_BACKOFF_PARENT_ELF to the qualified PHY-IQ-calibration ELF =="
+fi
+
+if [[ -n "${XR819_SDD_PROFILE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed SDD-profile parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/sdd-profile-codegen-manifest.json \
+    "$XR819_SDD_PROFILE_PARENT_ELF" "$ELF"
+else
+  echo "== SDD-profile codegen gate skipped: set XR819_SDD_PROFILE_PARENT_ELF to the qualified runtime-register/backoff ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

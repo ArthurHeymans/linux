@@ -21,6 +21,7 @@ python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-scheduler-support-layout.py
+python3 tools/check-sdd-profile-layout.py
 python3 tools/check-vif-timer-layout.py
 python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
@@ -44,6 +45,7 @@ python3 tools/check-dtcm-layout.py "$ELF" "$OUT"
 python3 tools/check-scheduler-event-layout.py "$ELF"
 python3 tools/check-runtime-register-backoff-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
+python3 tools/check-sdd-profile-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
 python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
