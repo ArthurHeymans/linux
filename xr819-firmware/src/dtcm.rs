@@ -672,11 +672,11 @@ struct ContextCompletionPrefix {
 /// pre-context/prefix boundary, so it remains an address-only shared view.
 #[repr(C, align(4))]
 struct CompletionRingObservedLayout { entries: [SharedU32; 64] }
-opaque_family!(
-    /// Occupied bytes underlying the first 59 completion-ring entries.
-    PreInternalContextQuarantine,
-    0xec
-);
+/// Physical backing for completion-ring entries 0 through 58. The final five
+/// entries overlap `InternalContextPrefix` and remain represented by the
+/// address-only logical view above.
+#[repr(C, align(4))]
+struct PreInternalContextQuarantine { completion_entries: [SharedU32; 59] }
 #[repr(C, align(4))]
 struct InternalContextPrefix { iv_seed: SharedU32, opaque_04: OpaqueBytes<0x10> }
 
@@ -2666,6 +2666,7 @@ const _: () = {
     assert!(core::mem::offset_of!(ContextCompletionPrefix, free_state) == 0x10);
     assert_type_layout!(CompletionRingObservedLayout, 0x100, 4);
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
+    assert!(core::mem::offset_of!(PreInternalContextQuarantine, completion_entries) == 0x00);
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
     assert!(core::mem::offset_of!(InternalContextPrefix, iv_seed) == 0x00);
     assert_type_layout!(InternalPasContext, 0x80, 4);

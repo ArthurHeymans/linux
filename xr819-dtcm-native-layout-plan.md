@@ -3824,3 +3824,24 @@ checks    /tmp/xr819-power-save-prefix-final-check.log
           c25015f4783b10a1da9c1a04fa2265af142ac9a1204e73fbf9213355afd72fb9
 ```
 
+### A.54 Physical completion-ring backing
+
+The physical `0xec` bytes at `0x04008f80..0x0400906c` now encode the first
+59 raw completion-ring entries directly as `[SharedU32; 59]`. Entries 59
+through 63 continue to overlap the internal-context prefix and remain covered
+by the address-only 64-entry logical view from A.47.
+
+This removes the false implication that the physical bytes were semantically
+unknown while preserving their shared volatile quarantine status. It does not
+create references or change the native Rust completion-ring owner. The existing
+completion-ring source/linked/codegen gate covers the full logical extent. The
+complete ELF remains byte-identical to the qualified power-save-prefix parent,
+so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-completion-backing-final-check.log
+          84791400ddd928fd13036dfacdebfadf71cc01f53f30be5070143d7ffa21c4d8
+```
+
