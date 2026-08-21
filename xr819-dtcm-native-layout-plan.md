@@ -4216,3 +4216,27 @@ manifest  tools/initialized-completion-words-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.71 Initialized IRQ callback words
+
+The 32 initialized callback words at `0x040011bc..0x0400123c` now have a bounded
+typed address API. Values remain quarantined raw words because callback targets
+include retained code and are not Rust-owned function pointers.
+
+The platform callback-table root now derives from the `InitializedVendorImage`
+layout. Existing index arithmetic, initialization writes, and interrupt
+registration ordering are unchanged. The linked image materializes only the
+used interior addresses `0x040011d0` and `0x040011e4`;
+`tools/check-initialized-irq-callbacks-layout.py` pins those literals and their
+complete decoded xrefs. The complete ELF and packed image remain byte-identical
+to the qualified initialized-completion-words parent, so no hardware rerun is
+required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-irq-callback-final-check.log
+          360a9ecd8a9b02cd2e62c67d790291250bea206ada49aa94e7969008b83a9f25
+manifest  tools/initialized-irq-callbacks-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

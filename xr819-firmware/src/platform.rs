@@ -99,7 +99,7 @@ const CLOCK_PARAMETERS_BASE: usize = crate::dtcm::CLOCK_PARAMETERS.get();
 const INTERRUPT_ROUTING_BASE: usize = 0x0abb_0000;
 const HOST_DOWNLOAD_STATE: usize = crate::dtcm::initialized_tsf_resync_state().get();
 const HIF_SHARED_BASE: usize = 0x0ab0_0100;
-const IRQ_CALLBACK_TABLE: usize = 0x0400_11bc;
+const IRQ_CALLBACK_TABLE: usize = crate::dtcm::IRQ_CALLBACK_TABLE.get();
 const VENDOR_BSS_START: usize = crate::dtcm::VENDOR_BSS_START.get();
 const VENDOR_BSS_END: usize = crate::dtcm::VENDOR_BSS_END.get();
 
