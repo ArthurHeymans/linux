@@ -41,6 +41,7 @@ python3 tools/check-vif-layout.py
 python3 tools/check-vif-timer-layout.py
 python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
+python3 tools/check-initialized-hif-control-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -86,6 +87,7 @@ python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
 python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
+python3 tools/check-initialized-hif-control-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -417,6 +419,15 @@ if [[ -n "${XR819_PRE_VIF_HEADER_PARENT_ELF:-}" ]]; then
     "$XR819_PRE_VIF_HEADER_PARENT_ELF" "$ELF"
 else
   echo "== pre-VIF-header codegen gate skipped: set XR819_PRE_VIF_HEADER_PARENT_ELF to the qualified power-save-boundary ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_HIF_CONTROL_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-HIF-control parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-hif-control-codegen-manifest.json \
+    "$XR819_INITIALIZED_HIF_CONTROL_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-HIF-control codegen gate skipped: set XR819_INITIALIZED_HIF_CONTROL_PARENT_ELF to the qualified power-save-tail ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

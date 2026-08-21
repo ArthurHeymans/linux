@@ -4042,3 +4042,27 @@ checks    /tmp/xr819-power-save-interval-tail-final-check.log
           b2f6f5daa2a8c691e980c37b71b33b010acd080cb837b94a1305725a24f58911
 ```
 
+### A.64 Initialized HIF coalescing controls
+
+The initialized island at `0x040011ac..0x040011bc` is now an exact
+`InitializedHifControl` record. Its first two words are the queued-depth and
+pending-count shadows maintained by host-message publication. The tail contains
+the coalescing enable byte, pending/ring-depth/count thresholds, and the 32-bit
+coalescing delay.
+
+These are the retained defaults consumed by `hif_confirm_coalesce_hold`:
+enabled, thresholds 10/4/2, and delay 8000 timer ticks. The record ends exactly
+at the 32-entry IRQ callback table. Narrow address APIs and tests pin every
+field. `tools/check-initialized-hif-control-layout.py` adds source, linked-xref,
+and exact-parent codegen gates. The complete ELF remains byte-identical to the
+qualified power-save-interval parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-initialized-hif-control-final-check.log
+          4529d9ac7536a1cb66bdadfc98f72f33191fcf467f7c9165c04bc8b201399331
+manifest  tools/initialized-hif-control-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

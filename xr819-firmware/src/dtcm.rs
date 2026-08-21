@@ -124,8 +124,7 @@ struct InitializedVendorImage {
     pre_duration_quantum_pointers: OpaqueBytes<0x6f6>,
     duration_quantum_pointers: [SharedU32; 4],
     pre_hif_control_shadow: OpaqueBytes<0xc8>,
-    hif_control_shadow: OpaqueBytes<0x8>,
-    pre_irq_callbacks: OpaqueBytes<0x8>,
+    hif_control: InitializedHifControl,
     irq_callbacks: [SharedU32; 32],
     pre_ampdu_counters: OpaqueBytes<0x64>,
     ampdu_counters: OpaqueBytes<0x28>,
@@ -136,6 +135,16 @@ struct InitializedVendorImage {
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
+}
+#[repr(C, align(4))]
+struct InitializedHifControl {
+    queued_depth: SharedU32,
+    pending_count: SharedU32,
+    coalesce_enabled: SharedU8,
+    pending_threshold: SharedU8,
+    ring_depth_threshold: SharedU8,
+    count_threshold: SharedU8,
+    coalesce_delay: SharedU32,
 }
 #[repr(C, align(4))]
 struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
@@ -1601,6 +1610,15 @@ pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress
 }
 
 pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000);
+pub(crate) const INITIALIZED_HIF_CONTROL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, hif_control));
+const fn initialized_hif_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(INITIALIZED_HIF_CONTROL.offset() + offset) }
+pub(crate) const fn initialized_hif_queued_depth() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, queued_depth)) }
+pub(crate) const fn initialized_hif_pending_count() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, pending_count)) }
+pub(crate) const fn initialized_hif_coalesce_enabled() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, coalesce_enabled)) }
+pub(crate) const fn initialized_hif_pending_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, pending_threshold)) }
+pub(crate) const fn initialized_hif_ring_depth_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, ring_depth_threshold)) }
+pub(crate) const fn initialized_hif_count_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, count_threshold)) }
+pub(crate) const fn initialized_hif_coalesce_delay() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, coalesce_delay)) }
 pub const SCHEDULER_EVENT_ROOT: DtcmAddress = DtcmAddress::from_offset(0x1fd4);
 pub(crate) const RUNTIME_REGISTER_BACKOFF_STATE: DtcmAddress = DtcmAddress::from_offset(0x2078);
 const fn runtime_register_backoff_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(RUNTIME_REGISTER_BACKOFF_STATE.offset() + offset) }
@@ -2982,7 +3000,15 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedVendorImage, aes_mode1_microcode) == 0x0830);
     assert!(core::mem::offset_of!(InitializedVendorImage, pre_duration_quantum_pointers) == 0x09de);
     assert!(core::mem::offset_of!(InitializedVendorImage, duration_quantum_pointers) == 0x10d4);
-    assert!(core::mem::offset_of!(InitializedVendorImage, hif_control_shadow) == 0x11ac);
+    assert_type_layout!(InitializedHifControl, 0x10, 4);
+    assert!(core::mem::offset_of!(InitializedHifControl, queued_depth) == 0x00);
+    assert!(core::mem::offset_of!(InitializedHifControl, pending_count) == 0x04);
+    assert!(core::mem::offset_of!(InitializedHifControl, coalesce_enabled) == 0x08);
+    assert!(core::mem::offset_of!(InitializedHifControl, pending_threshold) == 0x09);
+    assert!(core::mem::offset_of!(InitializedHifControl, ring_depth_threshold) == 0x0a);
+    assert!(core::mem::offset_of!(InitializedHifControl, count_threshold) == 0x0b);
+    assert!(core::mem::offset_of!(InitializedHifControl, coalesce_delay) == 0x0c);
+    assert!(core::mem::offset_of!(InitializedVendorImage, hif_control) == 0x11ac);
     assert!(core::mem::offset_of!(InitializedVendorImage, irq_callbacks) == 0x11bc);
     assert!(core::mem::offset_of!(InitializedVendorImage, ampdu_counters) == 0x12a0);
     assert!(core::mem::offset_of!(InitializedVendorImage, control_words) == 0x1420);
@@ -3620,6 +3646,19 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_hif_control_addresses_are_exact() {
+        assert_eq!(INITIALIZED_HIF_CONTROL.get(), 0x0400_11ac);
+        assert_eq!(initialized_hif_queued_depth().get(), 0x0400_11ac);
+        assert_eq!(initialized_hif_pending_count().get(), 0x0400_11b0);
+        assert_eq!(initialized_hif_coalesce_enabled().get(), 0x0400_11b4);
+        assert_eq!(initialized_hif_pending_threshold().get(), 0x0400_11b5);
+        assert_eq!(initialized_hif_ring_depth_threshold().get(), 0x0400_11b6);
+        assert_eq!(initialized_hif_count_threshold().get(), 0x0400_11b7);
+        assert_eq!(initialized_hif_coalesce_delay().get(), 0x0400_11b8);
+        assert_eq!(initialized_hif_coalesce_delay().get() + 4, 0x0400_11bc);
     }
 
     #[test]
