@@ -29,6 +29,7 @@ python3 tools/check-host-context-layout.py
 python3 tools/check-link-sequence-layout.py
 python3 tools/check-ba-lmc-pending-layout.py
 python3 tools/check-ba-session-layout.py
+python3 tools/check-ba-link-event-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
 echo "== arm build and stack check: feature-free firmware =="
@@ -43,6 +44,7 @@ python3 tools/check-host-context-layout.py "$ELF"
 python3 tools/check-link-sequence-layout.py "$ELF"
 python3 tools/check-ba-lmc-pending-layout.py "$ELF"
 python3 tools/check-ba-session-layout.py "$ELF"
+python3 tools/check-ba-link-event-layout.py "$ELF"
 
 if [[ -n "${XR819_PARENT_ELF:-}" ]]; then
   echo "== complete reviewed exact-parent text-symbol delta gate =="
@@ -76,6 +78,15 @@ if [[ -n "${XR819_BA_SESSION_PARENT_ELF:-}" ]]; then
     "$XR819_BA_SESSION_PARENT_ELF" "$ELF"
 else
   echo "== BA-session codegen gate skipped: set XR819_BA_SESSION_PARENT_ELF to the qualified BA/LMC parent ELF =="
+fi
+
+if [[ -n "${XR819_BA_LINK_EVENT_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed BA/link/event parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/ba-link-event-codegen-manifest.json \
+    "$XR819_BA_LINK_EVENT_PARENT_ELF" "$ELF"
+else
+  echo "== BA/link/event codegen gate skipped: set XR819_BA_LINK_EVENT_PARENT_ELF to the qualified BA-session ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

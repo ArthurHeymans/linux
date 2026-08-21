@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for the four typed BA session records.
+"""Drift-evidence gates for typed BA/link timers and network flags.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,8 +21,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BA_SESSION_RANGE = (0x04008E78, 0x04008F18)
-SYNTHESIZED = {0x8E78, 0x8E8C, 0x8EF0, 0x8F04, 0x8F18}
+BA_LINK_EVENT_RANGE = (0x04008F18, 0x04008F48)
+SYNTHESIZED = {0x8F18, 0x8F1B, 0x8F1C, 0x8F30, 0x8F44, 0x8F48}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx",
@@ -39,9 +39,9 @@ OWNER_FILES = {
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "BA_SESSION_BASE",
-    "BA_SESSION_TABLE",
-    "BA_SESSION_STRIDE",
+    "BA_LINK_EVENT_BASE",
+    "BA_EVENT_FLAGS_BASE",
+    "BA_TRANSITION_TIMER",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
@@ -169,7 +169,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return BA_SESSION_RANGE[0] <= value < BA_SESSION_RANGE[1]
+    return BA_LINK_EVENT_RANGE[0] <= value < BA_LINK_EVENT_RANGE[1]
 
 
 def check_source() -> None:
@@ -191,14 +191,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: BA-session literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: BA/link/event literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized BA-session form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized BA/link/event form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"BA SESSION SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"BA/LINK/EVENT SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -269,9 +269,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("BA SESSION LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("BA/LINK/EVENT LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "BA SESSION LINKED DRIFT-EVIDENCE GATE PASSED "
+        "BA/LINK/EVENT LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -290,4 +290,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"BA-session drift gate failed: {error}")
+        raise SystemExit(f"BA/link/event drift gate failed: {error}")

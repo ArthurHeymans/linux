@@ -614,11 +614,11 @@ struct BaSession { activity: SharedU32, peer_mac: [SharedU8; 6], tid: SharedU8, 
 #[repr(C, align(4))]
 struct BaSessions { records: [BaSession; 4] }
 
-opaque_family!(
-    /// BA/link/event/timer state immediately before TALA.
-    BaLinkEventState,
-    0x30
-);
+#[repr(C, align(4))]
+struct BaLinkEventState { ba_deferred_action: SharedU8, ba_deferred_interface: SharedU8, opaque_02: OpaqueBytes<0x01>, periodic_timer_enabled: SharedU8,
+    periodic_timer: OpaqueBytes<0x14>, transition_timer: OpaqueBytes<0x14>, current_network_flags: SharedU8, accumulated_network_flags: SharedU8,
+    changed_network_flags: SharedU8, opaque_2f: OpaqueBytes<0x01> }
+
 
 /// Exact qualified TALA accounting shape. The semantic names describe the
 /// translated algorithm, not exclusive ownership of these volatile words.
@@ -1735,6 +1735,30 @@ impl BaSessionAddress {
     const fn timer(self) -> DtcmAddress { self.field(core::mem::offset_of!(BaSession, timer)) }
 }
 
+#[cfg(test)]
+const fn ba_link_event_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, ba_link_event_state) + offset,
+    )
+}
+
+#[cfg(test)]
+const fn ba_deferred_action() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, ba_deferred_action)) }
+#[cfg(test)]
+const fn ba_deferred_interface() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, ba_deferred_interface)) }
+#[cfg(test)]
+const fn ba_periodic_timer_enabled() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, periodic_timer_enabled)) }
+#[cfg(test)]
+const fn ba_periodic_timer() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, periodic_timer)) }
+#[cfg(test)]
+const fn ba_transition_timer() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, transition_timer)) }
+#[cfg(test)]
+const fn current_network_flags() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, current_network_flags)) }
+#[cfg(test)]
+const fn accumulated_network_flags() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, accumulated_network_flags)) }
+#[cfg(test)]
+const fn changed_network_flags() -> DtcmAddress { ba_link_event_field(core::mem::offset_of!(BaLinkEventState, changed_network_flags)) }
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -1973,6 +1997,14 @@ const _: () = {
     assert!(core::mem::offset_of!(BaSession, timer) == 0x14);
     assert_type_layout!(BaSessions, 0xa0, 4);
     assert_type_layout!(BaLinkEventState, 0x30, 4);
+    assert!(core::mem::offset_of!(BaLinkEventState, ba_deferred_action) == 0x00);
+    assert!(core::mem::offset_of!(BaLinkEventState, ba_deferred_interface) == 0x01);
+    assert!(core::mem::offset_of!(BaLinkEventState, periodic_timer_enabled) == 0x03);
+    assert!(core::mem::offset_of!(BaLinkEventState, periodic_timer) == 0x04);
+    assert!(core::mem::offset_of!(BaLinkEventState, transition_timer) == 0x18);
+    assert!(core::mem::offset_of!(BaLinkEventState, current_network_flags) == 0x2c);
+    assert!(core::mem::offset_of!(BaLinkEventState, accumulated_network_flags) == 0x2d);
+    assert!(core::mem::offset_of!(BaLinkEventState, changed_network_flags) == 0x2e);
     assert_type_layout!(TalaAccounting, 0x24, 4);
     assert_type_layout!(ContextCompletionPrefix, 0x14, 4);
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
@@ -2375,6 +2407,19 @@ mod tests {
         assert_eq!(last.raw() + 0x28, 0x0400_8f18);
         assert!(ba_session(4).is_none());
         assert!(first.peer_mac_byte(6).is_none());
+    }
+
+    #[test]
+    fn ba_link_timers_and_network_flag_bytes_follow_decoded_offsets() {
+        assert_eq!(ba_deferred_action().get(), 0x0400_8f18);
+        assert_eq!(ba_deferred_interface().get(), 0x0400_8f19);
+        assert_eq!(ba_periodic_timer_enabled().get(), 0x0400_8f1b);
+        assert_eq!(ba_periodic_timer().get(), 0x0400_8f1c);
+        assert_eq!(ba_transition_timer().get(), 0x0400_8f30);
+        assert_eq!(current_network_flags().get(), 0x0400_8f44);
+        assert_eq!(accumulated_network_flags().get(), 0x0400_8f45);
+        assert_eq!(changed_network_flags().get(), 0x0400_8f46);
+        assert_eq!(changed_network_flags().get() + 2, 0x0400_8f48);
     }
 
     #[test]

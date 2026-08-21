@@ -2382,3 +2382,47 @@ manifest  tools/ba-session-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.17 BA/link timers and network flag state
+
+The fixed-DTCM range `0x04008f18..0x04008f48` now has the decoded shared
+layout:
+
+```text
++0x00 u8 deferred BA action
++0x01 u8 deferred BA interface
++0x02 unresolved byte
++0x03 u8 periodic-timer enable
++0x04 0x14-byte periodic timer
++0x18 0x14-byte transition timer
++0x2c u8 current ERP/HT network flags
++0x2d u8 accumulated beacon flags
++0x2e u8 changed/edge mask
++0x2f unresolved byte
+```
+
+`bab_link_state_check` publishes the deferred action/interface pair. Firmware
+initialization enables and initializes the first timer at `0x04008f1c`; JOIN
+and start-state paths use the second timer at `0x04008f30`.
+`rx_beacon_update_erp_ht_flags` accumulates ERP/HT observations and
+`event_flag_edge_detect` consumes the three bytes at `0x04008f44..0x04008f46`
+without changing their volatile ordering.
+
+The state remains vendor/timer owned and no safe complete-record references are
+created. `tools/check-ba-link-event-layout.py` rejects production literals and
+synthesized roots outside `dtcm.rs`; the linked Rust firmware contains no
+literal or decoded literal-load xrefs into the range. The complete ELF remains
+byte-identical to the qualified parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-ba-link-event-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-ba-link-event-final-check.log
+          f6fd1347a8a609386abc0e38571704dd3e0cd7af5ed92dd5ed6cc75706233162
+manifest  tools/ba-link-event-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
