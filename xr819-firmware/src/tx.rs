@@ -5654,7 +5654,7 @@ pub unsafe fn mac_hardware_idle() -> bool {
 /// servicing.
 pub unsafe fn mac_pipe_records_idle() -> bool {
     for pipe in 0..4_usize {
-        let record = 0x0400_1720_usize + pipe * 0x6c;
+        let record = crate::dtcm::MAC_PIPE_RECORDS.get() + pipe * 0x6c;
         if unsafe { ((record + 3) as *const u8).read_volatile() } != 0 {
             return false;
         }
@@ -6808,7 +6808,7 @@ unsafe fn prepare_context_publication(
             release_unpublished_probe_context(context);
             return Err(ProbeBuildError::PipeStateUnavailable);
         }
-        let pipe_record = 0x0400_1720_usize + usize::from(pipe) * 0x6c;
+        let pipe_record = crate::dtcm::MAC_PIPE_RECORDS.get() + usize::from(pipe) * 0x6c;
         let hardware = ((pipe_record + 8) as *const u32).read_volatile();
         let slot = (pipe_record as *const u8).read_volatile() & 3;
         let slot_record = pipe_record + 0x0c + usize::from(slot) * 0x18;

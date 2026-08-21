@@ -4265,3 +4265,28 @@ manifest  tools/host-pas-ring-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.73 MAC pipe records
+
+The four retained MAC pipe records at `0x04001720..0x040018d0` are now exact
+`0x6c`-byte layouts. Each record contains its current-slot byte, state byte,
+hardware-ring pointer, and four `0x18`-byte slot records. Each slot names the
+frame, auxiliary, and command words while keeping its mixed-width state prefix
+and unresolved bytes quarantined.
+
+Current Rust TX and host-scheduler consumers now derive direct pipe-record roots
+from the initialized-image layout. Existing `pipe * 0x6c`, `slot * 0x18`,
+volatile byte/word operations, and publication ordering remain unchanged.
+`tools/check-mac-pipe-records-layout.py` pins the linked root plus the two
+materialized interior field addresses and their decoded xrefs. The complete ELF
+and packed image remain byte-identical to the qualified host-PAS-ring parent, so
+no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-pipe-record-final-check.log
+          1a4e8f1935881b39d03f7a9e1a4485ffee20ee421250119d3b46b27ba8719575
+manifest  tools/mac-pipe-records-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

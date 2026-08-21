@@ -935,7 +935,7 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
     let pas = context.pas().raw();
     let mut idle_pipe_mask = 0_u8;
     for candidate in 0..4_u8 {
-        let pipe_state = 0x0400_1720 + u32::from(candidate) * 0x6c;
+        let pipe_state = crate::dtcm::MAC_PIPE_RECORDS.get() as u32 + u32::from(candidate) * 0x6c;
         if unsafe { read_live_u8(pipe_state + 3) } == 0 {
             idle_pipe_mask |= 1 << candidate;
         }
@@ -1122,7 +1122,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     let mut idle_pipe_mask = 0_u8;
     let mut candidate = 0_u8;
     while candidate < 4 {
-        let pipe_state = 0x0400_1720 + u32::from(candidate) * 0x6c;
+        let pipe_state = crate::dtcm::MAC_PIPE_RECORDS.get() as u32 + u32::from(candidate) * 0x6c;
         if unsafe { read_live_u8(pipe_state + 3) } == 0 {
             idle_pipe_mask |= 1 << candidate;
         }
@@ -1157,7 +1157,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         NonAggregateSchedulerDecision::ReservePipe(_) => {}
     }
 
-    let pipe_state = 0x0400_1720 + u32::from(pipe) * 0x6c;
+    let pipe_state = crate::dtcm::MAC_PIPE_RECORDS.get() as u32 + u32::from(pipe) * 0x6c;
     let slot = unsafe { read_live_u8(pipe_state) } & 3;
     let slot_record = pipe_state + 0x0c + u32::from(slot) * 0x18;
     let command = unsafe { read_live_u32(slot_record + 0x14) };

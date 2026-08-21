@@ -131,7 +131,9 @@ struct InitializedVendorImage {
     control_words: InitializedControlWords,
     pre_host_pas_ring: OpaqueBytes<0x138>,
     host_pas_ring: HostPasRing,
-    initialized_low_mac_state: OpaqueBytes<0x94c>,
+    initialized_low_mac_prefix: OpaqueBytes<0xa0>,
+    mac_pipe_records: [MacPipeRecord; 4],
+    initialized_low_mac_tail: OpaqueBytes<0x6fc>,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
@@ -178,6 +180,10 @@ struct InitializedHifControl {
 }
 #[repr(C, align(4))]
 struct HostPasRing { head: SharedU32, tail: SharedU32, slots: [SharedU32; 64] }
+#[repr(C, align(4))]
+struct MacPipeSlot { state_word: SharedU32, opaque_04: OpaqueBytes<0x08>, frame: SharedU32, auxiliary: SharedU32, command: SharedU32 }
+#[repr(C, align(4))]
+struct MacPipeRecord { current_slot: SharedU8, opaque_01: OpaqueBytes<0x02>, state: SharedU8, opaque_04: SharedU32, hardware_ring: SharedU32, slots: [MacPipeSlot; 4] }
 #[repr(C, align(4))]
 struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
 #[repr(C, align(4))]
@@ -1659,6 +1665,8 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const MAC_PIPE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records));
+pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(DtcmAddress::from_offset(MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>())) } else { None } }
 pub(crate) const HOST_PAS_RING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, host_pas_ring));
 pub(crate) const HOST_PAS_RING_HEAD: DtcmAddress = HOST_PAS_RING;
 pub(crate) const HOST_PAS_RING_TAIL: DtcmAddress = DtcmAddress::from_offset(HOST_PAS_RING.offset() + core::mem::offset_of!(HostPasRing, tail));
@@ -3108,15 +3116,25 @@ const _: () = {
     assert!(core::mem::offset_of!(HostPasRing, head) == 0x00);
     assert!(core::mem::offset_of!(HostPasRing, tail) == 0x04);
     assert!(core::mem::offset_of!(HostPasRing, slots) == 0x08);
-    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) == 0x1680);
+    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) == 0x1680);
+    assert!(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records) == 0x1720);
+    assert!(core::mem::size_of::<MacPipeSlot>() == 0x18);
+    assert!(core::mem::offset_of!(MacPipeSlot, frame) == 0x0c);
+    assert!(core::mem::offset_of!(MacPipeSlot, auxiliary) == 0x10);
+    assert!(core::mem::offset_of!(MacPipeSlot, command) == 0x14);
+    assert!(core::mem::size_of::<MacPipeRecord>() == 0x6c);
+    assert!(core::mem::offset_of!(MacPipeRecord, state) == 0x03);
+    assert!(core::mem::offset_of!(MacPipeRecord, hardware_ring) == 0x08);
+    assert!(core::mem::offset_of!(MacPipeRecord, slots) == 0x0c);
+    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x18d0);
     assert!(
-        core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) + 0x7ec == 0x1e6c
+        core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) + 0x7ec == 0x1e6c
     );
     assert!(
-        core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) + 0x8f8 == 0x1f78
+        core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) + 0x8f8 == 0x1f78
     );
     assert!(
-        core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) + 0x940 == 0x1fc0
+        core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) + 0x940 == 0x1fc0
     );
     assert_type_layout!(SchedulerExclusionState, 0x08, 4);
     assert!(core::mem::offset_of!(SchedulerExclusionState, exclusion_mask) == 0x00);
@@ -3741,6 +3759,15 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_mac_pipe_record_addresses_are_exact() {
+        assert_eq!(MAC_PIPE_RECORDS.get(), 0x0400_1720);
+        assert_eq!(mac_pipe_record(0).unwrap().get(), 0x0400_1720);
+        assert_eq!(mac_pipe_record(3).unwrap().get(), 0x0400_1864);
+        assert_eq!(mac_pipe_record(3).unwrap().get() + 0x6c, 0x0400_18d0);
+        assert!(mac_pipe_record(4).is_none());
     }
 
     #[test]

@@ -50,6 +50,7 @@ python3 tools/check-initialized-tx-rate-tables-layout.py
 python3 tools/check-initialized-completion-words-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-host-pas-ring-layout.py
+python3 tools/check-mac-pipe-records-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -104,6 +105,7 @@ python3 tools/check-initialized-tx-rate-tables-layout.py "$ELF"
 python3 tools/check-initialized-completion-words-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
+python3 tools/check-mac-pipe-records-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -516,6 +518,15 @@ if [[ -n "${XR819_HOST_PAS_RING_PARENT_ELF:-}" ]]; then
     "$XR819_HOST_PAS_RING_PARENT_ELF" "$ELF"
 else
   echo "== host-PAS-ring codegen gate skipped: set XR819_HOST_PAS_RING_PARENT_ELF to the qualified initialized-IRQ-callbacks ELF =="
+fi
+
+if [[ -n "${XR819_MAC_PIPE_RECORDS_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed MAC-pipe-records parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/mac-pipe-records-codegen-manifest.json \
+    "$XR819_MAC_PIPE_RECORDS_PARENT_ELF" "$ELF"
+else
+  echo "== MAC-pipe-records codegen gate skipped: set XR819_MAC_PIPE_RECORDS_PARENT_ELF to the qualified host-PAS-ring ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
