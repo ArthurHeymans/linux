@@ -678,7 +678,10 @@ struct CompletionRingObservedLayout { entries: [SharedU32; 64] }
 #[repr(C, align(4))]
 struct PreInternalContextQuarantine { completion_entries: [SharedU32; 59] }
 #[repr(C, align(4))]
-struct InternalContextPrefix { iv_seed: SharedU32, opaque_04: OpaqueBytes<0x10> }
+struct InternalContextPrefix {
+    iv_seed_or_completion_entry_59: SharedU32,
+    completion_entries_60_63: [SharedU32; 4],
+}
 
 /// One exact internal TX context record. It remains quarantine because retained
 /// teardown and diagnostics can mutate the same bytes.
@@ -2668,7 +2671,8 @@ const _: () = {
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
     assert!(core::mem::offset_of!(PreInternalContextQuarantine, completion_entries) == 0x00);
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
-    assert!(core::mem::offset_of!(InternalContextPrefix, iv_seed) == 0x00);
+    assert!(core::mem::offset_of!(InternalContextPrefix, iv_seed_or_completion_entry_59) == 0x00);
+    assert!(core::mem::offset_of!(InternalContextPrefix, completion_entries_60_63) == 0x04);
     assert_type_layout!(InternalPasContext, 0x80, 4);
     assert!(core::mem::offset_of!(InternalPasContext, completion_timestamp) == 0x14);
     assert!(core::mem::offset_of!(InternalPasContext, terminal_status) == 0x1c);

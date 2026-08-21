@@ -3845,3 +3845,23 @@ checks    /tmp/xr819-completion-backing-final-check.log
           84791400ddd928fd13036dfacdebfadf71cc01f53f30be5070143d7ffa21c4d8
 ```
 
+### A.55 Internal-prefix completion backing
+
+`InternalContextPrefix` now records all five overlapping completion-ring words.
+Its first word is explicitly named `iv_seed_or_completion_entry_59`, preserving
+both the retained IV/PN initialization meaning and the completion drain's ring
+meaning. The following four words are entries 60 through 63.
+
+Together with A.54, the entire physical `0x100`-byte completion-ring backing is
+now structurally typed. The logical address-only view remains authoritative for
+ring indexing, while the prefix type records the cross-family alias without
+claiming independent ownership. The complete ELF remains byte-identical to the
+qualified completion-backing parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-internal-prefix-backing-final-check.log
+          66eacc129d474a6c71b031e3c346d611af0a71cad105a7319157ce5885557b52
+```
+
