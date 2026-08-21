@@ -167,16 +167,10 @@ struct SddChannelRecord { bytes: [SharedU8; 3] }
 struct SddProfileBank { rate_limits: [SharedU16; 11], channel_records: [SddChannelRecord; 16], channel_count: SharedU8, opaque_47: SharedU8, agc_correction: SharedU16, calibration_coefficient: SharedU16, conversion_pair: [SharedU16; 2], rssi_coefficients: [SharedU16; 2], rssi_rate_scales: [SharedU16; 11], opaque_6a: OpaqueBytes<0x28> }
 #[repr(C, align(4))]
 struct SddConfigurationTables { profiles: [SddProfileBank; 2], opaque_124: OpaqueBytes<0x0c> }
-opaque_family!(
-    /// Wake/context state whose exact field partition is not yet decoded.
-    WakeContextState,
-    0x90
-);
-opaque_family!(
-    /// Two retained duration-source halfwords.
-    DurationSources,
-    0x4
-);
+#[repr(C, align(4))]
+struct WakeContextState { clock_words: [SharedU32; 4], response_pointers: [SharedU32; 32] }
+#[repr(C, align(2))]
+struct DurationSources { values: [SharedU16; 2] }
 opaque_family!(
     /// Undecoded occupied word before the low-MAC/PAS root.
     PreLowMacWord,
@@ -1387,6 +1381,11 @@ pub(crate) const fn sdd_conversion_value_unchecked(profile: usize, index: usize)
 pub(crate) const fn sdd_rssi_coefficient_unchecked(profile: usize, index: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, rssi_coefficients).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
 pub(crate) const fn sdd_rssi_rate_scale_unchecked(profile: usize, rate: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, rssi_rate_scales).wrapping_add(rate.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
 pub(crate) const fn sdd_gain_coefficient_unchecked(index: usize) -> DtcmAddress { sdd_profile_field(1, core::mem::offset_of!(SddProfileBank, opaque_6a).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
+pub(crate) const WAKE_CONTEXT_STATE: DtcmAddress = DtcmAddress::from_offset(0x35e0);
+pub(crate) const fn wake_clock_word(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(DtcmAddress::from_offset(WAKE_CONTEXT_STATE.offset() + core::mem::offset_of!(WakeContextState, clock_words) + index * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn wake_response_pointer_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(WAKE_CONTEXT_STATE.offset().wrapping_add(core::mem::offset_of!(WakeContextState, response_pointers)).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU32>()))) }
+pub(crate) const DURATION_SOURCES: DtcmAddress = DtcmAddress::from_offset(0x3670);
+pub(crate) const fn duration_source(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(DURATION_SOURCES.offset() + index * core::mem::size_of::<SharedU16>())) } else { None } }
 pub const LOW_MAC_PAS_ROOT: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET);
 pub const VIF_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x3e98);
 pub const VIF_RECORD_END: usize = VIF_RECORDS.get() + VIF_RECORD_COUNT * VIF_RECORD_SIZE;
@@ -2109,7 +2108,8 @@ const _: () = {
     assert!(core::mem::offset_of!(SddConfigurationTables, profiles) == 0x00);
     assert!(core::mem::offset_of!(SddConfigurationTables, opaque_124) == 0x124);
     assert_type_layout!(WakeContextState, 0x90, 4);
-    assert_type_layout!(DurationSources, 0x4, 4);
+    assert!(core::mem::offset_of!(WakeContextState, response_pointers) == 0x10);
+    assert_type_layout!(DurationSources, 0x4, 2);
     assert_type_layout!(PreLowMacWord, 0x4, 4);
     assert_type_layout!(PasRatePolicy, 0x14, 1);
     assert_type_layout!(PasRateWalkState, 0x4, 1);
@@ -2868,6 +2868,21 @@ mod tests {
         assert_eq!(sdd_gain_coefficient_unchecked(0).get(), 0x0400_35ac);
         assert_eq!(sdd_gain_coefficient_unchecked(3).get(), 0x0400_35b2);
         assert_eq!(SDD_CONFIGURATION_TABLES.get() + 0x130, 0x0400_35e0);
+    }
+
+    #[test]
+    fn wake_context_and_duration_addresses_are_exact() {
+        assert_eq!(WAKE_CONTEXT_STATE.get(), 0x0400_35e0);
+        assert_eq!(wake_clock_word(0).unwrap().get(), 0x0400_35e0);
+        assert_eq!(wake_clock_word(3).unwrap().get(), 0x0400_35ec);
+        assert!(wake_clock_word(4).is_none());
+        assert_eq!(wake_response_pointer_unchecked(0).get(), 0x0400_35f0);
+        assert_eq!(wake_response_pointer_unchecked(31).get(), 0x0400_366c);
+        assert_eq!(DURATION_SOURCES.get(), 0x0400_3670);
+        assert_eq!(duration_source(0).unwrap().get(), 0x0400_3670);
+        assert_eq!(duration_source(1).unwrap().get(), 0x0400_3672);
+        assert!(duration_source(2).is_none());
+        assert_eq!(duration_source(1).unwrap().get() + 2, 0x0400_3674);
     }
 
     #[test]

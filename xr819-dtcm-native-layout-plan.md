@@ -228,8 +228,8 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x040021b4..0x04002234` | `0x80` | 32-entry scheduler handler table | High, `32 * 4`; contains code pointers |
 | `0x04002234..0x040034b0` | `0x127c` | PHY/template/beacon/filter tables and opaque BSS | Medium islands, unknown aggregate extent |
 | `0x040034b0..0x040035e0` | `0x130` | typed SDD-derived channel/gain/profile tables | High structural confidence; shared quarantine |
-| `0x040035e0..0x04003670` | `0x90` | wake/context state and unknown | Low-medium |
-| `0x04003670..0x04003674` | `0x4` | retained duration-source halfwords | High addresses; semantics incomplete; fixed quarantine |
+| `0x040035e0..0x04003670` | `0x90` | typed wake clock words and 32 response pointers | High structural confidence; shared quarantine |
+| `0x04003670..0x04003674` | `0x4` | typed duration-source halfwords | High |
 | `0x04003674..0x04003678` | `0x4` | unknown | Unknown, not allocatable |
 | `0x04003678..0x04003e78` | `0x800` | shared low-MAC/PAS/rate/link/queue state with many computed overlays | High family root, incomplete fields; all-or-nothing group |
 | `0x04003e78..0x04003e98` | `0x20` | pre-VIF/link/aggregation header | Medium; includes link bitmap at `+0x18` |
@@ -3206,6 +3206,43 @@ packed    /tmp/xr819-sdd-profile-layout.bin
 checks    /tmp/xr819-sdd-profile-final-check.log
           3ceed21dce86ef3025df4352891ca61775cc457597c8f0a9221621595680255b
 manifest  tools/sdd-profile-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.35 Wake context and duration sources
+
+The complete wake-context family and its adjacent duration sources are now
+structurally typed:
+
+```text
+0x040035e0 +0x00 four u32 retained clock/context words
+           +0x10 32 u32 packet-RAM response pointers
+0x04003670 +0x00 two u16 duration-source values
+0x04003674 end
+```
+
+The retained vendor wake path writes the four leading words and response-pointer
+array; translated wake reinitialization consumes the same 32-entry array and
+two duration halfwords after RX, pipe, and register synchronization. The Rust
+path now derives those addresses from `dtcm.rs` while preserving loop bounds,
+volatile widths, and publication order.
+
+`tools/check-wake-context-layout.py` covers both adjacent families, rejects
+production literals and synthesized bases outside `dtcm.rs`, and pins one
+linked literal word plus two decoded literal-load xrefs. The complete ELF
+remains byte-identical to the qualified SDD-profile parent, so no hardware
+rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-wake-context-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-wake-context-final-check.log
+          a78efe826b161f7228d1de3628b43ba53316dc8281750a2af769f3073aa935fc
+manifest  tools/wake-context-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

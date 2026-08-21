@@ -1179,8 +1179,8 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
         // `mac_reinit_after_wake` restores these only after RX, pipe, and
         // register synchronization. This is wake-context restoration, not
         // VIF/JOIN programming.
-        write_u16(packet_ram::duration_word(0), read_u16(0x0400_3670));
-        write_u16(packet_ram::duration_word(1), read_u16(0x0400_3672));
+        write_u16(packet_ram::duration_word(0), read_u16(crate::dtcm::duration_source(0).unwrap().get()));
+        write_u16(packet_ram::duration_word(1), read_u16(crate::dtcm::duration_source(1).unwrap().get()));
 
         if let Some(vif) = crate::vif::wake_reinit_candidate() {
             program_mac_address(
@@ -1210,7 +1210,7 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
         for index in 0..32 {
             write_u32(
                 packet_ram::response_pointer(index),
-                read_u32(0x0400_35f0 + index * 4),
+                read_u32(crate::dtcm::wake_response_pointer_unchecked(index).get()),
             );
         }
         write_u32(
