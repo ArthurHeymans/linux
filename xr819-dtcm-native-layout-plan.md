@@ -4290,3 +4290,28 @@ manifest  tools/mac-pipe-records-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.74 Initialized low-MAC global prefix
+
+The `0xa0`-byte low-MAC prefix at `0x04001680..0x04001720` is now an exact
+`LowMacGlobalPrefix`. It names the FIFO controls, rate configuration, runtime
+flags, producer words, slot-time values, IFS duration, and two 22-entry airtime
+tables. Only the three bytes at `+0x0d` and the word at `+0x40` remain
+semantically opaque.
+
+MAC, radio, PHY, and TX roots now derive from this physical layout, including
+the direct FIFO-status and legacy-mode bytes and short-airtime table. Existing
+relative arithmetic and mixed-width volatile operations remain unchanged. The
+linked image materializes eleven interior addresses rather than the base;
+`tools/check-low-mac-global-prefix-layout.py` pins all 33 resolved literals and
+59 decoded xrefs. The complete ELF and packed image remain byte-identical to the
+qualified MAC-pipe-records parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-low-mac-global-final-check.log
+          6cd44eb8e30a1c32a2ba816b64dda9c08620cbe5cc6aac406afdac726da53bb3
+manifest  tools/low-mac-global-prefix-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

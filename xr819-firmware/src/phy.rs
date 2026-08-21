@@ -2132,7 +2132,7 @@ unsafe fn finish_channel_transition(
             crate::mac::reinitialize_after_wake(calibration_max_polls)
                 .map_err(ChannelTransitionError::MacWake)?;
         }
-        let status = 0x0400_1681 as *mut u8;
+        let status = crate::dtcm::LOW_MAC_FIFO_STATUS.get() as *mut u8;
         let value = status.read_volatile();
         if value & 1 != 0 {
             status.write_volatile(value & !1);

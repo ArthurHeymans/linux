@@ -131,7 +131,7 @@ struct InitializedVendorImage {
     control_words: InitializedControlWords,
     pre_host_pas_ring: OpaqueBytes<0x138>,
     host_pas_ring: HostPasRing,
-    initialized_low_mac_prefix: OpaqueBytes<0xa0>,
+    initialized_low_mac_prefix: LowMacGlobalPrefix,
     mac_pipe_records: [MacPipeRecord; 4],
     initialized_low_mac_tail: OpaqueBytes<0x6fc>,
     scheduler_exclusion_state: SchedulerExclusionState,
@@ -180,6 +180,8 @@ struct InitializedHifControl {
 }
 #[repr(C, align(4))]
 struct HostPasRing { head: SharedU32, tail: SharedU32, slots: [SharedU32; 64] }
+#[repr(C, align(4))]
+struct LowMacGlobalPrefix { fifo_control: SharedU8, fifo_status: SharedU8, rate_config: SharedU16, control_04: SharedU8, legacy_mode: SharedU8, event_pending: SharedU8, pipe_busy: SharedU8, controller_config: SharedU16, control_0a: SharedU8, control_0b: SharedU8, selected_rate: SharedU8, opaque_0d: OpaqueBytes<0x03>, producer: SharedU32, producer_mirror: SharedU32, state_18: SharedU32, slot_time_base: SharedU32, slot_time_initial: SharedU32, slot_time_x1: SharedU32, slot_time_x2: SharedU32, slot_time_x3: SharedU32, slot_time_constant: SharedU32, slot_time_x8: SharedU32, slot_time_x16: SharedU32, slot_time_x24: SharedU32, opaque_40: SharedU32, ifs_duration: SharedU32, short_airtimes: [SharedU16; 22], long_airtimes: [SharedU16; 22] }
 #[repr(C, align(4))]
 struct MacPipeSlot { state_word: SharedU32, opaque_04: OpaqueBytes<0x08>, frame: SharedU32, auxiliary: SharedU32, command: SharedU32 }
 #[repr(C, align(4))]
@@ -1665,6 +1667,11 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const LOW_MAC_GLOBAL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix));
+pub(crate) const LOW_MAC_FIFO_STATUS: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, fifo_status));
+pub(crate) const LOW_MAC_LEGACY_MODE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode));
+pub(crate) const LOW_MAC_SHORT_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, short_airtimes));
+pub(crate) const LOW_MAC_LONG_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, long_airtimes));
 pub(crate) const MAC_PIPE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records));
 pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(DtcmAddress::from_offset(MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>())) } else { None } }
 pub(crate) const HOST_PAS_RING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, host_pas_ring));
@@ -3117,6 +3124,14 @@ const _: () = {
     assert!(core::mem::offset_of!(HostPasRing, tail) == 0x04);
     assert!(core::mem::offset_of!(HostPasRing, slots) == 0x08);
     assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) == 0x1680);
+    assert!(core::mem::size_of::<LowMacGlobalPrefix>() == 0xa0);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, rate_config) == 0x02);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode) == 0x05);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, producer) == 0x10);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, slot_time_base) == 0x1c);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, ifs_duration) == 0x44);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, short_airtimes) == 0x48);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, long_airtimes) == 0x74);
     assert!(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records) == 0x1720);
     assert!(core::mem::size_of::<MacPipeSlot>() == 0x18);
     assert!(core::mem::offset_of!(MacPipeSlot, frame) == 0x0c);
@@ -3759,6 +3774,16 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_low_mac_global_addresses_are_exact() {
+        assert_eq!(LOW_MAC_GLOBAL.get(), 0x0400_1680);
+        assert_eq!(LOW_MAC_FIFO_STATUS.get(), 0x0400_1681);
+        assert_eq!(LOW_MAC_LEGACY_MODE.get(), 0x0400_1685);
+        assert_eq!(LOW_MAC_SHORT_AIRTIME_TABLE.get(), 0x0400_16c8);
+        assert_eq!(LOW_MAC_LONG_AIRTIME_TABLE.get(), 0x0400_16f4);
+        assert_eq!(LOW_MAC_GLOBAL.get() + 0xa0, MAC_PIPE_RECORDS.get());
     }
 
     #[test]

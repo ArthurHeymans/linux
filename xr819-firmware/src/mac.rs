@@ -2,7 +2,7 @@
 
 use crate::{packet_ram, platform, radio};
 
-const SHARED: usize = 0x0400_1680;
+const SHARED: usize = crate::dtcm::LOW_MAC_GLOBAL.get();
 const WAKE: usize = 0x0400_1ac0;
 
 #[inline(always)]

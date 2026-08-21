@@ -23,7 +23,7 @@ const FIFO_MAGIC: u32 = 0x00aa_55ff;
 const FIFO_RELEASED: u32 = 0xcccc_cc00;
 const DMA_PRODUCER: *const u32 = crate::platform::mac_register(0x0604) as *const u32;
 const DMA_CONSUMER: *mut u32 = crate::platform::mac_register(0x0608) as *mut u32;
-const VENDOR_FIFO_STATE: usize = 0x0400_1680;
+const VENDOR_FIFO_STATE: usize = crate::dtcm::LOW_MAC_GLOBAL.get();
 
 #[inline(always)]
 fn fifo_base() -> usize {

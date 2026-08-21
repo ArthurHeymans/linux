@@ -51,6 +51,7 @@ python3 tools/check-initialized-completion-words-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
+python3 tools/check-low-mac-global-prefix-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -106,6 +107,7 @@ python3 tools/check-initialized-completion-words-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
+python3 tools/check-low-mac-global-prefix-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -527,6 +529,15 @@ if [[ -n "${XR819_MAC_PIPE_RECORDS_PARENT_ELF:-}" ]]; then
     "$XR819_MAC_PIPE_RECORDS_PARENT_ELF" "$ELF"
 else
   echo "== MAC-pipe-records codegen gate skipped: set XR819_MAC_PIPE_RECORDS_PARENT_ELF to the qualified host-PAS-ring ELF =="
+fi
+
+if [[ -n "${XR819_LOW_MAC_GLOBAL_PREFIX_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed low-MAC-global-prefix parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/low-mac-global-prefix-codegen-manifest.json \
+    "$XR819_LOW_MAC_GLOBAL_PREFIX_PARENT_ELF" "$ELF"
+else
+  echo "== low-MAC-global-prefix codegen gate skipped: set XR819_LOW_MAC_GLOBAL_PREFIX_PARENT_ELF to the qualified MAC-pipe-records ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

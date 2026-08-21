@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for retained MAC pipe records.
+"""Drift-evidence gates for the initialized low-MAC global prefix.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MAC_PIPE_RECORD_RANGE = (0x04001720, 0x040018D0)
+LOW_MAC_GLOBAL_PREFIX_RANGE = (0x04001680, 0x04001720)
 SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -31,30 +31,50 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "tools/check-host-pas-ring-layout.py",
     "tools/check-low-mac-global-prefix-layout.py",
-    "tools/check-mac-pipe-records-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "MAC_PIPE_RECORDS_BASE",
-    "MAC_PIPE_RECORD_STRIDE",
-    "MAC_PIPE_SLOT_STRIDE",
+    "LOW_MAC_GLOBAL_BASE",
+    "LOW_MAC_SHORT_AIRTIME_TABLE_BASE",
+    "LOW_MAC_LONG_AIRTIME_TABLE_BASE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001720: 6,
-    0x04001723: 1,
-    0x04001738: 1,
+    0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
+    0x04001687: 1, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 5,
+    0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
-    ('_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001720): 2,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001723): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001738): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac18rebuild_pipe_state', 0x04001720): 2,
+    ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x0400169C): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26enter_mac_fatal_quiescence', 0x04001687): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04001685): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx31prepare_single_frame_pas_timing', 0x04001682): 2,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 10,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 13,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac19build_control_frame', 0x040016B0): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac19program_rate_tables', 0x04001682): 2,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac20program_slot_timings', 0x0400169C): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reinitialize_after_wake', 0x04001682): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reinitialize_after_wake', 0x04001690): 3,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reprogram_after_channel', 0x04001682): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reprogram_after_channel', 0x0400169C): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac24initialize_tx_pipe_state', 0x0400169C): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac28install_response_descriptors', 0x040016B0): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x0400168A): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001682): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001690): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy24begin_channel_transition', 0x04001682): 4,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25finish_channel_transition', 0x04001681): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25finish_channel_transition', 0x04001688): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4join5reset', 0x04001688): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service', 0x04001688): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio15poll_indication', 0x04001694): 2,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio22resynchronize_consumer', 0x04001690): 2,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio7release', 0x04001690): 3,
+    ('rust_main', 0x04001690): 1,
 })
 
 
@@ -178,7 +198,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return MAC_PIPE_RECORD_RANGE[0] <= value < MAC_PIPE_RECORD_RANGE[1]
+    return LOW_MAC_GLOBAL_PREFIX_RANGE[0] <= value < LOW_MAC_GLOBAL_PREFIX_RANGE[1]
 
 
 def check_source() -> None:
@@ -200,14 +220,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: MAC-pipe-record literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: low-MAC-global-prefix literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized MAC-pipe-record form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized low-MAC-global-prefix form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"MAC PIPE RECORD SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"LOW MAC GLOBAL PREFIX SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -278,9 +298,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("MAC PIPE RECORD LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("LOW MAC GLOBAL PREFIX LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "MAC PIPE RECORD LINKED DRIFT-EVIDENCE GATE PASSED "
+        "LOW MAC GLOBAL PREFIX LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -299,4 +319,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"MAC-pipe-record drift gate failed: {error}")
+        raise SystemExit(f"low-MAC-global-prefix drift gate failed: {error}")

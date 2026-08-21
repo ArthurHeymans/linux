@@ -153,7 +153,7 @@ impl SharedCompletionRing {
 const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get() as usize;
 #[cfg(not(target_arch = "arm"))]
 const PIPE_RETRY_RANDOM_STATE: u32 = crate::dtcm::initialized_random_lfsr().get() as u32;
-const PIPE_RECORDS: u32 = 0x0400_1680;
+const PIPE_RECORDS: u32 = crate::dtcm::LOW_MAC_GLOBAL.get() as u32;
 const CURRENT_PIPE: u32 = 0x0400_1f78;
 const CURRENT_PIPE_RECORD: u32 = CURRENT_PIPE + 0x0c;
 const CURRENT_SLOT: u32 = CURRENT_PIPE + 0x10;
@@ -174,7 +174,7 @@ const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const PIPE_RETRY_RATE_MAP: u32 = 0x0400_1aec;
 const PIPE_RETRY_TIMING_TABLE: u32 = crate::dtcm::TX_DURATION_TIMING_TABLE.get() as u32;
-const PAS_ACK_TIMING_TABLE: usize = 0x0400_16c8;
+const PAS_ACK_TIMING_TABLE: usize = crate::dtcm::LOW_MAC_SHORT_AIRTIME_TABLE.get();
 const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
 #[cfg(target_arch = "arm")]
 const INTERRUPT_PENDING: usize = 0x0a88_0020;
@@ -4646,7 +4646,7 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
     unsafe {
         trace_tx_stage(TX_TRACE_SUCCESS);
         trace_tx_value(0x2c, u32::from(pipe));
-        let global = 0x0400_1680_usize;
+        let global = crate::dtcm::LOW_MAC_GLOBAL.get();
         let pipe_state = global + usize::from(pipe) * 0x6c + 0xa0;
         let current = read_u8(pipe_state + 2);
         let current_slot = pipe_state + usize::from(current) * 0x18 + 0x0c;
@@ -4726,7 +4726,7 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
     unsafe {
         trace_tx_stage(TX_TRACE_START);
         trace_tx_value(0x24, u32::from(pipe));
-        let global = 0x0400_1680_usize;
+        let global = crate::dtcm::LOW_MAC_GLOBAL.get();
         write_u32(
             global + 0x40,
             read_u32(crate::platform::mac_register(0x0604)),
@@ -6521,7 +6521,7 @@ pub unsafe fn build_prepared_probe_descriptor(
         let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
         let request_flag_rate_bits =
             (address.request_flag_rate_bits_address() as *const u8).read_volatile();
-        let legacy_mode = (0x0400_1685 as *const u8).read_volatile();
+        let legacy_mode = (crate::dtcm::LOW_MAC_LEGACY_MODE.get() as *const u8).read_volatile();
         let rate_attribute =
             (crate::dtcm::RATE_ENCODING_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
         let hardware_rate =
@@ -6567,7 +6567,7 @@ unsafe fn emit_prepared_probe_descriptor(
         let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
         let request_flag_rate_bits =
             (address.request_flag_rate_bits_address() as *const u8).read_volatile();
-        let legacy_mode = (0x0400_1685 as *const u8).read_volatile();
+        let legacy_mode = (crate::dtcm::LOW_MAC_LEGACY_MODE.get() as *const u8).read_volatile();
         let rate_attribute =
             (crate::dtcm::RATE_ENCODING_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
         let hardware_rate =
