@@ -226,7 +226,8 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04002094..0x0400218c` | `0xf8` | retained debug-console state | Medium; mixed and mostly untranslated |
 | `0x0400218c..0x040021b4` | `0x28` | `ClockParameters` record | High shape from `register_structs!`; shared/timer-owned |
 | `0x040021b4..0x04002234` | `0x80` | 32-entry scheduler handler table | High, `32 * 4`; contains code pointers |
-| `0x04002234..0x040034b0` | `0x127c` | PHY/template/beacon/filter tables and opaque BSS | Medium islands, unknown aggregate extent |
+| `0x04002234..0x040022b8` | `0x84` | typed 22-record PHY gain-source table | High structural confidence from retained builder loop |
+| `0x040022b8..0x040034b0` | `0x11f8` | template/beacon/filter tables and opaque BSS | Medium islands, unknown aggregate extent |
 | `0x040034b0..0x040035e0` | `0x130` | typed SDD-derived channel/gain/profile tables | High structural confidence; shared quarantine |
 | `0x040035e0..0x04003670` | `0x90` | typed wake clock words and 32 response pointers | High structural confidence; shared quarantine |
 | `0x04003670..0x04003674` | `0x4` | typed duration-source halfwords | High |
@@ -3243,6 +3244,46 @@ packed    /tmp/xr819-wake-context-layout.bin
 checks    /tmp/xr819-wake-context-final-check.log
           a78efe826b161f7228d1de3628b43ba53316dc8281750a2af769f3073aa935fc
 manifest  tools/wake-context-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.36 PHY gain-source records
+
+The first `0x84` bytes of `PreConfigurationTables` are now an exact 22-record
+source table used by retained `phy_build_gain_tables`:
+
+```text
+0x04002234 22 records, stride 0x06
+  +0x00 u8 selector
+  +0x01 u8 retained byte
+  +0x02 i16 lower value
+  +0x04 i16 upper value
+0x040022b8 end
+```
+
+The retained builder copies and adjusts all 22 records before deriving its
+80-entry hardware gain table. No production Rust code currently reads this
+source table directly, so the migration adds only bounded structural addresses
+and compile-time layout checks. The remainder of `PreConfigurationTables`
+through `0x040034b0` stays opaque.
+
+`tools/check-phy-gain-source-layout.py` covers the complete record table and
+rejects production literals or synthesized base/stride forms outside
+`dtcm.rs`. The current Rust ELF has no linked in-range literal or decoded xref;
+the archived vendor decompilation and DTCM reference report remain the evidence
+for the record count and stride. The complete ELF remains byte-identical to the
+qualified wake-context parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-phy-gain-source-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-gain-source-final-check.log
+          2cb74b000a41cbb0c97c825e3a4f8a9e86914f1cfe7f8e962fc3575250de1c38
+manifest  tools/phy-gain-source-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

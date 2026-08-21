@@ -26,6 +26,7 @@ python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-scheduler-support-layout.py
+python3 tools/check-phy-gain-source-layout.py
 python3 tools/check-sdd-profile-layout.py
 python3 tools/check-wake-context-layout.py
 python3 tools/check-low-mac-pas-layout.py
@@ -59,6 +60,7 @@ python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-scheduler-event-layout.py "$ELF"
 python3 tools/check-runtime-register-backoff-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
+python3 tools/check-phy-gain-source-layout.py "$ELF"
 python3 tools/check-sdd-profile-layout.py "$ELF"
 python3 tools/check-wake-context-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
@@ -285,6 +287,15 @@ if [[ -n "${XR819_WAKE_CONTEXT_PARENT_ELF:-}" ]]; then
     "$XR819_WAKE_CONTEXT_PARENT_ELF" "$ELF"
 else
   echo "== wake-context codegen gate skipped: set XR819_WAKE_CONTEXT_PARENT_ELF to the qualified SDD-profile ELF =="
+fi
+
+if [[ -n "${XR819_PHY_GAIN_SOURCE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed PHY-gain-source parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/phy-gain-source-codegen-manifest.json \
+    "$XR819_PHY_GAIN_SOURCE_PARENT_ELF" "$ELF"
+else
+  echo "== PHY-gain-source codegen gate skipped: set XR819_PHY_GAIN_SOURCE_PARENT_ELF to the qualified wake-context ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

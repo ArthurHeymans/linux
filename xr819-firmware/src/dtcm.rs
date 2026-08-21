@@ -156,11 +156,10 @@ struct SchedulerHandlerTable {
     handlers: [SharedU32; 32],
 }
 
-opaque_family!(
-    /// PHY/template/beacon/filter state with only scattered decoded islands.
-    PreConfigurationTables,
-    0x127c
-);
+#[repr(C, align(2))]
+struct PhyGainSourceRecord { selector: SharedU8, opaque_01: SharedU8, lower: SharedU16, upper: SharedU16 }
+#[repr(C, align(4))]
+struct PreConfigurationTables { gain_source_records: [PhyGainSourceRecord; 22], opaque_084: OpaqueBytes<0x11f8> }
 #[repr(C)]
 struct SddChannelRecord { bytes: [SharedU8; 3] }
 #[repr(C, align(2))]
@@ -1366,6 +1365,8 @@ pub(crate) const fn pas_backoff_override_enabled() -> DtcmAddress { runtime_regi
 pub(crate) const fn pas_backoff_override_window() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window)) }
 pub const CLOCK_PARAMETERS: DtcmAddress = DtcmAddress::from_offset(0x218c);
 pub const SCHEDULER_HANDLER_TABLE: DtcmAddress = DtcmAddress::from_offset(0x21b4);
+pub(crate) const PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x2234);
+pub(crate) const fn phy_gain_source_record(index: usize) -> Option<DtcmAddress> { if index < 22 { Some(DtcmAddress::from_offset(PHY_GAIN_SOURCE_RECORDS.offset() + index * core::mem::size_of::<PhyGainSourceRecord>())) } else { None } }
 pub(crate) const SDD_CONFIGURATION_TABLES: DtcmAddress = DtcmAddress::from_offset(0x34b0);
 const fn sdd_profile_field(profile: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(SDD_CONFIGURATION_TABLES.offset().wrapping_add(profile.wrapping_mul(core::mem::size_of::<SddProfileBank>())).wrapping_add(offset)) }
 pub(crate) const fn sdd_profile(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(sdd_profile_unchecked(profile)) } else { None } }
@@ -2093,7 +2094,12 @@ const _: () = {
     assert!(core::mem::offset_of!(TimerEntry, callback) == 0x0c);
     assert!(core::mem::offset_of!(TimerEntry, context) == 0x10);
     assert_type_layout!(SchedulerHandlerTable, 0x80, 4);
+    assert_type_layout!(PhyGainSourceRecord, 0x06, 2);
+    assert!(core::mem::offset_of!(PhyGainSourceRecord, lower) == 0x02);
+    assert!(core::mem::offset_of!(PhyGainSourceRecord, upper) == 0x04);
     assert_type_layout!(PreConfigurationTables, 0x127c, 4);
+    assert!(core::mem::offset_of!(PreConfigurationTables, gain_source_records) == 0x000);
+    assert!(core::mem::offset_of!(PreConfigurationTables, opaque_084) == 0x084);
     assert_type_layout!(SddChannelRecord, 0x03, 1);
     assert_type_layout!(SddProfileBank, 0x92, 2);
     assert!(core::mem::offset_of!(SddProfileBank, channel_records) == 0x16);
@@ -2845,6 +2851,15 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn phy_gain_source_record_addresses_are_exact() {
+        assert_eq!(PHY_GAIN_SOURCE_RECORDS.get(), 0x0400_2234);
+        assert_eq!(phy_gain_source_record(0).unwrap().get(), 0x0400_2234);
+        assert_eq!(phy_gain_source_record(21).unwrap().get(), 0x0400_22b2);
+        assert!(phy_gain_source_record(22).is_none());
+        assert_eq!(phy_gain_source_record(21).unwrap().get() + 6, 0x0400_22b8);
     }
 
     #[test]
