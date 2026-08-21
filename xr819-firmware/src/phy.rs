@@ -548,7 +548,7 @@ pub unsafe fn commit_channel_pll(register: u32, mode: u8, extended_settle: bool)
 /// Complete enable/disable behavior from vendor `0x168b8` for state mode 2.
 pub unsafe fn set_calibration_engine_enabled(enabled: bool) {
     unsafe {
-        let offset = (0x0400_9984 as *const u32).read_volatile() as usize;
+        let offset = (crate::dtcm::phy_offset_word().get() as *const u32).read_volatile() as usize;
         let control_address = 0x0abb_8004 + offset;
         let mut control = (control_address as *const u32).read_volatile();
         if enabled {
@@ -939,7 +939,7 @@ pub fn channel_frequency_offset_mhz(mode: u8, frequency_khz: u32) -> i16 {
 pub unsafe fn program_channel_measurement_timing() -> Option<i32> {
     unsafe {
         let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
-        let frequency_khz = (0x0400_9974 as *const u32).read_volatile();
+        let frequency_khz = (crate::dtcm::phy_frequency_khz().get() as *const u32).read_volatile();
         let timing = channel_measurement_timing(mode, frequency_khz)?;
         write_u32(0x0ab8_8020, timing as u32);
         Some(timing)
@@ -954,7 +954,7 @@ pub unsafe fn program_channel_measurement_timing() -> Option<i32> {
 pub unsafe fn publish_channel_frequency_offset() -> i16 {
     unsafe {
         let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
-        let frequency_khz = (0x0400_9974 as *const u32).read_volatile();
+        let frequency_khz = (crate::dtcm::phy_frequency_khz().get() as *const u32).read_volatile();
         let offset = channel_frequency_offset_mhz(mode, frequency_khz);
         let current = (0x0400_99f4 as *const i32).read_volatile();
         if current != i32::from(offset) {
@@ -975,7 +975,7 @@ pub unsafe fn copy_channel_configuration_slot(slot: u8) {
         return;
     }
     unsafe {
-        let value = (0x0400_9998 as *const u32).read_volatile();
+        let value = (crate::dtcm::phy_measured_b().get() as *const u32).read_volatile();
         write_u32(0x0400_99ac + usize::from(slot) * 4, value);
     }
 }
@@ -1106,9 +1106,9 @@ pub unsafe fn program_channel_pll(channel: u16) -> Result<PllDivider, ChannelPll
             1 => ((5000 + u32::from(channel & 0xff) * 5) * 1000, 1000),
             _ => return Err(ChannelPllError::UnsupportedProfile),
         };
-        write_u32(0x0400_9974, frequency_khz);
+        write_u32(crate::dtcm::phy_frequency_khz().get(), frequency_khz);
         let reference = (crate::dtcm::phy_reference_word().get() as *const u32).read_volatile();
-        let correction = i32::from((0x0400_9988 as *const i16).read_volatile());
+        let correction = i32::from((crate::dtcm::phy_correction().get() as *const i16).read_volatile());
         let correction = i64::from(reference)
             .wrapping_mul(i64::from(correction))
             .wrapping_div(1000);
@@ -1175,14 +1175,14 @@ pub unsafe fn measure_temperature_primary()
             return Err(TemperatureMeasurementError::HardwareFaultNoRestore);
         }
         delay_units(10);
-        let denominator = i32::from((0x0400_9990 as *const i16).read_volatile());
+        let denominator = i32::from((crate::dtcm::phy_denominator().get() as *const i16).read_volatile());
         if denominator == 0 {
             return Err(TemperatureMeasurementError::InvalidCalibrationNoRestore);
         }
         let raw = (0x0abb_82d8 as *const i32)
             .read_volatile()
             .wrapping_mul(0x47);
-        let offset = i32::from((0x0400_9992 as *const i16).read_volatile());
+        let offset = i32::from((crate::dtcm::phy_correction_offset().get() as *const i16).read_volatile());
         let converted = raw
             .wrapping_sub(offset)
             .wrapping_mul(1000)
@@ -1190,7 +1190,7 @@ pub unsafe fn measure_temperature_primary()
         let accepted = (converted.wrapping_add(-41_000) as u32) <= 17_900;
         let value = if accepted { converted } else { 38_000 };
         if accepted {
-            write_u32(0x0400_9998, converted as u32);
+            write_u32(crate::dtcm::phy_measured_b().get(), converted as u32);
         }
         delay_units(1);
 
@@ -1491,8 +1491,8 @@ unsafe fn gain_computation_input(
             rssi_multiplier_coefficient: i32::from(((bank + 0x4e) as *const i16).read_volatile()),
             rssi_denominator: i32::from(((bank + 0x50) as *const i16).read_volatile()),
             rssi_offset: i32::from(((bank + 0x52) as *const i16).read_volatile()),
-            measured_a: (0x0400_9994 as *const i32).read_volatile(),
-            measured_b: (0x0400_9998 as *const i32).read_volatile(),
+            measured_a: (crate::dtcm::phy_measured_a().get() as *const i32).read_volatile(),
+            measured_b: (crate::dtcm::phy_measured_b().get() as *const i32).read_volatile(),
             analog_enabled: i32::from((crate::dtcm::scheduler_analog_enabled().get() as *const i16).read_volatile()),
             analog_word_2c: (crate::dtcm::scheduler_analog_word(0).unwrap().get() as *const u32).read_volatile(),
             analog_word_30: (crate::dtcm::scheduler_analog_word(1).unwrap().get() as *const u32).read_volatile(),
@@ -1645,7 +1645,7 @@ unsafe fn rf_init_stage_a_mode0() {
         write_u32(BASE - 0x90, 0x001c_0000);
         write_u32(
             BASE - 0xa4,
-            u32::from((0x0400_99ab as *const u8).read_volatile() == 0) * 9,
+            u32::from((crate::dtcm::phy_zero_select().get() as *const u8).read_volatile() == 0) * 9,
         );
         write_u32(BASE + 0x14, 0x0703_0100);
         write_u32(BASE + 0x18, 0x7f3f_1f0f);
@@ -1657,7 +1657,7 @@ unsafe fn rf_init_stage_a_mode0() {
             write_u32(0x0ac8_005c, 0x6a25_5800);
             write_u32(0x0ac8_00e8, 0x10c);
         }
-        let override_value = (0x0400_998b as *const u8).read_volatile();
+        let override_value = (crate::dtcm::phy_override_value().get() as *const u8).read_volatile();
         if override_value != 0 {
             write_u32(
                 0x0ac8_005c,
@@ -1691,7 +1691,7 @@ unsafe fn rf_init_stage_b_mode0() {
         write_u32(BASE - 0x20, 0x0000_140a);
         write_u32(BASE - 0x24, 0x0030_0000);
         write_u32(BASE, 0x1350_381e);
-        let alternate = (0x0400_998c as *const u8).read_volatile() == 1;
+        let alternate = (crate::dtcm::phy_silicon_variant().get() as *const u8).read_volatile() == 1;
         write_u32(BASE - 0xb8, if alternate { 0x8202 } else { 0x8002 });
         write_u32(BASE - 0xbc, 0x0008_0206);
         write_u32(BASE - 0x8c, 0x0000_0201);
@@ -1860,10 +1860,10 @@ unsafe fn publish_completed_receive_state() {
         write_u8(crate::dtcm::phy_calibration_stage().get(), 3);
         write_u8(0x0400_1adc, 2);
 
-        let mut state = (0x0400_99a9 as *const u8).read_volatile();
+        let mut state = (crate::dtcm::phy_retained_state().get() as *const u8).read_volatile();
         if state != 5 {
             state = 3;
-            write_u8(0x0400_99a9, state);
+            write_u8(crate::dtcm::phy_retained_state().get(), state);
         }
         write_u8(0x0400_1d30, 1);
         write_u32(0x0400_1d2c, u32::from(state));
@@ -1921,14 +1921,14 @@ pub unsafe fn advance_awake_station_tx() -> bool {
         if state == 1 {
             return false;
         }
-        let retained_state = (0x0400_99a9 as *const u8).read_volatile();
+        let retained_state = (crate::dtcm::phy_retained_state().get() as *const u8).read_volatile();
         // Vendor `phy_state_advance` never writes `0x040099a9`; it only reads
         // it to decide whether to run the reprogram tail. A hardware capture of
         // the accepted class-6 publication versus the refused class-0 one shows
         // the working path publishes with retained state 5, so forcing it to 3
         // here put the PHY into a configuration the MAC does not accept.
         if retained_state == 5 {
-            write_u8(0x0400_99a9, 3);
+            write_u8(crate::dtcm::phy_retained_state().get(), 3);
         }
         if retained_state != 0 {
             crate::mac::reprogram_after_channel();
@@ -2000,7 +2000,7 @@ unsafe fn run_vendor_dynamic_mode_calibration() {
     // steps likewise come directly from the stack image built there.
     let control_configuration = 0x07ff_0110_u32;
     let table_value = unsafe { (0x0400_0de8 as *const u16).read_volatile() as u32 };
-    let sample_width_shift = unsafe { (0x0400_9982 as *const u16).read_volatile() as u8 };
+    let sample_width_shift = unsafe { (crate::dtcm::phy_sample_width().get() as *const u16).read_volatile() as u8 };
     let configuration = DynamicIqHardwareCalibrationConfiguration {
         alternate_profile: false,
         table_value,
@@ -4432,9 +4432,9 @@ pub unsafe fn initialize_mac_software_state() {
         write_u8(0x0400_1add, 0);
         write_u8(0x0400_1ade, 0);
 
-        write_u8(0x0400_997c, 0);
-        write_u8(0x0400_998c, detect_rf_silicon_variant());
-        write_u8(0x0400_99a9, 0);
+        write_u8(crate::dtcm::phy_measurement_control().get(), 0);
+        write_u8(crate::dtcm::phy_silicon_variant().get(), detect_rf_silicon_variant());
+        write_u8(crate::dtcm::phy_retained_state().get(), 0);
         write_u16(0x0400_99ce, 100);
         write_u8(0x0400_99d0, 1);
         write_u8(0x0400_99d1, 0);
@@ -4450,8 +4450,8 @@ pub unsafe fn initialize_mac_software_state() {
         // Vendor 0x16ca4 derives these from remap window two at 0x04001ffc.
         let remap = (crate::dtcm::scheduler_remap_secondary().get() as *const u32).read_volatile();
         let (first, second) = derive_remap_timing(remap);
-        write_u16(0x0400_9990, first);
-        write_u16(0x0400_9992, second);
+        write_u16(crate::dtcm::phy_denominator().get(), first);
+        write_u16(crate::dtcm::phy_correction_offset().get(), second);
     }
 }
 

@@ -4403,7 +4403,7 @@ pub unsafe fn dispatch_phy_command_3() {
         debug_assert_eq!(phy_dispatch_switch_target(3), 0x0001_6fa0);
         let command = 0x0400_1d40_usize;
         let output = 0x0400_1d48_usize;
-        let global_state = 0x0400_99a9_usize;
+        let global_state = crate::dtcm::phy_retained_state().get();
         write_u8(command, 3);
         if read_u8(global_state) == 4 {
             write_u8(output + 1, read_u8(output + 1) | 2);
@@ -4428,11 +4428,11 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
         debug_assert_eq!(phy_dispatch_switch_target(2), 0x0001_6f92);
         let command = 0x0400_1d40_usize;
         let output = 0x0400_1d48_usize;
-        let global_state = 0x0400_99a9_usize;
+        let global_state = crate::dtcm::phy_retained_state().get();
         write_u8(command, 2);
         write_u8(command + 1, secondary);
         if read_u8(global_state) != 5 {
-            write_u8(0x0400_997c, secondary);
+            write_u8(crate::dtcm::phy_measurement_control().get(), secondary);
             write_u32(0x0abb_8004, read_u32(0x0abb_8004) | 0x800);
             write_u32(0x0abb_8014, 0x0014_00c8);
             write_u32(0x0abb_8010, 0x0014_00c8);
@@ -4462,7 +4462,7 @@ pub unsafe fn start_phy_operation_1() -> u8 {
         debug_assert_eq!(phy_dispatch_switch_target(1), 0x0001_6f8c);
         let state = 0x0400_1d20_usize;
         let output = state + 0x18;
-        let global_state = 0x0400_99a9_usize;
+        let global_state = crate::dtcm::phy_retained_state().get();
         write_u8(state + 0x10, 1);
         write_u8(state + 0x21, 0);
         if read_u8(global_state) != 5 {

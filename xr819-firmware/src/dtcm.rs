@@ -709,7 +709,9 @@ struct PhyCalibrationReferences { coefficient_i: SharedU32, coefficient_q: Share
 #[repr(C, align(4))]
 struct PhyProfileState { state: SharedU8, opaque_01: SharedU8, profile: SharedU8, phase: SharedU8, opaque_04: OpaqueBytes<0x02>, channel: SharedU16, opaque_08: OpaqueBytes<0x05>, profile0_ready: SharedU8, opaque_0e: OpaqueBytes<0x02>, auxiliary_state: SharedU8, transition_gate: SharedU8, opaque_12: SharedU8, calibration_stage: SharedU8, profile0_state: SharedU8, profile1_ready: SharedU8, profile1_channel: SharedU16, opaque_18: OpaqueBytes<0x08>, reference_word: SharedU32, opaque_24: SharedU32 }
 #[repr(C, align(4))]
-struct PhyCoreState { references: PhyCalibrationReferences, profile_state: PhyProfileState, opaque_38: OpaqueBytes<0x98> }
+struct PhyMeasurementState { frequency_khz: SharedU32, opaque_04: SharedU32, control_08: SharedU8, opaque_09: OpaqueBytes<0x05>, sample_width: SharedU16, offset_word: SharedU32, correction: SharedU16, opaque_16: SharedU8, override_value: SharedU8, silicon_variant: SharedU8, opaque_19: OpaqueBytes<0x03>, denominator: SharedU16, correction_offset: SharedU16, measured_a: SharedU32, measured_b: SharedU32, opaque_28: OpaqueBytes<0x0d>, retained_state: SharedU8, opaque_36: SharedU8, zero_select: SharedU8 }
+#[repr(C, align(4))]
+struct PhyCoreState { references: PhyCalibrationReferences, profile_state: PhyProfileState, measurement_state: PhyMeasurementState, opaque_70: OpaqueBytes<0x60> }
 
 opaque_family!(
     /// Remaining PHY and unknown vendor-zeroed tail.
@@ -1530,6 +1532,21 @@ pub(crate) const fn phy_profile0_state() -> DtcmAddress { phy_profile_field(core
 pub(crate) const fn phy_profile1_ready() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile1_ready)) }
 pub(crate) const fn phy_profile1_channel() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile1_channel)) }
 pub(crate) const fn phy_reference_word() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, reference_word)) }
+pub(crate) const PHY_MEASUREMENT_STATE: DtcmAddress = DtcmAddress::from_offset(0x9974);
+const fn phy_measurement_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_MEASUREMENT_STATE.offset() + offset) }
+pub(crate) const fn phy_frequency_khz() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, frequency_khz)) }
+pub(crate) const fn phy_measurement_control() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, control_08)) }
+pub(crate) const fn phy_sample_width() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, sample_width)) }
+pub(crate) const fn phy_offset_word() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, offset_word)) }
+pub(crate) const fn phy_correction() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, correction)) }
+pub(crate) const fn phy_override_value() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, override_value)) }
+pub const fn phy_silicon_variant() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, silicon_variant)) }
+pub(crate) const fn phy_denominator() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, denominator)) }
+pub(crate) const fn phy_correction_offset() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, correction_offset)) }
+pub(crate) const fn phy_measured_a() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, measured_a)) }
+pub(crate) const fn phy_measured_b() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, measured_b)) }
+pub(crate) const fn phy_retained_state() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, retained_state)) }
+pub(crate) const fn phy_zero_select() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, zero_select)) }
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
 
@@ -2365,10 +2382,24 @@ const _: () = {
     assert!(core::mem::offset_of!(PhyProfileState, profile1_ready) == 0x15);
     assert!(core::mem::offset_of!(PhyProfileState, profile1_channel) == 0x16);
     assert!(core::mem::offset_of!(PhyProfileState, reference_word) == 0x20);
+    assert_type_layout!(PhyMeasurementState, 0x38, 4);
+    assert!(core::mem::offset_of!(PhyMeasurementState, control_08) == 0x08);
+    assert!(core::mem::offset_of!(PhyMeasurementState, sample_width) == 0x0e);
+    assert!(core::mem::offset_of!(PhyMeasurementState, offset_word) == 0x10);
+    assert!(core::mem::offset_of!(PhyMeasurementState, correction) == 0x14);
+    assert!(core::mem::offset_of!(PhyMeasurementState, override_value) == 0x17);
+    assert!(core::mem::offset_of!(PhyMeasurementState, silicon_variant) == 0x18);
+    assert!(core::mem::offset_of!(PhyMeasurementState, denominator) == 0x1c);
+    assert!(core::mem::offset_of!(PhyMeasurementState, correction_offset) == 0x1e);
+    assert!(core::mem::offset_of!(PhyMeasurementState, measured_a) == 0x20);
+    assert!(core::mem::offset_of!(PhyMeasurementState, measured_b) == 0x24);
+    assert!(core::mem::offset_of!(PhyMeasurementState, retained_state) == 0x35);
+    assert!(core::mem::offset_of!(PhyMeasurementState, zero_select) == 0x37);
     assert_type_layout!(PhyCoreState, 0xd0, 4);
     assert!(core::mem::offset_of!(PhyCoreState, references) == 0x00);
     assert!(core::mem::offset_of!(PhyCoreState, profile_state) == 0x10);
-    assert!(core::mem::offset_of!(PhyCoreState, opaque_38) == 0x38);
+    assert!(core::mem::offset_of!(PhyCoreState, measurement_state) == 0x38);
+    assert!(core::mem::offset_of!(PhyCoreState, opaque_70) == 0x70);
     assert_type_layout!(PhyTail, 0x238, 4);
     assert_type_layout!(ResearchMargin, 0x3bc, 4);
     assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4);
@@ -2748,6 +2779,19 @@ mod tests {
         assert_eq!(phy_profile1_channel().get(), 0x0400_9962);
         assert_eq!(phy_reference_word().get(), 0x0400_996c);
         assert_eq!(phy_reference_word().get() + 8, 0x0400_9974);
+        assert_eq!(PHY_MEASUREMENT_STATE.get(), 0x0400_9974);
+        assert_eq!(phy_measurement_control().get(), 0x0400_997c);
+        assert_eq!(phy_sample_width().get(), 0x0400_9982);
+        assert_eq!(phy_offset_word().get(), 0x0400_9984);
+        assert_eq!(phy_correction().get(), 0x0400_9988);
+        assert_eq!(phy_override_value().get(), 0x0400_998b);
+        assert_eq!(phy_silicon_variant().get(), 0x0400_998c);
+        assert_eq!(phy_denominator().get(), 0x0400_9990);
+        assert_eq!(phy_correction_offset().get(), 0x0400_9992);
+        assert_eq!(phy_measured_a().get(), 0x0400_9994);
+        assert_eq!(phy_measured_b().get(), 0x0400_9998);
+        assert_eq!(phy_retained_state().get(), 0x0400_99a9);
+        assert_eq!(phy_zero_select().get() + 1, 0x0400_99ac);
     }
 
     #[test]

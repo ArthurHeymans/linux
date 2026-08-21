@@ -319,8 +319,8 @@ unsafe fn populate_vendor_calibration_state() {
         // Parameter-zero temperature fallback supplied by SDD element 0x46.
         if let Some(data) = find_sdd_element(0x46) {
             if data.len() >= 4 {
-                write_u16(0x0400_9990, u16::from_le_bytes([data[0], data[1]]));
-                write_u16(0x0400_9992, u16::from_le_bytes([data[2], data[3]]));
+                write_u16(crate::dtcm::phy_denominator().get(), u16::from_le_bytes([data[0], data[1]]));
+                write_u16(crate::dtcm::phy_correction_offset().get(), u16::from_le_bytes([data[2], data[3]]));
             }
         }
     }

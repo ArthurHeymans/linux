@@ -757,7 +757,7 @@ pub unsafe fn activate_sta(
         return Err(JoinStateError::Busy);
     }
     publish_sta_after_owner(record, true)?;
-    unsafe { write_u8(0x0400_99a9, 3) };
+    unsafe { write_u8(crate::dtcm::phy_retained_state().get(), 3) };
     Ok(())
 }
 
