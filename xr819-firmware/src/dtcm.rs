@@ -99,7 +99,7 @@ macro_rules! opaque_family {
         }
     };
 }
-#[repr(C, align(2))] struct TkipSboxTables { low_byte: [SharedU16; 256], high_byte: [SharedU16; 256] } #[repr(C, align(4))] struct AesTransferClassTable { flags: [SharedU32; 11] } #[repr(C, align(4))] struct RegisterWrite { address: SharedU32, value: SharedU32 } #[repr(C, align(4))] struct RegisterWriteList { writes: [RegisterWrite; 10], terminator_address: SharedU32, terminator_opaque: SharedU32 }
+#[repr(C, align(2))] struct TkipSboxTables { low_byte: [SharedU16; 256], high_byte: [SharedU16; 256] } #[repr(C, align(4))] struct AesTransferClassTable { flags: [SharedU32; 11] } #[repr(C, align(4))] struct RegisterWrite { address: SharedU32, value: SharedU32 } #[repr(C, align(4))] struct RegisterWriteList { writes: [RegisterWrite; 10], terminator_address: SharedU32, terminator_opaque: SharedU32 } #[repr(C, align(4))] struct PhyInitRegisterWriteList0 { writes: [RegisterWrite; 1], terminator_address: SharedU32, terminator_opaque: SharedU32 } #[repr(C, align(4))] struct PhyInitRegisterWriteList1 { writes: [RegisterWrite; 4], terminator_address: SharedU32, terminator_opaque: SharedU32 } #[repr(C, align(4))] struct PhyInitRegisterWriteList2 { writes: [RegisterWrite; 2], terminator_address: SharedU32, terminator_opaque: SharedU32 }
 /// Vendor COPY image with exact initialized-data islands represented at their
 /// qualified offsets. Bytes between islands remain occupied opaque data.
 #[repr(C, align(4))]
@@ -124,7 +124,7 @@ struct InitializedVendorImage {
     aes_mode1_microcode: OpaqueBytes<0x1ae>,
     pre_phy_gain_register_write_lists: OpaqueBytes<0x182>,
     phy_gain_register_write_lists: [RegisterWriteList; 2],
-    post_phy_gain_register_write_lists: OpaqueBytes<0x4c4>,
+    phy_init_register_write_list_0: PhyInitRegisterWriteList0, phy_init_register_write_list_1: PhyInitRegisterWriteList1, phy_init_register_write_list_2: PhyInitRegisterWriteList2, post_phy_init_register_write_lists: OpaqueBytes<0x474>,
     duration_quantum_pointers: [SharedU32; 4],
     pre_hif_control_shadow: OpaqueBytes<0xc8>,
     hif_control: InitializedHifControl,
@@ -1689,9 +1689,9 @@ pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress
         LOW_MAC_PAS_OFFSET + PAS_VIEWS_OFFSET + 0x1d8 + pipe * 0x38,
     )
 }
-pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000); pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables)); pub(crate) const AES_TRANSFER_CLASSES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, aes_transfer_classes)); pub(crate) const PHY_GAIN_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_register_write_lists));
+pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000); pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables)); pub(crate) const AES_TRANSFER_CLASSES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, aes_transfer_classes)); pub(crate) const PHY_GAIN_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_register_write_lists)); pub(crate) const PHY_INIT_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_0));
 pub const fn tkip_sbox_low_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, low_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } }
-pub const fn tkip_sbox_high_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, high_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } } pub(crate) const fn aes_transfer_class(class: usize) -> Option<DtcmAddress> { if class < 11 { Some(DtcmAddress::from_offset(AES_TRANSFER_CLASSES.offset() + core::mem::offset_of!(AesTransferClassTable, flags) + class * core::mem::size_of::<SharedU32>())) } else { None } } pub(crate) const fn phy_gain_register_write_list(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(DtcmAddress::from_offset(PHY_GAIN_REGISTER_WRITE_LISTS.offset() + profile * core::mem::size_of::<RegisterWriteList>())) } else { None } } pub(crate) const fn phy_gain_register_write_entry(profile: usize, entry: usize) -> Option<DtcmAddress> { if profile < 2 && entry < 10 { Some(DtcmAddress::from_offset(PHY_GAIN_REGISTER_WRITE_LISTS.offset() + profile * core::mem::size_of::<RegisterWriteList>() + core::mem::offset_of!(RegisterWriteList, writes) + entry * core::mem::size_of::<RegisterWrite>())) } else { None } }
+pub const fn tkip_sbox_high_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, high_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } } pub(crate) const fn aes_transfer_class(class: usize) -> Option<DtcmAddress> { if class < 11 { Some(DtcmAddress::from_offset(AES_TRANSFER_CLASSES.offset() + core::mem::offset_of!(AesTransferClassTable, flags) + class * core::mem::size_of::<SharedU32>())) } else { None } } pub(crate) const fn phy_gain_register_write_list(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(DtcmAddress::from_offset(PHY_GAIN_REGISTER_WRITE_LISTS.offset() + profile * core::mem::size_of::<RegisterWriteList>())) } else { None } } pub(crate) const fn phy_gain_register_write_entry(profile: usize, entry: usize) -> Option<DtcmAddress> { if profile < 2 && entry < 10 { Some(DtcmAddress::from_offset(PHY_GAIN_REGISTER_WRITE_LISTS.offset() + profile * core::mem::size_of::<RegisterWriteList>() + core::mem::offset_of!(RegisterWriteList, writes) + entry * core::mem::size_of::<RegisterWrite>())) } else { None } } pub(crate) const fn phy_init_register_write_list(index: usize) -> Option<DtcmAddress> { match index { 0 => Some(PHY_INIT_REGISTER_WRITE_LISTS), 1 => Some(DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_1))), 2 => Some(DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_2))), _ => None } } pub(crate) const fn phy_init_register_write_entry(list: usize, entry: usize) -> Option<DtcmAddress> { let count = match list { 0 => 1, 1 => 4, 2 => 2, _ => return None }; if entry < count { Some(DtcmAddress::from_offset(phy_init_register_write_list(list).unwrap().offset() + entry * core::mem::size_of::<RegisterWrite>())) } else { None } }
 pub(crate) const INITIALIZED_HIF_CONTROL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, hif_control));
 const fn initialized_hif_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(INITIALIZED_HIF_CONTROL.offset() + offset) }
 pub(crate) const fn initialized_hif_queued_depth() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, queued_depth)) }
@@ -2586,7 +2586,7 @@ macro_rules! assert_type_layout {
 const _: () = {
     assert_type_layout!(DtcmAddress, 4, 4);
     assert_type_layout!(InitializedVendorImage, 0x2078, 4);
-    assert_type_layout!(TkipSboxTables, 0x400, 2); assert_type_layout!(AesTransferClassTable, 0x2c, 4); assert!(core::mem::offset_of!(AesTransferClassTable, flags) == 0); assert_type_layout!(RegisterWrite, 0x08, 4); assert!(core::mem::offset_of!(RegisterWrite, address) == 0x00); assert!(core::mem::offset_of!(RegisterWrite, value) == 0x04); assert_type_layout!(RegisterWriteList, 0x58, 4); assert!(core::mem::offset_of!(RegisterWriteList, writes) == 0x00); assert!(core::mem::offset_of!(RegisterWriteList, terminator_address) == 0x50); assert!(core::mem::offset_of!(RegisterWriteList, terminator_opaque) == 0x54);
+    assert_type_layout!(TkipSboxTables, 0x400, 2); assert_type_layout!(AesTransferClassTable, 0x2c, 4); assert!(core::mem::offset_of!(AesTransferClassTable, flags) == 0); assert_type_layout!(RegisterWrite, 0x08, 4); assert!(core::mem::offset_of!(RegisterWrite, address) == 0x00); assert!(core::mem::offset_of!(RegisterWrite, value) == 0x04); assert_type_layout!(RegisterWriteList, 0x58, 4); assert!(core::mem::offset_of!(RegisterWriteList, writes) == 0x00); assert!(core::mem::offset_of!(RegisterWriteList, terminator_address) == 0x50); assert!(core::mem::offset_of!(RegisterWriteList, terminator_opaque) == 0x54); assert_type_layout!(PhyInitRegisterWriteList0, 0x10, 4); assert!(core::mem::offset_of!(PhyInitRegisterWriteList0, writes) == 0x00); assert!(core::mem::offset_of!(PhyInitRegisterWriteList0, terminator_address) == 0x08); assert!(core::mem::offset_of!(PhyInitRegisterWriteList0, terminator_opaque) == 0x0c); assert_type_layout!(PhyInitRegisterWriteList1, 0x28, 4); assert!(core::mem::offset_of!(PhyInitRegisterWriteList1, writes) == 0x00); assert!(core::mem::offset_of!(PhyInitRegisterWriteList1, terminator_address) == 0x20); assert!(core::mem::offset_of!(PhyInitRegisterWriteList1, terminator_opaque) == 0x24); assert_type_layout!(PhyInitRegisterWriteList2, 0x18, 4); assert!(core::mem::offset_of!(PhyInitRegisterWriteList2, writes) == 0x00); assert!(core::mem::offset_of!(PhyInitRegisterWriteList2, terminator_address) == 0x10); assert!(core::mem::offset_of!(PhyInitRegisterWriteList2, terminator_opaque) == 0x14);
     assert!(core::mem::offset_of!(TkipSboxTables, low_byte) == 0x000);
     assert!(core::mem::offset_of!(TkipSboxTables, high_byte) == 0x200);
     assert_type_layout!(RuntimeRegisterBackoffState, 0x1c, 4);
@@ -3195,7 +3195,7 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedVendorImage, aes_mode1_microcode) == 0x0830);
     assert!(core::mem::offset_of!(InitializedVendorImage, pre_phy_gain_register_write_lists) == 0x09de);
     assert!(core::mem::offset_of!(InitializedVendorImage, phy_gain_register_write_lists) == 0x0b60);
-    assert!(core::mem::offset_of!(InitializedVendorImage, post_phy_gain_register_write_lists) == 0x0c10); assert!(0x182 + 0x0b0 + 0x4c4 == 0x6f6);
+    assert!(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_0) == 0x0c10); assert!(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_1) == 0x0c20); assert!(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_2) == 0x0c48); assert!(core::mem::offset_of!(InitializedVendorImage, post_phy_init_register_write_lists) == 0x0c60); assert!(0x182 + 0x0b0 + 0x50 + 0x474 == 0x6f6);
     assert!(core::mem::offset_of!(InitializedVendorImage, duration_quantum_pointers) == 0x10d4);
     assert_type_layout!(InitializedHifControl, 0x10, 4);
     assert!(core::mem::offset_of!(InitializedHifControl, queued_depth) == 0x00);
@@ -4163,7 +4163,19 @@ mod tests {
         assert!(phy_gain_register_write_list(2).is_none());
         assert!(phy_gain_register_write_entry(2, 0).is_none());
         assert!(phy_gain_register_write_entry(0, 10).is_none());
-        assert_eq!(PHY_GAIN_REGISTER_WRITE_LISTS.get() + 2 * core::mem::size_of::<RegisterWriteList>(), 0x0400_0c10);
+        assert_eq!(PHY_GAIN_REGISTER_WRITE_LISTS.get() + 2 * core::mem::size_of::<RegisterWriteList>(), PHY_INIT_REGISTER_WRITE_LISTS.get());
+    }
+
+    #[test]
+    fn initialized_phy_init_register_write_list_addresses_are_exact() {
+        assert_eq!(PHY_INIT_REGISTER_WRITE_LISTS.get(), 0x0400_0c10);
+        assert_eq!([phy_init_register_write_list(0).unwrap().get(), phy_init_register_write_list(1).unwrap().get(), phy_init_register_write_list(2).unwrap().get()], [0x0400_0c10, 0x0400_0c20, 0x0400_0c48]);
+        assert_eq!(phy_init_register_write_entry(0, 0).unwrap().get(), 0x0400_0c10);
+        assert_eq!([phy_init_register_write_entry(1, 0).unwrap().get(), phy_init_register_write_entry(1, 1).unwrap().get(), phy_init_register_write_entry(1, 2).unwrap().get(), phy_init_register_write_entry(1, 3).unwrap().get()], [0x0400_0c20, 0x0400_0c28, 0x0400_0c30, 0x0400_0c38]);
+        assert_eq!([phy_init_register_write_entry(2, 0).unwrap().get(), phy_init_register_write_entry(2, 1).unwrap().get()], [0x0400_0c48, 0x0400_0c50]);
+        assert!(phy_init_register_write_list(3).is_none()); assert!(phy_init_register_write_entry(0, 1).is_none()); assert!(phy_init_register_write_entry(1, 4).is_none()); assert!(phy_init_register_write_entry(2, 2).is_none());
+        assert_eq!(phy_init_register_write_list(0).unwrap().get() + core::mem::size_of::<PhyInitRegisterWriteList0>(), 0x0400_0c20); assert_eq!(phy_init_register_write_list(1).unwrap().get() + core::mem::size_of::<PhyInitRegisterWriteList1>(), 0x0400_0c48);
+        assert_eq!(phy_init_register_write_list(2).unwrap().get() + core::mem::size_of::<PhyInitRegisterWriteList2>(), 0x0400_0c60); assert_eq!(DURATION_QUANTUM_POINTERS.get(), 0x0400_10d4);
     }
 
     #[test]

@@ -4677,3 +4677,69 @@ checks    /tmp/xr819-phy-gain-register-write-lists-final-check.log
           c8ba4944f2f4e38339be9c7505ad828063c68ff84e1470ab0fd820cc09730659
 ```
 
+### A.87 Initialized PHY initialization register-write lists
+
+The complete initialized interval `0x04000c10..0x04000c60` is represented by
+three consecutive private, alignment-four shared-quarantine layouts. List 0 at
+`0x04000c10` has one `RegisterWrite`, the address sentinel at `+0x08`, and a
+semantically opaque physical `u32` at `+0x0c`, for size `0x10`. List 1 at
+`0x04000c20` has four writes, sentinel at `+0x20`, and opaque word at `+0x24`,
+for size `0x28`. List 2 at `0x04000c48` has two writes, sentinel at `+0x10`,
+and opaque word at `+0x14`, for size `0x18`. Each write retains the exact
+`{SharedU32 address, SharedU32 value}` representation and eight-byte stride.
+The remaining opaque suffix starts at `0x04000c60`, remains `0x474` bytes, and
+leaves the duration-quantum-pointer boundary unchanged at `0x040010d4`.
+
+The vendor COPY image establishes these ordered source literals: list 0 has
+`0x0ab80108 = 0x00200300`; list 1 has `0x0ab8807c = 0x00000001`,
+`0x0ab88058 = 0x000063d9`, `0x0ab8808c = 0x0000103f`, and
+`0x0ab88090 = 0x1010103f`; list 2 has `0x0ab90000 = 0x00000000` and
+`0x0ab90014 = 0x0fffffff`. Every list is followed by address sentinel
+`0xffffffff`; the following physical `u32` has known width but no assigned
+semantics. These values are evidence recorded here, not Rust constants or APIs.
+
+`reg_write_list_apply` performs an unchecked eight-byte walk: one 32-bit
+address load, the sentinel comparison, one 32-bit value load only for a normal
+entry, one ordered 32-bit MMIO write, then pointer advance. It does not read the
+word following the sentinel. `phy_apply_reg_init_lists` passes roots
+`0x04000c10`, `0x04000c20`, `0x04000c48`, and the excluded unresolved root
+`0x04000c60` in order, at retained PCs `0x00017208`, `0x0001720e`,
+`0x00017214`, and `0x0001721a`. No other retained direct reference occurs in
+the decoded interval. Vendor COPY initializes the bytes, but the unrestricted
+HIF memory writer and possible vendor/IRQ/FIQ mutation require shared
+quarantine; no immutability or exclusive ownership is claimed.
+
+The Rust API exposes addresses only: the private crate root is derived with
+`offset_of!`, list indices 0 through 2 map to the three exact roots, and entry
+counts `[1, 4, 2]` retain eight-byte spacing. There are no safe references or
+slices, value/sentinel/MMIO accessors, iterators, or validation APIs. No
+production PHY/MMIO callsite changed. Consequently volatile widths,
+wrapping/unchecked arithmetic, MMIO/barrier/interrupt and initialization order,
+request ownership, and all 30 HIF inputs remain unchanged.
+
+`tools/check-phy-init-register-write-lists-layout.py` owns exactly
+`[0x04000c10, 0x04000c60)`. It masks Rust `cfg(test)` items, rejects raw
+in-range and synthesized boundary literals plus alternate base/root/stride
+forms outside the layout owner, and pins aligned linked literals and decoded
+PC-relative xrefs by containing symbol. The reviewed linked manifests are both
+empty (`literals=0`, `decoded_xrefs=0`). Source-only and linked invocations run
+adjacent to the PHY gain-list checker in both build scripts. The exact-parent
+complete codegen review is recorded in
+`tools/phy-init-register-write-lists-codegen-manifest.json` and reports no text
+symbol drift.
+
+Focused host tests pin every root and normal entry, invalid list and entry
+indices, list adjacency, final structural end, and the unchanged duration
+pointer root. The focused test, source checker, complete software gate, Thumb
+release/linked checker, exact-parent codegen gate, and OTA packing passed
+without artifact drift. No hardware test was run. `0x04000c60` and everything
+through the next separately qualified slice remain opaque.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-init-register-write-lists-final-check.log
+          c486edf9a0570d86f35c8ac7ad6acd0bc2bc74a62966f30b35dd5f25536da7f1
+manifest  tools/phy-init-register-write-lists-codegen-manifest.json
+```
+

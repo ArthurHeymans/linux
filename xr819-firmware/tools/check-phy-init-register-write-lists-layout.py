@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for initialized PHY gain register-write lists.
+"""Drift-evidence gates for initialized PHY init register-write lists.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,8 +21,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PHY_GAIN_REGISTER_WRITE_LIST_RANGE = (0x04000B60, 0x04000C10)
-SYNTHESIZED = {0x0B60, 0x0BB8, 0x0C10}
+PHY_INIT_REGISTER_WRITE_LIST_RANGE = (0x04000C10, 0x04000C60)
+SYNTHESIZED = {0x0C10, 0x0C20, 0x0C48, 0x0C60}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx",
@@ -31,16 +31,18 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
-    "tools/check-phy-gain-register-write-lists-layout.py",
+    "tools/check-phy-init-register-write-lists-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {
-    "tools/check-phy-init-register-write-lists-layout.py": {0x04000C10, 0x0C10},
+    "tools/check-phy-gain-register-write-lists-layout.py": {0x04000C10, 0x0C10},
 }
 FORBIDDEN_FORMS = (
-    "PHY_GAIN_REGISTER_WRITE_LIST_BASE",
-    "PHY_GAIN_REGISTER_WRITE_LISTS_BASE",
-    "PHY_GAIN_REGISTER_WRITE_LIST_STRIDE",
-    "PHY_GAIN_REGISTER_WRITE_ENTRY_STRIDE",
+    "PHY_INIT_REGISTER_WRITE_LIST_BASE",
+    "PHY_INIT_REGISTER_WRITE_LISTS_BASE",
+    "PHY_INIT_REGISTER_WRITE_LIST_ROOT",
+    "PHY_INIT_REGISTER_WRITE_LIST_ROOTS",
+    "PHY_INIT_REGISTER_WRITE_LIST_STRIDE",
+    "PHY_INIT_REGISTER_WRITE_ENTRY_STRIDE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
@@ -168,7 +170,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return PHY_GAIN_REGISTER_WRITE_LIST_RANGE[0] <= value < PHY_GAIN_REGISTER_WRITE_LIST_RANGE[1]
+    return PHY_INIT_REGISTER_WRITE_LIST_RANGE[0] <= value < PHY_INIT_REGISTER_WRITE_LIST_RANGE[1]
 
 
 def check_source() -> None:
@@ -190,14 +192,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: PHY-gain-register-write-list literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: PHY-init-register-write-list literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized PHY-gain-register-write-list form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized PHY-init-register-write-list form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"PHY GAIN REGISTER-WRITE LIST SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"PHY INIT REGISTER-WRITE LIST SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -268,9 +270,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("PHY GAIN REGISTER-WRITE LIST LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("PHY INIT REGISTER-WRITE LIST LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "PHY GAIN REGISTER-WRITE LIST LINKED DRIFT-EVIDENCE GATE PASSED "
+        "PHY INIT REGISTER-WRITE LIST LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -289,4 +291,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"PHY-gain-register-write-list drift gate failed: {error}")
+        raise SystemExit(f"PHY-init-register-write-list drift gate failed: {error}")
