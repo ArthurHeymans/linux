@@ -1,6 +1,6 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** native semantic host-WSM-context and coupled free-list candidate based directly on committed typed VIF `8940467e9cdc`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
+**Status:** fixed initialized debug-command descriptor table structurally decoded through `0x040011ac`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
 **Firmware lineage:** candidate based directly on `8940467e9cdc` (`Model VIF state in Rust`), itself atop qualified low-MAC/PAS. The exact parent was rebuilt from revision files for code-generation comparison; no rejected patch was applied.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
@@ -294,6 +294,7 @@ Within `0x04000000..0x04002078`:
 | `0x04000e48..0x040010d4` | `0x28c` bytes | opaque initialized suffix; `0x04000e48` is an excluded unchecked lookahead and distinct register-list root |
 | `0x040010d4..0x040010e4` | 4 `u32` | per-pipe duration-quantum MMIO pointers |
 | `0x04001160..0x04001164` | one shared `u32` | fixed TX aggregate expiration delta; no known Rust consumer or writer |
+| `0x04001164..0x040011ac` | six `0x0c` records | initialized debug-command descriptors: raw command-name, help-text, and handler words; shared quarantine |
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
 | `0x040012a0..0x040012c8` | `0x28` | exported AMPDU counters table |
@@ -1330,7 +1331,7 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 
 ### A.3 Semantic fields versus opaque storage
 
-High-confidence count/stride semantics are encoded for VIF records, host contexts, internal contexts, LMC messages, the scheduler table, and the exact TALA arrays. The power-save area is intentionally different: only the `0x208` family span and observed `0x104` address stride are retained, without asserting two owned records. `InitializedVendorImage` also asserts the documented initialized islands: duration timing at `0x0138`, rate encoding/attributes at `0x0194`/`0x01aa`, ten visible completion-related words at `0x0260`, ring/status maps at `0x02d8`/`0x02dc`, command dispatch at `0x0710`, AES descriptors/microcode at `0x0804`/`0x0830`, two PHY gain register-write lists at `0x0b60`/`0x0bb8`, duration-quantum pointers at `0x10d4`, the TX aggregate expiration delta at `0x1160`, HIF shadow at `0x11ac`, IRQ callbacks at `0x11bc`, AMPDU counters at `0x12a0`, control words at `0x1420`, the low-MAC initialized root at `0x1680`, retry/TALA anchors within that root, scheduler exclusion words at `0x1fcc`, and the event island at `0x1fd4`. TALA uses shared scalar wrappers at offsets `0x00`, `0x04`, `0x0c`, `0x14`, and `0x1c`. The internal pool retains its exact `free_head`/`contexts` split at offsets `0` and `4`.
+High-confidence count/stride semantics are encoded for VIF records, host contexts, internal contexts, LMC messages, the scheduler table, and the exact TALA arrays. The power-save area is intentionally different: only the `0x208` family span and observed `0x104` address stride are retained, without asserting two owned records. `InitializedVendorImage` also asserts the documented initialized islands: duration timing at `0x0138`, rate encoding/attributes at `0x0194`/`0x01aa`, ten visible completion-related words at `0x0260`, ring/status maps at `0x02d8`/`0x02dc`, command dispatch at `0x0710`, AES descriptors/microcode at `0x0804`/`0x0830`, two PHY gain register-write lists at `0x0b60`/`0x0bb8`, duration-quantum pointers at `0x10d4`, the TX aggregate expiration delta at `0x1160`, six initialized debug-command descriptors at `0x1164`, HIF shadow at `0x11ac`, IRQ callbacks at `0x11bc`, AMPDU counters at `0x12a0`, control words at `0x1420`, the low-MAC initialized root at `0x1680`, retry/TALA anchors within that root, scheduler exclusion words at `0x1fcc`, and the event island at `0x1fd4`. TALA uses shared scalar wrappers at offsets `0x00`, `0x04`, `0x0c`, `0x14`, and `0x1c`. The internal pool retains its exact `free_head`/`contexts` split at offsets `0` and `4`.
 
 Everything with unresolved internal extent or ownership is a private opaque family. In particular, the command/channel-switch overlap is one opaque overlay rather than two fields, and the historically overlapping HIF views are represented as one quarantine family. The power-save stride is asserted but no field API is provided because the decompilation's larger relative offsets remain ambiguous. Unknown ranges are represented only because the complete fixed ABI object necessarily spans them; no API names them as padding, free space, or allocatable capacity.
 
@@ -4951,12 +4952,12 @@ Vendor COPY initialization and register-computed, indirect, generic HIF/debug,
 vendor, IRQ, and FIQ mutation remain within the containment model, so no safe
 reference is created.
 
-The next independently referenced root is `0x04001164`, but its extent and
-semantics remain unresolved. Consequently `0x04001164..0x040011ac` stays exactly
-`OpaqueBytes<0x48>`, and initialized HIF control remains fixed at
-`0x040011ac`. The containing `InitializedVendorImage` remains size `0x2078` and
-alignment four. No bytes in the unresolved suffix, TALA relocation, or
-`0x04002984..0x04003050` are decoded by this slice.
+The next independently referenced root is `0x04001164`. This slice stopped at
+that boundary; Appendix A.92 now decodes its exact six-record extent through
+`0x040011ac`. Initialized HIF control remains fixed at `0x040011ac`, and the
+containing `InitializedVendorImage` remains size `0x2078` and alignment four.
+No bytes beyond this slice, TALA relocation, or `0x04002984..0x04003050` were
+changed here.
 
 The retained subtraction and addition remain the vendor's unchecked/wrapping
 32-bit operations followed by the signed-negative comparison. MMIO, barrier,
@@ -4971,8 +4972,8 @@ split, sole address constant, assertions, and global sizes, forbids broad or
 safe APIs, and pins empty aligned linked-literal and decoded PC-relative-xref
 multisets. This is drift evidence only; register-computed, indirect, generic
 HIF/debug, vendor, IRQ, and FIQ accesses remain outside its proof. Focused host
-tests pin the address, type shape and end, opaque suffix size/end, and complete
-initialized-image size. The checker runs in source and linked phases of both
+tests pin the address, type shape and end, the following descriptor-table
+boundary, and complete initialized-image size. The checker runs in source and linked phases of both
 build gates, and the exact-parent manifest permits no codegen drift. No hardware
 test was run.
 
@@ -4980,5 +4981,55 @@ test was run.
 ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
 packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 manifest  tools/tx-aggregate-expiration-delta-codegen-manifest.json
+```
+
+### A.92 Fixed initialized debug-command descriptor table
+
+The vendor COPY initializes `0x04001164..0x040011ac`. The resolved parameter at
+PC `0x00015bbe` binds root `0x04001164` to the second argument of
+`dbg_console_register_cmds(..., DAT_00015d60, 6)`, proving the fixed root and
+hard count six. Registration reads separate aligned 32-bit words at record
+`+0x00`, `+0x08`, and `+0x04`, advances by three `int` elements, and may stop
+at the first null field. Execution identifies `+0x00` as the command-name word,
+prints `+0x04` as help/display text, and indirectly dispatches through `+0x08`.
+This proves three shared `u32` words at offsets 0, 4, and 8 with stride `0x0c`;
+it does not prove pointee extents, valid strings, Thumb targets, or a callable
+Rust type. Six records occupy exactly `0x48` bytes and meet the independent HIF
+root at `0x040011ac`, leaving no unexplained bytes in the selected interval.
+
+`DebugCommandDescriptor` and `InitializedDebugCommandDescriptors` preserve that
+exact representation and remain shared quarantine views. Early null termination
+does not transfer ownership or make later records immutable. Vendor COPY,
+generic HIF/debug writes, retained vendor code, and IRQ/FIQ mutation remain
+possible. The bounded crate-private API returns only `DtcmAddress` or
+`Option<DtcmAddress>` for the table, six record roots, and the three fields; it
+creates no references and exposes no pointers, values, readers/writers, slices,
+iterators, generic offsets, callback conversions, validation, copying, or
+invocation. No production consumer changed, so `dbg_console_init` still orders
+task registration, descriptor registration, announcement, and timer
+initialization exactly as before. Volatile widths, MMIO/barrier/IRQ/FIQ order,
+wrapping arithmetic, request ownership, and all 30 HIF inputs are untouched.
+
+`tools/check-initialized-debug-command-descriptors-layout.py` covers exactly
+half-open range `[0x04001164, 0x040011ac)`. It requires the exact structs,
+fields, count, offsets, enclosing split, bounded address-only API, bounds tests,
+assertions, and global sizes; rejects unchecked/generic-offset, pointer,
+reference, value, read/write, callable, slice, and iterator APIs; gates full
+physical-address source literals outside `src/dtcm.rs` and itself; and pins the
+empty aligned linked-literal and decoded PC-relative-xref multisets. Its
+adversarial self-test verifies that a renamed generic function deriving a raw
+pointer from `DTCM_STATE_BASE + slot * 4` is rejected while the bounded
+address-only descriptor API remains accepted. This is drift evidence, not writer
+closure or ownership proof. The checker runs in the
+source and linked phases of `check.sh` and `build-ota-image.sh`, and the
+exact-parent manifest permits no text-symbol drift. No TALA relocation or bytes
+in `0x04002984..0x04003050` changed, and no hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-debug-command-descriptors-final-check.log
+          b77f1eb1479983d4267398d506386618d09bd9626e330eca9029a5707cad46eb
+manifest  tools/initialized-debug-command-descriptors-codegen-manifest.json
 ```
 

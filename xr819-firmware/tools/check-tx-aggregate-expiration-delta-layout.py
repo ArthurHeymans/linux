@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04001160, 0x04001164)
+RANGE = (0x04001160, 0x04001160 + 0x04)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc",
@@ -34,13 +34,13 @@ REQUIRED_INVENTORY = (
     "#[repr(C, align(4))] struct TxAggregateExpirationDelta { value: SharedU32 }",
     "measurement_workspace: MeasurementWorkspace",
     "tx_aggregate_expiration_delta: TxAggregateExpirationDelta",
-    "post_tx_aggregate_expiration_delta: OpaqueBytes<0x48>",
+    "debug_command_descriptors: InitializedDebugCommandDescriptors",
     "pub(crate) const TX_AGGREGATE_EXPIRATION_DELTA: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tx_aggregate_expiration_delta));",
     "assert_type_layout!(TxAggregateExpirationDelta, 0x04, 4)",
     "offset_of!(TxAggregateExpirationDelta, value) == 0",
     "offset_of!(InitializedVendorImage, measurement_workspace) == 0x10f8",
     "offset_of!(InitializedVendorImage, tx_aggregate_expiration_delta) == 0x1160",
-    "offset_of!(InitializedVendorImage, post_tx_aggregate_expiration_delta) == 0x1164",
+    "offset_of!(InitializedVendorImage, debug_command_descriptors) == 0x1164",
     "offset_of!(InitializedVendorImage, hif_control) == 0x11ac",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
