@@ -47,6 +47,7 @@ python3 tools/check-initialized-control-words-layout.py
 python3 tools/check-queue-pipe-mappings-layout.py
 python3 tools/check-duration-quantum-pointers-layout.py
 python3 tools/check-initialized-tx-rate-tables-layout.py
+python3 tools/check-initialized-completion-words-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -98,6 +99,7 @@ python3 tools/check-initialized-control-words-layout.py "$ELF"
 python3 tools/check-queue-pipe-mappings-layout.py "$ELF"
 python3 tools/check-duration-quantum-pointers-layout.py "$ELF"
 python3 tools/check-initialized-tx-rate-tables-layout.py "$ELF"
+python3 tools/check-initialized-completion-words-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -483,6 +485,15 @@ if [[ -n "${XR819_INITIALIZED_TX_RATE_TABLES_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_TX_RATE_TABLES_PARENT_ELF" "$ELF"
 else
   echo "== initialized-TX-rate-tables codegen gate skipped: set XR819_INITIALIZED_TX_RATE_TABLES_PARENT_ELF to the qualified duration-quantum-pointers ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_COMPLETION_WORDS_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-completion-words parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-completion-words-codegen-manifest.json \
+    "$XR819_INITIALIZED_COMPLETION_WORDS_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-completion-words codegen gate skipped: set XR819_INITIALIZED_COMPLETION_WORDS_PARENT_ELF to the qualified initialized-TX-rate-tables ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

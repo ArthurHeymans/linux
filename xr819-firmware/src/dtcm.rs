@@ -1656,6 +1656,8 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const VISIBLE_COMPLETION_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, visible_completion_words));
+pub(crate) const fn visible_completion_word(index: usize) -> Option<DtcmAddress> { if index < 10 { Some(DtcmAddress::from_offset(VISIBLE_COMPLETION_WORDS.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const TX_DURATION_TIMING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tx_duration_timing));
 pub(crate) const RATE_ENCODING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_encoding));
 pub(crate) const RATE_ATTRIBUTE_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_attributes));
@@ -3724,6 +3726,15 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_completion_word_addresses_are_exact() {
+        assert_eq!(VISIBLE_COMPLETION_WORDS.get(), 0x0400_0260);
+        assert_eq!(visible_completion_word(0).unwrap().get(), 0x0400_0260);
+        assert_eq!(visible_completion_word(9).unwrap().get(), 0x0400_0284);
+        assert_eq!(visible_completion_word(9).unwrap().get() + 4, 0x0400_0288);
+        assert!(visible_completion_word(10).is_none());
     }
 
     #[test]

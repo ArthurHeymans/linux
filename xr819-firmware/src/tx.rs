@@ -5330,7 +5330,7 @@ where
 
         let completion_class = (context.completion_class_address() as *const u8).read_volatile();
         let callback_address =
-            (0x0400_0260_usize + usize::from(completion_class) * 4) as *const u32;
+            (crate::dtcm::VISIBLE_COMPLETION_WORDS.get() + usize::from(completion_class) * 4) as *const u32;
         if callback_address.read_volatile() == 0 {
             return CompletedContextDispatch::NoCallback;
         }

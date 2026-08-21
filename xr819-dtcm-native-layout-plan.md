@@ -4190,3 +4190,29 @@ manifest  tools/initialized-tx-rate-tables-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.70 Initialized completion words
+
+The ten initialized words at `0x04000260..0x04000288` now have a bounded typed
+address API. They remain raw quarantined words rather than function pointers:
+the qualified image and decompilation prove the visible extent, but not that
+every entry is callable.
+
+The translated TX completion-class lookup now derives its base from the
+`InitializedVendorImage` layout while retaining the unchecked class-driven
+`* 4` arithmetic and volatile load. The current linked scanner resolves no
+standalone literal in this interval, so
+`tools/check-initialized-completion-words-layout.py` intentionally pins an empty
+linked-literal/xref set in addition to the source ownership gate and complete
+exact-parent codegen manifest. The complete ELF and packed image remain
+byte-identical to the qualified initialized-TX-rate-tables parent, so no
+hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-completion-words-final-check.log
+          6742a2e0bc7999d60e67abccc04a7470128f62fecdbf11db723dfcbef55762fb
+manifest  tools/initialized-completion-words-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
