@@ -162,6 +162,10 @@ struct SchedulerHandlerTable {
 struct PhyGainSourceRecord { selector: SharedU8, opaque_01: SharedU8, lower: SharedU16, upper: SharedU16 }
 #[repr(C, align(4))]
 struct TemplateFrameDescriptor { kind_00: SharedU8, flags_01: SharedU8, opaque_02: OpaqueBytes<0x02>, buffer_04: SharedU32, kind_08: SharedU8, flags_09: SharedU8, opaque_0a: OpaqueBytes<0x02>, pointer_0c: SharedU32, kind_10: SharedU8, flags_11: SharedU8, length_12: SharedU16, opaque_14: OpaqueBytes<0x04>, kind_18: SharedU8, flags_19: SharedU8, length_1a: SharedU16, opaque_1c: OpaqueBytes<0x04>, kind_20: SharedU8, flags_21: SharedU8, length_22: SharedU16, opaque_24: OpaqueBytes<0x04>, kind_28: SharedU8, flags_29: SharedU8, opaque_2a: OpaqueBytes<0x02>, pointer_2c: SharedU32, kind_30: SharedU8, opaque_31: OpaqueBytes<0x03>, pointer_34: SharedU32, kind_38: SharedU8, flags_39: SharedU8, length_3a: SharedU16, pointer_3c: SharedU32 }
+/// Overlapping address schema used by retained RF initialization. The logical
+/// view crosses beacon/filter storage and therefore is not embedded as an owner.
+#[repr(C, align(4))]
+struct RfInitializationObservedLayout { control_minus_ac: SharedU32, opaque_04: OpaqueBytes<0x04>, control_minus_a4: SharedU32, opaque_0c: OpaqueBytes<0x08>, table_minus_98: SharedU32, table_minus_94: SharedU32, control_minus_90: SharedU32, opaque_20: OpaqueBytes<0x38>, negative_words: [SharedU32; 7], opaque_74: OpaqueBytes<0x38>, root_prefix: OpaqueBytes<0x14>, table_14: SharedU32, table_18: SharedU32, table_1c: SharedU32, table_20: SharedU32, pointer_24: SharedU32, opaque_d4: OpaqueBytes<0x08>, control_30: SharedU32, opaque_e0: OpaqueBytes<0x04>, pointer_38: SharedU32 }
 #[repr(C, align(4))]
 struct PreConfigurationTables { gain_source_records: [PhyGainSourceRecord; 22], opaque_084: OpaqueBytes<0x0d98>, template_descriptors: [TemplateFrameDescriptor; 2], opaque_e9c: OpaqueBytes<0x03e0> }
 #[repr(C)]
@@ -1381,6 +1385,8 @@ pub const CLOCK_PARAMETERS: DtcmAddress = DtcmAddress::from_offset(0x218c);
 pub const SCHEDULER_HANDLER_TABLE: DtcmAddress = DtcmAddress::from_offset(0x21b4);
 pub(crate) const PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x2234);
 pub(crate) const fn phy_gain_source_record(index: usize) -> Option<DtcmAddress> { if index < 22 { Some(DtcmAddress::from_offset(PHY_GAIN_SOURCE_RECORDS.offset() + index * core::mem::size_of::<PhyGainSourceRecord>())) } else { None } }
+pub(crate) const RF_INITIALIZATION_VIEW: DtcmAddress = DtcmAddress::from_offset(0x2684);
+pub(crate) const RF_INITIALIZATION_ROOT: DtcmAddress = DtcmAddress::from_offset(0x2730);
 pub(crate) const TEMPLATE_FRAME_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(0x3050);
 pub(crate) const fn template_frame_descriptor(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(TEMPLATE_FRAME_DESCRIPTORS.offset() + index * core::mem::size_of::<TemplateFrameDescriptor>())) } else { None } }
 pub(crate) const SDD_CONFIGURATION_TABLES: DtcmAddress = DtcmAddress::from_offset(0x34b0);
@@ -2121,6 +2127,13 @@ const _: () = {
     assert_type_layout!(PhyGainSourceRecord, 0x06, 2);
     assert!(core::mem::offset_of!(PhyGainSourceRecord, lower) == 0x02);
     assert!(core::mem::offset_of!(PhyGainSourceRecord, upper) == 0x04);
+    assert_type_layout!(RfInitializationObservedLayout, 0xe8, 4);
+    assert!(core::mem::offset_of!(RfInitializationObservedLayout, table_minus_98) == 0x14);
+    assert!(core::mem::offset_of!(RfInitializationObservedLayout, negative_words) == 0x58);
+    assert!(core::mem::offset_of!(RfInitializationObservedLayout, root_prefix) == 0xac);
+    assert!(core::mem::offset_of!(RfInitializationObservedLayout, table_14) == 0xc0);
+    assert!(core::mem::offset_of!(RfInitializationObservedLayout, control_30) == 0xdc);
+    assert!(core::mem::offset_of!(RfInitializationObservedLayout, pointer_38) == 0xe4);
     assert_type_layout!(TemplateFrameDescriptor, 0x40, 4);
     assert!(core::mem::offset_of!(TemplateFrameDescriptor, buffer_04) == 0x04);
     assert!(core::mem::offset_of!(TemplateFrameDescriptor, pointer_0c) == 0x0c);
@@ -2905,6 +2918,14 @@ mod tests {
         assert_eq!(phy_gain_source_record(21).unwrap().get(), 0x0400_22b2);
         assert!(phy_gain_source_record(22).is_none());
         assert_eq!(phy_gain_source_record(21).unwrap().get() + 6, 0x0400_22b8);
+    }
+
+    #[test]
+    fn rf_initialization_view_addresses_are_exact() {
+        assert_eq!(RF_INITIALIZATION_VIEW.get(), 0x0400_2684);
+        assert_eq!(RF_INITIALIZATION_ROOT.get(), 0x0400_2730);
+        assert_eq!(RF_INITIALIZATION_ROOT.get() - RF_INITIALIZATION_VIEW.get(), 0xac);
+        assert_eq!(RF_INITIALIZATION_VIEW.get() + core::mem::size_of::<RfInitializationObservedLayout>(), 0x0400_276c);
     }
 
     #[test]

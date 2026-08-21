@@ -1652,7 +1652,7 @@ unsafe fn rf_init_stage_a_mode0() {
         write_u32(BASE + 0x24, 0x0000_ffff);
         write_u32(BASE + 0x1c, 0x0703_0100);
         write_u32(BASE + 0x20, 0x7f3f_1f0f);
-        write_u32(BASE - 0x94, 0x0400_2730);
+        write_u32(BASE - 0x94, crate::dtcm::RF_INITIALIZATION_ROOT.get() as u32);
         if (crate::dtcm::scheduler_analog_enabled().get() as *const u16).read_volatile() == 0 {
             write_u32(0x0ac8_005c, 0x6a25_5800);
             write_u32(0x0ac8_00e8, 0x10c);

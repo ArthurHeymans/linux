@@ -29,6 +29,7 @@ python3 tools/check-debug-console-layout.py
 python3 tools/check-scheduler-support-layout.py
 python3 tools/check-phy-gain-source-layout.py
 python3 tools/check-template-descriptor-layout.py
+python3 tools/check-rf-initialization-view.py
 python3 tools/check-sdd-profile-layout.py
 python3 tools/check-wake-context-layout.py
 python3 tools/check-low-mac-pas-layout.py
@@ -66,6 +67,7 @@ python3 tools/check-debug-console-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-phy-gain-source-layout.py "$ELF"
 python3 tools/check-template-descriptor-layout.py "$ELF"
+python3 tools/check-rf-initialization-view.py "$ELF"
 python3 tools/check-sdd-profile-layout.py "$ELF"
 python3 tools/check-wake-context-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
@@ -329,6 +331,15 @@ if [[ -n "${XR819_CONTEXT_COMPLETION_PARENT_ELF:-}" ]]; then
     "$XR819_CONTEXT_COMPLETION_PARENT_ELF" "$ELF"
 else
   echo "== context-completion codegen gate skipped: set XR819_CONTEXT_COMPLETION_PARENT_ELF to the qualified debug-console ELF =="
+fi
+
+if [[ -n "${XR819_RF_INITIALIZATION_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed RF-initialization parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/rf-initialization-codegen-manifest.json \
+    "$XR819_RF_INITIALIZATION_PARENT_ELF" "$ELF"
+else
+  echo "== RF-initialization codegen gate skipped: set XR819_RF_INITIALIZATION_PARENT_ELF to the qualified context-completion ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

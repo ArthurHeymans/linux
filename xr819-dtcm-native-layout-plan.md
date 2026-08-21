@@ -3420,7 +3420,40 @@ candidate was reverted before commit; no ELF or packed image was produced from
 it as an accepted endpoint.
 
 Future work must represent the beacon indexes as overlapping address views,
-like the power-save schema, or first decode the complete RF/table lifetime that
-shares `0x04002730`. The bytes remain occupied quarantine and are not free
-space.
+like the power-save schema. The RF side of that overlap is now represented by
+the accepted address-only view in A.41. The bytes remain occupied quarantine
+and are not free space.
+
+### A.41 Overlapping RF-initialization view
+
+Retained `rf_init_stage_a` proves one logical RF view rooted at `0x04002730`,
+with accesses from `root - 0xac` through `root + 0x38`. The resulting observed
+extent is `0x04002684..0x0400276c`. It contains several table/control pointers,
+seven consecutive negative-offset words, and positive fields at `+0x14`,
+`+0x18`, `+0x1c`, `+0x20`, `+0x24`, `+0x30`, and `+0x38`.
+
+`RfInitializationObservedLayout` is deliberately not embedded in
+`PreConfigurationTables`: its extent overlaps beacon IE-index storage and does
+not confer physical ownership. Translated PHY startup now publishes
+`RF_INITIALIZATION_ROOT` rather than a raw `0x04002730` literal, without
+changing the surrounding MMIO or calibration sequence.
+
+`tools/check-rf-initialization-view.py` covers the full logical extent, rejects
+other production literals and synthesized aliases outside `dtcm.rs`, and pins
+one linked root literal plus one decoded xref. The complete ELF remains
+byte-identical to the qualified context-completion parent, so no hardware rerun
+is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-rf-initialization-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-rf-initialization-final-check.log
+          4e099e8302bc876252ec3820c0e7819e822c9d96cd779bfc5e84d948ef3954d8
+manifest  tools/rf-initialization-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
 
