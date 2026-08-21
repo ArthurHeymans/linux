@@ -171,7 +171,9 @@ struct BeaconIeOffsetIndex { count: SharedU32, offsets: [SharedU16; 256] }
 #[repr(C, align(4))]
 struct BeaconFilterStorage { stored_length: SharedU32, stored_beacon: [SharedU8; 700], active_index: SharedU32, indexes: [BeaconIeOffsetIndex; 2] }
 #[repr(C, align(4))]
-struct PreConfigurationTables { gain_source_records: [PhyGainSourceRecord; 22], beacon_filter: BeaconFilterStorage, opaque_750: OpaqueBytes<0x06cc>, template_descriptors: [TemplateFrameDescriptor; 2], opaque_e9c: OpaqueBytes<0x03e0> }
+struct TemplateBackingStorage { primary: [[SharedU8; 0x100]; 2], secondary: [[SharedU8; 0x60]; 2], tertiary: [[SharedU8; 0x90]; 2] }
+#[repr(C, align(4))]
+struct PreConfigurationTables { gain_source_records: [PhyGainSourceRecord; 22], beacon_filter: BeaconFilterStorage, opaque_750: OpaqueBytes<0x06cc>, template_descriptors: [TemplateFrameDescriptor; 2], template_backing: TemplateBackingStorage }
 #[repr(C)]
 struct SddChannelRecord { bytes: [SharedU8; 3] }
 #[repr(C, align(2))]
@@ -1398,6 +1400,10 @@ pub(crate) const fn beacon_ie_index(index: usize) -> Option<DtcmAddress> { match
 pub(crate) const fn beacon_ie_offset(index: usize, entry: usize) -> Option<DtcmAddress> { if entry >= 256 { return None; } match beacon_ie_index(index) { Some(base) => Some(DtcmAddress::from_offset(base.offset() + core::mem::offset_of!(BeaconIeOffsetIndex, offsets) + entry * core::mem::size_of::<SharedU16>())), None => None } }
 pub(crate) const TEMPLATE_FRAME_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(0x3050);
 pub(crate) const fn template_frame_descriptor(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(TEMPLATE_FRAME_DESCRIPTORS.offset() + index * core::mem::size_of::<TemplateFrameDescriptor>())) } else { None } }
+pub(crate) const TEMPLATE_BACKING_STORAGE: DtcmAddress = DtcmAddress::from_offset(0x30d0);
+pub(crate) const fn template_primary_buffer(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(TEMPLATE_BACKING_STORAGE.offset() + index * 0x100)) } else { None } }
+pub(crate) const fn template_secondary_buffer(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(TEMPLATE_BACKING_STORAGE.offset() + core::mem::offset_of!(TemplateBackingStorage, secondary) + index * 0x60)) } else { None } }
+pub(crate) const fn template_tertiary_buffer(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(TEMPLATE_BACKING_STORAGE.offset() + core::mem::offset_of!(TemplateBackingStorage, tertiary) + index * 0x90)) } else { None } }
 pub(crate) const SDD_CONFIGURATION_TABLES: DtcmAddress = DtcmAddress::from_offset(0x34b0);
 const fn sdd_profile_field(profile: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(SDD_CONFIGURATION_TABLES.offset().wrapping_add(profile.wrapping_mul(core::mem::size_of::<SddProfileBank>())).wrapping_add(offset)) }
 pub(crate) const fn sdd_profile(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(sdd_profile_unchecked(profile)) } else { None } }
@@ -2149,6 +2155,9 @@ const _: () = {
     assert!(core::mem::offset_of!(RfInitializationObservedLayout, table_14) == 0xc0);
     assert!(core::mem::offset_of!(RfInitializationObservedLayout, control_30) == 0xdc);
     assert!(core::mem::offset_of!(RfInitializationObservedLayout, pointer_38) == 0xe4);
+    assert_type_layout!(TemplateBackingStorage, 0x3e0, 4);
+    assert!(core::mem::offset_of!(TemplateBackingStorage, secondary) == 0x200);
+    assert!(core::mem::offset_of!(TemplateBackingStorage, tertiary) == 0x2c0);
     assert_type_layout!(TemplateFrameDescriptor, 0x40, 4);
     assert!(core::mem::offset_of!(TemplateFrameDescriptor, buffer_04) == 0x04);
     assert!(core::mem::offset_of!(TemplateFrameDescriptor, pointer_0c) == 0x0c);
@@ -2160,7 +2169,7 @@ const _: () = {
     assert!(core::mem::offset_of!(PreConfigurationTables, beacon_filter) == 0x084);
     assert!(core::mem::offset_of!(PreConfigurationTables, opaque_750) == 0x750);
     assert!(core::mem::offset_of!(PreConfigurationTables, template_descriptors) == 0xe1c);
-    assert!(core::mem::offset_of!(PreConfigurationTables, opaque_e9c) == 0xe9c);
+    assert!(core::mem::offset_of!(PreConfigurationTables, template_backing) == 0xe9c);
     assert_type_layout!(SddChannelRecord, 0x03, 1);
     assert_type_layout!(SddProfileBank, 0x92, 2);
     assert!(core::mem::offset_of!(SddProfileBank, channel_records) == 0x16);
@@ -2968,6 +2977,15 @@ mod tests {
         assert_eq!(template_frame_descriptor(1).unwrap().get(), 0x0400_3090);
         assert!(template_frame_descriptor(2).is_none());
         assert_eq!(template_frame_descriptor(1).unwrap().get() + 0x40, 0x0400_30d0);
+        assert_eq!(TEMPLATE_BACKING_STORAGE.get(), 0x0400_30d0);
+        assert_eq!(template_primary_buffer(0).unwrap().get(), 0x0400_30d0);
+        assert_eq!(template_primary_buffer(1).unwrap().get(), 0x0400_31d0);
+        assert_eq!(template_secondary_buffer(0).unwrap().get(), 0x0400_32d0);
+        assert_eq!(template_secondary_buffer(1).unwrap().get(), 0x0400_3330);
+        assert_eq!(template_tertiary_buffer(0).unwrap().get(), 0x0400_3390);
+        assert_eq!(template_tertiary_buffer(1).unwrap().get(), 0x0400_3420);
+        assert!(template_primary_buffer(2).is_none());
+        assert_eq!(template_tertiary_buffer(1).unwrap().get() + 0x90, 0x0400_34b0);
     }
 
     #[test]

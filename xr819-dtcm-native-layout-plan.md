@@ -230,7 +230,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x040022b8..0x04002984` | `0x6cc` | typed retained beacon storage, selector, and IE indexes | High structural confidence; RF overlap remains address-only |
 | `0x04002984..0x04003050` | `0x6cc` | beacon/template-adjacent opaque BSS | Low-medium; not allocatable |
 | `0x04003050..0x040030d0` | `0x80` | typed two-record template descriptor table | High structural confidence from retained initializer |
-| `0x040030d0..0x040034b0` | `0x3e0` | template backing and opaque BSS | Medium islands, overlapping pointer evidence |
+| `0x040030d0..0x040034b0` | `0x3e0` | typed three-class template backing buffers | High structural confidence from retained descriptor initializer |
 | `0x040034b0..0x040035e0` | `0x130` | typed SDD-derived channel/gain/profile tables | High structural confidence; shared quarantine |
 | `0x040035e0..0x04003670` | `0x90` | typed wake clock words and 32 response pointers | High structural confidence; shared quarantine |
 | `0x04003670..0x04003674` | `0x4` | typed duration-source halfwords | High |
@@ -3533,6 +3533,44 @@ packed    /tmp/xr819-beacon-filter-storage-layout.bin
 checks    /tmp/xr819-beacon-filter-storage-final-check.log
           ba5113373d5457a9d4a1162d8d4aeedf60dbebc5bac98281b25a6cdc0f0d057a
 manifest  tools/beacon-filter-storage-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.44 Template backing buffers
+
+The retained descriptor initializer partitions the complete
+`0x040030d0..0x040034b0` tail into three two-buffer classes:
+
+```text
+0x040030d0 two 0x100-byte primary buffers
+0x040032d0 two 0x060-byte secondary buffers
+0x04003390 two 0x090-byte tertiary buffers
+0x040034b0 end
+```
+
+For descriptor index `i`, the initializer publishes primary at
+`0x040030d0 + i * 0x100`, secondary at `0x040032d0 + i * 0x60`, and tertiary at
+`0x04003390 + i * 0x90`. The three arrays exactly fill the prior opaque `0x3e0`
+bytes without gaps. Their contents remain raw shared bytes because frame-type
+consumers retain heterogeneous payload semantics.
+
+`tools/check-template-backing-layout.py` covers the complete tail, recognizes
+the adjacent descriptor and SDD checker boundaries, and rejects production
+literals or synthesized base/stride aliases outside `dtcm.rs`. The current Rust
+ELF has no linked in-range literal or decoded xref; the retained initializer is
+the layout evidence. The complete ELF remains byte-identical to the qualified
+beacon-filter-storage parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-template-backing-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-template-backing-final-check.log
+          2f67cf4e8740e28ec9a02d3851a406cc602476241115652233f31873d622d7a3
+manifest  tools/template-backing-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

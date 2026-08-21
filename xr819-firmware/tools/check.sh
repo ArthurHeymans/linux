@@ -29,6 +29,7 @@ python3 tools/check-debug-console-layout.py
 python3 tools/check-scheduler-support-layout.py
 python3 tools/check-phy-gain-source-layout.py
 python3 tools/check-template-descriptor-layout.py
+python3 tools/check-template-backing-layout.py
 python3 tools/check-rf-initialization-view.py
 python3 tools/check-beacon-ie-index-view.py
 python3 tools/check-beacon-filter-storage-layout.py
@@ -69,6 +70,7 @@ python3 tools/check-debug-console-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-phy-gain-source-layout.py "$ELF"
 python3 tools/check-template-descriptor-layout.py "$ELF"
+python3 tools/check-template-backing-layout.py "$ELF"
 python3 tools/check-rf-initialization-view.py "$ELF"
 python3 tools/check-beacon-ie-index-view.py "$ELF"
 python3 tools/check-beacon-filter-storage-layout.py "$ELF"
@@ -362,6 +364,15 @@ if [[ -n "${XR819_BEACON_FILTER_STORAGE_PARENT_ELF:-}" ]]; then
     "$XR819_BEACON_FILTER_STORAGE_PARENT_ELF" "$ELF"
 else
   echo "== beacon-filter-storage codegen gate skipped: set XR819_BEACON_FILTER_STORAGE_PARENT_ELF to the qualified beacon-IE-index ELF =="
+fi
+
+if [[ -n "${XR819_TEMPLATE_BACKING_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed template-backing parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/template-backing-codegen-manifest.json \
+    "$XR819_TEMPLATE_BACKING_PARENT_ELF" "$ELF"
+else
+  echo "== template-backing codegen gate skipped: set XR819_TEMPLATE_BACKING_PARENT_ELF to the qualified beacon-filter-storage ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

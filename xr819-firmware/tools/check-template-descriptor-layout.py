@@ -54,6 +54,7 @@ OWNER_FILES = {
     "tools/check-wake-context-layout.py",
     "tools/check-phy-gain-source-layout.py",
     "tools/check-template-descriptor-layout.py",
+    "tools/check-template-backing-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

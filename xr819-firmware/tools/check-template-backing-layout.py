@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for SDD-derived profile and gain state.
+"""Drift-evidence gates for retained template backing buffers.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SDD_PROFILE_RANGE = (0x040034B0, 0x040035E0)
+TEMPLATE_BACKING_RANGE = (0x040030D0, 0x040034B0)
 SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -51,33 +51,21 @@ OWNER_FILES = {
     "tools/check-phy-table-control-layout.py",
     "tools/check-runtime-register-backoff-layout.py",
     "tools/check-sdd-profile-layout.py",
+    "tools/check-wake-context-layout.py",
+    "tools/check-phy-gain-source-layout.py",
+    "tools/check-template-descriptor-layout.py",
     "tools/check-template-backing-layout.py",
+    "tools/check-sdd-profile-layout.py",
 }
-ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {
-    "src/bin/hif_extension_probe.rs": {
-        0x040034F8, 0x040034FA, 0x040034FC, 0x04003500,
-        0x040035AC, 0x040035AE,
-    },
-}
+ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "SDD_PROFILE_BASE",
-    "SDD_PROFILE_STRIDE",
+    "TEMPLATE_BACKING_BASE",
+    "TEMPLATE_BACKING_STRIDE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x040034B0: 3, 0x040034F6: 1, 0x040034F8: 1, 0x04003588: 1}
-)
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
-    {
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration6retain', 0x040034B0): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration6retain', 0x040034F6): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware13configuration6retain', 0x04003588): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy23build_mode0_gain_tables', 0x040034F8): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25program_all_tx_gain_slots', 0x040034B0): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy29initialize_mac_software_state', 0x040034B0): 1,
-    }
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:
@@ -200,7 +188,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return SDD_PROFILE_RANGE[0] <= value < SDD_PROFILE_RANGE[1]
+    return TEMPLATE_BACKING_RANGE[0] <= value < TEMPLATE_BACKING_RANGE[1]
 
 
 def check_source() -> None:
@@ -222,14 +210,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: SDD-profile literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: template-backing literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized SDD-profile form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized template-backing form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"SDD PROFILE SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"TEMPLATE BACKING SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -300,9 +288,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("SDD PROFILE LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("TEMPLATE BACKING LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "SDD PROFILE LINKED DRIFT-EVIDENCE GATE PASSED "
+        "TEMPLATE BACKING LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -321,4 +309,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"SDD-profile drift gate failed: {error}")
+        raise SystemExit(f"template-backing drift gate failed: {error}")
