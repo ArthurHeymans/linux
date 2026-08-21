@@ -760,11 +760,21 @@ opaque_family!(
     0x208
 );
 
-opaque_family!(
-    /// Occupied boundary bytes between power-save and HIF state.
-    PowerSaveHifBoundary,
-    0x44
-);
+/// Physical PS/HIF boundary. Its first `0x34` bytes are the extension tail of
+/// logical power-save view 1; only the final `0x10` bytes remain opaque.
+#[repr(C, align(4))]
+struct PowerSaveHifBoundary {
+    opaque_00: OpaqueBytes<0x14>,
+    duration_14: SharedU32,
+    duration_18: SharedU32,
+    duration_1c: SharedU32,
+    opaque_20: OpaqueBytes<0x04>,
+    interval_24: SharedU32,
+    opaque_28: OpaqueBytes<0x08>,
+    counter_30: SharedU16,
+    threshold_32: SharedU16,
+    opaque_34: OpaqueBytes<0x10>,
+}
 #[repr(C, align(4))]
 struct HostMessageFreeRing { producer: SharedU32, consumer: SharedU32, entries: [SharedU32; 4] }
 #[repr(C, align(4))]
@@ -2670,6 +2680,12 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, threshold_136) == 0x136);
     assert_type_layout!(PowerSaveFamily, 0x208, 4);
     assert_type_layout!(PowerSaveHifBoundary, 0x44, 4);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, duration_14) == 0x14);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, duration_1c) == 0x1c);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, interval_24) == 0x24);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, counter_30) == 0x30);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, threshold_32) == 0x32);
+    assert!(core::mem::offset_of!(PowerSaveHifBoundary, opaque_34) == 0x34);
     assert_type_layout!(HostMessageFreeRing, 0x18, 4);
     assert!(core::mem::offset_of!(HostMessageFreeRing, entries) == 0x08);
     assert_type_layout!(DeferredTransferQueue, 0x14, 4);

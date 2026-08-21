@@ -3755,3 +3755,25 @@ checks    /tmp/xr819-internal-offset-use-final-check.log
           c0817c350d16c5e7957cbac93afe7498fd6a8ea59d76afb037a43e7aecf26a1d
 ```
 
+### A.51 Physical power-save/HIF boundary tail
+
+The physical `PowerSaveHifBoundary` at `0x040096dc..0x04009720` now encodes
+the portion proven by logical power-save view 1. Its first `0x34` bytes are
+that view's extension tail: three duration words, an interval word, and the
+final counter/threshold halfwords at physical offsets `+0x30/+0x32`. The
+remaining `0x10` bytes before the HIF roots stay opaque.
+
+This does not partition the two power-save views into owned records. It merely
+records the already-qualified overlap in the physical top-level quarantine,
+with compile-time assertions tying the physical offsets to the logical schema.
+The existing power-save source/linked/codegen gate covers the complete typed
+portion through `0x04009710`. The complete ELF remains byte-identical to the
+qualified internal-offset parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-boundary-final-check.log
+          bc8b179c7621a013064a98211ef0fb33ef025eec63694fad82157a5cc5291934
+```
+
