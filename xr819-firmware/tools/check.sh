@@ -56,6 +56,7 @@ python3 tools/check-ba-lmc-pending-layout.py
 python3 tools/check-ba-session-layout.py
 python3 tools/check-ba-link-event-layout.py
 python3 tools/check-context-completion-layout.py
+python3 tools/check-completion-ring-view.py
 python3 tools/check-internal-context-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
@@ -98,6 +99,7 @@ python3 tools/check-ba-lmc-pending-layout.py "$ELF"
 python3 tools/check-ba-session-layout.py "$ELF"
 python3 tools/check-ba-link-event-layout.py "$ELF"
 python3 tools/check-context-completion-layout.py "$ELF"
+python3 tools/check-completion-ring-view.py "$ELF"
 python3 tools/check-internal-context-layout.py "$ELF"
 
 if [[ -n "${XR819_PARENT_ELF:-}" ]]; then
@@ -384,6 +386,15 @@ if [[ -n "${XR819_INTERNAL_CONTEXT_PARENT_ELF:-}" ]]; then
     "$XR819_INTERNAL_CONTEXT_PARENT_ELF" "$ELF"
 else
   echo "== internal-context codegen gate skipped: set XR819_INTERNAL_CONTEXT_PARENT_ELF to the qualified template-backing ELF =="
+fi
+
+if [[ -n "${XR819_COMPLETION_RING_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed completion-ring parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/completion-ring-codegen-manifest.json \
+    "$XR819_COMPLETION_RING_PARENT_ELF" "$ELF"
+else
+  echo "== completion-ring codegen gate skipped: set XR819_COMPLETION_RING_PARENT_ELF to the qualified internal-PAS ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

@@ -256,8 +256,9 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04008f18..0x04008f48` | `0x30` | BA/link/event/timer state | Medium |
 | `0x04008f48..0x04008f6c` | `0x24` | TALA accounting, exact qualified layout | High shape; address-changing migration rejected |
 | `0x04008f6c..0x04008f80` | `0x14` | typed completion/context accounting anchor | High structural confidence; byte/halfword shared quarantine |
-| `0x04008f80..0x0400906c` | `0xec` | unknown | Unknown, not allocatable |
-| `0x0400906c..0x04009080` | `0x14` | internal-context global/header prefix | Medium; free head is reached at base `+0x14` |
+| `0x04008f80..0x04009080` | `0x100` logical | typed 64-entry completion-ring view crossing the physical prefix boundary | High shape; overlapping shared quarantine |
+| `0x04008f80..0x0400906c` | `0xec` physical | first 59 completion-ring words and overlapping completion state | Shared opaque backing |
+| `0x0400906c..0x04009080` | `0x14` physical | final five completion-ring words plus internal-context prefix overlay | Shared opaque backing |
 | `0x04009080..0x040094d4` | `0x454` | typed internal TX context pool with initializer fields in three `0x170` records | High exact linker-owned fixed quarantine |
 | `0x040094d4..0x040096dc` | `0x208` | opaque power-save family; observed address stride `0x104` | High base/family span and visible stride; record extent/count/overlap semantics remain uncertain |
 | `0x040096dc..0x04009720` | `0x44` | unknown/PS-HIF boundary | Unknown, not allocatable |
@@ -3637,5 +3638,40 @@ ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
 packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-internal-context-pas-final-check.log
           99fd1e1eda6222d08bc7e34fe56e7f7fc2b2266c69abe14da4f46027355a8899
+```
+
+### A.47 Overlapping completion-ring view
+
+Retained `tx_complete_tala_adapt` treats `0x04008f80..0x04009080` as a
+64-entry ring of raw context pointers. The ring base is
+`ContextCompletionPrefix + 0x14`; consumer and producer cursors remain at
+prefix `+0x0c` and `+0x10`. Each drain clears the selected pointer before
+advancing the consumer modulo 64.
+
+The logical ring crosses the old physical family boundary: entries 0 through 58
+occupy `PreInternalContextQuarantine`, while entries 59 through 63 occupy
+`InternalContextPrefix`. It is therefore represented as an address-only
+`CompletionRingObservedLayout`, not as a second embedded owner. This also
+explains why `0x0400906c` simultaneously appears as the internal-context prefix
+root in retained initialization evidence.
+
+`tools/check-completion-ring-view.py` covers the complete logical ring,
+recognizes both adjacent family checkers, and rejects production literals or
+synthesized base/stride aliases outside `dtcm.rs`. The current Rust ELF has no
+linked in-range literal or decoded xref because translated completion ownership
+now lives in native state. The complete ELF remains byte-identical to the
+qualified internal-PAS parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-completion-ring-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-completion-ring-final-check.log
+          8306fdbc560629d8d507bb7d4dc6e0546b74ec62cf12c52eb18df7e258911190
+manifest  tools/completion-ring-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

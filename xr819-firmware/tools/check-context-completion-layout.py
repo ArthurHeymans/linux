@@ -52,6 +52,7 @@ OWNER_FILES = {
     "tools/check-runtime-register-backoff-layout.py",
     "tools/check-debug-console-layout.py",
     "tools/check-context-completion-layout.py",
+    "tools/check-completion-ring-view.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

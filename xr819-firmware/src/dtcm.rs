@@ -666,9 +666,12 @@ struct ContextCompletionPrefix {
     free_state: SharedU32,
 }
 
+/// Retained 64-entry completion ring. Its logical extent crosses the physical
+/// pre-context/prefix boundary, so it remains an address-only shared view.
+#[repr(C, align(4))]
+struct CompletionRingObservedLayout { entries: [SharedU32; 64] }
 opaque_family!(
-    /// Occupied undecoded bytes between completion accounting and the internal
-    /// context global prefix.
+    /// Occupied bytes underlying the first 59 completion-ring entries.
     PreInternalContextQuarantine,
     0xec
 );
@@ -1593,6 +1596,8 @@ pub const TALA_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(0x8f48);
 pub const CONTEXT_COMPLETION_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x8f6c);
 const fn context_completion_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(CONTEXT_COMPLETION_PREFIX.offset() + offset) }
 pub(crate) const fn class0_internal_context_count() -> DtcmAddress { context_completion_field(core::mem::offset_of!(ContextCompletionPrefix, class0_count)) }
+pub(crate) const COMPLETION_RING_VIEW: DtcmAddress = DtcmAddress::from_offset(0x8f80);
+pub(crate) const fn completion_ring_entry(index: usize) -> Option<DtcmAddress> { if index < 64 { Some(DtcmAddress::from_offset(COMPLETION_RING_VIEW.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub const INTERNAL_CONTEXT_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x906c);
 pub const INTERNAL_CONTEXT_POOL: DtcmAddress = DtcmAddress::from_offset(0x9080);
 pub const POWER_SAVE_FAMILY: DtcmAddress = DtcmAddress::from_offset(0x94d4);
@@ -2533,6 +2538,7 @@ const _: () = {
     assert!(core::mem::offset_of!(ContextCompletionPrefix, pending_count) == 0x0a);
     assert!(core::mem::offset_of!(ContextCompletionPrefix, coalesce_state) == 0x0c);
     assert!(core::mem::offset_of!(ContextCompletionPrefix, free_state) == 0x10);
+    assert_type_layout!(CompletionRingObservedLayout, 0x100, 4);
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
     assert_type_layout!(InternalPasContext, 0x80, 4);
@@ -3003,6 +3009,17 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn completion_ring_view_addresses_are_exact() {
+        assert_eq!(COMPLETION_RING_VIEW.get(), 0x0400_8f80);
+        assert_eq!(completion_ring_entry(0).unwrap().get(), 0x0400_8f80);
+        assert_eq!(completion_ring_entry(58).unwrap().get(), 0x0400_9068);
+        assert_eq!(completion_ring_entry(59).unwrap().get(), 0x0400_906c);
+        assert_eq!(completion_ring_entry(63).unwrap().get(), 0x0400_907c);
+        assert!(completion_ring_entry(64).is_none());
+        assert_eq!(completion_ring_entry(63).unwrap().get() + 4, 0x0400_9080);
     }
 
     #[test]
