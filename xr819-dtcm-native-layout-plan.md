@@ -3981,3 +3981,23 @@ checks    /tmp/xr819-power-save-control-final-check.log
           c32cdd4870f6945db345e71e6cb133e8c9b13b684496a8dd6c3df1dd085a08e4
 ```
 
+### A.61 Power-save post-timer state
+
+The final seven bytes of each physical `0x104` power-save prefix are now typed:
+TX-completion pending, beacon RX state, beacon rate, and a 32-bit wake-timer
+delay at `+0x100`. The logical view keeps an explicit opaque `+0x104..+0x118`
+span before its previously decoded duration extension.
+
+Retained TX completion, beacon processing, and TBTT wake scheduling separately
+exercise these fields. Exact tests pin both interface-0 addresses and the
+interface-1 wake-delay word at `0x040096d8`, immediately inside the physical
+PS/HIF boundary. The complete ELF remains byte-identical to the qualified
+power-save-control parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-post-timer-final-check.log
+          16801b8d9c3fec3c113ac27bc2c3979eee4e988e91f8b32fc0f25cbb00cfe2a9
+```
+
