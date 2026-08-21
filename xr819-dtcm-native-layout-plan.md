@@ -286,6 +286,7 @@ Within `0x04000000..0x04002078`:
 | `0x04000710..0x040007a4` | 37 `u32` | WSM command dispatch table |
 | `0x04000804...` | table | AES transfer-class descriptors; class 6 TX CCMP, class 7 RX CCMP |
 | `0x04000830..0x040009de` | `0x1ae` bytes | recovered AES mode-1 microcode, SHA-256 `211ad6ec...d881b4c` |
+| `0x04000b60..0x04000c10` | two `0x58`-byte lists | initialized PHY gain register writes: ten ordered `{u32 address, u32 value}` pairs and a physical `{0xffffffff, 0xffffffff}` terminator pair per list |
 | `0x040010d4..0x040010e4` | 4 `u32` | per-pipe duration-quantum MMIO pointers |
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
@@ -616,9 +617,11 @@ The previous Rust `register_structs!` definitions gave `HifSoftwareState` size `
 
 **Known fixed writers:** `0x04009a04` and `0x04009a08` remain fixed. `0x04009a04` is read as the threshold at root `0x040099d4 + 0x30` by gain programming and has additional retained consumers. `0x04009a08` is adjacent force/calibration state consulted outside the translated PLL owner.
 
-**Initialization:** vendor COPY tables, vendor FILL zero, SDD-derived configuration, and substantial runtime PHY setup.
+**Initialization:** vendor COPY tables, vendor FILL zero, SDD-derived configuration, and substantial runtime PHY setup. The initialized COPY image also contains two adjacent gain register-write lists at `0x04000b60..0x04000c10`. Each has ten ordered 32-bit address/value pairs followed physically by `{0xffffffff, 0xffffffff}`. `phy_build_gain_tables` selects `0x04000b60` by default and `0x04000bb8` only for profile 1, then `reg_write_list_apply` loads each address and value as separate 32-bit words, emits one ordered 32-bit MMIO write, and advances eight bytes until the address sentinel. The second terminator word is not read.
 
-**Status:** mixed. The accepted migrations prove that small tuples can move only when all references are confined to translated code. They do not imply that the surrounding root can be moved.
+The default ordered pairs are `(0x0ab80400, 0x55f4282b)`, `(0x0ab80410, 0x0000003a)`, `(0x0ab80c20, 0x00000000)`, `(0x0aba803c, 0x77871f1b)`, `(0x0ab80404, 0x0010137a)`, `(0x0ab80414, 0x000000ab)`, `(0x0ab80418, 0x00000000)`, `(0x0ab8041c, 0x00080ea0)`, `(0x0abc8004, 0x00000109)`, and `(0x0aba8048, 0x031fd6f0)`, followed by `(0xffffffff, 0xffffffff)`. The profile-1 list is identical except its first value is `0x55f4292b` and its second value is `0x0000003b`, followed by the same remaining pairs and terminator. These data support only default versus profile-1 selection and ordered register writes.
+
+**Status:** mixed. The accepted migrations prove that small tuples can move only when all references are confined to translated code. They do not imply that the surrounding root can be moved. The initialized gain lists have no known runtime writer, but container COPY as the only evidenced initialization writer does not prove immutability: vendor, IRQ/FIQ, and debug paths can still observe or mutate shared DTCM quarantine.
 
 ---
 
@@ -1317,7 +1320,7 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 
 ### A.3 Semantic fields versus opaque storage
 
-High-confidence count/stride semantics are encoded for VIF records, host contexts, internal contexts, LMC messages, the scheduler table, and the exact TALA arrays. The power-save area is intentionally different: only the `0x208` family span and observed `0x104` address stride are retained, without asserting two owned records. `InitializedVendorImage` also asserts the documented initialized islands: duration timing at `0x0138`, rate encoding/attributes at `0x0194`/`0x01aa`, ten visible completion-related words at `0x0260`, ring/status maps at `0x02d8`/`0x02dc`, command dispatch at `0x0710`, AES descriptors/microcode at `0x0804`/`0x0830`, duration-quantum pointers at `0x10d4`, HIF shadow at `0x11ac`, IRQ callbacks at `0x11bc`, AMPDU counters at `0x12a0`, control words at `0x1420`, the low-MAC initialized root at `0x1680`, retry/TALA anchors within that root, scheduler exclusion words at `0x1fcc`, and the event island at `0x1fd4`. TALA uses shared scalar wrappers at offsets `0x00`, `0x04`, `0x0c`, `0x14`, and `0x1c`. The internal pool retains its exact `free_head`/`contexts` split at offsets `0` and `4`.
+High-confidence count/stride semantics are encoded for VIF records, host contexts, internal contexts, LMC messages, the scheduler table, and the exact TALA arrays. The power-save area is intentionally different: only the `0x208` family span and observed `0x104` address stride are retained, without asserting two owned records. `InitializedVendorImage` also asserts the documented initialized islands: duration timing at `0x0138`, rate encoding/attributes at `0x0194`/`0x01aa`, ten visible completion-related words at `0x0260`, ring/status maps at `0x02d8`/`0x02dc`, command dispatch at `0x0710`, AES descriptors/microcode at `0x0804`/`0x0830`, two PHY gain register-write lists at `0x0b60`/`0x0bb8`, duration-quantum pointers at `0x10d4`, HIF shadow at `0x11ac`, IRQ callbacks at `0x11bc`, AMPDU counters at `0x12a0`, control words at `0x1420`, the low-MAC initialized root at `0x1680`, retry/TALA anchors within that root, scheduler exclusion words at `0x1fcc`, and the event island at `0x1fd4`. TALA uses shared scalar wrappers at offsets `0x00`, `0x04`, `0x0c`, `0x14`, and `0x1c`. The internal pool retains its exact `free_head`/`contexts` split at offsets `0` and `4`.
 
 Everything with unresolved internal extent or ownership is a private opaque family. In particular, the command/channel-switch overlap is one opaque overlay rather than two fields, and the historically overlapping HIF views are represented as one quarantine family. The power-save stride is asserted but no field API is provided because the decompilation's larger relative offsets remain ambiguous. Unknown ranges are represented only because the complete fixed ABI object necessarily spans them; no API names them as padding, free space, or allocatable capacity.
 
@@ -4626,3 +4629,51 @@ packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-aes-transfer-class-final-check.log
           31306106616d0fcfc13baa01db75b8ccf60438d389de1d334ad3f0488d2dbaab
 ```
+
+### A.86 Initialized PHY gain register-write lists
+
+The exact initialized interval `0x04000b60..0x04000c10` is now represented by
+two adjacent private `RegisterWriteList` shared-quarantine layouts. Each list is
+`0x58` bytes, alignment four: ten ordered `RegisterWrite` pairs of two `u32`
+shared scalars at offsets `+0` and `+4`, followed by a sentinel address word at
+`+0x50` and a semantically opaque physical word at `+0x54`. The default root is
+`0x04000b60`, profile 1 begins at `0x04000bb8`, and the two lists end exactly at
+`0x04000c10`; no byte in the adjacent register-list family is claimed.
+
+The vendor COPY bytes contain the exact ordered pairs recorded in section 4.10.
+`reg_write_list_apply` loads the address as one 32-bit word, checks it against
+`0xffffffff`, then loads the following value as one 32-bit word, performs one
+32-bit MMIO write, and advances eight bytes in order. It never reads the second
+terminator word. `phy_build_gain_tables` chooses the first list by default and
+the second only when the PHY profile byte equals one. The retained-reference
+report contains only the two decoded roots, at PCs `0x000171c4` and
+`0x00017192` respectively. No known runtime writer or Rust reader/writer was
+found, but container COPY being the only evidenced initialization writer does
+not establish immutability; vendor, IRQ/FIQ, and debug access remains possible.
+
+The API is address-only: it derives the private list root with `offset_of!`,
+returns list roots only for profiles 0 and 1, and returns normal pair roots only
+for entries 0 through 9. It exposes no safe reference, slice, value read/write,
+terminator-value accessor, or runtime iterator, and does not constrain the
+retained unchecked vendor loop. No PHY/MMIO production consumer changed, so
+volatile widths, wrapping/unchecked arithmetic, MMIO/barrier/interrupt order,
+initialization order, request ownership, and all HIF behavior remain unchanged.
+No production callsite exists and no codegen manifest was added.
+
+`tools/check-phy-gain-register-write-lists-layout.py` owns the exact half-open
+range `[0x04000b60, 0x04000c10)`, masks Rust `cfg(test)` items, rejects raw
+in-range literals and alternate base/list-stride/entry-stride forms outside the
+layout owner, and pins reviewed aligned linked literals and decoded
+PC-relative xrefs to empty counters. Computed/indirect and vendor/IRQ/FIQ/debug
+access remains outside closure. Source-only and linked invocations run in both
+software build scripts. The focused exact-address test, source-only checker,
+complete software gate, Thumb release build, linked checker, complete ELF hash,
+and packed-image hash passed without drift. No hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-gain-register-write-lists-final-check.log
+          c8ba4944f2f4e38339be9c7505ad828063c68ff84e1470ab0fd820cc09730659
+```
+
