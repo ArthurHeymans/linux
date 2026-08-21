@@ -40,6 +40,7 @@ python3 tools/check-phy-channel-cache-layout.py
 python3 tools/check-phy-table-control-layout.py
 python3 tools/check-phy-iq-calibration-layout.py
 python3 tools/check-low-mac-pas-layout.py
+python3 tools/check-pre-vif-header-layout.py
 python3 tools/check-peer-pipe-layout.py
 python3 tools/check-command-channel-overlay.py
 python3 tools/check-lmc-control-layout.py
@@ -76,6 +77,7 @@ python3 tools/check-phy-channel-cache-layout.py "$ELF"
 python3 tools/check-phy-table-control-layout.py "$ELF"
 python3 tools/check-phy-iq-calibration-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
+python3 tools/check-pre-vif-header-layout.py "$ELF"
 python3 tools/check-peer-pipe-layout.py "$ELF"
 python3 tools/check-command-channel-overlay.py "$ELF"
 python3 tools/check-lmc-control-layout.py "$ELF"

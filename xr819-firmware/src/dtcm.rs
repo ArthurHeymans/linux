@@ -322,11 +322,13 @@ struct LowMacPasFamily {
     response_enabled: [SharedU8; 4],
     overlapping_pas_link_ba_views: OpaqueBytes<0x390>,
 }
-opaque_family!(
-    /// Link/aggregation header immediately preceding the VIF array.
-    PreVifHeader,
-    0x20
-);
+/// Link/aggregation header immediately preceding the VIF array.
+#[repr(C, align(4))]
+struct PreVifHeader {
+    opaque_00: OpaqueBytes<0x18>,
+    link_bitmap: SharedU32,
+    opaque_1c: OpaqueBytes<0x04>,
+}
 
 /// One physical VIF ABI record.
 ///
@@ -1589,6 +1591,10 @@ pub(crate) const fn wake_response_pointer_unchecked(index: usize) -> DtcmAddress
 pub(crate) const DURATION_SOURCES: DtcmAddress = DtcmAddress::from_offset(0x3670);
 pub(crate) const fn duration_source(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(DURATION_SOURCES.offset() + index * core::mem::size_of::<SharedU16>())) } else { None } }
 pub const LOW_MAC_PAS_ROOT: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET);
+pub(crate) const PRE_VIF_LINK_BITMAP: DtcmAddress = DtcmAddress::from_offset(
+    core::mem::offset_of!(DtcmLayout, pre_vif_header)
+        + core::mem::offset_of!(PreVifHeader, link_bitmap),
+);
 pub const VIF_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x3e98);
 pub const VIF_RECORD_END: usize = VIF_RECORDS.get() + VIF_RECORD_COUNT * VIF_RECORD_SIZE;
 pub const HOST_TX_CONTEXTS: DtcmAddress = DtcmAddress::from_offset(0x5a24);
@@ -2364,6 +2370,7 @@ const _: () = {
     assert_type_layout!(AlternatePasRootAddress, 4, 4);
     assert_type_layout!(LowMacPasFamily, LOW_MAC_PAS_SIZE, 4);
     assert_type_layout!(PreVifHeader, 0x20, 4);
+    assert!(core::mem::offset_of!(PreVifHeader, link_bitmap) == 0x18);
     assert_type_layout!(VifRecord, VIF_RECORD_SIZE, 4);
     assert_type_layout!(VifRecordAddress, 4, 4);
     assert!(core::mem::offset_of!(VifRecord, scan_rate_config) == 0x000);
@@ -2980,6 +2987,8 @@ mod tests {
 
     #[test]
     fn vif_addresses_are_typed_bounded_and_cross_record_wake_is_explicit() {
+        assert_eq!(PRE_VIF_LINK_BITMAP.get(), 0x0400_3e90);
+        assert_eq!(PRE_VIF_LINK_BITMAP.get() + 8, VIF_RECORDS.get());
         let first = vif_record(0).unwrap();
         let second = vif_record(1).unwrap();
         let third = vif_record(2).unwrap();

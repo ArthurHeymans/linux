@@ -236,7 +236,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04003670..0x04003674` | `0x4` | typed duration-source halfwords | High |
 | `0x04003674..0x04003678` | `0x4` | unknown | Unknown, not allocatable |
 | `0x04003678..0x04003e78` | `0x800` | shared low-MAC/PAS/rate/link/queue state with many computed overlays | High family root, incomplete fields; all-or-nothing group |
-| `0x04003e78..0x04003e98` | `0x20` | pre-VIF/link/aggregation header | Medium; includes link bitmap at `+0x18` |
+| `0x04003e78..0x04003e98` | `0x20` | typed pre-VIF/link/aggregation header | High link-bitmap field at `+0x18`; remaining bytes opaque |
 | `0x04003e98..0x040049a8` | `0xb10` | three VIF records, stride `0x3b0` | High stride/count; internal records remain mixed |
 | `0x040049a8..0x04005a24` | `0x107c` | unknown/possibly VIF-adjacent tables and gaps | Unknown, not allocatable |
 | `0x04005a24..0x04008544` | `0x2b20` | 30 host WSM TX contexts, stride `0x170` | High exact range; mixed Rust/vendor mutation |
@@ -3775,5 +3775,29 @@ ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
 packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-power-save-boundary-final-check.log
           bc8b179c7621a013064a98211ef0fb33ef025eec63694fad82157a5cc5291934
+```
+
+### A.52 Pre-VIF link bitmap
+
+The `0x20`-byte pre-VIF header at `0x04003e78..0x04003e98` now names the
+retained link/BA bitmap word at `+0x18` (`0x04003e90`). Retained BA,
+aggregation, link-reset, and queue-building code all read or update this exact
+word. The surrounding `0x1c` bytes remain explicit opaque quarantine.
+
+`PRE_VIF_LINK_BITMAP` is derived from the top-level member and field offsets.
+Exact tests pin the field eight bytes before the first VIF record.
+`tools/check-pre-vif-header-layout.py` covers the complete header and recognizes
+both the preceding low-MAC/PAS and following VIF family checkers. The translated
+Rust ELF currently has no linked in-range literal or decoded xref. The complete
+ELF remains byte-identical to the qualified power-save-boundary parent, so no
+hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-pre-vif-final-check.log
+          8ae06fa05b35df0bce345ff6138172919745064048af65f6dc54ab65eafc160f
+manifest  tools/pre-vif-header-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

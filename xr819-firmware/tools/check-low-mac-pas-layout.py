@@ -199,7 +199,7 @@ def check_source() -> None:
     failures: list[str] = []
     for path in source_paths():
         relative = path.relative_to(ROOT).as_posix()
-        if relative in {"src/dtcm.rs", "tools/check-low-mac-pas-layout.py"}:
+        if relative in {"src/dtcm.rs", "tools/check-low-mac-pas-layout.py", "tools/check-pre-vif-header-layout.py"}:
             continue
         code = code_only(
             path.read_text(errors="replace"),

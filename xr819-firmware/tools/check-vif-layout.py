@@ -20,7 +20,7 @@ VIF_RANGE = (0x04003E98, 0x040049A8)
 SYNTHESIZED = {0x3E98, 0x4248, 0x45F8, 0x49A8}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {".rs", ".py", ".sh", ".c", ".h", ".cc", ".cpp", ".s", ".S", ".ld", ".x", ".toml"}
-OWNER_FILES = {"src/dtcm.rs", "src/vif.rs", "tools/check-vif-layout.py", "tools/check-vif-timer-layout.py"}
+OWNER_FILES = {"src/dtcm.rs", "src/vif.rs", "tools/check-pre-vif-header-layout.py", "tools/check-vif-layout.py", "tools/check-vif-timer-layout.py"}
 FORBIDDEN_FORMS = ("VIF_BASE", "VIF_STRIDE", "VIF_RECORDS", "VIF_RECORD_SIZE")
 
 # Exact decoded literal-load xrefs in the qualified feature-free image. This is
