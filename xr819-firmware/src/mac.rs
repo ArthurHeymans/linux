@@ -697,7 +697,7 @@ pub unsafe fn initialize_tx_pipe_state() {
     // authentication frames into protected/ToDS/more-data 0x61b0 frames.
     unsafe { write_u32(packet_ram::interface_metadata(), 0) };
     for (index, value) in TX_DURATION_TIMING.into_iter().enumerate() {
-        unsafe { write_u16(0x0400_0138 + index * 2, value) };
+        unsafe { write_u16(crate::dtcm::TX_DURATION_TIMING_TABLE.get() + index * 2, value) };
     }
     for pipe in 0..4 {
         unsafe {
@@ -708,8 +708,8 @@ pub unsafe fn initialize_tx_pipe_state() {
         };
     }
     for (base, values) in [
-        (0x0400_0194, &RATE_ENCODING[..]),
-        (0x0400_01aa, &RATE_ATTRIBUTE[..]),
+        (crate::dtcm::RATE_ENCODING_TABLE.get(), &RATE_ENCODING[..]),
+        (crate::dtcm::RATE_ATTRIBUTE_TABLE.get(), &RATE_ATTRIBUTE[..]),
         (crate::dtcm::QUEUE_TO_ACCESS_CATEGORY.get(), &[1_u8, 0, 2, 3][..]),
         (crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get(), &[1_u8, 0, 2, 3][..]),
     ] {

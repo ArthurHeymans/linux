@@ -4164,3 +4164,29 @@ manifest  tools/duration-quantum-pointers-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.69 Initialized TX rate tables
+
+The initialized duration table at `0x04000138..0x0400014c` is now exposed as
+ten bounded `u16` entries. The two 22-byte tables at
+`0x04000194..0x040001c0` are now exact byte arrays for rate encoding and rate
+attributes instead of opaque storage.
+
+MAC startup and all current Rust TX consumers now derive these addresses from
+the `InitializedVendorImage` layout. The retained wrapping rate-index additions,
+volatile widths, and initialization order are unchanged. The linked image folds
+the attribute-table access into arithmetic from the encoding-table root, so the
+drift manifest intentionally contains linked roots only at `0x04000138` and
+`0x04000194`. `tools/check-initialized-tx-rate-tables-layout.py` pins that exact
+literal and decoded-xref multiset. The complete ELF and packed image remain
+byte-identical to the qualified duration-quantum-pointers parent, so no hardware
+rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-initialized-tx-rate-final-check.log
+          2c1c34b35ccfabafbb4e49424b984d040176d2b2738a3ef97953cabe9ab5af0a
+manifest  tools/initialized-tx-rate-tables-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

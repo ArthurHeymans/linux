@@ -107,8 +107,8 @@ struct InitializedVendorImage {
     pre_duration_tables: OpaqueBytes<0x138>,
     tx_duration_timing: [SharedU16; 10],
     pre_rate_tables: OpaqueBytes<0x48>,
-    rate_encoding: OpaqueBytes<0x16>,
-    rate_attributes: OpaqueBytes<0x16>,
+    rate_encoding: [SharedU8; 22],
+    rate_attributes: [SharedU8; 22],
     pre_completion_callback_words: OpaqueBytes<0xa0>,
     /// Ten visible words in the qualified initialized island. The evidence does
     /// not establish that every word is a complete callable entry.
@@ -1656,6 +1656,12 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const TX_DURATION_TIMING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tx_duration_timing));
+pub(crate) const RATE_ENCODING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_encoding));
+pub(crate) const RATE_ATTRIBUTE_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_attributes));
+pub(crate) const fn tx_duration_timing(rate: usize) -> Option<DtcmAddress> { if rate < 10 { Some(DtcmAddress::from_offset(TX_DURATION_TIMING_TABLE.offset() + rate * core::mem::size_of::<SharedU16>())) } else { None } }
+pub(crate) const fn rate_encoding(rate: usize) -> Option<DtcmAddress> { if rate < 22 { Some(DtcmAddress::from_offset(RATE_ENCODING_TABLE.offset() + rate)) } else { None } }
+pub(crate) const fn rate_attribute(rate: usize) -> Option<DtcmAddress> { if rate < 22 { Some(DtcmAddress::from_offset(RATE_ATTRIBUTE_TABLE.offset() + rate)) } else { None } }
 pub(crate) const DURATION_QUANTUM_POINTERS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, duration_quantum_pointers));
 pub(crate) const fn duration_quantum_pointer(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(DtcmAddress::from_offset(DURATION_QUANTUM_POINTERS.offset() + pipe * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const QUEUE_PIPE_MAPPINGS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, queue_pipe_mappings));
@@ -3718,6 +3724,20 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_tx_rate_table_addresses_are_exact() {
+        assert_eq!(TX_DURATION_TIMING_TABLE.get(), 0x0400_0138);
+        assert_eq!(tx_duration_timing(0).unwrap().get(), 0x0400_0138);
+        assert_eq!(tx_duration_timing(9).unwrap().get(), 0x0400_014a);
+        assert!(tx_duration_timing(10).is_none());
+        assert_eq!(RATE_ENCODING_TABLE.get(), 0x0400_0194);
+        assert_eq!(rate_encoding(21).unwrap().get(), 0x0400_01a9);
+        assert!(rate_encoding(22).is_none());
+        assert_eq!(RATE_ATTRIBUTE_TABLE.get(), 0x0400_01aa);
+        assert_eq!(rate_attribute(21).unwrap().get(), 0x0400_01bf);
+        assert!(rate_attribute(22).is_none());
     }
 
     #[test]

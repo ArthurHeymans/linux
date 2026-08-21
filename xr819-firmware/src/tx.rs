@@ -173,7 +173,7 @@ const PIPE_RETRY_HARDWARE_STATE: u32 = 0x0400_1e6c;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const PIPE_RETRY_RATE_MAP: u32 = 0x0400_1aec;
-const PIPE_RETRY_TIMING_TABLE: u32 = 0x0400_0138;
+const PIPE_RETRY_TIMING_TABLE: u32 = crate::dtcm::TX_DURATION_TIMING_TABLE.get() as u32;
 const PAS_ACK_TIMING_TABLE: usize = 0x0400_16c8;
 const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
 #[cfg(target_arch = "arm")]
@@ -4744,7 +4744,7 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         let frame_node = FrameNodeAddress::new(read_u32(slot + 0x0c));
         let context = frame_node.context();
         if read_u32(0x0400_1d2c) == 3 {
-            let secondary = read_u8(0x0400_0194 + usize::from(read_u8(context.tx_rate_address())));
+            let secondary = read_u8(crate::dtcm::RATE_ENCODING_TABLE.get() + usize::from(read_u8(context.tx_rate_address())));
             dispatch_phy_command_2(secondary);
             if read_u8(0x0400_1d48) == 4 {
                 write_u32(0x0400_1d2c, 4);
@@ -6523,9 +6523,9 @@ pub unsafe fn build_prepared_probe_descriptor(
             (address.request_flag_rate_bits_address() as *const u8).read_volatile();
         let legacy_mode = (0x0400_1685 as *const u8).read_volatile();
         let rate_attribute =
-            (0x0400_0194_usize.wrapping_add(usize::from(rate)) as *const u8).read_volatile();
+            (crate::dtcm::RATE_ENCODING_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
         let hardware_rate =
-            (0x0400_01aa_usize.wrapping_add(usize::from(rate)) as *const u8).read_volatile();
+            (crate::dtcm::RATE_ATTRIBUTE_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
         let phy = build_phy_rate_words(
             rate,
             legacy_mode,
@@ -6569,9 +6569,9 @@ unsafe fn emit_prepared_probe_descriptor(
             (address.request_flag_rate_bits_address() as *const u8).read_volatile();
         let legacy_mode = (0x0400_1685 as *const u8).read_volatile();
         let rate_attribute =
-            (0x0400_0194_usize.wrapping_add(usize::from(rate)) as *const u8).read_volatile();
+            (crate::dtcm::RATE_ENCODING_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
         let hardware_rate =
-            (0x0400_01aa_usize.wrapping_add(usize::from(rate)) as *const u8).read_volatile();
+            (crate::dtcm::RATE_ATTRIBUTE_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
         let phy = build_phy_rate_words(
             rate,
             legacy_mode,
