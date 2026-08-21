@@ -54,6 +54,7 @@ OWNER_FILES = {
     "tools/check-context-completion-layout.py",
     "tools/check-rf-initialization-view.py",
     "tools/check-beacon-ie-index-view.py",
+    "tools/check-beacon-filter-storage-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

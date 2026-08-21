@@ -227,7 +227,8 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x0400218c..0x040021b4` | `0x28` | `ClockParameters` record | High shape from `register_structs!`; shared/timer-owned |
 | `0x040021b4..0x04002234` | `0x80` | 32-entry scheduler handler table | High, `32 * 4`; contains code pointers |
 | `0x04002234..0x040022b8` | `0x84` | typed 22-record PHY gain-source table | High structural confidence from retained builder loop |
-| `0x040022b8..0x04003050` | `0xd98` | beacon/filter state and opaque BSS | Medium islands, unknown aggregate extent |
+| `0x040022b8..0x04002984` | `0x6cc` | typed retained beacon storage, selector, and IE indexes | High structural confidence; RF overlap remains address-only |
+| `0x04002984..0x04003050` | `0x6cc` | beacon/template-adjacent opaque BSS | Low-medium; not allocatable |
 | `0x04003050..0x040030d0` | `0x80` | typed two-record template descriptor table | High structural confidence from retained initializer |
 | `0x040030d0..0x040034b0` | `0x3e0` | template backing and opaque BSS | Medium islands, overlapping pointer evidence |
 | `0x040034b0..0x040035e0` | `0x130` | typed SDD-derived channel/gain/profile tables | High structural confidence; shared quarantine |
@@ -3491,6 +3492,47 @@ packed    /tmp/xr819-beacon-ie-index-layout.bin
 checks    /tmp/xr819-beacon-ie-index-final-check.log
           66ff81148d8a1186b46026b6576f5d666d9da7720b5cf07598d8184e10d6a6e6
 manifest  tools/beacon-ie-index-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.43 Beacon-filter physical storage
+
+The complete `0x6cc`-byte beacon-filter storage rooted at `0x040022b8` is now
+represented in the physical `PreConfigurationTables` layout:
+
+```text
+0x040022b8 +0x000 u32 stored beacon length
+           +0x004 700-byte stored beacon image
+           +0x2c0 u32 active IE-index selector
+           +0x2c4 IE index 0, size 0x204
+           +0x4c8 IE index 1, size 0x204
+0x04002984 end
+```
+
+The 700-byte cap comes from both `ie_index_build` and
+`beacon_filter_check_and_store`; the latter copies the complete beacon after its
+length word and flips the selector after publication. The index count and 256
+halfword offsets retain the A.42 layout. This physical quarantine does not
+invalidate the overlapping RF address view: no safe aggregate reference or
+exclusive owner is exposed.
+
+`tools/check-beacon-filter-storage-layout.py` covers the complete physical
+family, recognizes the adjacent gain-table boundary and reviewed overlapping
+RF/IE checkers, and rejects other production literals or synthesized aliases.
+Its one linked literal and decoded xref remain the shared RF root. The complete
+ELF remains byte-identical to the qualified beacon-IE-index parent, so no
+hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-beacon-filter-storage-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-beacon-filter-storage-final-check.log
+          ba5113373d5457a9d4a1162d8d4aeedf60dbebc5bac98281b25a6cdc0f0d057a
+manifest  tools/beacon-filter-storage-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
