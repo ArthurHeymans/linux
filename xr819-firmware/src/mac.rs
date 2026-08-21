@@ -420,14 +420,14 @@ pub unsafe fn program_immediate_response_descriptors() {
 
 unsafe fn save_register_context() {
     unsafe {
-        write_u32(crate::platform::mac_register(0x1404), read_u32(0x0400_2078));
-        write_u32(crate::platform::mac_register(0x1408), read_u32(0x0400_207c));
+        write_u32(crate::platform::mac_register(0x1404), read_u32(crate::dtcm::runtime_register_context_unchecked(0).get()));
+        write_u32(crate::platform::mac_register(0x1408), read_u32(crate::dtcm::runtime_register_context_unchecked(1).get()));
         write_u32(
             crate::platform::mac_register(0x140c),
             u32::from(read_u16(crate::dtcm::saved_register_context().get())),
         );
-        write_u32(crate::platform::mac_register(0x1410), read_u32(0x0400_2080));
-        write_u32(crate::platform::mac_register(0x1400), read_u32(0x0400_2084));
+        write_u32(crate::platform::mac_register(0x1410), read_u32(crate::dtcm::runtime_register_context_unchecked(2).get()));
+        write_u32(crate::platform::mac_register(0x1400), read_u32(crate::dtcm::runtime_register_context_unchecked(3).get()));
     }
 }
 
@@ -840,8 +840,8 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // and the optional contention-window override controls. Rebuilt code
         // consumes all three, so reconstruct them explicitly.
         write_u32(0x0400_1b04, 0);
-        write_u32(0x0400_2088, 0);
-        write_u32(0x0400_208c, 0);
+        write_u32(crate::dtcm::pas_backoff_override_enabled().get(), 0);
+        write_u32(crate::dtcm::pas_backoff_override_window().get(), 0);
         for word in 0..5 {
             write_u32(
                 crate::dtcm::rate_policy_word_unchecked(0, word).get(),

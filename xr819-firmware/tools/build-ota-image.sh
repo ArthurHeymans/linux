@@ -19,6 +19,7 @@ python3 tools/check-rust-main-stack.py "$ELF"
 python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
+python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-scheduler-support-layout.py
 python3 tools/check-vif-timer-layout.py
 python3 tools/check-power-save-layout.py
@@ -41,6 +42,7 @@ python3 tools/check-ba-link-event-layout.py
 python3 tools/pack-sectioned-elf.py "$ELF" "$OUT"
 python3 tools/check-dtcm-layout.py "$ELF" "$OUT"
 python3 tools/check-scheduler-event-layout.py "$ELF"
+python3 tools/check-runtime-register-backoff-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
 python3 tools/check-power-save-layout.py "$ELF"

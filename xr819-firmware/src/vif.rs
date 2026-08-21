@@ -377,8 +377,8 @@ impl PasOperationIo for VolatilePasOperationIo {
 #[cfg(test)]
 fn reset_pas_backoff_with_io<I: PasOperationIo>(interface: u8, io: &mut I) {
     let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
-    let override_enabled = io.read_u32(0x0400_2088, PasOperationBranch::BackoffReset) != 0;
-    let override_window = io.read_u32(0x0400_208c, PasOperationBranch::BackoffReset);
+    let override_enabled = io.read_u32(crate::dtcm::pas_backoff_override_enabled().get(), PasOperationBranch::BackoffReset) != 0;
+    let override_window = io.read_u32(crate::dtcm::pas_backoff_override_window().get(), PasOperationBranch::BackoffReset);
     for queue in 0..4 {
         io.write_u32(
             pas.retry_count_unchecked(queue).get(),
@@ -408,8 +408,8 @@ unsafe fn reset_pas_backoff(interface: u8) -> Result<(), JoinStateError> {
         return Err(JoinStateError::InvalidInterface);
     }
     let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
-    let override_enabled = read_u32(0x0400_2088) != 0;
-    let override_window = read_u32(0x0400_208c);
+    let override_enabled = read_u32(crate::dtcm::pas_backoff_override_enabled().get()) != 0;
+    let override_window = read_u32(crate::dtcm::pas_backoff_override_window().get());
     for queue in 0..4 {
         unsafe { write_u32(pas.retry_count_unchecked(queue).get(), 0) };
         let window = if override_enabled {

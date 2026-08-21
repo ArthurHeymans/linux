@@ -222,7 +222,8 @@ This table is intentionally conservative. Subranges below refine known islands w
 | Range | Size | Classification | Evidence/confidence |
 | --- | ---: | --- | --- |
 | `0x04000000..0x04002078` | `0x2078` | Vendor initialized image: constant tables, dispatch tables, callbacks, timing/rate data, boot/scheduler parameters, AES microcode, and opaque data | High initialization; mixed semantic confidence |
-| `0x04002078..0x0400218c` | `0x114` | BSS-like register-context/backoff/debug state | Medium; selected fields translated, remainder mixed |
+| `0x04002078..0x04002094` | `0x1c` | typed saved register context and PAS backoff overrides | High structural confidence; shared quarantine |
+| `0x04002094..0x0400218c` | `0xf8` | retained debug-console state | Medium; mixed and mostly untranslated |
 | `0x0400218c..0x040021b4` | `0x28` | `ClockParameters` record | High shape from `register_structs!`; shared/timer-owned |
 | `0x040021b4..0x04002234` | `0x80` | 32-entry scheduler handler table | High, `32 * 4`; contains code pointers |
 | `0x04002234..0x040034b0` | `0x127c` | PHY/template/beacon/filter tables and opaque BSS | Medium islands, unknown aggregate extent |
@@ -3120,6 +3121,44 @@ packed    /tmp/xr819-phy-iq-calibration-layout.bin
 checks    /tmp/xr819-phy-iq-calibration-final-check.log
           3539bf7e7f74d4877b6aae9ea38a92a627c5c24a22eded0c0716e6f6c6b75595
 manifest  tools/phy-iq-calibration-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.33 Runtime register context and PAS backoff overrides
+
+The first `0x1c` bytes of the former opaque `RuntimePrefix` are now an exact
+shared layout:
+
+```text
+0x04002078 +0x00 four u32 saved MAC register-context words
+           +0x10 u32 PAS backoff override-enable word
+           +0x14 u32 PAS backoff override window
+           +0x18 u32 retained backoff word, semantics unresolved
+0x04002094 end
+```
+
+The remaining `0xf8` bytes through `0x0400218c` stay opaque debug-console state.
+Translated MAC channel reprogramming and PAS reset/update paths now derive the
+proven addresses from `dtcm.rs`; volatile widths and operation ordering remain
+unchanged. Test fixtures retain explicit addresses to verify the vendor-visible
+access trace.
+
+`tools/check-runtime-register-backoff-layout.py` covers the complete typed
+prefix, rejects other production literals and synthesized base forms, and pins
+two linked literal words plus two decoded literal-load xrefs. The complete ELF
+remains byte-identical to the qualified PHY-IQ-calibration parent, so no
+hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-runtime-register-backoff-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-runtime-register-backoff-final-check.log
+          e5fcdbdc522a67ee66dd160cdd6ccb91374e4b3575a6d30d3a2320c2576e1556
+manifest  tools/runtime-register-backoff-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

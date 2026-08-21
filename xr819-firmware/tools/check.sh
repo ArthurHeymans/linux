@@ -24,6 +24,7 @@ cargo +nightly test --features vendor-host-tx-diagnostics
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
+python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-scheduler-support-layout.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
@@ -54,6 +55,7 @@ python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/pack-sectioned-elf.py "$ELF" "$PACKED"
 python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-scheduler-event-layout.py "$ELF"
+python3 tools/check-runtime-register-backoff-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
@@ -252,6 +254,15 @@ if [[ -n "${XR819_PHY_IQ_CALIBRATION_PARENT_ELF:-}" ]]; then
     "$XR819_PHY_IQ_CALIBRATION_PARENT_ELF" "$ELF"
 else
   echo "== PHY-IQ-calibration codegen gate skipped: set XR819_PHY_IQ_CALIBRATION_PARENT_ELF to the qualified PHY-table-control ELF =="
+fi
+
+if [[ -n "${XR819_RUNTIME_REGISTER_BACKOFF_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed runtime-register/backoff parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/runtime-register-backoff-codegen-manifest.json \
+    "$XR819_RUNTIME_REGISTER_BACKOFF_PARENT_ELF" "$ELF"
+else
+  echo "== runtime-register/backoff codegen gate skipped: set XR819_RUNTIME_REGISTER_BACKOFF_PARENT_ELF to the qualified PHY-IQ-calibration ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

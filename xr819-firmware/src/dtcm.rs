@@ -138,11 +138,10 @@ struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion:
 #[repr(C, align(4))]
 struct SchedulerEventIsland { pending_events: SharedU32, runtime_flags: SharedU32, opaque_08: OpaqueBytes<0x0a>, startup_mode: SharedU16, opaque_14: OpaqueBytes<0x08>, analog_enabled: SharedU16, opaque_1e: OpaqueBytes<0x02>, remap_primary: SharedU32, opaque_24: OpaqueBytes<0x04>, remap_secondary: SharedU32, analog_words: [SharedU32; 3], opaque_38: OpaqueBytes<0x08>, timer_list_head: SharedU32 }
 
-opaque_family!(
-    /// Register-context, backoff, diagnostic, and other early zeroed state.
-    RuntimePrefix,
-    0x114
-);
+#[repr(C, align(4))]
+struct RuntimeRegisterBackoffState { register_context: [SharedU32; 4], override_enabled: SharedU32, override_window: SharedU32, opaque_18: SharedU32 }
+#[repr(C, align(4))]
+struct RuntimePrefix { register_backoff: RuntimeRegisterBackoffState, debug_console_state: OpaqueBytes<0xf8> }
 #[repr(C, align(4))]
 struct ClockParameterIsland { opaque_00: SharedU32, mac_clock_snapshot: SharedU32, beacon_counter_snapshot: SharedU32, hardware_counter_cache: SharedU32, opaque_10: SharedU32, conversion_factor: SharedU32, opaque_18: SharedU32, conversion_mode: SharedU8, opaque_1d: OpaqueBytes<0x03>, opaque_20: SharedU32, correction_offset: SharedU32 }
 
@@ -1364,6 +1363,12 @@ pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress
 
 pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000);
 pub const SCHEDULER_EVENT_ROOT: DtcmAddress = DtcmAddress::from_offset(0x1fd4);
+pub(crate) const RUNTIME_REGISTER_BACKOFF_STATE: DtcmAddress = DtcmAddress::from_offset(0x2078);
+const fn runtime_register_backoff_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(RUNTIME_REGISTER_BACKOFF_STATE.offset() + offset) }
+pub(crate) const fn runtime_register_context(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(runtime_register_context_unchecked(index)) } else { None } }
+pub(crate) const fn runtime_register_context_unchecked(index: usize) -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, register_context) + index * core::mem::size_of::<SharedU32>()) }
+pub(crate) const fn pas_backoff_override_enabled() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_enabled)) }
+pub(crate) const fn pas_backoff_override_window() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window)) }
 pub const CLOCK_PARAMETERS: DtcmAddress = DtcmAddress::from_offset(0x218c);
 pub const SCHEDULER_HANDLER_TABLE: DtcmAddress = DtcmAddress::from_offset(0x21b4);
 pub const LOW_MAC_PAS_ROOT: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET);
@@ -2053,7 +2058,12 @@ macro_rules! assert_type_layout {
 const _: () = {
     assert_type_layout!(DtcmAddress, 4, 4);
     assert_type_layout!(InitializedVendorImage, 0x2078, 4);
+    assert_type_layout!(RuntimeRegisterBackoffState, 0x1c, 4);
+    assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_enabled) == 0x10);
+    assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window) == 0x14);
     assert_type_layout!(RuntimePrefix, 0x114, 4);
+    assert!(core::mem::offset_of!(RuntimePrefix, register_backoff) == 0x00);
+    assert!(core::mem::offset_of!(RuntimePrefix, debug_console_state) == 0x1c);
     assert_type_layout!(ClockParameterIsland, 0x28, 4);
     assert!(core::mem::offset_of!(ClockParameterIsland, mac_clock_snapshot) == 0x04);
     assert!(core::mem::offset_of!(ClockParameterIsland, beacon_counter_snapshot) == 0x08);
@@ -2807,6 +2817,17 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn runtime_register_and_backoff_addresses_are_exact() {
+        assert_eq!(RUNTIME_REGISTER_BACKOFF_STATE.get(), 0x0400_2078);
+        assert_eq!(runtime_register_context(0).unwrap().get(), 0x0400_2078);
+        assert_eq!(runtime_register_context(3).unwrap().get(), 0x0400_2084);
+        assert!(runtime_register_context(4).is_none());
+        assert_eq!(pas_backoff_override_enabled().get(), 0x0400_2088);
+        assert_eq!(pas_backoff_override_window().get(), 0x0400_208c);
+        assert_eq!(pas_backoff_override_window().get() + 8, 0x0400_2094);
     }
 
     #[test]
