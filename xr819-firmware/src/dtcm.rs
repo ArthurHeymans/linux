@@ -806,7 +806,7 @@ struct DeferredTransferQueue { active: SharedU32, pending_head: SharedU32, pendi
 #[repr(C, align(4))]
 struct HifBufferState { host_message_ring: HostMessageFreeRing, opaque_18: SharedU32, transfer_queue: DeferredTransferQueue, control_word: SharedU32 }
 #[repr(C, align(4))]
-struct LegacyHifSoftwareState { mode: SharedU32, pending_count: SharedU32, coalesce_count: SharedU32, coalesce_timer: TimerEntry, rx_buffers: [SharedU32; 32], rx_consumer: SharedU32, rx_state: SharedU32, tx_queue: [SharedU32; 64], tx_producer: SharedU32, tx_consumer: SharedU32, opaque_1b0: OpaqueBytes<0x1c>, sequence_state: SharedU32, transport_state: SharedU32 }
+struct LegacyHifSoftwareState { mode: SharedU32, pending_count: SharedU32, coalesce_count: SharedU32, coalesce_timer: TimerEntry, rx_buffers: [SharedU32; 32], rx_consumer: SharedU32, rx_state: SharedU32, tx_queue: [SharedU32; 64], tx_producer: SharedU32, tx_consumer: SharedU32, queue_depth: SharedU32, queued_tx_producer: SharedU32, queued_tx_consumer: SharedU32, input_producer: SharedU32, input_consumer: SharedU32, input_ring_mask: SharedU32, input_descriptors: SharedU32, sequence_state: SharedU32, transport_state: SharedU32 }
 #[repr(C, align(4))]
 struct MicCompletionState { queue: DeferredTransferQueue }
 
@@ -2757,6 +2757,13 @@ const _: () = {
     assert!(core::mem::offset_of!(LegacyHifSoftwareState, tx_queue) == 0xa8);
     assert!(core::mem::offset_of!(LegacyHifSoftwareState, tx_producer) == 0x1a8);
     assert!(core::mem::offset_of!(LegacyHifSoftwareState, tx_consumer) == 0x1ac);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, queue_depth) == 0x1b0);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, queued_tx_producer) == 0x1b4);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, queued_tx_consumer) == 0x1b8);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, input_producer) == 0x1bc);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, input_consumer) == 0x1c0);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, input_ring_mask) == 0x1c4);
+    assert!(core::mem::offset_of!(LegacyHifSoftwareState, input_descriptors) == 0x1c8);
     assert!(core::mem::offset_of!(LegacyHifSoftwareState, sequence_state) == 0x1cc);
     assert!(core::mem::offset_of!(LegacyHifSoftwareState, transport_state) == 0x1d0);
     assert_type_layout!(MicCompletionState, 0x14, 4);
@@ -3389,6 +3396,13 @@ mod tests {
         assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, tx_queue)).get(), 0x0400_97fc);
         assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, tx_producer)).get(), 0x0400_98fc);
         assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, tx_consumer)).get(), 0x0400_9900);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, queue_depth)).get(), 0x0400_9904);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, queued_tx_producer)).get(), 0x0400_9908);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, queued_tx_consumer)).get(), 0x0400_990c);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, input_producer)).get(), 0x0400_9910);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, input_consumer)).get(), 0x0400_9914);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, input_ring_mask)).get(), 0x0400_9918);
+        assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, input_descriptors)).get(), 0x0400_991c);
         assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, sequence_state)).get(), 0x0400_9920);
         assert_eq!(legacy_hif_field(core::mem::offset_of!(LegacyHifSoftwareState, transport_state)).get() + 4, 0x0400_9928);
         assert_eq!(mic_completion_field(core::mem::offset_of!(MicCompletionState, queue)).get(), 0x0400_9928);

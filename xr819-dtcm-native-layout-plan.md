@@ -3888,3 +3888,27 @@ checks    /tmp/xr819-power-save-final-tail-check.log
           9abf06c98c45731ee2676d5d6f61e85e632e780b778d0a164d05061ea40bea4e
 ```
 
+### A.57 Retained HIF ring controls
+
+The final previously opaque `0x1c` bytes of `LegacyHifSoftwareState` now name
+seven retained HIF ring-control words at `0x04009904..0x04009920`:
+queue depth, queued TX producer/consumer, input producer/consumer, input ring
+mask, and input descriptor base. The existing sequence and transport words
+remain at `0x04009920/+0x04`.
+
+These names follow the retained queue, RX dispatch, TX-confirm drain, and
+sequence-publication arithmetic. Some words participate in overlapping
+negative-offset views from adjacent HIF roots; structural typing therefore
+remains shared volatile quarantine rather than exclusive ownership. Exact
+assertions and tests pin every word. The existing HIF/MIC source, linked-xref,
+and codegen gate covers the complete range. The complete ELF remains
+byte-identical to the qualified power-save-tail parent, so no hardware rerun is
+required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-hif-ring-controls-final-check.log
+          c2e0dfed5d1f7c28e50c27bf44560ce57c0877ec200bb24d44d2835728d1d07d
+```
+
