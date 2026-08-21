@@ -3405,3 +3405,22 @@ manifest  tools/context-completion-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.40 Rejected disjoint beacon-IE index ownership
+
+A candidate attempted to partition `0x04002578..0x04002984` as one selector
+word followed by two `0x204`-byte IE-offset indexes. This shape follows
+`ie_index_build`: each index has a `u32` count and up to 256 `u16` offsets, with
+observed starts at `0x0400257c` and `0x04002780`.
+
+That ownership interpretation is not sound. The first proposed index spans
+`0x0400257c..0x04002780` and therefore contains `0x04002730`, which is also a
+retained RF-initialization root and is published by translated PHY startup.
+The candidate source gate exposed this cross-family overlap immediately. The
+candidate was reverted before commit; no ELF or packed image was produced from
+it as an accepted endpoint.
+
+Future work must represent the beacon indexes as overlapping address views,
+like the power-save schema, or first decode the complete RF/table lifetime that
+shares `0x04002730`. The bytes remain occupied quarantine and are not free
+space.
+
