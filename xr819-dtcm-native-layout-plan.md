@@ -1,6 +1,6 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** fixed initialized debug-command descriptor table structurally decoded through `0x040011ac`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
+**Status:** fixed initialized PHY watchdog counter structurally decoded through `0x04001240`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
 **Firmware lineage:** candidate based directly on `8940467e9cdc` (`Model VIF state in Rust`), itself atop qualified low-MAC/PAS. The exact parent was rebuilt from revision files for code-generation comparison; no rejected patch was applied.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
@@ -297,6 +297,7 @@ Within `0x04000000..0x04002078`:
 | `0x04001164..0x040011ac` | six `0x0c` records | initialized debug-command descriptors: raw command-name, help-text, and handler words; shared quarantine |
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
+| `0x0400123c..0x04001240` | one shared `u32` | fixed PHY watchdog count; wrapping increment and reset observed |
 | `0x040012a0..0x040012c8` | `0x28` | exported AMPDU counters table |
 | `0x04001420...` | mixed | control words; `0x04001428` host-download state, former PRNG at `0x0400142c`, timer offset at `0x0400143c` |
 | `0x04001680...` | mixed | low-MAC shared root and four pipe families |
@@ -5033,3 +5034,58 @@ checks    /tmp/xr819-debug-command-descriptors-final-check.log
 manifest  tools/initialized-debug-command-descriptors-codegen-manifest.json
 ```
 
+
+### A.93 Fixed initialized PHY watchdog counter
+
+The initialized COPY interval `0x0400123c..0x04001240` is now represented by
+exactly one `#[repr(C, align(4))] PhyWatchdogCounter { count: SharedU32 }`.
+`/tmp/xr819-dtcm-refs.out` records exactly three direct references, all in
+`phy_watchdog_check`: a 32-bit write at PC `0x00017366`, a 32-bit read at
+`0x0001736a`, and a 32-bit write at `0x00017370`. The decompilation types the
+literal root as `uint *`, reads the old value, writes the unchecked/wrapping
+`old + 1`, compares that incremented value with 3, and eventually resets the
+same word to zero. This supports only a shared 32-bit watchdog count.
+
+The decoded IRQ callback table ends exactly at `0x0400123c`. The new counter
+ends at `0x04001240`; `0x04001240..0x040012a0` remains an opaque `0x60`-byte
+tail, and the independently decoded A-MPDU telemetry table still begins at
+`0x040012a0`. No timer or adjacent byte was decoded. The counter remains in the
+initialized vendor COPY placement and is only a shared quarantine view: vendor,
+IRQ, FIQ, generic-memory, and HIF/debug mutation remain possible. This is not
+writer closure or exclusive ownership.
+
+The sole API is the crate-private address constant `PHY_WATCHDOG_COUNTER`,
+derived from the two structural offsets. It exposes no pointer, reference,
+value, reader/writer, generic offset, unchecked accessor, slice, or iterator,
+and it has no production consumer. Therefore volatile operations, MMIO,
+barrier and interrupt order, initialization order, wrapping arithmetic, request
+ownership, and all 30 HIF inputs remain unchanged.
+
+`tools/check-initialized-phy-watchdog-counter-layout.py` covers exactly the
+half-open range `[0x0400123c, 0x04001240)`. It requires the exact struct,
+enclosing split, sole address constant, compile-time assertions, focused test,
+and global sizes; rejects unsafe API expansion; source-gates physical literals;
+and pins empty aligned linked-literal and decoded PC-relative-xref multisets.
+Those empty sets are drift evidence, not writer closure. The checker runs in
+both source and linked-ELF phases of `check.sh` and `build-ota-image.sh`.
+`tools/initialized-phy-watchdog-counter-codegen-manifest.json` provides the
+exact-parent text-symbol gate through
+`XR819_INITIALIZED_PHY_WATCHDOG_COUNTER_PARENT_ELF`; symbol checks remain
+supplemental to complete-file identity.
+
+The focused host test
+`initialized_phy_watchdog_counter_address_is_exact` pins the type, count offset,
+IRQ boundary, counter start/end, opaque-tail start/size/end, A-MPDU boundary,
+and complete `InitializedVendorImage`, `DtcmLayout`, and `SharedDtcmState`
+sizes and alignments. Software-only checks and the Thumb build were run; no
+hardware test was run. No TALA relocation or bytes in
+`0x04002984..0x04003050` changed.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-watchdog-final-check.log
+          3394026cdee1042e65d55ba66f478e534bce447ab2f91bc11b861cc76dcbac18
+manifest  tools/initialized-phy-watchdog-counter-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
