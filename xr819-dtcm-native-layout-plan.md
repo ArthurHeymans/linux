@@ -4141,3 +4141,26 @@ manifest  tools/queue-pipe-mappings-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.68 Duration-quantum register pointers
+
+The four initialized words at `0x040010d4..0x040010e4` are now exposed through
+a bounded duration-quantum pointer API. Retained startup fills them with the
+four MAC pipe duration-register addresses; TX publication reads the table when
+programming per-pipe timing.
+
+The remaining production base literals in MAC initialization and TX were
+replaced with the typed root while preserving the existing `pipe * 4`
+arithmetic and volatile writes. `tools/check-duration-quantum-pointers-layout.py`
+pins two linked base literals, their decoded xrefs, and exact-parent codegen.
+The complete ELF remains byte-identical to the qualified queue/pipe-mappings
+parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-duration-quantum-final-check.log
+          4117aaa7bf12e5ba084cb4df6da199dba7422adb70371f52fbcc38b1945c48bf
+manifest  tools/duration-quantum-pointers-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

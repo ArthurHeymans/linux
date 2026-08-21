@@ -159,7 +159,7 @@ const CURRENT_PIPE_RECORD: u32 = CURRENT_PIPE + 0x0c;
 const CURRENT_SLOT: u32 = CURRENT_PIPE + 0x10;
 const PIPE_IRQ_PENDING: u32 = crate::platform::mac_register(0x0e84) as u32;
 const PIPE_IRQ_TRIGGER: u32 = crate::platform::mac_register(0x0e98) as u32;
-const PIPE_QUANTUM_POINTERS: u32 = 0x0400_10d4;
+const PIPE_QUANTUM_POINTERS: u32 = crate::dtcm::DURATION_QUANTUM_POINTERS.get() as u32;
 const PIPE_QUANTUM: u32 = 0x0000_0fff;
 const PIPE_BUSY: u32 = PIPE_RECORDS + 7;
 const QUEUE_BACKOFF_TABLE: u32 = crate::dtcm::QUEUE_TO_ACCESS_CATEGORY.get() as u32; const ACCESS_CATEGORY_QUEUE_TABLE: u32 = crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32;

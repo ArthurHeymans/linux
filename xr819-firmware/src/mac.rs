@@ -702,7 +702,7 @@ pub unsafe fn initialize_tx_pipe_state() {
     for pipe in 0..4 {
         unsafe {
             write_u32(
-                0x0400_10d4 + pipe * 4,
+                crate::dtcm::DURATION_QUANTUM_POINTERS.get() + pipe * 4,
                 crate::platform::mac_register(0x0e70) as u32 + pipe as u32 * 4,
             )
         };

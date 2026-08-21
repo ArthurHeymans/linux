@@ -1656,6 +1656,8 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const DURATION_QUANTUM_POINTERS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, duration_quantum_pointers));
+pub(crate) const fn duration_quantum_pointer(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(DtcmAddress::from_offset(DURATION_QUANTUM_POINTERS.offset() + pipe * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const QUEUE_PIPE_MAPPINGS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, queue_pipe_mappings));
 pub(crate) const QUEUE_TO_ACCESS_CATEGORY: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, queue_to_access_category));
 pub(crate) const ACCESS_CATEGORY_TO_QUEUE: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, access_category_to_queue));
@@ -3716,6 +3718,15 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_duration_quantum_pointer_addresses_are_exact() {
+        assert_eq!(DURATION_QUANTUM_POINTERS.get(), 0x0400_10d4);
+        assert_eq!(duration_quantum_pointer(0).unwrap().get(), 0x0400_10d4);
+        assert_eq!(duration_quantum_pointer(3).unwrap().get(), 0x0400_10e0);
+        assert_eq!(duration_quantum_pointer(3).unwrap().get() + 4, 0x0400_10e4);
+        assert!(duration_quantum_pointer(4).is_none());
     }
 
     #[test]
