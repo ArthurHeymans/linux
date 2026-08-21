@@ -50,6 +50,7 @@ python3 tools/check-ba-session-layout.py
 python3 tools/check-ba-link-event-layout.py
 python3 tools/check-context-completion-layout.py
 python3 tools/check-completion-ring-view.py
+python3 tools/check-internal-context-prefix-layout.py
 python3 tools/check-internal-context-layout.py
 python3 tools/pack-sectioned-elf.py "$ELF" "$OUT"
 python3 tools/check-dtcm-layout.py "$ELF" "$OUT"
@@ -85,6 +86,7 @@ python3 tools/check-ba-session-layout.py "$ELF"
 python3 tools/check-ba-link-event-layout.py "$ELF"
 python3 tools/check-context-completion-layout.py "$ELF"
 python3 tools/check-completion-ring-view.py "$ELF"
+python3 tools/check-internal-context-prefix-layout.py "$ELF"
 python3 tools/check-internal-context-layout.py "$ELF"
 
 echo "features=none"

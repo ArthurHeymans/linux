@@ -675,12 +675,8 @@ opaque_family!(
     PreInternalContextQuarantine,
     0xec
 );
-opaque_family!(
-    /// Internal-context global/header prefix. The pool free head follows this
-    /// record at the historically qualified address.
-    InternalContextPrefix,
-    0x14
-);
+#[repr(C, align(4))]
+struct InternalContextPrefix { iv_seed: SharedU32, opaque_04: OpaqueBytes<0x10> }
 
 /// One exact internal TX context record. It remains quarantine because retained
 /// teardown and diagnostics can mutate the same bytes.
@@ -1599,6 +1595,7 @@ pub(crate) const fn class0_internal_context_count() -> DtcmAddress { context_com
 pub(crate) const COMPLETION_RING_VIEW: DtcmAddress = DtcmAddress::from_offset(0x8f80);
 pub(crate) const fn completion_ring_entry(index: usize) -> Option<DtcmAddress> { if index < 64 { Some(DtcmAddress::from_offset(COMPLETION_RING_VIEW.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub const INTERNAL_CONTEXT_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x906c);
+pub(crate) const fn internal_context_iv_seed() -> DtcmAddress { INTERNAL_CONTEXT_PREFIX }
 pub const INTERNAL_CONTEXT_POOL: DtcmAddress = DtcmAddress::from_offset(0x9080);
 pub const POWER_SAVE_FAMILY: DtcmAddress = DtcmAddress::from_offset(0x94d4);
 
@@ -2541,6 +2538,7 @@ const _: () = {
     assert_type_layout!(CompletionRingObservedLayout, 0x100, 4);
     assert_type_layout!(PreInternalContextQuarantine, 0xec, 4);
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
+    assert!(core::mem::offset_of!(InternalContextPrefix, iv_seed) == 0x00);
     assert_type_layout!(InternalPasContext, 0x80, 4);
     assert!(core::mem::offset_of!(InternalPasContext, completion_timestamp) == 0x14);
     assert!(core::mem::offset_of!(InternalPasContext, terminal_status) == 0x1c);
@@ -3017,6 +3015,7 @@ mod tests {
         assert_eq!(completion_ring_entry(0).unwrap().get(), 0x0400_8f80);
         assert_eq!(completion_ring_entry(58).unwrap().get(), 0x0400_9068);
         assert_eq!(completion_ring_entry(59).unwrap().get(), 0x0400_906c);
+        assert_eq!(internal_context_iv_seed().get(), completion_ring_entry(59).unwrap().get());
         assert_eq!(completion_ring_entry(63).unwrap().get(), 0x0400_907c);
         assert!(completion_ring_entry(64).is_none());
         assert_eq!(completion_ring_entry(63).unwrap().get() + 4, 0x0400_9080);

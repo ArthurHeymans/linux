@@ -3675,3 +3675,35 @@ manifest  tools/completion-ring-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.48 Internal-context prefix overlay
+
+The physical `0x14`-byte prefix at `0x0400906c..0x04009080` now names its
+proven first word as the retained 24-bit IV/PN seed initialized by
+`tx_ctx_pool_init`. The remaining `0x10` bytes stay opaque.
+
+This field deliberately aliases completion-ring entry 59 from A.47. The
+physical prefix type records the internal-context initialization meaning, while
+the completion-ring type remains an address-only view of the retained drain
+contract. Neither representation grants exclusive ownership or a safe shared
+reference.
+
+`tools/check-internal-context-prefix-layout.py` covers the physical prefix,
+recognizes both overlapping completion-ring and adjacent pool checkers, and
+rejects production literals or synthesized aliases outside `dtcm.rs`. The
+current Rust ELF has no linked in-range literal or decoded xref. The complete
+ELF remains byte-identical to the qualified completion-ring parent, so no
+hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-internal-prefix-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-internal-prefix-final-check.log
+          de8561a400d6f357fdbb0858b5854cd117e296909be020f56635ebb86b4bf0b2
+manifest  tools/internal-context-prefix-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

@@ -54,6 +54,7 @@ OWNER_FILES = {
     "tools/check-context-completion-layout.py",
     "tools/check-completion-ring-view.py",
     "tools/check-internal-context-layout.py",
+    "tools/check-internal-context-prefix-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
