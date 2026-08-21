@@ -26,6 +26,7 @@ python3 tools/check-address-literals.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
 python3 tools/check-host-context-layout.py
+python3 tools/check-peer-pipe-layout.py
 python3 tools/check-command-channel-overlay.py
 python3 tools/check-lmc-control-layout.py
 python3 tools/check-link-sequence-layout.py
@@ -44,6 +45,7 @@ python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-host-context-layout.py "$ELF"
+python3 tools/check-peer-pipe-layout.py "$ELF"
 python3 tools/check-command-channel-overlay.py "$ELF"
 python3 tools/check-lmc-control-layout.py "$ELF"
 python3 tools/check-link-sequence-layout.py "$ELF"
@@ -120,6 +122,15 @@ if [[ -n "${XR819_LMC_CONTROL_PARENT_ELF:-}" ]]; then
     "$XR819_LMC_CONTROL_PARENT_ELF" "$ELF"
 else
   echo "== LMC-control codegen gate skipped: set XR819_LMC_CONTROL_PARENT_ELF to the qualified command/channel ELF =="
+fi
+
+if [[ -n "${XR819_PEER_PIPE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed peer-pipe parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/peer-pipe-codegen-manifest.json \
+    "$XR819_PEER_PIPE_PARENT_ELF" "$ELF"
+else
+  echo "== peer-pipe codegen gate skipped: set XR819_PEER_PIPE_PARENT_ELF to the qualified LMC-control ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

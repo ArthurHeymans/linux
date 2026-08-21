@@ -235,7 +235,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | `0x04003e98..0x040049a8` | `0xb10` | three VIF records, stride `0x3b0` | High stride/count; internal records remain mixed |
 | `0x040049a8..0x04005a24` | `0x107c` | unknown/possibly VIF-adjacent tables and gaps | Unknown, not allocatable |
 | `0x04005a24..0x04008544` | `0x2b20` | 30 host WSM TX contexts, stride `0x170` | High exact range; mixed Rust/vendor mutation |
-| `0x04008544..0x04008594` | `0x50` | unknown | Unknown, not allocatable |
+| `0x04008544..0x04008594` | `0x50` | eight peer-pipe records plus management/scan tail | High count/stride and field shape |
 | `0x04008594..0x040085fc` | `0x68` | uploaded WSM command-15 blob | High size; `0x040085f8` overlaps/anchors channel-switch control |
 | `0x040085f8..0x04008618` | `0x20` | channel-switch/scan control overlay | Medium; overlaps blob tail, proving a simple field partition is unsafe |
 | `0x04008618..0x04008798` | `0x180` | LMC/encryption/free-list roots and mixed control | Medium; several roots, incomplete extent |
@@ -1286,7 +1286,7 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 | `0x3e98` | `0xb10` | `VifRecords` | three opaque `VifRecord` values at stride `0x3b0` |
 | `0x49a8` | `0x107c` | `PostVifQuarantine` | occupied VIF-adjacent unknown state |
 | `0x5a24` | `0x2b20` | `HostTxContexts` | 30 opaque host contexts at stride `0x170` |
-| `0x8544` | `0x50` | `PreCommandQuarantine` | occupied pre-command bytes |
+| `0x8544` | `0x50` | `PreCommandQuarantine` | eight peer-pipe records, four management counters, scan channel, and pending root |
 | `0x8594` | `0x84` | `CommandChannelSwitchOverlay` | one deliberately opaque overlay: command blob at `+0x00` and channel-switch view at `+0x64` overlap |
 | `0x8618` | `0x180` | `LmcControlRoots` | encryption free-list header plus first 31 duplicate-cache records; record 31 crosses into `0x8798` |
 | `0x8798` | `0x18` | `HostContextAccounting` | host-context/duplicate-cache accounting |
@@ -1905,8 +1905,9 @@ Rust ownership. No hardware run was performed.
 
 `HostTxContext` is now a complete `#[repr(C, align(4))` layout of exactly
 `0x170` bytes. The 30-record `HostTxContexts` array remains exactly
-`0x04005a24..0x04008544`; the following `0x50`-byte pre-command quarantine still
-begins at `0x8544` and is not consumed. Every named field, opaque region, nested
+`0x04005a24..0x04008544`; in this historical host-context slice the following
+`0x50` bytes at `0x8544` were not consumed. They are decoded later in A.21 as
+the peer-pipe table and management/scan tail. Every named field, opaque region, nested
 PAS overlay, size, alignment, and offset has a compile-time assertion.
 
 The semantic prefix covers the original HIF request pointer, intrusive link,
@@ -2571,6 +2572,50 @@ packed    /tmp/xr819-lmc-control-layout.bin
 checks    /tmp/xr819-lmc-control-final-check.log
           0069ec6ee9825091de1d1a6d6aac7771d3704347133524e8291b626681728a30
 manifest  tools/lmc-control-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.21 Peer-pipe table and pre-command tail
+
+The former unknown range `0x04008544..0x04008594` is now decoded as:
+
+```text
+0x04008544  eight peer-pipe records, stride 0x08
+  +0x00 six-byte peer MAC
+  +0x06 state flags
+  +0x07 signed aging/replacement counter
+0x04008584  four u16 management counters
+0x0400858c  u16 scan/channel observation
+0x0400858e  two unresolved bytes
+0x04008590  u32 pending/control root
+```
+
+`pipe_find_or_alloc_lower` scans records 0 through 3 and
+`pipe_find_or_alloc_upper`/`pipe_find_by_mac_upper` scan records 4 through 7.
+The allocation paths compare all six peer-address bytes, use state bit 0 as the
+occupied marker, and maintain the signed replacement counter at `+0x07`.
+Beacon processing applies the same aging transition across all eight records.
+
+The tail fields are independently used by management RX, scan channel
+validation, and pending-list reset. They remain retained-vendor owned, and no
+safe record references are created.
+
+`tools/check-peer-pipe-layout.py` rejects production literals and synthesized
+base/stride forms outside `dtcm.rs`. The linked Rust image has no literal or
+decoded literal-load xrefs into the range. The complete ELF remains
+byte-identical to the qualified LMC-control parent, so no hardware rerun is
+required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-peer-pipe-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-peer-pipe-final-check.log
+          e15a37189ae0652e18fa9f9a8a1f70fe55e4601df7ddef185d611ee6c7689260
+manifest  tools/peer-pipe-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

@@ -506,11 +506,11 @@ struct HostTxContexts {
     contexts: [HostTxContext; HOST_TX_CONTEXT_COUNT],
 }
 
-opaque_family!(
-    /// Occupied bytes between host contexts and the command upload buffer.
-    PreCommandQuarantine,
-    0x50
-);
+#[repr(C, align(4))]
+struct PeerPipeEntry { peer_mac: [SharedU8; 6], state_flags: SharedU8, age: SharedU8 }
+#[repr(C, align(4))]
+struct PreCommandQuarantine { peer_pipes: [PeerPipeEntry; 8], management_counters: [SharedU16; 4], scan_channel: SharedU16, opaque_4a: OpaqueBytes<0x02>, pending_root: SharedU32 }
+
 
 /// Command-15 blob whose last four bytes overlap channel-switch control.
 /// Later bytes are shared by JOIN, scan, register-save, and TX-buffer state.
@@ -1850,6 +1850,39 @@ const fn duplicate_cache_entry(index: usize) -> Option<DtcmAddress> {
     } else { None }
 }
 
+#[cfg(test)]
+const fn pre_command_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, pre_command_quarantine) + offset,
+    )
+}
+#[cfg(test)]
+const fn peer_pipe(index: usize) -> Option<DtcmAddress> {
+    if index < 8 {
+        Some(pre_command_field(
+            core::mem::offset_of!(PreCommandQuarantine, peer_pipes)
+                + index * core::mem::size_of::<PeerPipeEntry>(),
+        ))
+    } else { None }
+}
+#[cfg(test)]
+const fn management_counter(index: usize) -> Option<DtcmAddress> {
+    if index < 4 {
+        Some(pre_command_field(
+            core::mem::offset_of!(PreCommandQuarantine, management_counters)
+                + index * core::mem::size_of::<SharedU16>(),
+        ))
+    } else { None }
+}
+#[cfg(test)]
+const fn pre_command_scan_channel() -> DtcmAddress {
+    pre_command_field(core::mem::offset_of!(PreCommandQuarantine, scan_channel))
+}
+#[cfg(test)]
+const fn pre_command_pending_root() -> DtcmAddress {
+    pre_command_field(core::mem::offset_of!(PreCommandQuarantine, pending_root))
+}
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -2012,7 +2045,15 @@ const _: () = {
     assert!(core::mem::offset_of!(HostTxContext, pas) == 0x54);
     assert!(core::mem::offset_of!(HostTxContext, opaque_d4) == 0xd4);
     assert_type_layout!(HostTxContexts, 0x2b20, 4);
+    assert_type_layout!(PeerPipeEntry, 0x08, 4);
+    assert!(core::mem::offset_of!(PeerPipeEntry, peer_mac) == 0x00);
+    assert!(core::mem::offset_of!(PeerPipeEntry, state_flags) == 0x06);
+    assert!(core::mem::offset_of!(PeerPipeEntry, age) == 0x07);
     assert_type_layout!(PreCommandQuarantine, 0x50, 4);
+    assert!(core::mem::offset_of!(PreCommandQuarantine, peer_pipes) == 0x00);
+    assert!(core::mem::offset_of!(PreCommandQuarantine, management_counters) == 0x40);
+    assert!(core::mem::offset_of!(PreCommandQuarantine, scan_channel) == 0x48);
+    assert!(core::mem::offset_of!(PreCommandQuarantine, pending_root) == 0x4c);
     assert_type_layout!(CommandChannelSwitchOverlay, 0x84, 4);
     assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, upload_prefix) == 0x00);
     assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, overlay_head) == 0x64);
@@ -2485,6 +2526,21 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn peer_pipe_table_and_pre_command_tail_are_exact() {
+        assert_eq!(peer_pipe(0).unwrap().get(), 0x0400_8544);
+        assert_eq!(peer_pipe(3).unwrap().get(), 0x0400_855c);
+        assert_eq!(peer_pipe(4).unwrap().get(), 0x0400_8564);
+        assert_eq!(peer_pipe(7).unwrap().get(), 0x0400_857c);
+        assert!(peer_pipe(8).is_none());
+        assert_eq!(management_counter(0).unwrap().get(), 0x0400_8584);
+        assert_eq!(management_counter(3).unwrap().get(), 0x0400_858a);
+        assert!(management_counter(4).is_none());
+        assert_eq!(pre_command_scan_channel().get(), 0x0400_858c);
+        assert_eq!(pre_command_pending_root().get(), 0x0400_8590);
+        assert_eq!(pre_command_pending_root().get() + 4, 0x0400_8594);
     }
 
     #[test]

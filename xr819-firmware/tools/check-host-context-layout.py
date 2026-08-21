@@ -35,6 +35,7 @@ OWNER_FILES = {
     "tools/check-host-context-layout.py",
     "tools/check-link-sequence-layout.py",
     "tools/check-lmc-control-layout.py",
+    "tools/check-peer-pipe-layout.py",
 }
 # Generic DTCM packer-policy fixture, not a host-context consumer.
 ALLOWED_SOURCE_LITERALS = {"tools/test-pack-sectioned-elf.py": {0x04008000}}
