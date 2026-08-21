@@ -3707,3 +3707,30 @@ manifest  tools/internal-context-prefix-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.49 Typed internal-context address schema
+
+`InternalContextAddress` now derives all translated internal TX field addresses
+from `InternalTxContext` and `InternalPasContext` offsets rather than repeating
+an undocumented numeric schema. It provides bounded construction by pool index
+and an explicitly unsafe raw constructor for call sites that have already
+established internal-context identity.
+
+The API covers every internal field currently consumed through the shared
+`ContextAddress` abstraction: list linkage, borrowed header/frame address,
+completion fields, PAS frame/control/rate state, timestamps, retry and
+ownership state, descriptor/frame-state pointers, sequence/interface/link
+metadata, and the internal cipher buffer. Exact tests pin all three record
+bases and representative fields through the final record.
+
+This is address typing only. It creates no reference to vendor/IRQ/FIQ-mutated
+storage and does not change the existing volatile access contract. The complete
+ELF remains byte-identical to the qualified internal-prefix parent, so no
+hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-internal-address-final-check.log
+          57b46de63917ce28ec9319fc8090490d8502ebb9a42c1ea043b6ff5c2ebcebfc
+```
+
