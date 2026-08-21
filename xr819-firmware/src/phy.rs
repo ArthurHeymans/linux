@@ -956,9 +956,9 @@ pub unsafe fn publish_channel_frequency_offset() -> i16 {
         let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let frequency_khz = (crate::dtcm::phy_frequency_khz().get() as *const u32).read_volatile();
         let offset = channel_frequency_offset_mhz(mode, frequency_khz);
-        let current = (0x0400_99f4 as *const i32).read_volatile();
+        let current = (crate::dtcm::phy_state_scale().get() as *const i32).read_volatile();
         if current != i32::from(offset) {
-            (0x0400_99f4 as *mut i32).write_volatile(i32::from(offset));
+            (crate::dtcm::phy_state_scale().get() as *mut i32).write_volatile(i32::from(offset));
         }
         offset
     }
@@ -1119,7 +1119,7 @@ pub unsafe fn program_channel_pll(channel: u16) -> Result<PllDivider, ChannelPll
             return Err(ChannelPllError::InvalidReference);
         }
         let cached_channel = cached_pll_channel();
-        let cache_forced = (0x0400_9a08 as *const u8).read_volatile() != 0;
+        let cache_forced = (crate::dtcm::phy_extended_settle().get() as *const u8).read_volatile() != 0;
         let divider = if cached_channel == channel && !cache_forced {
             let (integer, fractional) = cached_pll_divider();
             PllDivider {
@@ -1269,7 +1269,7 @@ pub unsafe fn channel_tx_power_from_rate_table(
         }
         let column = if second_column { 1 } else { 2 };
         let encoded = i32::from(((records + selected * 3 + column) as *const u8).read_volatile());
-        let base = i32::from((0x0400_9a04 as *const i16).read_volatile());
+        let base = i32::from((crate::dtcm::phy_threshold().get() as *const i16).read_volatile());
         Ok(base.wrapping_add(encoded.wrapping_mul(4)) as i16)
     }
 }
@@ -1291,7 +1291,7 @@ pub unsafe fn publish_channel_power(channel: u8) -> Result<(i16, i16, i16), Chan
         let threshold =
             crate::configuration::channel_threshold_correction(threshold_id, u16::from(channel))
                 .ok_or(ChannelPowerError::InvalidThresholdTable)?;
-        write_u16(0x0400_9a04, threshold as u16);
+        write_u16(crate::dtcm::phy_threshold().get(), threshold as u16);
         let first = channel_tx_power_from_rate_table(channel, false)?;
         let second = channel_tx_power_from_rate_table(channel, true)?;
         set_channel_power_limits(first, second);
@@ -1496,7 +1496,7 @@ unsafe fn gain_computation_input(
             analog_enabled: i32::from((crate::dtcm::scheduler_analog_enabled().get() as *const i16).read_volatile()),
             analog_word_2c: (crate::dtcm::scheduler_analog_word(0).unwrap().get() as *const u32).read_volatile(),
             analog_word_30: (crate::dtcm::scheduler_analog_word(1).unwrap().get() as *const u32).read_volatile(),
-            state_scale: (0x0400_99f4 as *const i32).read_volatile(),
+            state_scale: (crate::dtcm::phy_state_scale().get() as *const i32).read_volatile(),
         })
     }
 }
@@ -3524,7 +3524,7 @@ pub unsafe fn begin_dynamic_iq_band_registers(
         write_u32(0x0abc_0030, derived.abc0030);
         snapshot.abc00b4 = (0x0abc_00b4 as *const u32).read_volatile();
         let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
-        let extended_settle = (0x0400_9a08 as *const u8).read_volatile() != 0;
+        let extended_settle = (crate::dtcm::phy_extended_settle().get() as *const u8).read_volatile() != 0;
         commit_channel_pll(synth_register, mode, extended_settle);
         snapshot.abb800c = (0x0abb_800c as *const u32).read_volatile();
         write_u32(0x0abb_800c, 1);
@@ -3576,7 +3576,7 @@ pub unsafe fn restore_dynamic_iq_band_registers(snapshot: &DynamicIqBandRegister
         }
         write_u32(0x0abb_8004, snapshot.abb8004);
         let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
-        let extended_settle = (0x0400_9a08 as *const u8).read_volatile() != 0;
+        let extended_settle = (crate::dtcm::phy_extended_settle().get() as *const u8).read_volatile() != 0;
         commit_channel_pll(snapshot.abc00b4, mode, extended_settle);
         write_u32(0x0abd_0000, snapshot.abd0000);
         delay_units(6);
@@ -4438,14 +4438,14 @@ pub unsafe fn initialize_mac_software_state() {
         write_u16(crate::dtcm::phy_retained_channel().get(), 100);
         write_u8(crate::dtcm::phy_calibration_state().get(), 1);
         write_u8(crate::dtcm::phy_calibration_aux().get(), 0);
-        write_u8(0x0400_99f4 + 0x14, 1);
+        write_u8(crate::dtcm::phy_extended_settle().get(), 1);
 
         // Vendor 0x198f2 mode-zero state pointers.
         write_u32(crate::dtcm::phy_table_pointer().get(), 0x0400_34b0);
-        write_u32(0x0400_99ec, 0x0400_1088);
-        write_u32(0x0400_99f0, 0x0400_1098);
-        write_u32(0x0400_99f4, u32::MAX);
-        write_u8(0x0400_99f4 + 0x15, 0);
+        write_u32(crate::dtcm::phy_calibration_table_a().get(), 0x0400_1088);
+        write_u32(crate::dtcm::phy_calibration_table_b().get(), 0x0400_1098);
+        write_u32(crate::dtcm::phy_state_scale().get(), u32::MAX);
+        write_u8(crate::dtcm::phy_table_control().get(), 0);
 
         // Vendor 0x16ca4 derives these from remap window two at 0x04001ffc.
         let remap = (crate::dtcm::scheduler_remap_secondary().get() as *const u32).read_volatile();

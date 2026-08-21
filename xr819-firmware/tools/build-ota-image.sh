@@ -27,6 +27,7 @@ python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
 python3 tools/check-phy-channel-cache-layout.py
+python3 tools/check-phy-table-control-layout.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-peer-pipe-layout.py
 python3 tools/check-command-channel-overlay.py
@@ -47,6 +48,7 @@ python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
 python3 tools/check-phy-channel-cache-layout.py "$ELF"
+python3 tools/check-phy-table-control-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-peer-pipe-layout.py "$ELF"
 python3 tools/check-command-channel-overlay.py "$ELF"

@@ -3033,3 +3033,45 @@ manifest  tools/phy-channel-cache-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.31 PHY table pointers and calibration controls
+
+The final `0x30` bytes of `PhyCoreState` are now an exact shared layout:
+
+```text
+0x040099dc +0x00 opaque retained state
+           +0x10 u32 calibration table A pointer
+           +0x14 u32 calibration table B pointer
+           +0x18 i32 retained state scale
+           +0x28 i16 calibration threshold
+           +0x2c u8 extended-settle flag
+           +0x2d u8 table/control flag
+0x04009a0c end
+```
+
+Production PHY initialization, calibration, transition, and observation paths
+now derive these addresses from `dtcm.rs`. The extension diagnostic retains one
+explicit state-scale read at `0x040099f4`. Volatile widths and calibration/MMIO
+ordering remain unchanged. Together with A.27 through A.30, this removes the
+remaining opaque bytes from the complete `0x0400993c..0x04009a0c`
+`PhyCoreState` quarantine layout while preserving unknown fields as explicit
+opaque subranges.
+
+`tools/check-phy-table-control-layout.py` covers the complete block, rejects
+other production literals and synthesized base/stride forms, and pins four
+linked literal words plus four decoded literal-load xrefs. The complete ELF
+remains byte-identical to the qualified PHY-channel-cache parent, so no hardware
+rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-phy-table-control-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-table-control-final-check.log
+          fbdd98c82f377b443c66696764c97abe0fc986c229e7cb85e79bfe3e7cd9a276
+manifest  tools/phy-table-control-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
