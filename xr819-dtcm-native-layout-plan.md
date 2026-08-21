@@ -3912,3 +3912,27 @@ checks    /tmp/xr819-hif-ring-controls-final-check.log
           c2e0dfed5d1f7c28e50c27bf44560ce57c0877ec200bb24d44d2835728d1d07d
 ```
 
+### A.58 Power-save wake statistics and leading state
+
+The leading `0x2a` bytes of each physical power-save prefix are now decoded.
+They contain three wake-stat control bytes, the measured wake duration, minimum/
+sum/maximum hardware-register samples, minimum/sum/maximum elapsed-time
+samples, TX-completion state, next-TBTT state, doze state, and requested PM
+mode.
+
+The wake-stat accumulator proves the six words at `+0x08..+0x20`: on its first
+sample it initializes min/sum/max triples, then updates extrema and totals on
+subsequent wakes. `ps_wake_sequence`, beacon timing, TX completion, PM command,
+and doze-selection paths independently prove the remaining leading fields.
+Both the logical overlapping view and each physical `0x104` prefix carry the
+same layout. Bounded address APIs and exact tests pin representative fields in
+both interfaces. The complete ELF remains byte-identical to the qualified HIF
+ring-control parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-wake-stats-final-check.log
+          900044b2c6dad7076a53fa4a39b9d4b3359fe1f17599f91a366f9b508b09142d
+```
+
