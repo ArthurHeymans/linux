@@ -315,37 +315,37 @@ impl ContextAddress {
         }
     }
 
-    fn intrusive_next_address(self) -> usize { self.host_or_offset(|c| c.intrusive_next(), 0x04) }
-    fn borrowed_frame_address_address(self) -> usize { self.host_or_offset(|c| c.borrowed_frame_address(), 0x1c) }
-    fn completion_status_address(self) -> usize { self.host_or_offset(|c| c.completion_status(), 0x20) }
-    fn saved_status_address(self) -> usize { self.host_or_offset(|c| c.saved_status(), 0x25) }
-    fn completion_flags_address(self) -> usize { self.host_or_offset(|c| c.completion_flags(), 0x26) }
-    fn optional_pipe_object_address(self) -> usize { self.host_or_offset(|c| c.optional_pipe_object(), 0x4c) }
-    fn completion_class_address(self) -> usize { self.host_or_offset(|c| c.completion_class(), 0x53) }
-    fn frame_address_address(self) -> usize { self.host_or_offset(|c| c.frame_address(), 0x54) }
-    fn control_bits_address(self) -> usize { self.host_or_offset(|c| c.control_bits(), 0x58) }
-    fn frame_length_address(self) -> usize { self.host_or_offset(|c| c.frame_length(), 0x5c) }
-    fn frame_control_address(self) -> usize { self.host_or_offset(|c| c.frame_control(), 0x5e) }
-    fn access_category_address(self) -> usize { self.host_or_offset(|c| c.access_category(), 0x60) }
-    fn request_flag_rate_bits_address(self) -> usize { self.host_or_offset(|c| c.request_flag_rate_bits(), 0x61) }
-    fn retry_policy_address(self) -> usize { self.host_or_offset(|c| c.retry_policy(), 0x62) }
-    fn tx_rate_address(self) -> usize { self.host_or_offset(|c| c.tx_rate(), 0x63) }
-    fn completion_timestamp_address(self) -> usize { self.host_or_offset(|c| c.completion_timestamp(), 0x68) }
-    fn scheduler_timestamp_address(self) -> usize { self.host_or_offset(|c| c.scheduler_timestamp(), 0x6c) }
-    fn terminal_status_address(self) -> usize { self.host_or_offset(|c| c.terminal_status(), 0x70) }
-    fn try_count_address(self) -> usize { self.host_or_offset(|c| c.try_count(), 0x72) }
-    fn ownership_bits_address(self) -> usize { self.host_or_offset(|c| c.ownership_bits(), 0x80) }
-    fn duration_address(self) -> usize { self.host_or_offset(|c| c.duration(), 0x8a) }
-    fn descriptor_state_address(self) -> usize { self.host_or_offset(|c| c.descriptor_state(), 0x90) }
-    fn frame_state_address_address(self) -> usize { self.host_or_offset(|c| c.frame_state_address(), 0xa0) }
-    fn auxiliary_state_address(self) -> usize { self.host_or_offset(|c| c.auxiliary_state(), 0xa4) }
-    fn tid_address(self) -> usize { self.host_or_offset(|c| c.tid(), 0xa6) }
-    fn sequence_number_address(self) -> usize { self.host_or_offset(|c| c.sequence_number(), 0xa8) }
-    fn retry_rate_address(self) -> usize { self.host_or_offset(|c| c.retry_rate(), 0xaa) }
-    fn interface_address(self) -> usize { self.host_or_offset(|c| c.interface(), 0xbd) }
-    fn duration_slot_address(self) -> usize { self.host_or_offset(|c| c.duration_slot(), 0xbe) }
-    fn host_link_address(self) -> usize { self.host_or_offset(|c| c.host_link(), 0xbf) }
-    fn completion_byte_6c_address(self) -> usize { self.host_or_offset(|c| c.completion_byte_6c(), 0xc0) }
+    fn intrusive_next_address(self) -> usize { self.host_or_offset(|c| c.intrusive_next(), crate::dtcm::InternalContextAddress::INTRUSIVE_NEXT_OFFSET) }
+    fn borrowed_frame_address_address(self) -> usize { self.host_or_offset(|c| c.borrowed_frame_address(), crate::dtcm::InternalContextAddress::BORROWED_FRAME_ADDRESS_OFFSET) }
+    fn completion_status_address(self) -> usize { self.host_or_offset(|c| c.completion_status(), crate::dtcm::InternalContextAddress::COMPLETION_STATUS_OFFSET) }
+    fn saved_status_address(self) -> usize { self.host_or_offset(|c| c.saved_status(), crate::dtcm::InternalContextAddress::SAVED_STATUS_OFFSET) }
+    fn completion_flags_address(self) -> usize { self.host_or_offset(|c| c.completion_flags(), crate::dtcm::InternalContextAddress::COMPLETION_FLAGS_OFFSET) }
+    fn optional_pipe_object_address(self) -> usize { self.host_or_offset(|c| c.optional_pipe_object(), crate::dtcm::InternalContextAddress::OPTIONAL_PIPE_OBJECT_OFFSET) }
+    fn completion_class_address(self) -> usize { self.host_or_offset(|c| c.completion_class(), crate::dtcm::InternalContextAddress::COMPLETION_CLASS_OFFSET) }
+    fn frame_address_address(self) -> usize { self.host_or_offset(|c| c.frame_address(), crate::dtcm::InternalContextAddress::FRAME_ADDRESS_OFFSET) }
+    fn control_bits_address(self) -> usize { self.host_or_offset(|c| c.control_bits(), crate::dtcm::InternalContextAddress::CONTROL_BITS_OFFSET) }
+    fn frame_length_address(self) -> usize { self.host_or_offset(|c| c.frame_length(), crate::dtcm::InternalContextAddress::FRAME_LENGTH_OFFSET) }
+    fn frame_control_address(self) -> usize { self.host_or_offset(|c| c.frame_control(), crate::dtcm::InternalContextAddress::FRAME_CONTROL_OFFSET) }
+    fn access_category_address(self) -> usize { self.host_or_offset(|c| c.access_category(), crate::dtcm::InternalContextAddress::ACCESS_CATEGORY_OFFSET) }
+    fn request_flag_rate_bits_address(self) -> usize { self.host_or_offset(|c| c.request_flag_rate_bits(), crate::dtcm::InternalContextAddress::REQUEST_FLAG_RATE_BITS_OFFSET) }
+    fn retry_policy_address(self) -> usize { self.host_or_offset(|c| c.retry_policy(), crate::dtcm::InternalContextAddress::RETRY_POLICY_OFFSET) }
+    fn tx_rate_address(self) -> usize { self.host_or_offset(|c| c.tx_rate(), crate::dtcm::InternalContextAddress::TX_RATE_OFFSET) }
+    fn completion_timestamp_address(self) -> usize { self.host_or_offset(|c| c.completion_timestamp(), crate::dtcm::InternalContextAddress::COMPLETION_TIMESTAMP_OFFSET) }
+    fn scheduler_timestamp_address(self) -> usize { self.host_or_offset(|c| c.scheduler_timestamp(), crate::dtcm::InternalContextAddress::SCHEDULER_TIMESTAMP_OFFSET) }
+    fn terminal_status_address(self) -> usize { self.host_or_offset(|c| c.terminal_status(), crate::dtcm::InternalContextAddress::TERMINAL_STATUS_OFFSET) }
+    fn try_count_address(self) -> usize { self.host_or_offset(|c| c.try_count(), crate::dtcm::InternalContextAddress::TRY_COUNT_OFFSET) }
+    fn ownership_bits_address(self) -> usize { self.host_or_offset(|c| c.ownership_bits(), crate::dtcm::InternalContextAddress::OWNERSHIP_BITS_OFFSET) }
+    fn duration_address(self) -> usize { self.host_or_offset(|c| c.duration(), crate::dtcm::InternalContextAddress::DURATION_OFFSET) }
+    fn descriptor_state_address(self) -> usize { self.host_or_offset(|c| c.descriptor_state(), crate::dtcm::InternalContextAddress::DESCRIPTOR_STATE_OFFSET) }
+    fn frame_state_address_address(self) -> usize { self.host_or_offset(|c| c.frame_state_address(), crate::dtcm::InternalContextAddress::FRAME_STATE_ADDRESS_OFFSET) }
+    fn auxiliary_state_address(self) -> usize { self.host_or_offset(|c| c.auxiliary_state(), crate::dtcm::InternalContextAddress::AUXILIARY_STATE_OFFSET) }
+    fn tid_address(self) -> usize { self.host_or_offset(|c| c.tid(), crate::dtcm::InternalContextAddress::TID_OFFSET) }
+    fn sequence_number_address(self) -> usize { self.host_or_offset(|c| c.sequence_number(), crate::dtcm::InternalContextAddress::SEQUENCE_NUMBER_OFFSET) }
+    fn retry_rate_address(self) -> usize { self.host_or_offset(|c| c.retry_rate(), crate::dtcm::InternalContextAddress::RETRY_RATE_OFFSET) }
+    fn interface_address(self) -> usize { self.host_or_offset(|c| c.interface(), crate::dtcm::InternalContextAddress::INTERFACE_OFFSET) }
+    fn duration_slot_address(self) -> usize { self.host_or_offset(|c| c.duration_slot(), crate::dtcm::InternalContextAddress::DURATION_SLOT_OFFSET) }
+    fn host_link_address(self) -> usize { self.host_or_offset(|c| c.host_link(), crate::dtcm::InternalContextAddress::HOST_LINK_OFFSET) }
+    fn completion_byte_6c_address(self) -> usize { self.host_or_offset(|c| c.completion_byte_6c(), crate::dtcm::InternalContextAddress::COMPLETION_BYTE_6C_OFFSET) }
 }
 
 impl FrameNodeAddress {
