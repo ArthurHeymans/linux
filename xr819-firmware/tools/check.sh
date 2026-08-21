@@ -28,6 +28,7 @@ python3 tools/check-scheduler-support-layout.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
 python3 tools/check-vif-timer-layout.py
+python3 tools/check-power-save-layout.py
 python3 tools/check-host-context-layout.py
 python3 tools/check-peer-pipe-layout.py
 python3 tools/check-command-channel-overlay.py
@@ -50,6 +51,7 @@ python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-vif-timer-layout.py "$ELF"
+python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-host-context-layout.py "$ELF"
 python3 tools/check-peer-pipe-layout.py "$ELF"
 python3 tools/check-command-channel-overlay.py "$ELF"
@@ -164,6 +166,15 @@ if [[ -n "${XR819_VIF_TIMER_PARENT_ELF:-}" ]]; then
     "$XR819_VIF_TIMER_PARENT_ELF" "$ELF"
 else
   echo "== VIF-timer codegen gate skipped: set XR819_VIF_TIMER_PARENT_ELF to the qualified scheduler-support ELF =="
+fi
+
+if [[ -n "${XR819_POWER_SAVE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed power-save parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/power-save-codegen-manifest.json \
+    "$XR819_POWER_SAVE_PARENT_ELF" "$ELF"
+else
+  echo "== power-save codegen gate skipped: set XR819_POWER_SAVE_PARENT_ELF to the qualified VIF-timer ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

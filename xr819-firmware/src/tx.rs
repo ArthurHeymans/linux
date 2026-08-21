@@ -4890,11 +4890,11 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
         }
 
         if read_u32(0x0400_1ae8) != 0 {
-            if read_u8(0x0400_94fe) < 3 {
+            if read_u8(crate::dtcm::power_save_global_sleep_state().get()) < 3 {
                 return;
             }
             backend.timer_start((state + 0xe8) as u32, 0x0000_1f40);
-            if read_u8(0x0400_94fe) == 4 {
+            if read_u8(crate::dtcm::power_save_global_sleep_state().get()) == 4 {
                 backend.try_enter_sleep_all();
             }
             return;
@@ -4905,7 +4905,7 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
         }
         let mode = read_u8(state + 0x40);
         if mode != 1 {
-            if mode == 0 && read_u8(0x0400_94fe) >= 3 {
+            if mode == 0 && read_u8(crate::dtcm::power_save_global_sleep_state().get()) >= 3 {
                 backend.try_enter_sleep_all();
             }
             return;
@@ -4919,7 +4919,7 @@ pub unsafe fn service_power_save_completion<B: PowerSaveCompletionEffects>(
         }
         let context_flags = read_u32(context.control_bits_address());
         if context_flags & (1 << 25) != 0 {
-            backend.timer_start((state + 0xc0) as u32, read_u32(0x0400_9504));
+            backend.timer_start((state + 0xc0) as u32, read_u32(crate::dtcm::power_save_global_timer_duration().get()));
             return;
         }
 

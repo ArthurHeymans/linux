@@ -675,6 +675,11 @@ pub(crate) struct InternalContextPoolState {
     contexts: [InternalTxContext; INTERNAL_TX_CONTEXT_COUNT],
 }
 
+/// Overlapping address schema used by retained per-interface power-save code.
+/// Its `0x138` extent deliberately exceeds the observed `0x104` view stride.
+#[repr(C, align(4))]
+struct PowerSaveObservedLayout { opaque_000: OpaqueBytes<0x2a>, global_sleep_state: SharedU8, opaque_02b: OpaqueBytes<0x05>, global_timer_duration: SharedU32, opaque_034: OpaqueBytes<0x0c>, mode: SharedU8, opaque_041: OpaqueBytes<0x03>, flags: SharedU16, opaque_046: OpaqueBytes<0x0e>, pending: SharedU32, opaque_058: OpaqueBytes<0x02>, queue_mask: SharedU16, opaque_05c: OpaqueBytes<0x14>, timers: [TimerEntry; 7], state_fc: SharedU8, opaque_0fd: OpaqueBytes<0x1b>, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, opaque_124: OpaqueBytes<0x04>, interval_128: SharedU32, opaque_12c: OpaqueBytes<0x08>, counter_134: SharedU16, threshold_136: SharedU16 }
+
 opaque_family!(
     /// One occupied `0x208` power-save family. Per-interface calculations use
     /// an observed `0x104` stride, but larger relative accesses may be interior
@@ -1473,6 +1478,24 @@ pub fn power_save_observed_view(index: usize) -> Option<DtcmAddress> {
     let offset = index.checked_mul(POWER_SAVE_OBSERVED_STRIDE)?;
     (offset < 0x208).then(|| DtcmAddress::from_offset(POWER_SAVE_FAMILY.offset() + offset))
 }
+fn power_save_observed_field(interface: usize, offset: usize) -> Option<DtcmAddress> {
+    power_save_observed_view(interface).map(|base| DtcmAddress::from_offset(base.offset() + offset))
+}
+pub(crate) fn power_save_timer(interface: usize, timer: usize) -> Option<DtcmAddress> {
+    if timer < 7 {
+        power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, timers) + timer * core::mem::size_of::<TimerEntry>())
+    } else { None }
+}
+pub(crate) const fn power_save_global_sleep_state() -> DtcmAddress {
+    DtcmAddress::from_offset(POWER_SAVE_FAMILY.offset() + core::mem::offset_of!(PowerSaveObservedLayout, global_sleep_state))
+}
+pub(crate) const fn power_save_global_timer_duration() -> DtcmAddress {
+    DtcmAddress::from_offset(POWER_SAVE_FAMILY.offset() + core::mem::offset_of!(PowerSaveObservedLayout, global_timer_duration))
+}
+#[cfg(test)]
+fn power_save_extension_field(interface: usize, offset: usize) -> Option<DtcmAddress> {
+    power_save_observed_field(interface, offset)
+}
 pub const HIF_BUFFER_STATE: DtcmAddress = DtcmAddress::from_offset(0x9720);
 pub const MIC_COMPLETION_STATE: DtcmAddress = DtcmAddress::from_offset(0x9928);
 pub const PHY_STATE: DtcmAddress = DtcmAddress::from_offset(0x993c);
@@ -2258,6 +2281,20 @@ const _: () = {
     assert_type_layout!(InternalContextPrefix, 0x14, 4);
     assert_type_layout!(InternalTxContext, INTERNAL_TX_CONTEXT_SIZE, 4);
     assert_type_layout!(InternalContextPoolState, 0x454, 4);
+    assert_type_layout!(PowerSaveObservedLayout, 0x138, 4);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, global_sleep_state) == 0x02a);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, global_timer_duration) == 0x030);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, mode) == 0x040);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, flags) == 0x044);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, pending) == 0x054);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, queue_mask) == 0x05a);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, timers) == 0x070);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, state_fc) == 0x0fc);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, duration_118) == 0x118);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, duration_120) == 0x120);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, interval_128) == 0x128);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, counter_134) == 0x134);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, threshold_136) == 0x136);
     assert_type_layout!(PowerSaveFamily, 0x208, 4);
     assert_type_layout!(PowerSaveHifBoundary, 0x44, 4);
     assert_type_layout!(HifBufferState, 0x34, 4);
@@ -2619,6 +2656,22 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn power_save_timer_views_preserve_overlapping_extents() {
+        assert_eq!(power_save_global_sleep_state().get(), 0x0400_94fe);
+        assert_eq!(power_save_global_timer_duration().get(), 0x0400_9504);
+        assert_eq!(power_save_timer(0, 0).unwrap().get(), 0x0400_9544);
+        assert_eq!(power_save_timer(0, 6).unwrap().get(), 0x0400_95bc);
+        assert_eq!(power_save_timer(1, 0).unwrap().get(), 0x0400_9648);
+        assert_eq!(power_save_timer(1, 6).unwrap().get(), 0x0400_96c0);
+        assert_eq!(power_save_timer(1, 6).unwrap().get() + 0x14, 0x0400_96d4);
+        assert!(power_save_timer(2, 0).is_none());
+        assert!(power_save_timer(0, 7).is_none());
+        assert_eq!(power_save_extension_field(0, core::mem::offset_of!(PowerSaveObservedLayout, duration_118)).unwrap().get(), 0x0400_95ec);
+        assert_eq!(power_save_extension_field(1, core::mem::offset_of!(PowerSaveObservedLayout, duration_118)).unwrap().get(), 0x0400_96f0);
+        assert_eq!(power_save_extension_field(1, core::mem::offset_of!(PowerSaveObservedLayout, threshold_136)).unwrap().get() + 2, 0x0400_9710);
     }
 
     #[test]

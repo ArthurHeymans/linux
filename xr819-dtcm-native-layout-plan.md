@@ -556,7 +556,7 @@ end    0x040096dc
 
 `ps_per_vif_timers_init` initializes seven timer objects per record at offsets `+0x70`, `+0x84`, `+0x98`, `+0xac`, `+0xc0`, `+0xd4`, and `+0xe8`, stores the interface at `+0x43`, and initializes fields beyond the nominal `0x104` view through related roots. Runtime functions use this family from JOIN, scan, TX completion, beacon handling, UAPSD, listen interval, PS-Poll, and doze/wake paths.
 
-**Status:** shared/mixed, volatile, timer-cyclic. The apparent record extent must be validated carefully because the decompiler shows offsets such as `+0x118..+0x120` from the per-interface calculation during initialization; either the logical structure is larger than `0x104`, the base denotes an interior view, or adjacent storage is intentionally shared. This ambiguity alone blocks a semantic Rust struct.
+**Status:** typed overlapping address schema, shared/mixed, volatile, and timer-cyclic. The `0x138` logical view now records proven controls, seven timer entries, and extension fields through `+0x136`, while the physical view starts remain `0x104` apart. Thus view 0 overlaps view 1, and view 1 extends into `PowerSaveHifBoundary` through `0x04009710`. This is deliberately not represented as two owned Rust records.
 
 ### 4.9 HIF, deferred transfer, MIC, and crypto control
 
@@ -2764,6 +2764,56 @@ packed    /tmp/xr819-vif-timer-layout.bin
 checks    /tmp/xr819-vif-timer-final-check.log
           ca6b1b828a41bafaba3533ba9761586388a85a0f592d401c86a03eafa1cf3727
 manifest  tools/vif-timer-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.25 Overlapping power-save timer views
+
+The power-save family retains two observed view starts at stride `0x104`, but
+the proven logical schema extends to `+0x138`:
+
+```text
+base 0x040094d4 + interface * 0x104
++0x02a u8  global sleep/transition state
++0x030 u32 global timer duration
++0x040 u8  mode
++0x044 u16 flags
++0x054 u32 pending/accounting word
++0x05a u16 queue mask
++0x070 seven TimerEntry objects, contiguous through +0x0fc
++0x0fc u8  state
++0x118/+0x11c/+0x120 u32 timer durations/control words
++0x128 u32 interval
++0x134/+0x136 u16 counter/threshold
+logical extent 0x138
+```
+
+View 0 begins at `0x040094d4`; view 1 begins at `0x040095d8`. Therefore view 0's
+extension fields overlap view 1, while view 1's extension reaches
+`0x04009710`, inside the existing `PowerSaveHifBoundary` quarantine. The seven
+timers themselves remain within the `0x208` power-save family and end at
+`0x040096d4` for interface 1.
+
+The translated TX completion path now derives the two former fixed literals at
+`0x040094fe` and `0x04009504` from the schema. Existing interface-relative
+arithmetic and volatile ordering remain unchanged.
+
+`tools/check-power-save-layout.py` covers the complete overlapping logical
+extent, permits only the linker/layout boundary fixtures, and pins five linked
+literal words and decoded literal-load xrefs. The complete ELF remains
+byte-identical to the qualified VIF-timer parent, so no hardware rerun is
+required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-power-save-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-final-check.log
+          faa980a9d55e460c64c8b987a7102e4cac4c3c4bf711750c86f96e2fda9b16b6
+manifest  tools/power-save-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
