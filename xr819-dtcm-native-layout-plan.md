@@ -4541,3 +4541,46 @@ manifest  tools/ampdu-completion-control-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.84 Initialized TKIP S-box tables
+
+The retained initialized interval `0x04000310..0x04000710` is now an exact
+`TkipSboxTables` quarantine view containing two contiguous 256-entry tables of
+shared `u16` scalars. `low_byte` occupies `0x04000310..0x04000510` and
+`high_byte` occupies `0x04000510..0x04000710`; the latter ends exactly at the
+existing command-dispatch table. The `0x040002e4..0x04000310` prefix remains
+opaque. The complete range lies in the vendor COPY record, and no owned Rust
+initializer was introduced.
+
+Retained `tkip_key_mix` performs six `u16` reads from each table using the low
+byte (`& 0xff`) and high byte as indexes. `tkip_phase1_mix` performs five `u16`
+reads from each table per iteration for exactly eight iterations. The exported
+DTCM reference report records the corresponding low-table references at
+`0x00001bde..0x00001e16` and high-table references at
+`0x00001be0..0x00001e18`. These consumers provide exclusive evidence for
+256-entry, two-byte-wide access; no retained runtime writer or Rust
+reader/writer was found, and container COPY initialization is the only known
+writer. This supports structural read-only naming, not Rust ownership or an
+immutability claim: vendor and IRQ/FIQ-visible DTCM remains shared quarantine,
+and no safe reference or slice is exposed.
+
+The new API returns only the table root and bounded, layout-derived entry
+addresses for indexes `0..256`; it provides no value read or write operation.
+No production source literal was migrated, and the unrelated bare MAC MMIO
+offset `0x0310` remains untouched. `tools/check-tkip-sbox-layout.py` scans
+production sources while masking Rust `cfg(test)` items and pins the reviewed
+ELF aligned-literal and decoded-PC-relative-xref counters at zero. Those empty
+counters are drift evidence rather than consumer closure because
+register-computed retained references are not recovered. The checker runs in
+source-only and linked phases of both software build scripts. No production
+callsite was created, so this layout-only slice has no codegen manifest.
+
+The focused address test, source-only checker, complete `tools/check.sh` gate,
+Thumb build, linked checker (`literals=0 decoded_xrefs=0`), and exact complete
+artifact hashes passed. No hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-tkip-sbox-final-check.log
+          b9f6eb49286b6be3497e80f3f112e9d3bd2cb235fb9d7cd0387f7098fe855c51
+```

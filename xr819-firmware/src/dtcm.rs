@@ -99,7 +99,7 @@ macro_rules! opaque_family {
         }
     };
 }
-
+#[repr(C, align(2))] struct TkipSboxTables { low_byte: [SharedU16; 256], high_byte: [SharedU16; 256] }
 /// Vendor COPY image with exact initialized-data islands represented at their
 /// qualified offsets. Bytes between islands remain occupied opaque data.
 #[repr(C, align(4))]
@@ -115,9 +115,9 @@ struct InitializedVendorImage {
     /// Ten visible words in the qualified initialized island. The evidence does
     /// not establish that every word is a complete callable entry.
     visible_completion_words: [SharedU32; 10],
-    pre_ring_cursor_map: OpaqueBytes<0x50>,
-    queue_pipe_mappings: QueuePipeMappings,
-    pre_command_dispatch: OpaqueBytes<0x42c>,
+    pre_ring_cursor_map: OpaqueBytes<0x50>, queue_pipe_mappings: QueuePipeMappings,
+    pre_tkip_sbox_tables: OpaqueBytes<0x2c>,
+    tkip_sbox_tables: TkipSboxTables,
     command_dispatch: [SharedU32; 37],
     pre_aes_descriptors: OpaqueBytes<0x60>,
     aes_transfer_descriptors: OpaqueBytes<0x2c>,
@@ -1680,7 +1680,6 @@ pub(crate) const fn ba_pipe_record_address(pipe: usize) -> Option<DtcmAddress> {
         None
     }
 }
-
 /// Intentionally preserves the unbounded vendor BA base-plus-pipe arithmetic,
 /// including the historically observed crossing into the pre-VIF header.
 pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress {
@@ -1688,8 +1687,9 @@ pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress
         LOW_MAC_PAS_OFFSET + PAS_VIEWS_OFFSET + 0x1d8 + pipe * 0x38,
     )
 }
-
-pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000);
+pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000); pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables));
+pub const fn tkip_sbox_low_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, low_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } }
+pub const fn tkip_sbox_high_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, high_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } }
 pub(crate) const INITIALIZED_HIF_CONTROL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, hif_control));
 const fn initialized_hif_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(INITIALIZED_HIF_CONTROL.offset() + offset) }
 pub(crate) const fn initialized_hif_queued_depth() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, queued_depth)) }
@@ -2584,6 +2584,9 @@ macro_rules! assert_type_layout {
 const _: () = {
     assert_type_layout!(DtcmAddress, 4, 4);
     assert_type_layout!(InitializedVendorImage, 0x2078, 4);
+    assert_type_layout!(TkipSboxTables, 0x400, 2);
+    assert!(core::mem::offset_of!(TkipSboxTables, low_byte) == 0x000);
+    assert!(core::mem::offset_of!(TkipSboxTables, high_byte) == 0x200);
     assert_type_layout!(RuntimeRegisterBackoffState, 0x1c, 4);
     assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_enabled) == 0x10);
     assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window) == 0x14);
@@ -3183,6 +3186,8 @@ const _: () = {
     assert!(core::mem::offset_of!(QueuePipeMappings, queue_to_access_category) == 0x04);
     assert!(core::mem::offset_of!(QueuePipeMappings, access_category_to_queue) == 0x08);
     assert!(core::mem::offset_of!(InitializedVendorImage, queue_pipe_mappings) == 0x02d8);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_tkip_sbox_tables) == 0x02e4);
+    assert!(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables) == 0x0310);
     assert!(core::mem::offset_of!(InitializedVendorImage, command_dispatch) == 0x0710);
     assert!(core::mem::offset_of!(InitializedVendorImage, aes_transfer_descriptors) == 0x0804);
     assert!(core::mem::offset_of!(InitializedVendorImage, aes_mode1_microcode) == 0x0830);
@@ -4115,6 +4120,19 @@ mod tests {
         assert_eq!(RATE_ATTRIBUTE_TABLE.get(), 0x0400_01aa);
         assert_eq!(rate_attribute(21).unwrap().get(), 0x0400_01bf);
         assert!(rate_attribute(22).is_none());
+    }
+
+    #[test]
+    fn initialized_tkip_sbox_table_addresses_are_exact() {
+        assert_eq!(TKIP_SBOX_TABLES.get(), 0x0400_0310);
+        assert_eq!(tkip_sbox_low_entry(0).unwrap().get(), 0x0400_0310);
+        assert_eq!(tkip_sbox_low_entry(255).unwrap().get(), 0x0400_050e);
+        assert!(tkip_sbox_low_entry(256).is_none());
+        assert_eq!(tkip_sbox_high_entry(0).unwrap().get(), 0x0400_0510);
+        assert_eq!(tkip_sbox_high_entry(255).unwrap().get(), 0x0400_070e);
+        assert!(tkip_sbox_high_entry(256).is_none());
+        assert_eq!(tkip_sbox_high_entry(255).unwrap().get() + core::mem::size_of::<SharedU16>(), 0x0400_0710);
+        assert_eq!(TKIP_SBOX_TABLES.get() + core::mem::size_of::<TkipSboxTables>(), DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, command_dispatch));
     }
 
     #[test]
