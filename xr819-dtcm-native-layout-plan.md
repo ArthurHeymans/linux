@@ -4584,3 +4584,45 @@ packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-tkip-sbox-final-check.log
           b9f6eb49286b6be3497e80f3f112e9d3bd2cb235fb9d7cd0387f7098fe855c51
 ```
+
+### A.85 Initialized AES transfer-class table
+
+The retained vendor-COPY interval `0x04000804..0x04000830` is now an exact
+`AesTransferClassTable` shared-quarantine view: 11 volatile-width `u32` entries,
+stride four, size `0x2c`, and alignment four. It starts after the unchanged
+opaque `0x040007a4..0x04000804` prefix and ends exactly at the existing AES
+mode-1 microcode at `0x04000830`; neither adjacent range is absorbed or moved.
+No Rust initializer, value accessor, safe reference, slice, writer, or
+immutability/ownership claim was introduced.
+
+Retained `hif_start_next_xfer` loads one 32-bit word from
+`0x04000804 + (*(u8 *)(descriptor + 4) * 4)`. Its unchecked `u8` indexing is
+unchanged and is not constrained by the bounded layout API. Existing evidence
+identifies transfer classes 6 and 7 as TX and RX CCMP respectively, while the
+observed class 10 use establishes that entry without supporting additional
+crypto semantics. No known Rust reader/writer or runtime writer was found.
+The DTCM reference report resolves the base only to `hif_start_next_xfer`; this
+is drift evidence, not complete consumer closure.
+
+The new private API exposes only the layout-derived table root and bounded
+addresses for classes `0..11`. `tools/check-aes-transfer-class-layout.py` owns
+the exact half-open range `[0x04000804, 0x04000830)`, masks Rust `cfg(test)`
+items during its production-source scan, rejects raw in-range literals and
+alternate base/stride forms outside the layout owner, and pins reviewed linked
+aligned literals and decoded PC-relative xrefs by symbol at zero. Computed,
+indirect, vendor, IRQ, and FIQ consumers remain outside closure. The checker
+runs in source-only and linked phases of `tools/check.sh` and
+`tools/build-ota-image.sh`. No production callsite exists, so no codegen
+manifest was added.
+
+The focused test pins the root; classes 0, 6, 7, and 10; the rejected class 11;
+and exact adjacency to AES microcode. Focused host tests, the source checker,
+the complete software gate, Thumb release build, linked checker, and packed
+image gate passed without complete-artifact drift. No hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-aes-transfer-class-final-check.log
+          31306106616d0fcfc13baa01db75b8ccf60438d389de1d334ad3f0488d2dbaab
+```

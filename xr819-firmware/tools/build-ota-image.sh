@@ -41,6 +41,7 @@ python3 tools/check-duration-quantum-pointers-layout.py
 python3 tools/check-initialized-tx-rate-tables-layout.py
 python3 tools/check-initialized-completion-words-layout.py
 python3 tools/check-tkip-sbox-layout.py
+python3 tools/check-aes-transfer-class-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
@@ -99,6 +100,7 @@ python3 tools/check-duration-quantum-pointers-layout.py "$ELF"
 python3 tools/check-initialized-tx-rate-tables-layout.py "$ELF"
 python3 tools/check-initialized-completion-words-layout.py "$ELF"
 python3 tools/check-tkip-sbox-layout.py "$ELF"
+python3 tools/check-aes-transfer-class-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"

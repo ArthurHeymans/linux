@@ -99,7 +99,7 @@ macro_rules! opaque_family {
         }
     };
 }
-#[repr(C, align(2))] struct TkipSboxTables { low_byte: [SharedU16; 256], high_byte: [SharedU16; 256] }
+#[repr(C, align(2))] struct TkipSboxTables { low_byte: [SharedU16; 256], high_byte: [SharedU16; 256] } #[repr(C, align(4))] struct AesTransferClassTable { flags: [SharedU32; 11] }
 /// Vendor COPY image with exact initialized-data islands represented at their
 /// qualified offsets. Bytes between islands remain occupied opaque data.
 #[repr(C, align(4))]
@@ -120,7 +120,7 @@ struct InitializedVendorImage {
     tkip_sbox_tables: TkipSboxTables,
     command_dispatch: [SharedU32; 37],
     pre_aes_descriptors: OpaqueBytes<0x60>,
-    aes_transfer_descriptors: OpaqueBytes<0x2c>,
+    aes_transfer_classes: AesTransferClassTable,
     aes_mode1_microcode: OpaqueBytes<0x1ae>,
     pre_duration_quantum_pointers: OpaqueBytes<0x6f6>,
     duration_quantum_pointers: [SharedU32; 4],
@@ -1687,9 +1687,9 @@ pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress
         LOW_MAC_PAS_OFFSET + PAS_VIEWS_OFFSET + 0x1d8 + pipe * 0x38,
     )
 }
-pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000); pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables));
+pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000); pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables)); pub(crate) const AES_TRANSFER_CLASSES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, aes_transfer_classes));
 pub const fn tkip_sbox_low_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, low_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } }
-pub const fn tkip_sbox_high_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, high_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } }
+pub const fn tkip_sbox_high_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, high_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } } pub(crate) const fn aes_transfer_class(class: usize) -> Option<DtcmAddress> { if class < 11 { Some(DtcmAddress::from_offset(AES_TRANSFER_CLASSES.offset() + core::mem::offset_of!(AesTransferClassTable, flags) + class * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const INITIALIZED_HIF_CONTROL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, hif_control));
 const fn initialized_hif_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(INITIALIZED_HIF_CONTROL.offset() + offset) }
 pub(crate) const fn initialized_hif_queued_depth() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, queued_depth)) }
@@ -2584,7 +2584,7 @@ macro_rules! assert_type_layout {
 const _: () = {
     assert_type_layout!(DtcmAddress, 4, 4);
     assert_type_layout!(InitializedVendorImage, 0x2078, 4);
-    assert_type_layout!(TkipSboxTables, 0x400, 2);
+    assert_type_layout!(TkipSboxTables, 0x400, 2); assert_type_layout!(AesTransferClassTable, 0x2c, 4); assert!(core::mem::offset_of!(AesTransferClassTable, flags) == 0);
     assert!(core::mem::offset_of!(TkipSboxTables, low_byte) == 0x000);
     assert!(core::mem::offset_of!(TkipSboxTables, high_byte) == 0x200);
     assert_type_layout!(RuntimeRegisterBackoffState, 0x1c, 4);
@@ -3189,7 +3189,7 @@ const _: () = {
     assert!(core::mem::offset_of!(InitializedVendorImage, pre_tkip_sbox_tables) == 0x02e4);
     assert!(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables) == 0x0310);
     assert!(core::mem::offset_of!(InitializedVendorImage, command_dispatch) == 0x0710);
-    assert!(core::mem::offset_of!(InitializedVendorImage, aes_transfer_descriptors) == 0x0804);
+    assert!(core::mem::offset_of!(InitializedVendorImage, aes_transfer_classes) == 0x0804);
     assert!(core::mem::offset_of!(InitializedVendorImage, aes_mode1_microcode) == 0x0830);
     assert!(core::mem::offset_of!(InitializedVendorImage, pre_duration_quantum_pointers) == 0x09de);
     assert!(core::mem::offset_of!(InitializedVendorImage, duration_quantum_pointers) == 0x10d4);
@@ -4133,6 +4133,18 @@ mod tests {
         assert!(tkip_sbox_high_entry(256).is_none());
         assert_eq!(tkip_sbox_high_entry(255).unwrap().get() + core::mem::size_of::<SharedU16>(), 0x0400_0710);
         assert_eq!(TKIP_SBOX_TABLES.get() + core::mem::size_of::<TkipSboxTables>(), DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, command_dispatch));
+    }
+
+    #[test]
+    fn initialized_aes_transfer_class_addresses_are_exact() {
+        assert_eq!(AES_TRANSFER_CLASSES.get(), 0x0400_0804);
+        assert_eq!(aes_transfer_class(0).unwrap().get(), 0x0400_0804);
+        assert_eq!(aes_transfer_class(6).unwrap().get(), 0x0400_081c);
+        assert_eq!(aes_transfer_class(7).unwrap().get(), 0x0400_0820);
+        assert_eq!(aes_transfer_class(10).unwrap().get(), 0x0400_082c);
+        assert!(aes_transfer_class(11).is_none());
+        assert_eq!(aes_transfer_class(10).unwrap().get() + core::mem::size_of::<SharedU32>(), 0x0400_0830);
+        assert_eq!(AES_TRANSFER_CLASSES.get() + core::mem::size_of::<AesTransferClassTable>(), DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, aes_mode1_microcode));
     }
 
     #[test]
