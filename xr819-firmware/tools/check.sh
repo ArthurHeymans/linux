@@ -25,6 +25,7 @@ echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
+python3 tools/check-debug-console-layout.py
 python3 tools/check-scheduler-support-layout.py
 python3 tools/check-phy-gain-source-layout.py
 python3 tools/check-template-descriptor-layout.py
@@ -60,6 +61,7 @@ python3 tools/pack-sectioned-elf.py "$ELF" "$PACKED"
 python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-scheduler-event-layout.py "$ELF"
 python3 tools/check-runtime-register-backoff-layout.py "$ELF"
+python3 tools/check-debug-console-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-phy-gain-source-layout.py "$ELF"
 python3 tools/check-template-descriptor-layout.py "$ELF"
@@ -307,6 +309,15 @@ if [[ -n "${XR819_TEMPLATE_DESCRIPTOR_PARENT_ELF:-}" ]]; then
     "$XR819_TEMPLATE_DESCRIPTOR_PARENT_ELF" "$ELF"
 else
   echo "== template-descriptor codegen gate skipped: set XR819_TEMPLATE_DESCRIPTOR_PARENT_ELF to the qualified PHY-gain-source ELF =="
+fi
+
+if [[ -n "${XR819_DEBUG_CONSOLE_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed debug-console parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/debug-console-codegen-manifest.json \
+    "$XR819_DEBUG_CONSOLE_PARENT_ELF" "$ELF"
+else
+  echo "== debug-console codegen gate skipped: set XR819_DEBUG_CONSOLE_PARENT_ELF to the qualified template-descriptor ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

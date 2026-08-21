@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for clock/TSF and scheduler-handler state.
+"""Drift-evidence gates for retained debug-console state.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,8 +21,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEDULER_SUPPORT_RANGE = (0x0400218C, 0x04002234)
-SYNTHESIZED = {0x218C, 0x2190, 0x2198, 0x21A0, 0x21A8, 0x21B0, 0x21B4, 0x2234}
+DEBUG_CONSOLE_RANGE = (0x04002094, 0x0400218C)
+SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx",
@@ -42,25 +42,25 @@ OWNER_FILES = {
     "tools/check-peer-pipe-layout.py",
     "tools/check-scheduler-event-layout.py",
     "tools/check-scheduler-support-layout.py",
+    "tools/check-power-save-layout.py",
+    "tools/check-hif-mic-layout.py",
+    "tools/check-phy-reference-layout.py",
+    "tools/check-phy-profile-layout.py",
+    "tools/check-phy-measurement-layout.py",
+    "tools/check-phy-channel-cache-layout.py",
+    "tools/check-phy-table-control-layout.py",
+    "tools/check-runtime-register-backoff-layout.py",
     "tools/check-debug-console-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "CLOCK_PARAMETER_BASE",
-    "SCHEDULER_HANDLER_BASE",
-    "SCHEDULER_HANDLER_STRIDE",
+    "DEBUG_CONSOLE_BASE",
+    "DEBUG_COMMAND_TABLE_BASE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04002198: 1, 0x040021B4: 1}
-)
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
-    {
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x040021B4): 1,
-        ('rust_main', 0x04002198): 1,
-    }
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:
@@ -183,7 +183,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return SCHEDULER_SUPPORT_RANGE[0] <= value < SCHEDULER_SUPPORT_RANGE[1]
+    return DEBUG_CONSOLE_RANGE[0] <= value < DEBUG_CONSOLE_RANGE[1]
 
 
 def check_source() -> None:
@@ -205,14 +205,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: scheduler-support literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: debug-console literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized scheduler-support form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized debug-console form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"SCHEDULER SUPPORT SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"DEBUG CONSOLE SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -283,9 +283,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("SCHEDULER SUPPORT LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("DEBUG CONSOLE LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "SCHEDULER SUPPORT LINKED DRIFT-EVIDENCE GATE PASSED "
+        "DEBUG CONSOLE LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -304,4 +304,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"scheduler-support drift gate failed: {error}")
+        raise SystemExit(f"debug-console drift gate failed: {error}")

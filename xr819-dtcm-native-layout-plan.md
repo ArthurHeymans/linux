@@ -223,7 +223,7 @@ This table is intentionally conservative. Subranges below refine known islands w
 | --- | ---: | --- | --- |
 | `0x04000000..0x04002078` | `0x2078` | Vendor initialized image: constant tables, dispatch tables, callbacks, timing/rate data, boot/scheduler parameters, AES microcode, and opaque data | High initialization; mixed semantic confidence |
 | `0x04002078..0x04002094` | `0x1c` | typed saved register context and PAS backoff overrides | High structural confidence; shared quarantine |
-| `0x04002094..0x0400218c` | `0xf8` | retained debug-console state | Medium; mixed and mostly untranslated |
+| `0x04002094..0x0400218c` | `0xf8` | typed retained debug-console state | High structural confidence; untranslated quarantine |
 | `0x0400218c..0x040021b4` | `0x28` | `ClockParameters` record | High shape from `register_structs!`; shared/timer-owned |
 | `0x040021b4..0x04002234` | `0x80` | 32-entry scheduler handler table | High, `32 * 4`; contains code pointers |
 | `0x04002234..0x040022b8` | `0x84` | typed 22-record PHY gain-source table | High structural confidence from retained builder loop |
@@ -3319,6 +3319,47 @@ packed    /tmp/xr819-template-descriptor-layout.bin
 checks    /tmp/xr819-template-descriptor-final-check.log
           f7e038e473e021960d6fa07999a25eaf11e17d7badf779ed3a1e0347072fb7c4
 manifest  tools/template-descriptor-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.38 Debug-console state
+
+The remaining `0xf8` bytes of `RuntimePrefix` are now an exact retained console
+layout:
+
+```text
+0x04002094 +0x00 u32 input length
+           +0x04 u32 flags/halt state
+           +0x08 TimerEntry
+           +0x1c u32 memory command address
+           +0x20 u32 memory command value
+           +0x24 u32 registered-command count
+           +0x28 32 u32 raw command-descriptor pointers
+           +0xa8 80-byte input line buffer
+0x0400218c end
+```
+
+The `dbg_console_readline` bound of `0x4f`, command registration ceiling of 32,
+and timer operations prove the array sizes and offsets. Command pointers and
+memory-command values remain raw shared words; no safe callback or memory API is
+exposed. No production Rust path currently invokes this retained console.
+
+`tools/check-debug-console-layout.py` covers the complete family and rejects
+production literals or synthesized bases outside `dtcm.rs`. The current Rust
+ELF has no linked in-range literal or decoded xref; retained console routines
+remain the structural evidence. The complete ELF remains byte-identical to the
+qualified template-descriptor parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-debug-console-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-debug-console-final-check.log
+          f05e41df5ba3f8492fb7d0f4992363393fc38461f0e23fbef62be1c689e89f73
+manifest  tools/debug-console-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

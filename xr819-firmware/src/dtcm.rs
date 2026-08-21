@@ -141,7 +141,9 @@ struct SchedulerEventIsland { pending_events: SharedU32, runtime_flags: SharedU3
 #[repr(C, align(4))]
 struct RuntimeRegisterBackoffState { register_context: [SharedU32; 4], override_enabled: SharedU32, override_window: SharedU32, opaque_18: SharedU32 }
 #[repr(C, align(4))]
-struct RuntimePrefix { register_backoff: RuntimeRegisterBackoffState, debug_console_state: OpaqueBytes<0xf8> }
+struct DebugConsoleState { input_length: SharedU32, flags: SharedU32, timer: TimerEntry, memory_address: SharedU32, memory_value: SharedU32, command_count: SharedU32, commands: [SharedU32; 32], line_buffer: [SharedU8; 80] }
+#[repr(C, align(4))]
+struct RuntimePrefix { register_backoff: RuntimeRegisterBackoffState, debug_console_state: DebugConsoleState }
 #[repr(C, align(4))]
 struct ClockParameterIsland { opaque_00: SharedU32, mac_clock_snapshot: SharedU32, beacon_counter_snapshot: SharedU32, hardware_counter_cache: SharedU32, opaque_10: SharedU32, conversion_factor: SharedU32, opaque_18: SharedU32, conversion_mode: SharedU8, opaque_1d: OpaqueBytes<0x03>, opaque_20: SharedU32, correction_offset: SharedU32 }
 
@@ -1365,6 +1367,9 @@ pub(crate) const fn runtime_register_context(index: usize) -> Option<DtcmAddress
 pub(crate) const fn runtime_register_context_unchecked(index: usize) -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, register_context) + index * core::mem::size_of::<SharedU32>()) }
 pub(crate) const fn pas_backoff_override_enabled() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_enabled)) }
 pub(crate) const fn pas_backoff_override_window() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window)) }
+pub(crate) const DEBUG_CONSOLE_STATE: DtcmAddress = DtcmAddress::from_offset(0x2094);
+pub(crate) const fn debug_console_command(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(DtcmAddress::from_offset(DEBUG_CONSOLE_STATE.offset() + core::mem::offset_of!(DebugConsoleState, commands) + index * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn debug_console_line_byte(index: usize) -> Option<DtcmAddress> { if index < 80 { Some(DtcmAddress::from_offset(DEBUG_CONSOLE_STATE.offset() + core::mem::offset_of!(DebugConsoleState, line_buffer) + index)) } else { None } }
 pub const CLOCK_PARAMETERS: DtcmAddress = DtcmAddress::from_offset(0x218c);
 pub const SCHEDULER_HANDLER_TABLE: DtcmAddress = DtcmAddress::from_offset(0x21b4);
 pub(crate) const PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x2234);
@@ -2081,6 +2086,12 @@ const _: () = {
     assert_type_layout!(RuntimeRegisterBackoffState, 0x1c, 4);
     assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_enabled) == 0x10);
     assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window) == 0x14);
+    assert_type_layout!(DebugConsoleState, 0xf8, 4);
+    assert!(core::mem::offset_of!(DebugConsoleState, timer) == 0x08);
+    assert!(core::mem::offset_of!(DebugConsoleState, memory_address) == 0x1c);
+    assert!(core::mem::offset_of!(DebugConsoleState, command_count) == 0x24);
+    assert!(core::mem::offset_of!(DebugConsoleState, commands) == 0x28);
+    assert!(core::mem::offset_of!(DebugConsoleState, line_buffer) == 0xa8);
     assert_type_layout!(RuntimePrefix, 0x114, 4);
     assert!(core::mem::offset_of!(RuntimePrefix, register_backoff) == 0x00);
     assert!(core::mem::offset_of!(RuntimePrefix, debug_console_state) == 0x1c);
@@ -2919,6 +2930,18 @@ mod tests {
         assert_eq!(duration_source(1).unwrap().get(), 0x0400_3672);
         assert!(duration_source(2).is_none());
         assert_eq!(duration_source(1).unwrap().get() + 2, 0x0400_3674);
+    }
+
+    #[test]
+    fn debug_console_addresses_are_exact() {
+        assert_eq!(DEBUG_CONSOLE_STATE.get(), 0x0400_2094);
+        assert_eq!(debug_console_command(0).unwrap().get(), 0x0400_20bc);
+        assert_eq!(debug_console_command(31).unwrap().get(), 0x0400_2138);
+        assert!(debug_console_command(32).is_none());
+        assert_eq!(debug_console_line_byte(0).unwrap().get(), 0x0400_213c);
+        assert_eq!(debug_console_line_byte(79).unwrap().get(), 0x0400_218b);
+        assert!(debug_console_line_byte(80).is_none());
+        assert_eq!(debug_console_line_byte(79).unwrap().get() + 1, 0x0400_218c);
     }
 
     #[test]

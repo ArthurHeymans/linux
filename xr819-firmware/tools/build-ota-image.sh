@@ -20,6 +20,7 @@ python3 tools/check-packet-ram-layout.py "$ELF"
 python3 tools/check-address-literals.py
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
+python3 tools/check-debug-console-layout.py
 python3 tools/check-scheduler-support-layout.py
 python3 tools/check-phy-gain-source-layout.py
 python3 tools/check-template-descriptor-layout.py
@@ -47,6 +48,7 @@ python3 tools/pack-sectioned-elf.py "$ELF" "$OUT"
 python3 tools/check-dtcm-layout.py "$ELF" "$OUT"
 python3 tools/check-scheduler-event-layout.py "$ELF"
 python3 tools/check-runtime-register-backoff-layout.py "$ELF"
+python3 tools/check-debug-console-layout.py "$ELF"
 python3 tools/check-scheduler-support-layout.py "$ELF"
 python3 tools/check-phy-gain-source-layout.py "$ELF"
 python3 tools/check-template-descriptor-layout.py "$ELF"
