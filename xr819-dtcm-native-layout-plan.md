@@ -4001,3 +4001,24 @@ checks    /tmp/xr819-power-save-post-timer-final-check.log
           16801b8d9c3fec3c113ac27bc2c3979eee4e988e91f8b32fc0f25cbb00cfe2a9
 ```
 
+### A.62 Power-save beacon wake scheduling state
+
+The logical extension at `+0x104..+0x118` is now fully typed as beacon airtime,
+pre-TBTT offset, beacon and backoff intervals, next-wake deadline, TX-completion
+state, wake-timer active state, one unresolved byte, and the beacon-timing
+adjustment flag.
+
+Beacon RX recomputes airtime and timing, TBTT scheduling consumes these values
+to publish the wake deadline, and reset/sleep paths clear or test the state
+bytes. The second logical view places this extension inside the physical
+PS/HIF boundary, as required by the established overlap. Exact bounded-address
+tests cover both views. The complete ELF remains byte-identical to the qualified
+post-timer parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-wake-schedule-final-check.log
+          7aac0a8c19cc7f720f49f92b212559b626719a68378a109c723279dff10b7480
+```
+
