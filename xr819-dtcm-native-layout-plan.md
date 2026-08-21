@@ -4516,3 +4516,28 @@ manifest  tools/phy-descriptor-gain-records-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.83 A-MPDU completion control
+
+The initialized word at `0x0400140c..0x04001410` is now an exact
+`AmpduCompletionControl`. Retained completion code and the translated drain path
+use its nonzero value to decide whether to count pending class-zero completions
+before draining the shared completion ring.
+
+The translated completion path now derives both this gate and the existing
+A-MPDU telemetry root from typed initialized-image layouts. The gate read,
+completion-ring walk, counter widths, and telemetry update order remain
+unchanged. `tools/check-ampdu-completion-control-layout.py` pins the linked word
+and decoded xref; the existing telemetry gate continues to cover
+`0x040012a0..0x040012c8`. The complete ELF and packed image remain byte-identical
+to the qualified PHY-descriptor-gain-records parent, so no hardware rerun is
+required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-ampdu-completion-control-final-check.log
+          49e84ea01b2338d4520d93e383f42513b822c87d0bfd95973ddfb0c300f8f65c
+manifest  tools/ampdu-completion-control-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

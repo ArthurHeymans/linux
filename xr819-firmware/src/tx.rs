@@ -5130,7 +5130,7 @@ where
     unsafe {
         let mut cursor = CompletionDrainCursor::begin();
         let mut zero_class_pending = 0_u8;
-        if read_u32(0x0400_140c) != 0 {
+        if read_u32(crate::dtcm::AMPDU_COMPLETION_CONTROL.get()) != 0 {
             let mut index = cursor.next;
             while index != cursor.target {
                 let node = COMPLETION_RING.frame_node(index);
@@ -5154,7 +5154,7 @@ where
 
             let flags = read_u32(context.control_bits_address());
             if flags & (1 << 5) != 0 {
-                let stats = 0x0400_12a0_usize;
+                let stats = crate::dtcm::AMPDU_TELEMETRY_COUNTERS.get();
                 let accumulated =
                     u64::from(read_u32(stats + 8)) | (u64::from(read_u32(stats + 0x0c)) << 32);
                 let accumulated = accumulated.wrapping_add(u64::from(read_u16(context.frame_length_address())));

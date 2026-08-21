@@ -129,7 +129,9 @@ struct InitializedVendorImage {
     irq_callbacks: [SharedU32; 32],
     pre_ampdu_counters: OpaqueBytes<0x64>,
     ampdu_counters: AmpduTelemetryCounters,
-    pre_control_words: OpaqueBytes<0x158>,
+    pre_ampdu_completion_control: OpaqueBytes<0x144>,
+    ampdu_completion_control: AmpduCompletionControl,
+    pre_control_words: OpaqueBytes<0x10>,
     control_words: InitializedControlWords,
     pre_phy_channel_threshold_descriptors: OpaqueBytes<0x1c>,
     phy_channel_threshold_descriptors: [PhyChannelThresholdDescriptor; 2],
@@ -171,6 +173,8 @@ struct InitializedControlWords {
     opaque_18: SharedU32,
     timer_counter: SharedU32,
 }
+#[repr(C, align(4))]
+struct AmpduCompletionControl { enabled: SharedU32 }
 #[repr(C, align(4))]
 struct AmpduTelemetryCounters {
     tx_error_frames: SharedU32,
@@ -1695,6 +1699,7 @@ pub(crate) const fn initialized_hif_pending_threshold() -> DtcmAddress { initial
 pub(crate) const fn initialized_hif_ring_depth_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, ring_depth_threshold)) }
 pub(crate) const fn initialized_hif_count_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, count_threshold)) }
 pub(crate) const fn initialized_hif_coalesce_delay() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, coalesce_delay)) }
+pub(crate) const AMPDU_COMPLETION_CONTROL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, ampdu_completion_control));
 pub(crate) const AMPDU_TELEMETRY_COUNTERS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, ampdu_counters));
 const fn ampdu_telemetry_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(AMPDU_TELEMETRY_COUNTERS.offset() + offset) }
 pub(crate) const fn ampdu_tx_error_frames() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_error_frames)) }
@@ -3203,6 +3208,11 @@ const _: () = {
     assert!(core::mem::offset_of!(AmpduTelemetryCounters, opaque_20) == 0x20);
     assert!(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count) == 0x24);
     assert!(core::mem::offset_of!(InitializedVendorImage, ampdu_counters) == 0x12a0);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_ampdu_completion_control) == 0x12c8);
+    assert!(core::mem::offset_of!(InitializedVendorImage, ampdu_completion_control) == 0x140c);
+    assert!(core::mem::size_of::<AmpduCompletionControl>() == 0x04);
+    assert!(core::mem::offset_of!(AmpduCompletionControl, enabled) == 0x00);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_control_words) == 0x1410);
     assert_type_layout!(InitializedControlWords, 0x20, 4);
     assert!(core::mem::offset_of!(InitializedControlWords, beacon_state) == 0x00);
     assert!(core::mem::offset_of!(InitializedControlWords, rx_indication_state) == 0x04);
@@ -4140,6 +4150,12 @@ mod tests {
         assert_eq!(initialized_tsf_accumulator_low().get(), 0x0400_1430);
         assert_eq!(initialized_timer_counter().get(), 0x0400_143c);
         assert_eq!(initialized_timer_counter().get() + 4, 0x0400_1440);
+    }
+
+    #[test]
+    fn initialized_ampdu_completion_control_address_is_exact() {
+        assert_eq!(AMPDU_COMPLETION_CONTROL.get(), 0x0400_140c);
+        assert_eq!(AMPDU_COMPLETION_CONTROL.get() + 4, 0x0400_1410);
     }
 
     #[test]
