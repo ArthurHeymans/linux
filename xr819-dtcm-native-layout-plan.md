@@ -4856,3 +4856,74 @@ checks    /tmp/xr819-initialized-iq-calibration-gain-indices-check.log
 manifest  tools/initialized-iq-calibration-gain-indices-codegen-manifest.json
 ```
 
+### A.90 Fixed measurement workspace
+
+The measurement workspace is a fixed shared-quarantine view at
+`0x040010f8..0x04001160`, not relocated or exclusively Rust-owned.
+`measure_setup_by_type` forms its root as `0x0400110c - 0x14` and calls
+`fw_memzero(root, 0x68)`, proving the half-open physical extent. It then writes
+the request's measurement type as one byte at `+0x05` and completion status as
+one 32-bit word at `+0x08`, in that order after the complete zero. This preserves
+the observed zero-before-field-write initialization order without adding a Rust
+initializer or production consumer.
+
+| Offset | Width/shape | Decoded field |
+| ---: | --- | --- |
+| `+0x00` | volatile/shared `u16` | dwell bound |
+| `+0x02` | `0x03` opaque bytes | unknown |
+| `+0x05` | volatile/shared `u8` | measurement type |
+| `+0x06` | `0x02` opaque bytes | unknown |
+| `+0x08` | volatile/shared `u32` | completion status |
+| `+0x0c` | `0x05` opaque bytes | unknown |
+| `+0x11` | volatile/shared `u8` | dispatch state |
+| `+0x12` | volatile/shared `u16` | dispatch argument |
+| `+0x14` | `0x04` opaque bytes | unknown |
+| `+0x18` | two volatile/shared `u32` words | start timestamp; deliberately not `u64` |
+| `+0x20` | two volatile/shared `u32` words | elapsed timestamp; deliberately not `u64` |
+| `+0x28` | one opaque byte | nested scan-request root/prefix |
+| `+0x29` | volatile/shared `u8` | nested scan-request mode |
+| `+0x2a` | `0x3e` opaque bytes | undecoded nested request tail |
+
+The enclosing former `0xc8`-byte opaque field is split exactly as `0x14 + 0x68
++ 0x4c`: opaque `0x040010e4..0x040010f8`, this workspace, and opaque
+`0x04001160..0x040011ac`. The first independently observed adjacent reference is
+`0x04001160` in `txq_build_aggregate_lists`, supporting that exclusive endpoint;
+the following initialized HIF/control field remains at `0x040011ac`.
+`InitializedVendorImage`, `DtcmLayout`, and `SharedDtcmState` retain their exact
+sizes.
+
+Retained direct consumers include `measure_setup_by_type`,
+`measure_state_dispatch_args`, `measure_arm_dwell_timer`, task completion, and
+`measure_emit_complete`. Vendor COPY initialization of the containing DTCM image,
+generic HIF bulk memory reads/writes, debug memory access, and untranslated
+vendor/IRQ/FIQ mutation remain consumers or mutation avenues even where they do
+not appear as direct literals. The nested scan-request tail therefore remains
+opaque. This view grants no immutability, exclusive ownership, safe reference,
+or request-ownership claim; MMIO/barrier/interrupt order, arithmetic behavior,
+initialization routines, and all 30 HIF inputs remain unchanged.
+
+The crate-private inventory is address-only: the workspace root; dwell, type,
+completion, dispatch-state, and dispatch-argument addresses; checked start and
+elapsed timestamp-word addresses for indices zero and one; the nested request
+root; and its mode byte. It returns only `DtcmAddress`/`Option<DtcmAddress>` and
+exposes no reference, pointer, value, slice, iterator, writer, generic offset,
+or opaque-tail access.
+
+`tools/check-measurement-workspace-layout.py` gates full 32-bit source literals
+in `[0x040010f8, 0x04001160)` outside `dtcm.rs` and itself, verifies the reviewed
+struct/accessor/layout inventory, and pins aligned linked literals and decoded
+PC-relative xrefs. It intentionally does not treat short values such as
+`0x1100` as physical addresses. Its empty linked manifests and source coverage
+are drift evidence only, not proof against register-computed, indirect, generic
+HIF/debug, vendor, IRQ, or FIQ accesses and not ownership proof. The checker is
+integrated in both `check.sh` and `build-ota-image.sh`; focused host tests pin all
+reviewed addresses and reject timestamp index two. The exact-parent codegen
+manifest requires no text-symbol, operation-order, IRQ/barrier, stack, or symbol
+set drift. No hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+manifest  tools/measurement-workspace-codegen-manifest.json
+```
+
