@@ -3958,3 +3958,26 @@ checks    /tmp/xr819-power-save-timing-final-check.log
           a64b4c6bd8d57d91855162cce0c643e229da3699b5597633eb83a3b7e9b48bd5
 ```
 
+### A.60 Power-save control and U-APSD state
+
+The remaining bytes between the core flags at `+0x44` and the first timer at
+`+0x70` are now typed. They include sleep-transition flags, the wake-stat
+timestamp, signed backoff adjustment, reset/beacon/pending-control/U-APSD state
+bytes, pending state and flags, wake reason, queue mask, and five TX-followup/
+U-APSD timing/configuration words.
+
+The retained sleep, beacon, TX-completion, poll/QoS-null, join-reset, and U-APSD
+setup/restart paths independently exercise these addresses. The typed widths
+preserve their observed byte, halfword, and word accesses; names do not imply
+exclusive Rust ownership. Both logical and physical prefix schemas now remain
+structured continuously through the seven embedded timers. The complete ELF
+remains byte-identical to the qualified power-save-timing parent, so no hardware
+rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-control-final-check.log
+          c32cdd4870f6945db345e71e6cb133e8c9b13b684496a8dd6c3df1dd085a08e4
+```
+
