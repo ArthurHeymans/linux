@@ -609,11 +609,11 @@ struct PendingBaLmcState {
 struct LmcMessage { kind: SharedU8, flags: SharedU8, opaque_02: OpaqueBytes<0x02>, payload: OpaqueBytes<0x24>, interface: SharedU8, completion_state: SharedU8, opaque_2a: OpaqueBytes<0x02> }
 #[repr(C, align(4))]
 struct LmcMessages { records: [LmcMessage; LMC_MESSAGE_COUNT] }
-opaque_family!(
-    /// Occupied undecoded bytes after the LMC message records.
-    PostLmcQuarantine,
-    0xa0
-);
+#[repr(C, align(4))]
+struct BaSession { activity: SharedU32, peer_mac: [SharedU8; 6], tid: SharedU8, interface: SharedU8, opaque_0c: OpaqueBytes<0x06>, timeout_1024us: SharedU16, timer: OpaqueBytes<0x14> }
+#[repr(C, align(4))]
+struct BaSessions { records: [BaSession; 4] }
+
 opaque_family!(
     /// BA/link/event/timer state immediately before TALA.
     BaLinkEventState,
@@ -741,7 +741,7 @@ struct DtcmLayout {
     ba_lmc_header: BaLmcHeader,                       // 0x8ab8
     pending_ba_lmc: PendingBaLmcState,                // 0x8ad8
     lmc_messages: LmcMessages,                        // 0x8bb8
-    post_lmc_quarantine: PostLmcQuarantine,           // 0x8e78
+    ba_sessions: BaSessions,                         // 0x8e78
     ba_link_event_state: BaLinkEventState,            // 0x8f18
     tala: TalaAccounting,                             // 0x8f48
     context_completion_prefix: ContextCompletionPrefix, // 0x8f6c
@@ -1700,6 +1700,41 @@ impl LmcMessageAddress {
     }
 }
 
+#[cfg(test)]
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BaSessionAddress(DtcmAddress);
+
+#[cfg(test)]
+const fn ba_session(index: usize) -> Option<BaSessionAddress> {
+    if index < 4 { Some(ba_session_unchecked(index)) } else { None }
+}
+
+#[cfg(test)]
+const fn ba_session_unchecked(index: usize) -> BaSessionAddress {
+    BaSessionAddress(DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, ba_sessions)
+            + core::mem::offset_of!(BaSessions, records)
+            + index * core::mem::size_of::<BaSession>(),
+    ))
+}
+
+#[cfg(test)]
+impl BaSessionAddress {
+    const fn field(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+    const fn raw(self) -> u32 { self.0.get() as u32 }
+    const fn activity(self) -> DtcmAddress { self.field(core::mem::offset_of!(BaSession, activity)) }
+    const fn peer_mac_byte(self, index: usize) -> Option<DtcmAddress> {
+        if index < 6 { Some(self.field(core::mem::offset_of!(BaSession, peer_mac) + index)) } else { None }
+    }
+    const fn tid(self) -> DtcmAddress { self.field(core::mem::offset_of!(BaSession, tid)) }
+    const fn interface(self) -> DtcmAddress { self.field(core::mem::offset_of!(BaSession, interface)) }
+    const fn timeout_1024us(self) -> DtcmAddress { self.field(core::mem::offset_of!(BaSession, timeout_1024us)) }
+    const fn timer(self) -> DtcmAddress { self.field(core::mem::offset_of!(BaSession, timer)) }
+}
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -1929,7 +1964,14 @@ const _: () = {
     assert!(core::mem::offset_of!(LmcMessage, interface) == 0x28);
     assert!(core::mem::offset_of!(LmcMessage, completion_state) == 0x29);
     assert_type_layout!(LmcMessages, 0x2c0, 4);
-    assert_type_layout!(PostLmcQuarantine, 0xa0, 4);
+    assert_type_layout!(BaSession, 0x28, 4);
+    assert!(core::mem::offset_of!(BaSession, activity) == 0x00);
+    assert!(core::mem::offset_of!(BaSession, peer_mac) == 0x04);
+    assert!(core::mem::offset_of!(BaSession, tid) == 0x0a);
+    assert!(core::mem::offset_of!(BaSession, interface) == 0x0b);
+    assert!(core::mem::offset_of!(BaSession, timeout_1024us) == 0x12);
+    assert!(core::mem::offset_of!(BaSession, timer) == 0x14);
+    assert_type_layout!(BaSessions, 0xa0, 4);
     assert_type_layout!(BaLinkEventState, 0x30, 4);
     assert_type_layout!(TalaAccounting, 0x24, 4);
     assert_type_layout!(ContextCompletionPrefix, 0x14, 4);
@@ -2075,7 +2117,7 @@ const _: () = {
     assert!(core::mem::offset_of!(DtcmLayout, ba_lmc_header) == 0x8ab8);
     assert!(core::mem::offset_of!(DtcmLayout, pending_ba_lmc) == 0x8ad8);
     assert!(core::mem::offset_of!(DtcmLayout, lmc_messages) == 0x8bb8);
-    assert!(core::mem::offset_of!(DtcmLayout, post_lmc_quarantine) == 0x8e78);
+    assert!(core::mem::offset_of!(DtcmLayout, ba_sessions) == 0x8e78);
     assert!(core::mem::offset_of!(DtcmLayout, ba_link_event_state) == 0x8f18);
     assert!(core::mem::offset_of!(DtcmLayout, tala) == 0x8f48);
     assert!(core::mem::offset_of!(DtcmLayout, context_completion_prefix) == 0x8f6c);
@@ -2314,6 +2356,25 @@ mod tests {
         assert_eq!(last.raw() + LMC_MESSAGE_SIZE as u32, 0x0400_8e78);
         assert!(lmc_message(LMC_MESSAGE_COUNT).is_none());
         assert!(first.completion_mac_word(3).is_none());
+    }
+
+    #[test]
+    fn ba_session_records_follow_the_decoded_four_by_0x28_layout() {
+        let first = ba_session(0).unwrap();
+        let last = ba_session(3).unwrap();
+        assert_eq!(first.raw(), 0x0400_8e78);
+        assert_eq!(first.activity().get(), 0x0400_8e78);
+        assert_eq!(first.peer_mac_byte(0).unwrap().get(), 0x0400_8e7c);
+        assert_eq!(first.peer_mac_byte(5).unwrap().get(), 0x0400_8e81);
+        assert_eq!(first.tid().get(), 0x0400_8e82);
+        assert_eq!(first.interface().get(), 0x0400_8e83);
+        assert_eq!(first.timeout_1024us().get(), 0x0400_8e8a);
+        assert_eq!(first.timer().get(), 0x0400_8e8c);
+        assert_eq!(last.raw(), 0x0400_8ef0);
+        assert_eq!(last.timer().get(), 0x0400_8f04);
+        assert_eq!(last.raw() + 0x28, 0x0400_8f18);
+        assert!(ba_session(4).is_none());
+        assert!(first.peer_mac_byte(6).is_none());
     }
 
     #[test]

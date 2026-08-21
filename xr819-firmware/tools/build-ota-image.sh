@@ -21,10 +21,12 @@ python3 tools/check-address-literals.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-link-sequence-layout.py
 python3 tools/check-ba-lmc-pending-layout.py
+python3 tools/check-ba-session-layout.py
 python3 tools/pack-sectioned-elf.py "$ELF" "$OUT"
 python3 tools/check-dtcm-layout.py "$ELF" "$OUT"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-link-sequence-layout.py "$ELF"
 python3 tools/check-ba-lmc-pending-layout.py "$ELF"
+python3 tools/check-ba-session-layout.py "$ELF"
 
 echo "features=none"

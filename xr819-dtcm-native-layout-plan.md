@@ -1297,7 +1297,7 @@ Every entry below is a private field with compile-time `size_of!`, `align_of!`, 
 | `0x8ab8` | `0x20` | `BaLmcHeader` | BA/LMC global header |
 | `0x8ad8` | `0xe0` | `PendingBaLmcState` | shared pending-list/BA/LMC/scheduler/radio state |
 | `0x8bb8` | `0x2c0` | `LmcMessages` | 16 opaque records at stride `0x2c` |
-| `0x8e78` | `0xa0` | `PostLmcQuarantine` | occupied undecoded bytes |
+| `0x8e78` | `0xa0` | `BaSessions` | four BA session records, stride `0x28` |
 | `0x8f18` | `0x30` | `BaLinkEventState` | BA/link/event/timer state |
 | `0x8f48` | `0x24` | `TalaAccounting` | exact semantic arrays and reserved bytes; still shared quarantine |
 | `0x8f6c` | `0x14` | `ContextCompletionPrefix` | completion/context accounting anchor, including class-0 count at `+5` |
@@ -2341,3 +2341,44 @@ checks    /tmp/xr819-ba-lmc-final-check.log
 manifest  tools/ba-lmc-pending-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.16 BA session records
+
+The former opaque range `0x04008e78..0x04008f18` is four fixed-DTCM BA
+session records with stride `0x28`:
+
+```text
++0x00 u32 activity/in-use state
++0x04 six-byte peer MAC
++0x0a u8 TID
++0x0b u8 interface
++0x0c six unresolved bytes
++0x12 u16 timeout in 1024-us units
++0x14 0x14-byte scheduler timer object
+```
+
+The shape follows `bab_init`, which initializes four timers at
+`base + index * 0x28 + 0x14`, and the allocation/find/teardown paths that use
+activity, peer address, TID, interface, and timeout at the decoded offsets.
+These remain retained-vendor-owned records; structural typing does not create
+safe references or move the table.
+
+`tools/check-ba-session-layout.py` rejects production literals and synthesized
+base/stride forms outside `dtcm.rs`. The linked firmware contains no Rust
+literal or decoded literal-load xrefs into this range. The complete 197-symbol
+inventory, ELF, and packed image remain byte-for-byte identical to the
+qualified BA/LMC parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-ba-session-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-ba-session-final-check.log
+          5a5486765fb9fcb5f8684e2404915884f76ffbfc973815d1776c2b8a5b40b971
+manifest  tools/ba-session-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
