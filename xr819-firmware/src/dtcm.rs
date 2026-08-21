@@ -129,10 +129,15 @@ struct InitializedVendorImage {
     control_words: OpaqueBytes<0x20>,
     pre_low_mac_root: OpaqueBytes<0x240>,
     initialized_low_mac_state: OpaqueBytes<0x94c>,
-    scheduler_exclusion_words: [SharedU32; 2],
-    scheduler_event_island: OpaqueBytes<0x44>,
+    scheduler_exclusion_state: SchedulerExclusionState,
+    scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
 }
+#[repr(C, align(4))]
+struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
+#[repr(C, align(4))]
+struct SchedulerEventIsland { pending_events: SharedU32, runtime_flags: SharedU32, opaque_08: OpaqueBytes<0x0a>, startup_mode: SharedU16, opaque_14: OpaqueBytes<0x08>, analog_enabled: SharedU16, opaque_1e: OpaqueBytes<0x02>, remap_primary: SharedU32, opaque_24: OpaqueBytes<0x04>, remap_secondary: SharedU32, analog_words: [SharedU32; 3], opaque_38: OpaqueBytes<0x08>, timer_list_head: SharedU32 }
+
 opaque_family!(
     /// Register-context, backoff, diagnostic, and other early zeroed state.
     RuntimePrefix,
@@ -1883,6 +1888,38 @@ const fn pre_command_pending_root() -> DtcmAddress {
     pre_command_field(core::mem::offset_of!(PreCommandQuarantine, pending_root))
 }
 
+const fn scheduler_exclusion_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, initialized_vendor_image)
+            + core::mem::offset_of!(InitializedVendorImage, scheduler_exclusion_state)
+            + offset,
+    )
+}
+const fn scheduler_event_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, initialized_vendor_image)
+            + core::mem::offset_of!(InitializedVendorImage, scheduler_event_island)
+            + offset,
+    )
+}
+pub(crate) const fn scheduler_exclusion_mask() -> DtcmAddress { scheduler_exclusion_field(core::mem::offset_of!(SchedulerExclusionState, exclusion_mask)) }
+pub(crate) const fn scheduler_secondary_exclusion() -> DtcmAddress { scheduler_exclusion_field(core::mem::offset_of!(SchedulerExclusionState, secondary_exclusion)) }
+pub(crate) const fn scheduler_pending_events() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, pending_events)) }
+pub(crate) const fn scheduler_runtime_flags() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, runtime_flags)) }
+pub(crate) const fn scheduler_startup_mode() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, startup_mode)) }
+pub(crate) const fn scheduler_analog_enabled() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, analog_enabled)) }
+pub(crate) const fn scheduler_remap_primary() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, remap_primary)) }
+pub(crate) const fn scheduler_remap_secondary() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, remap_secondary)) }
+pub(crate) const fn scheduler_analog_word(index: usize) -> Option<DtcmAddress> {
+    if index < 3 {
+        Some(scheduler_event_field(
+            core::mem::offset_of!(SchedulerEventIsland, analog_words)
+                + index * core::mem::size_of::<SharedU32>(),
+        ))
+    } else { None }
+}
+pub(crate) const fn scheduler_timer_list_head() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, timer_list_head)) }
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -2220,7 +2257,19 @@ const _: () = {
     assert!(
         core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_state) + 0x940 == 0x1fc0
     );
-    assert!(core::mem::offset_of!(InitializedVendorImage, scheduler_exclusion_words) == 0x1fcc);
+    assert_type_layout!(SchedulerExclusionState, 0x08, 4);
+    assert!(core::mem::offset_of!(SchedulerExclusionState, exclusion_mask) == 0x00);
+    assert!(core::mem::offset_of!(SchedulerExclusionState, secondary_exclusion) == 0x04);
+    assert_type_layout!(SchedulerEventIsland, 0x44, 4);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, pending_events) == 0x00);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, runtime_flags) == 0x04);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, startup_mode) == 0x12);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, analog_enabled) == 0x1c);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, remap_primary) == 0x20);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, remap_secondary) == 0x28);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, analog_words) == 0x2c);
+    assert!(core::mem::offset_of!(SchedulerEventIsland, timer_list_head) == 0x40);
+    assert!(core::mem::offset_of!(InitializedVendorImage, scheduler_exclusion_state) == 0x1fcc);
     assert!(core::mem::offset_of!(InitializedVendorImage, scheduler_event_island) == 0x1fd4);
     assert!(core::mem::offset_of!(InitializedVendorImage, initialized_tail) == 0x2018);
 
@@ -2526,6 +2575,23 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn scheduler_event_and_timer_roots_are_exact() {
+        assert_eq!(scheduler_exclusion_mask().get(), 0x0400_1fcc);
+        assert_eq!(scheduler_secondary_exclusion().get(), 0x0400_1fd0);
+        assert_eq!(scheduler_pending_events().get(), 0x0400_1fd4);
+        assert_eq!(scheduler_runtime_flags().get(), 0x0400_1fd8);
+        assert_eq!(scheduler_startup_mode().get(), 0x0400_1fe6);
+        assert_eq!(scheduler_analog_enabled().get(), 0x0400_1ff0);
+        assert_eq!(scheduler_remap_primary().get(), 0x0400_1ff4);
+        assert_eq!(scheduler_remap_secondary().get(), 0x0400_1ffc);
+        assert_eq!(scheduler_analog_word(0).unwrap().get(), 0x0400_2000);
+        assert_eq!(scheduler_analog_word(2).unwrap().get(), 0x0400_2008);
+        assert!(scheduler_analog_word(3).is_none());
+        assert_eq!(scheduler_timer_list_head().get(), 0x0400_2014);
+        assert_eq!(scheduler_timer_list_head().get() + 4, 0x0400_2018);
     }
 
     #[test]

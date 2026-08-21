@@ -1493,9 +1493,9 @@ unsafe fn gain_computation_input(
             rssi_offset: i32::from(((bank + 0x52) as *const i16).read_volatile()),
             measured_a: (0x0400_9994 as *const i32).read_volatile(),
             measured_b: (0x0400_9998 as *const i32).read_volatile(),
-            analog_enabled: i32::from((0x0400_1ff0 as *const i16).read_volatile()),
-            analog_word_2c: (0x0400_2000 as *const u32).read_volatile(),
-            analog_word_30: (0x0400_2004 as *const u32).read_volatile(),
+            analog_enabled: i32::from((crate::dtcm::scheduler_analog_enabled().get() as *const i16).read_volatile()),
+            analog_word_2c: (crate::dtcm::scheduler_analog_word(0).unwrap().get() as *const u32).read_volatile(),
+            analog_word_30: (crate::dtcm::scheduler_analog_word(1).unwrap().get() as *const u32).read_volatile(),
             state_scale: (0x0400_99f4 as *const i32).read_volatile(),
         })
     }
@@ -1609,7 +1609,7 @@ unsafe fn rf_init_stage_d_mode0() {
         let alternate = ((state + 0x40) as *const u8).read_volatile() == 1;
         write_u32(BASE - 0x3c, 0x304);
         write_u32(BASE - 0x38, if alternate { 0x9200 } else { 0x9000 });
-        let remap = (0x0400_1ff4 as *const u32).read_volatile();
+        let remap = (crate::dtcm::scheduler_remap_primary().get() as *const u32).read_volatile();
         write_u32(
             BASE - 0x20,
             ((remap & 0x07ff_ffff) >> 26)
@@ -1653,7 +1653,7 @@ unsafe fn rf_init_stage_a_mode0() {
         write_u32(BASE + 0x1c, 0x0703_0100);
         write_u32(BASE + 0x20, 0x7f3f_1f0f);
         write_u32(BASE - 0x94, 0x0400_2730);
-        if (0x0400_1ff0 as *const u16).read_volatile() == 0 {
+        if (crate::dtcm::scheduler_analog_enabled().get() as *const u16).read_volatile() == 0 {
             write_u32(0x0ac8_005c, 0x6a25_5800);
             write_u32(0x0ac8_00e8, 0x10c);
         }
@@ -1871,8 +1871,9 @@ unsafe fn publish_completed_receive_state() {
         write_u32(0x0400_1d3c, 0x0098_9680);
         write_u8(0x0400_1d41, 0);
 
-        let keep_awake = (0x0400_1fd8 as *const u32).read_volatile();
-        write_u32(0x0400_1fd8, keep_awake | 0x0004_0000);
+        let runtime_flags = crate::dtcm::scheduler_runtime_flags().get();
+        let keep_awake = (runtime_flags as *const u32).read_volatile();
+        write_u32(runtime_flags, keep_awake | 0x0004_0000);
     }
 }
 
@@ -3503,7 +3504,7 @@ pub unsafe fn begin_dynamic_iq_band_registers(
             snapshot.abc0034 = (0x0abc_0034 as *const u32).read_volatile();
             write_u32(0x0abc_0034, 0x0000_06c3);
             snapshot.abc0020 = (0x0abc_0020 as *const u32).read_volatile();
-            let source_04001ff4 = (0x0400_1ff4 as *const u32).read_volatile();
+            let source_04001ff4 = (crate::dtcm::scheduler_remap_primary().get() as *const u32).read_volatile();
             derived = dynamic_iq_band_derived_values(false, table_value, source_04001ff4);
             write_u32(0x0abc_0020, derived.abc0020);
             snapshot.abc0050 = (0x0abc_0050 as *const u32).read_volatile();
@@ -4419,7 +4420,7 @@ pub unsafe fn initialize_mac_software_state() {
         write_u16(STATE + 0x36, 10);
 
         // Vendor startup mode bit 1 controls this compatibility flag.
-        let startup_mode = (0x0400_1fe6 as *const u16).read_volatile();
+        let startup_mode = (crate::dtcm::scheduler_startup_mode().get() as *const u16).read_volatile();
         if startup_mode & 2 == 0 {
             write_u8(STATE + 0x15, 1);
         }
@@ -4447,7 +4448,7 @@ pub unsafe fn initialize_mac_software_state() {
         write_u8(0x0400_99f4 + 0x15, 0);
 
         // Vendor 0x16ca4 derives these from remap window two at 0x04001ffc.
-        let remap = (0x0400_1ffc as *const u32).read_volatile();
+        let remap = (crate::dtcm::scheduler_remap_secondary().get() as *const u32).read_volatile();
         let (first, second) = derive_remap_timing(remap);
         write_u16(0x0400_9990, first);
         write_u16(0x0400_9992, second);

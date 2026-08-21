@@ -921,7 +921,7 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // root is separate retained DTCM state. Leaving it untouched makes the
         // first timer insertion follow stale firmware pointers and corrupt the
         // cooperative scheduler before a TX confirmation can reach the host.
-        write_u32(0x0400_2014, 0);
+        write_u32(crate::dtcm::scheduler_timer_list_head().get(), 0);
         for object in [0x0400_1d18, 0x0400_1ac8] {
             write_u32(object + 0x0c, callback);
             write_u32(object + 0x10, 0);

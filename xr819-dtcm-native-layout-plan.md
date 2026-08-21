@@ -303,13 +303,13 @@ The dense initialized image also contains opaque tables and code pointers. It mu
 
 **Ranges:** primarily `0x04001fcc..0x04002018`, `0x0400218c..0x04002234`, plus timer objects embedded in VIF/PS/scan records.
 
-**Known fields/shape:** `BootState` at `0x04001fd4` is currently described by a `register_structs!` type, but this type is only a partial view. `ClockParameters` is `0x28` bytes at `0x0400218c`. The scheduler handler table is 32 code pointers at `0x040021b4`.
+**Known fields/shape:** the shared `SchedulerExclusionState` at `0x04001fcc` contains two exclusion words. `SchedulerEventIsland` spans `0x04001fd4..0x04002018` and names pending events, runtime flags, startup/analog/remap observations, three analog words, and the intrusive timer-list head while leaving unresolved bytes opaque. `ClockParameters` is `0x28` bytes at `0x0400218c`. The scheduler handler table is 32 code pointers at `0x040021b4`.
 
 **Readers/writers:** `sched_main_loop`, `evt_flags_set/clear`, `timer_start`, `timer_cancel`, `sched_arm_next_timer`, `task_22bc`, `mac_irq_handler`, HIF send/defer paths, MIC completion, scan/JOIN, channel switch, measurement, BA, power save, PHY tasks, and current Rust scheduler helpers. The literal-pool report found dozens of independent pointers resolving to `0x04001fd4`.
 
 **Initialization:** low words around `0x04001fcc` are vendor COPY data and are explicitly reconstructed/cleared by Rust startup. The timer-list root at `0x04002014` is in vendor FILL/BSS and is explicitly reset before timer insertion. Handler entries are installed at runtime.
 
-**Status:** mixed/shared. Even when a particular event bit is only set by Rust, untranslated tasks read the same event word and embedded timer objects retain vendor callbacks. This family requires `UnsafeCell` or volatile access under IRQ/FIQ exclusion. It is not sound to expose `&mut SchedulerState` while interrupt code can mutate it.
+**Status:** typed mixed/shared quarantine. Rust startup, event claiming/publication, timer-list operations, host-TX gates, and PHY observations now derive their addresses from `dtcm.rs`, but untranslated tasks read and write the same words and embedded timer objects retain vendor callbacks. This family requires volatile access under IRQ/FIQ exclusion. It is not sound to expose `&mut SchedulerState` while interrupt code can mutate it.
 
 **Cross-family pointers:** timer objects point to VIF, PS, scan, BA, and PHY contexts; the handler table contains code pointers; scheduler bits are the publication mechanism for HIF, TX completion, scan, JOIN/channel switch, measurement, and BA.
 
@@ -2616,6 +2616,53 @@ packed    /tmp/xr819-peer-pipe-layout.bin
 checks    /tmp/xr819-peer-pipe-final-check.log
           e15a37189ae0652e18fa9f9a8a1f70fe55e4601df7ddef185d611ee6c7689260
 manifest  tools/peer-pipe-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.22 Scheduler/event/timer roots
+
+The initialized scheduler root is now represented by two exact shared layouts:
+
+```text
+0x04001fcc  u32 global scheduler/radio exclusion mask
+0x04001fd0  u32 secondary exclusion/task state
+0x04001fd4  u32 pending scheduler events
+0x04001fd8  u32 scheduler/runtime flags
+0x04001fe6  u16 PHY startup mode
+0x04001ff0  u16 analog/gain enable observation
+0x04001ff4  u32 primary retained remap word
+0x04001ffc  u32 secondary retained remap word
+0x04002000  three u32 analog/calibration words
+0x04002014  u32 intrusive timer-list head
+0x04002018  end
+```
+
+Unresolved bytes remain opaque. The mixed scheduler and PHY naming reflects
+actual retained consumers rather than exclusive subsystem ownership. The event
+word and timer root remain live publication structures shared with vendor task,
+IRQ, HIF, MIC, scan/JOIN, BA, power-save, and PHY paths.
+
+Translated startup, scheduler event claiming/publication, timer insertion and
+cancellation, host-TX gating, and PHY observation paths now derive these
+addresses from `dtcm.rs`. Exact volatile operations, IRQ/FIQ masking, event-bit
+ordering, and intrusive-list writes are unchanged.
+
+`tools/check-scheduler-event-layout.py` covers `0x04001fcc..0x04002018`, permits
+only the explicit diagnostic probe and packer-test fixtures, and pins 16 linked
+literal words plus 25 decoded literal-load xrefs. The complete ELF remains
+byte-identical to the qualified peer-pipe parent, so no hardware rerun is
+required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-scheduler-event-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-scheduler-event-final-check.log
+          91917c4f24d452b2d2597a767ed0250185adf883c9cc801910b1e3ab4586f3d8
+manifest  tools/scheduler-event-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 

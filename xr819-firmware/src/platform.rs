@@ -251,8 +251,8 @@ pub fn initialize_runtime_state() {
     // immediately before the event structure. Sectioned custom images do not
     // carry that data segment, so stale bootloader bits (notably 0x20) would
     // make `task_b88e` leave every class-0 frame pending.
-    register32(0x0400_1fcc).set(0);
-    register32(0x0400_1fd0).set(0);
+    register32(crate::dtcm::scheduler_exclusion_mask().get()).set(0);
+    register32(crate::dtcm::scheduler_secondary_exclusion().get()).set(0);
 
     boot_word(0x04).set(0);
     boot_write_u16(0x08, 7);

@@ -150,7 +150,7 @@ impl SharedCompletionRing {
 }
 
 #[cfg(not(all(target_arch = "arm", target_feature = "thumb-mode")))]
-const SCHEDULER_PENDING: usize = 0x0400_1fd4;
+const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get() as usize;
 #[cfg(not(target_arch = "arm"))]
 const PIPE_RETRY_RANDOM_STATE: u32 = 0x0400_142c;
 const PIPE_RECORDS: u32 = 0x0400_1680;
@@ -2697,7 +2697,7 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
             3 | 1 if phase == 3 || event_type == 0x19 => unsafe {
                 if read_u8(PIPE_RECORDS as usize + 0x0a) != 0 {
                     write_u8(PIPE_RECORDS as usize + 0x0a, 0);
-                    let pending = 0x0400_1fd4_usize;
+                    let pending = crate::dtcm::scheduler_pending_events().get() as usize;
                     write_u32(pending, read_u32(pending) | 0x10);
                 }
                 if read_u8(PIPE_RECORDS as usize + 6) != 0 {
@@ -2830,7 +2830,7 @@ pub unsafe fn execute_popped_mac_event_inactive<B: SingleOutstandingMacHardwareE
 
 #[cfg_attr(not(target_arch = "arm"), allow(dead_code))]
 fn insert_scheduler_timer_list<M: MacPipeMmio>(mmio: &mut M, timer: u32, deadline: u32) -> bool {
-    let mut previous_link = 0x0400_2014_u32;
+    let mut previous_link = crate::dtcm::scheduler_timer_list_head().get() as u32;
     let mut next = mmio.read_u32(previous_link);
     while next != 0 && (mmio.read_u32(next + 8).wrapping_sub(deadline) as i32) <= 0 {
         previous_link = next;
@@ -2843,7 +2843,7 @@ fn insert_scheduler_timer_list<M: MacPipeMmio>(mmio: &mut M, timer: u32, deadlin
     mmio.write_u32(previous_link, timer);
     mmio.write_u32(timer, next);
     mmio.write_u32(timer + 4, previous_link);
-    mmio.read_u32(0x0400_2014) == timer
+    mmio.read_u32(crate::dtcm::scheduler_timer_list_head().get() as u32) == timer
 }
 
 #[cfg_attr(not(target_arch = "arm"), allow(dead_code))]
@@ -2863,10 +2863,10 @@ fn unlink_scheduler_timer_list<M: MacPipeMmio>(mmio: &mut M, timer: u32) -> bool
 
 #[cfg_attr(not(target_arch = "arm"), allow(dead_code))]
 fn claim_scheduler_mask<M: MacPipeMmio>(mmio: &mut M, mask: u32) -> u32 {
-    let pending = mmio.read_u32(0x0400_1fd4);
+    let address = crate::dtcm::scheduler_pending_events().get() as u32; let pending = mmio.read_u32(address);
     let claimed = pending & mask;
     if claimed != 0 {
-        mmio.write_u32(0x0400_1fd4, pending & !claimed);
+        mmio.write_u32(address, pending & !claimed);
     }
     claimed
 }
@@ -2883,10 +2883,10 @@ unsafe fn claim_scheduler_mask_atomic(mask: u32) -> u32 {
 unsafe fn clear_scheduler_timer_event() {
     let previous = unsafe { mask_irq_fiq_terminal() };
     unsafe {
-        let pending = read_u32(0x0400_1fd8) & !0x10;
-        write_u32(0x0400_1fd8, pending);
+        let pending = read_u32(crate::dtcm::scheduler_runtime_flags().get()) & !0x10;
+        write_u32(crate::dtcm::scheduler_runtime_flags().get(), pending);
         if pending == 0 {
-            write_u32(0x0400_1fd4, read_u32(0x0400_1fd4) | 4);
+            write_u32(crate::dtcm::scheduler_pending_events().get(), read_u32(crate::dtcm::scheduler_pending_events().get()) | 4);
         }
         restore_irq_fiq(previous);
     }
@@ -2899,7 +2899,7 @@ unsafe fn cancel_scheduler_timer(timer: u32) -> bool {
         if previous_link == 0 {
             return false;
         }
-        if read_u32(0x0400_1fd8) & 0x10 != 0 && read_u32(0x0400_2014) == timer {
+        if read_u32(crate::dtcm::scheduler_runtime_flags().get()) & 0x10 != 0 && read_u32(crate::dtcm::scheduler_timer_list_head().get()) == timer {
             clear_scheduler_timer_event();
         }
 
@@ -5547,7 +5547,7 @@ where
 /// MAC/DTCM state must be mapped and exclusively owned by event servicing.
 pub unsafe fn service_mac_beacon_event() {
     execute_mac_beacon_event(&mut VolatileMacPipeMmio, |bits| unsafe {
-        let pending = 0x0400_1fd4 as *mut u32;
+        let pending = crate::dtcm::scheduler_pending_events().get() as *mut u32;
         pending.write_volatile(pending.read_volatile() | bits);
     });
 }
@@ -5591,7 +5591,7 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
             0x19 => {
                 let state = read_u32(0x0400_1aa8);
                 if state == 4 {
-                    let pending = 0x0400_1fd4_usize;
+                    let pending = crate::dtcm::scheduler_pending_events().get() as usize;
                     write_u32(pending, read_u32(pending) | (1 << 24));
                 } else if state != 5 {
                     service_mac_beacon_event();
@@ -5600,7 +5600,7 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
             }
             0x35 if read_u8(crate::dtcm::radio_timer_state().get()) == 2 => {
                 write_u8(crate::dtcm::radio_timer_state().get(), 4);
-                let pending = 0x0400_1fd4_usize;
+                let pending = crate::dtcm::scheduler_pending_events().get() as usize;
                 write_u32(pending, read_u32(pending) | (1 << 31));
             }
             _ => {}
