@@ -3936,3 +3936,25 @@ checks    /tmp/xr819-power-save-wake-stats-final-check.log
           900044b2c6dad7076a53fa4a39b9d4b3359fe1f17599f91a366f9b508b09142d
 ```
 
+### A.59 Power-save timing and activity prefix
+
+The next power-save prefix slice now names the wake-stat sample counter at
+`+0x2b`, resume state at `+0x2d`, beacon timing reference at `+0x34`, joined
+state word at `+0x38`, wake lead time at `+0x3c`, and the mode/activity/pending/
+timer bytes at `+0x40..+0x43`.
+
+Beacon processing updates the timing reference, join setup publishes the state
+word, wake scheduling consumes the lead-time value, and the sleep/reevaluation
+paths repeatedly test the activity byte. The retained timer initializer writes
+the final byte. Both logical and physical schemas carry these exact offsets,
+with bounded address APIs and cross-interface tests. The complete ELF remains
+byte-identical to the qualified wake-statistics parent, so no hardware rerun is
+required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-power-save-timing-final-check.log
+          a64b4c6bd8d57d91855162cce0c643e229da3699b5597633eb83a3b7e9b48bd5
+```
+

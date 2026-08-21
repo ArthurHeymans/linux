@@ -755,7 +755,7 @@ pub(crate) struct InternalContextPoolState {
 /// Overlapping address schema used by retained per-interface power-save code.
 /// Its `0x13c` extent deliberately exceeds the observed `0x104` view stride.
 #[repr(C, align(4))]
-struct PowerSaveObservedLayout { wake_stats_phase: SharedU8, wake_stats_flag_01: SharedU8, wake_stats_flag_02: SharedU8, opaque_003: OpaqueBytes<0x03>, wake_duration: SharedU16, wake_register_min: SharedU32, wake_register_sum: SharedU32, wake_register_max: SharedU32, wake_elapsed_min: SharedU32, wake_elapsed_sum: SharedU32, wake_elapsed_max: SharedU32, tx_completion_state: SharedU32, next_tbtt: SharedU32, doze_state: SharedU8, requested_pm_mode: SharedU8, global_sleep_state: SharedU8, opaque_02b: OpaqueBytes<0x05>, global_timer_duration: SharedU32, opaque_034: OpaqueBytes<0x0c>, mode: SharedU8, opaque_041: OpaqueBytes<0x03>, flags: SharedU16, opaque_046: OpaqueBytes<0x0e>, pending: SharedU32, opaque_058: OpaqueBytes<0x02>, queue_mask: SharedU16, opaque_05c: OpaqueBytes<0x14>, timers: [TimerEntry; 7], state_fc: SharedU8, opaque_0fd: OpaqueBytes<0x1b>, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, opaque_124: OpaqueBytes<0x04>, interval_128: SharedU32, opaque_12c: OpaqueBytes<0x08>, counter_134: SharedU16, threshold_136: SharedU16, scan_completion_138: SharedU16, sleep_vote_count_13a: SharedU16 }
+struct PowerSaveObservedLayout { wake_stats_phase: SharedU8, wake_stats_flag_01: SharedU8, wake_stats_flag_02: SharedU8, opaque_003: OpaqueBytes<0x03>, wake_duration: SharedU16, wake_register_min: SharedU32, wake_register_sum: SharedU32, wake_register_max: SharedU32, wake_elapsed_min: SharedU32, wake_elapsed_sum: SharedU32, wake_elapsed_max: SharedU32, tx_completion_state: SharedU32, next_tbtt: SharedU32, doze_state: SharedU8, requested_pm_mode: SharedU8, global_sleep_state: SharedU8, wake_stats_counter: SharedU8, opaque_02c: SharedU8, resume_state: SharedU8, opaque_02e: OpaqueBytes<0x02>, global_timer_duration: SharedU32, beacon_timing_reference: SharedU32, join_state_word: SharedU32, wake_lead_time: SharedU32, mode: SharedU8, active: SharedU8, tx_pending_state: SharedU8, timer_state: SharedU8, flags: SharedU16, opaque_046: OpaqueBytes<0x0e>, pending: SharedU32, opaque_058: OpaqueBytes<0x02>, queue_mask: SharedU16, opaque_05c: OpaqueBytes<0x14>, timers: [TimerEntry; 7], state_fc: SharedU8, opaque_0fd: OpaqueBytes<0x1b>, duration_118: SharedU32, duration_11c: SharedU32, duration_120: SharedU32, opaque_124: OpaqueBytes<0x04>, interval_128: SharedU32, opaque_12c: OpaqueBytes<0x08>, counter_134: SharedU16, threshold_136: SharedU16, scan_completion_138: SharedU16, sleep_vote_count_13a: SharedU16 }
 
 /// Physical `0x104` prefix at each observed power-save view start. The logical
 /// view continues past this prefix and overlaps the next physical prefix.
@@ -777,11 +777,18 @@ struct PowerSavePhysicalPrefix {
     doze_state: SharedU8,
     requested_pm_mode: SharedU8,
     global_sleep_state: SharedU8,
-    opaque_02b: OpaqueBytes<0x05>,
+    wake_stats_counter: SharedU8,
+    opaque_02c: SharedU8,
+    resume_state: SharedU8,
+    opaque_02e: OpaqueBytes<0x02>,
     global_timer_duration: SharedU32,
-    opaque_034: OpaqueBytes<0x0c>,
+    beacon_timing_reference: SharedU32,
+    join_state_word: SharedU32,
+    wake_lead_time: SharedU32,
     mode: SharedU8,
-    opaque_041: OpaqueBytes<0x03>,
+    active: SharedU8,
+    tx_pending_state: SharedU8,
+    timer_state: SharedU8,
     flags: SharedU16,
     opaque_046: OpaqueBytes<0x0e>,
     pending: SharedU32,
@@ -1763,6 +1770,11 @@ pub(crate) fn power_save_tx_completion_state(interface: usize) -> Option<DtcmAdd
 pub(crate) fn power_save_next_tbtt(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, next_tbtt)) }
 pub(crate) fn power_save_doze_state(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, doze_state)) }
 pub(crate) fn power_save_requested_pm_mode(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, requested_pm_mode)) }
+pub(crate) fn power_save_wake_stats_counter(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, wake_stats_counter)) }
+pub(crate) fn power_save_beacon_timing_reference(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, beacon_timing_reference)) }
+pub(crate) fn power_save_join_state_word(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, join_state_word)) }
+pub(crate) fn power_save_wake_lead_time(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, wake_lead_time)) }
+pub(crate) fn power_save_active(interface: usize) -> Option<DtcmAddress> { power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, active)) }
 pub(crate) fn power_save_timer(interface: usize, timer: usize) -> Option<DtcmAddress> {
     if timer < 7 {
         power_save_observed_field(interface, core::mem::offset_of!(PowerSaveObservedLayout, timers) + timer * core::mem::size_of::<TimerEntry>())
@@ -2735,8 +2747,16 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, doze_state) == 0x028);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, requested_pm_mode) == 0x029);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, global_sleep_state) == 0x02a);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, wake_stats_counter) == 0x02b);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, resume_state) == 0x02d);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, global_timer_duration) == 0x030);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, beacon_timing_reference) == 0x034);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, join_state_word) == 0x038);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, wake_lead_time) == 0x03c);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, mode) == 0x040);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, active) == 0x041);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, tx_pending_state) == 0x042);
+    assert!(core::mem::offset_of!(PowerSaveObservedLayout, timer_state) == 0x043);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, flags) == 0x044);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, pending) == 0x054);
     assert!(core::mem::offset_of!(PowerSaveObservedLayout, queue_mask) == 0x05a);
@@ -2758,8 +2778,16 @@ const _: () = {
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, doze_state) == 0x028);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, requested_pm_mode) == 0x029);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, global_sleep_state) == 0x02a);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, wake_stats_counter) == 0x02b);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, resume_state) == 0x02d);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, global_timer_duration) == 0x030);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, beacon_timing_reference) == 0x034);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, join_state_word) == 0x038);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, wake_lead_time) == 0x03c);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, mode) == 0x040);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, active) == 0x041);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, tx_pending_state) == 0x042);
+    assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, timer_state) == 0x043);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, flags) == 0x044);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, pending) == 0x054);
     assert!(core::mem::offset_of!(PowerSavePhysicalPrefix, queue_mask) == 0x05a);
@@ -3457,7 +3485,13 @@ mod tests {
         assert_eq!(power_save_requested_pm_mode(0).unwrap().get(), 0x0400_94fd);
         assert_eq!(power_save_requested_pm_mode(1).unwrap().get(), 0x0400_9601);
         assert_eq!(power_save_global_sleep_state().get(), 0x0400_94fe);
+        assert_eq!(power_save_wake_stats_counter(0).unwrap().get(), 0x0400_94ff);
         assert_eq!(power_save_global_timer_duration().get(), 0x0400_9504);
+        assert_eq!(power_save_beacon_timing_reference(0).unwrap().get(), 0x0400_9508);
+        assert_eq!(power_save_join_state_word(0).unwrap().get(), 0x0400_950c);
+        assert_eq!(power_save_wake_lead_time(0).unwrap().get(), 0x0400_9510);
+        assert_eq!(power_save_active(0).unwrap().get(), 0x0400_9515);
+        assert_eq!(power_save_active(1).unwrap().get(), 0x0400_9619);
         assert_eq!(power_save_timer(0, 0).unwrap().get(), 0x0400_9544);
         assert_eq!(power_save_timer(0, 6).unwrap().get(), 0x0400_95bc);
         assert_eq!(power_save_timer(1, 0).unwrap().get(), 0x0400_9648);
