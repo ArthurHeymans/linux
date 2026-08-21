@@ -938,7 +938,7 @@ pub fn channel_frequency_offset_mhz(mode: u8, frequency_khz: u32) -> i16 {
 /// The vendor channel state at `0x0400994c` must be initialized.
 pub unsafe fn program_channel_measurement_timing() -> Option<i32> {
     unsafe {
-        let mode = (0x0400_994e as *const u8).read_volatile();
+        let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let frequency_khz = (0x0400_9974 as *const u32).read_volatile();
         let timing = channel_measurement_timing(mode, frequency_khz)?;
         write_u32(0x0ab8_8020, timing as u32);
@@ -953,7 +953,7 @@ pub unsafe fn program_channel_measurement_timing() -> Option<i32> {
 /// The vendor channel and PHY software states must be initialized.
 pub unsafe fn publish_channel_frequency_offset() -> i16 {
     unsafe {
-        let mode = (0x0400_994e as *const u8).read_volatile();
+        let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let frequency_khz = (0x0400_9974 as *const u32).read_volatile();
         let offset = channel_frequency_offset_mhz(mode, frequency_khz);
         let current = (0x0400_99f4 as *const i32).read_volatile();
@@ -990,7 +990,7 @@ pub unsafe fn set_phy_agc_enabled(enabled: bool) {
         let current = (0x0ab8_0c38 as *const u32).read_volatile();
         let updated = if enabled {
             write_u32(0x0abb_81a0, 0);
-            let profile = (0x0400_994e as *const u8).read_volatile();
+            let profile = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
             write_u32(0x0ab8_006c, if profile == 1 { 0 } else { 0x0ebf });
             write_u32(0x0ab8_0068, 0);
             current | 0x1800
@@ -1100,14 +1100,14 @@ pub struct ChannelTransitionResult {
 /// The vendor channel state and PLL register bank must be initialized.
 pub unsafe fn program_channel_pll(channel: u16) -> Result<PllDivider, ChannelPllError> {
     unsafe {
-        let profile = (0x0400_994e as *const u8).read_volatile();
+        let profile = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let (frequency_khz, multiplier) = match profile {
             0 => (channel_frequency_khz_2ghz(channel), 1250),
             1 => ((5000 + u32::from(channel & 0xff) * 5) * 1000, 1000),
             _ => return Err(ChannelPllError::UnsupportedProfile),
         };
         write_u32(0x0400_9974, frequency_khz);
-        let reference = (0x0400_996c as *const u32).read_volatile();
+        let reference = (crate::dtcm::phy_reference_word().get() as *const u32).read_volatile();
         let correction = i32::from((0x0400_9988 as *const i16).read_volatile());
         let correction = i64::from(reference)
             .wrapping_mul(i64::from(correction))
@@ -1211,7 +1211,7 @@ pub unsafe fn measure_temperature_primary()
 /// The vendor SDD-derived descriptor and record pointers must remain valid.
 pub unsafe fn lookup_channel_threshold(channel: u16) -> Result<i16, ChannelPowerError> {
     unsafe {
-        let profile = usize::from((0x0400_994e as *const u8).read_volatile());
+        let profile = usize::from((crate::dtcm::phy_profile().get() as *const u8).read_volatile());
         if profile > 1 {
             return Err(ChannelPowerError::InvalidThresholdTable);
         }
@@ -1282,7 +1282,7 @@ pub unsafe fn channel_tx_power_from_rate_table(
 /// Both vendor SDD-derived tables and PHY software state must be initialized.
 pub unsafe fn publish_channel_power(channel: u8) -> Result<(i16, i16, i16), ChannelPowerError> {
     unsafe {
-        let profile = (0x0400_994e as *const u8).read_volatile();
+        let profile = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let threshold_id = match profile {
             0 => 0x30,
             1 => 0x31,
@@ -1522,10 +1522,10 @@ fn encoded_gain_words(gain_code: u16, rssi_value: u16) -> (u32, u32) {
 /// SDD state, analog state, and the gain MMIO banks must be initialized.
 pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), GainProgrammingError> {
     unsafe {
-        if (0x0400_995f as *const u8).read_volatile() < 2 {
+        if (crate::dtcm::phy_calibration_stage().get() as *const u8).read_volatile() < 2 {
             return Ok(());
         }
-        let profile = (0x0400_994e as *const u8).read_volatile();
+        let profile = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         if profile > 1 {
             return Err(GainProgrammingError::InvalidProfile);
         }
@@ -1569,10 +1569,10 @@ pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), Gai
 /// The vendor channel state and correction bank must be initialized.
 pub unsafe fn prepare_channel_calibration_cache() -> ChannelCalibrationRequirement {
     unsafe {
-        let profile = (0x0400_994e as *const u8).read_volatile();
+        let profile = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let validity_address = match profile {
-            0 => 0x0400_9959,
-            1 => 0x0400_9961,
+            0 => crate::dtcm::phy_profile0_ready().get(),
+            1 => crate::dtcm::phy_profile1_ready().get(),
             _ => return ChannelCalibrationRequirement::UnsupportedProfile,
         };
         if (validity_address as *const u8).read_volatile() != 0 {
@@ -1594,9 +1594,9 @@ pub unsafe fn prepare_channel_calibration_cache() -> ChannelCalibrationRequireme
 /// The vendor channel state must be initialized.
 pub unsafe fn record_calibrated_channel(channel: u16) {
     unsafe {
-        match (0x0400_994e as *const u8).read_volatile() {
-            0 if (0x0400_9959 as *const u8).read_volatile() == 1 => write_u16(0x0400_9962, channel),
-            1 if (0x0400_9961 as *const u8).read_volatile() == 1 => write_u16(0x0400_99ce, channel),
+        match (crate::dtcm::phy_profile().get() as *const u8).read_volatile() {
+            0 if (crate::dtcm::phy_profile0_ready().get() as *const u8).read_volatile() == 1 => write_u16(crate::dtcm::phy_profile1_channel().get(), channel),
+            1 if (crate::dtcm::phy_profile1_ready().get() as *const u8).read_volatile() == 1 => write_u16(0x0400_99ce, channel),
             _ => {}
         }
     }
@@ -1605,7 +1605,7 @@ pub unsafe fn record_calibrated_channel(channel: u16) {
 unsafe fn rf_init_stage_d_mode0() {
     const BASE: usize = 0x0abc_0040;
     unsafe {
-        let state = 0x0400_994c_usize;
+        let state = crate::dtcm::PHY_PROFILE_STATE.get();
         let alternate = ((state + 0x40) as *const u8).read_volatile() == 1;
         write_u32(BASE - 0x3c, 0x304);
         write_u32(BASE - 0x38, if alternate { 0x9200 } else { 0x9000 });
@@ -1724,7 +1724,7 @@ unsafe fn rf_init_stage_b_mode0() {
 unsafe fn rf_init_stage_c_mode0() {
     const BASE: usize = 0x0abc_00c0;
     unsafe {
-        let reference = (0x0400_996c as *const u32).read_volatile();
+        let reference = (crate::dtcm::phy_reference_word().get() as *const u32).read_volatile();
         let range = u32::from(reference >= 0x5dc0) + u32::from(reference >= 0xbb80);
         let gain = if reference >= 0xbb80 {
             2
@@ -1787,7 +1787,7 @@ unsafe fn apply_first_channel_detector_state() {
     ];
     unsafe {
         prepare_rf_mode0_stage();
-        if (0x0400_994c as *const u8).read_volatile() == 2 {
+        if (crate::dtcm::PHY_PROFILE_STATE.get() as *const u8).read_volatile() == 2 {
             apply_register_list(SUBSTATE);
         }
         for (index, value) in EXPANDED.into_iter().enumerate() {
@@ -1809,8 +1809,8 @@ unsafe fn prepare_rf_mode0_stage() {
         rf_init_stage_a_mode0();
         rf_init_stage_b_mode0();
         rf_init_stage_c_mode0();
-        if (0x0400_9960 as *const u8).read_volatile() == 0 {
-            write_u8(0x0400_9960, 2);
+        if (crate::dtcm::phy_profile0_state().get() as *const u8).read_volatile() == 0 {
+            write_u8(crate::dtcm::phy_profile0_state().get(), 2);
             initialize_mac_core_mode0();
         }
     }
@@ -1833,7 +1833,7 @@ unsafe fn program_mode2_band_hardware() {
         // and selects bandwidth mode 2. The shared tail clears bit 4 for PHY
         // profile 2.
         control = (control & !2) | 4;
-        if (0x0400_994c as *const u8).read_volatile() == 2 {
+        if (crate::dtcm::PHY_PROFILE_STATE.get() as *const u8).read_volatile() == 2 {
             control &= !0x10;
         }
         write_u32(0x0abb_8004, control);
@@ -1845,9 +1845,9 @@ unsafe fn program_scan_receive_band() {
         // `phy_do_channel_switch` derives dispatcher mode 2 from scan rate
         // configuration 0x0117: bits 0 and 4 are both set and bit 5 is clear.
         // Profile byte +2 remains zero for the 2.4 GHz synth/calibration path.
-        write_u8(0x0400_994e, 0);
-        write_u8(0x0400_994f, 2);
-        write_u8(0x0400_995f, 3);
+        write_u8(crate::dtcm::phy_profile().get(), 0);
+        write_u8(crate::dtcm::phy_phase().get(), 2);
+        write_u8(crate::dtcm::phy_calibration_stage().get(), 3);
         write_u8(0x0400_99d0, 1);
         program_mode2_band_hardware();
     }
@@ -1857,7 +1857,7 @@ unsafe fn publish_completed_receive_state() {
     unsafe {
         // The active channel path leaves the PHY controller running at
         // 0x0ac80064 == 1. Writing 0x10 here is vendor radio-stop behavior.
-        write_u8(0x0400_995f, 3);
+        write_u8(crate::dtcm::phy_calibration_stage().get(), 3);
         write_u8(0x0400_1adc, 2);
 
         let mut state = (0x0400_99a9 as *const u8).read_volatile();
@@ -1916,7 +1916,7 @@ unsafe fn set_packet_receive_enabled(enabled: bool, max_polls: u32) -> bool {
 /// PHY state and MAC channel registers must be exclusively owned.
 pub unsafe fn advance_awake_station_tx() -> bool {
     unsafe {
-        write_u8(0x0400_994f, 0);
+        write_u8(crate::dtcm::phy_phase().get(), 0);
         let state = (crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get() as *const u8).read_volatile();
         if state == 1 {
             return false;
@@ -1947,9 +1947,9 @@ pub unsafe fn advance_awake_station_tx() -> bool {
 pub unsafe fn start_scan_stop_calibration_state() {
     unsafe {
         (0x0ac8_0064 as *mut u32).write_volatile(0x10);
-        (0x0400_995f as *mut u8).write_volatile(1);
-        if (0x0400_994f as *const u8).read_volatile() == 3 {
-            (0x0400_9961 as *mut u8).write_volatile(0);
+        (crate::dtcm::phy_calibration_stage().get() as *mut u8).write_volatile(1);
+        if (crate::dtcm::phy_phase().get() as *const u8).read_volatile() == 3 {
+            (crate::dtcm::phy_profile1_ready().get() as *mut u8).write_volatile(0);
             (0x0400_99ce as *mut u16).write_volatile(100);
             (0x0400_99d0 as *mut u8).write_volatile(1);
         }
@@ -2038,9 +2038,9 @@ unsafe fn begin_channel_transition(
         return Err(ChannelTransitionError::InvalidTiming);
     }
     let same_mode_channel = unsafe {
-        (0x0400_994f as *const u8).read_volatile() == 2
-            && (0x0400_994e as *const u8).read_volatile() == 0
-            && (0x0400_9952 as *const u16).read_volatile() == channel
+        (crate::dtcm::phy_phase().get() as *const u8).read_volatile() == 2
+            && (crate::dtcm::phy_profile().get() as *const u8).read_volatile() == 0
+            && (crate::dtcm::phy_channel().get() as *const u16).read_volatile() == channel
             && (0x0400_99d0 as *const u8).read_volatile() == 0
     };
     if !same_mode_channel {
@@ -2066,13 +2066,13 @@ unsafe fn begin_channel_transition(
             // rebuilds the SDD-corrected AGC table after RF initialization.
             build_mode0_gain_tables();
             program_scan_receive_band();
-            write_u16(0x0400_9952, channel);
+            write_u16(crate::dtcm::phy_channel().get(), channel);
         }
     }
     let divider = unsafe { program_channel_pll(channel) }.map_err(ChannelTransitionError::Pll)?;
 
     let mut calibration_ran = false;
-    if !same_mode_channel && unsafe { (0x0400_995d as *const u8).read_volatile() } != 0 {
+    if !same_mode_channel && unsafe { (crate::dtcm::phy_transition_gate().get() as *const u8).read_volatile() } != 0 {
         unsafe { run_vendor_mode_calibration(calibration_max_polls) }
             .map_err(ChannelTransitionError::Calibration)?;
         calibration_ran = true;
@@ -2201,7 +2201,7 @@ impl ChannelTransitionScheduler {
         if unsafe {
             (crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get() as *const u16).read_volatile() == channel
                 && (crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get() as *const u8).read_volatile() == 4
-                && (0x0400_994f as *const u8).read_volatile() == 2
+                && (crate::dtcm::phy_phase().get() as *const u8).read_volatile() == 2
         } {
             let (integer, fractional) = unsafe { cached_pll_divider() };
             self.result.divider = PllDivider {
@@ -2796,7 +2796,7 @@ pub unsafe fn publish_dynamic_iq_final_state(
     alternate_profile: bool,
     finalization: DynamicIqFinalization,
 ) {
-    let base = 0x0400_994c_usize;
+    let base = crate::dtcm::PHY_PROFILE_STATE.get();
     unsafe {
         if finalization.verification.second_quality_failed {
             write_u8(base + if alternate_profile { 0x7a } else { 0x78 }, 1);
@@ -3414,8 +3414,8 @@ pub fn dynamic_iq_synth_register(
 /// The DTCM calibration state and PLL register must be initialized and readable.
 pub unsafe fn prepare_dynamic_iq_synth_register(frequency: i32) -> Option<u32> {
     unsafe {
-        let mode = (0x0400_994e as *const u8).read_volatile();
-        let reference = (0x0400_996c as *const u32).read_volatile();
+        let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
+        let reference = (crate::dtcm::phy_reference_word().get() as *const u32).read_volatile();
         let current_register = (0x0abc_00b4 as *const u32).read_volatile();
         dynamic_iq_synth_register(mode, frequency, current_register, reference)
     }
@@ -3523,7 +3523,7 @@ pub unsafe fn begin_dynamic_iq_band_registers(
         snapshot.abc0030 = (0x0abc_0030 as *const u32).read_volatile();
         write_u32(0x0abc_0030, derived.abc0030);
         snapshot.abc00b4 = (0x0abc_00b4 as *const u32).read_volatile();
-        let mode = (0x0400_994e as *const u8).read_volatile();
+        let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let extended_settle = (0x0400_9a08 as *const u8).read_volatile() != 0;
         commit_channel_pll(synth_register, mode, extended_settle);
         snapshot.abb800c = (0x0abb_800c as *const u32).read_volatile();
@@ -3575,7 +3575,7 @@ pub unsafe fn restore_dynamic_iq_band_registers(snapshot: &DynamicIqBandRegister
             write_u32(0x0abb_8068, snapshot.abb8068);
         }
         write_u32(0x0abb_8004, snapshot.abb8004);
-        let mode = (0x0400_994e as *const u8).read_volatile();
+        let mode = (crate::dtcm::phy_profile().get() as *const u8).read_volatile();
         let extended_settle = (0x0400_9a08 as *const u8).read_volatile() != 0;
         commit_channel_pll(snapshot.abc00b4, mode, extended_settle);
         write_u32(0x0abd_0000, snapshot.abd0000);
@@ -3916,9 +3916,9 @@ pub unsafe fn run_vendor_dynamic_iq_hardware_calibration(
     mut configuration: DynamicIqHardwareCalibrationConfiguration,
     samples: &mut [u32; 64],
 ) -> DynamicIqHardwareCalibrationResult {
-    let profile = unsafe { (0x0400_994e as *const u8).read_volatile() };
+    let profile = unsafe { (crate::dtcm::phy_profile().get() as *const u8).read_volatile() };
     if profile != 0 {
-        unsafe { write_u8(0x0400_9961, 1) };
+        unsafe { write_u8(crate::dtcm::phy_profile1_ready().get(), 1) };
         return DynamicIqHardwareCalibrationResult {
             profile_shortcut: true,
             ..DynamicIqHardwareCalibrationResult::default()
@@ -4223,7 +4223,7 @@ unsafe fn run_iq_calibration_core(
 
     unsafe { set_calibration_engine_enabled(true) };
     let selected_mode = unsafe { (0x0abb_80f0 as *const u32).read_volatile() as u8 & 3 };
-    let profile_base = 0x0400_994c_usize;
+    let profile_base = crate::dtcm::PHY_PROFILE_STATE.get();
     if unsafe { (profile_base as *const u8).add(0x10).read_volatile() } == 0 {
         let shift_state = unsafe { (0x0abb_8680 as *const u32).read_volatile() };
         unsafe { write_u32(profile_base + 0x2c, shift_state) };
@@ -4296,7 +4296,7 @@ unsafe fn run_iq_calibration_core(
                 return Err(IqCalibrationHardwareError::SecondaryBaselineTimeout);
             }
         };
-        let profile = unsafe { (0x0400_994e as *const u8).read_volatile() };
+        let profile = unsafe { (crate::dtcm::phy_profile().get() as *const u8).read_volatile() };
         let secondary_snapshot = unsafe { begin_iq_calibration_path(1, profile) };
         let target = match unsafe { run_calibration_sample_mode(dac_i, dac_q, 0, max_polls) } {
             Ok(value) => value,
@@ -4392,7 +4392,7 @@ unsafe fn detect_rf_silicon_variant() -> u8 {
 }
 
 pub unsafe fn initialize_mac_software_state() {
-    const STATE: usize = 0x0400_994c;
+    const STATE: usize = crate::dtcm::PHY_PROFILE_STATE.get();
 
     unsafe {
         write_u8(STATE, 2);

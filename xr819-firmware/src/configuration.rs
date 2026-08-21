@@ -256,7 +256,7 @@ unsafe fn populate_vendor_calibration_state() {
 
     unsafe {
         if let Some(reference) = reference_frequency_khz() {
-            write_u32(0x0400_996c, u32::from(reference));
+            write_u32(crate::dtcm::phy_reference_word().get(), u32::from(reference));
         }
 
         // Annotated callbacks 0x17626 and 0x17646.

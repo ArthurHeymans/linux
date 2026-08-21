@@ -707,7 +707,9 @@ struct MicCompletionState { queue: DeferredTransferQueue }
 #[repr(C, align(4))]
 struct PhyCalibrationReferences { coefficient_i: SharedU32, coefficient_q: SharedU32, scale_i: SharedU32, scale_q: SharedU32 }
 #[repr(C, align(4))]
-struct PhyCoreState { references: PhyCalibrationReferences, opaque_10: OpaqueBytes<0xc0> }
+struct PhyProfileState { state: SharedU8, opaque_01: SharedU8, profile: SharedU8, phase: SharedU8, opaque_04: OpaqueBytes<0x02>, channel: SharedU16, opaque_08: OpaqueBytes<0x05>, profile0_ready: SharedU8, opaque_0e: OpaqueBytes<0x02>, auxiliary_state: SharedU8, transition_gate: SharedU8, opaque_12: SharedU8, calibration_stage: SharedU8, profile0_state: SharedU8, profile1_ready: SharedU8, profile1_channel: SharedU16, opaque_18: OpaqueBytes<0x08>, reference_word: SharedU32, opaque_24: SharedU32 }
+#[repr(C, align(4))]
+struct PhyCoreState { references: PhyCalibrationReferences, profile_state: PhyProfileState, opaque_38: OpaqueBytes<0x98> }
 
 opaque_family!(
     /// Remaining PHY and unknown vendor-zeroed tail.
@@ -1515,6 +1517,19 @@ pub(crate) const fn phy_scale_i() -> DtcmAddress { phy_reference_field(core::mem
 pub(crate) const fn phy_scale_i_byte(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(phy_scale_i_byte_unchecked(index)) } else { None } }
 pub(crate) const fn phy_scale_i_byte_unchecked(index: usize) -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_i) + index) }
 pub(crate) const fn phy_scale_q() -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_q)) }
+pub(crate) const PHY_PROFILE_STATE: DtcmAddress = DtcmAddress::from_offset(0x994c);
+const fn phy_profile_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_PROFILE_STATE.offset() + offset) }
+pub(crate) const fn phy_profile() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile)) }
+pub(crate) const fn phy_phase() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, phase)) }
+pub(crate) const fn phy_channel() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, channel)) }
+pub const fn phy_profile0_ready() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile0_ready)) }
+pub const fn phy_auxiliary_state() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, auxiliary_state)) }
+pub(crate) const fn phy_transition_gate() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, transition_gate)) }
+pub(crate) const fn phy_calibration_stage() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, calibration_stage)) }
+pub(crate) const fn phy_profile0_state() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile0_state)) }
+pub(crate) const fn phy_profile1_ready() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile1_ready)) }
+pub(crate) const fn phy_profile1_channel() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile1_channel)) }
+pub(crate) const fn phy_reference_word() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, reference_word)) }
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
 
@@ -2338,9 +2353,22 @@ const _: () = {
     assert!(core::mem::offset_of!(PhyCalibrationReferences, coefficient_q) == 0x04);
     assert!(core::mem::offset_of!(PhyCalibrationReferences, scale_i) == 0x08);
     assert!(core::mem::offset_of!(PhyCalibrationReferences, scale_q) == 0x0c);
+    assert_type_layout!(PhyProfileState, 0x28, 4);
+    assert!(core::mem::offset_of!(PhyProfileState, profile) == 0x02);
+    assert!(core::mem::offset_of!(PhyProfileState, phase) == 0x03);
+    assert!(core::mem::offset_of!(PhyProfileState, channel) == 0x06);
+    assert!(core::mem::offset_of!(PhyProfileState, profile0_ready) == 0x0d);
+    assert!(core::mem::offset_of!(PhyProfileState, auxiliary_state) == 0x10);
+    assert!(core::mem::offset_of!(PhyProfileState, transition_gate) == 0x11);
+    assert!(core::mem::offset_of!(PhyProfileState, calibration_stage) == 0x13);
+    assert!(core::mem::offset_of!(PhyProfileState, profile0_state) == 0x14);
+    assert!(core::mem::offset_of!(PhyProfileState, profile1_ready) == 0x15);
+    assert!(core::mem::offset_of!(PhyProfileState, profile1_channel) == 0x16);
+    assert!(core::mem::offset_of!(PhyProfileState, reference_word) == 0x20);
     assert_type_layout!(PhyCoreState, 0xd0, 4);
     assert!(core::mem::offset_of!(PhyCoreState, references) == 0x00);
-    assert!(core::mem::offset_of!(PhyCoreState, opaque_10) == 0x10);
+    assert!(core::mem::offset_of!(PhyCoreState, profile_state) == 0x10);
+    assert!(core::mem::offset_of!(PhyCoreState, opaque_38) == 0x38);
     assert_type_layout!(PhyTail, 0x238, 4);
     assert_type_layout!(ResearchMargin, 0x3bc, 4);
     assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4);
@@ -2707,6 +2735,19 @@ mod tests {
         assert!(phy_scale_i_byte(4).is_none());
         assert_eq!(phy_scale_q().get(), 0x0400_9948);
         assert_eq!(phy_scale_q().get() + 4, 0x0400_994c);
+        assert_eq!(PHY_PROFILE_STATE.get(), 0x0400_994c);
+        assert_eq!(phy_profile().get(), 0x0400_994e);
+        assert_eq!(phy_phase().get(), 0x0400_994f);
+        assert_eq!(phy_channel().get(), 0x0400_9952);
+        assert_eq!(phy_profile0_ready().get(), 0x0400_9959);
+        assert_eq!(phy_auxiliary_state().get(), 0x0400_995c);
+        assert_eq!(phy_transition_gate().get(), 0x0400_995d);
+        assert_eq!(phy_calibration_stage().get(), 0x0400_995f);
+        assert_eq!(phy_profile0_state().get(), 0x0400_9960);
+        assert_eq!(phy_profile1_ready().get(), 0x0400_9961);
+        assert_eq!(phy_profile1_channel().get(), 0x0400_9962);
+        assert_eq!(phy_reference_word().get(), 0x0400_996c);
+        assert_eq!(phy_reference_word().get() + 8, 0x0400_9974);
     }
 
     #[test]

@@ -593,7 +593,7 @@ The previous Rust `register_structs!` definitions gave `HifSoftwareState` size `
 
 ```text
 0x0400993c..0x0400994c    four IQ reference coefficient/scale words; byte 0x9945 is independently observed
-0x0400994c...             shared PHY state root
+0x0400994c..0x04009974    typed PHY profile/channel/transition state
 0x04009974                channel frequency kHz
 0x0400998c                silicon variant / calibration family
 0x04009990,+0x9992        derived timing halfwords
@@ -2905,6 +2905,50 @@ packed    /tmp/xr819-phy-reference-layout.bin
 checks    /tmp/xr819-phy-reference-final-check.log
           08774d2e2a39a15976b0e6e31f0af39b5e346d80f6daf95f75a91227df25ba6c
 manifest  tools/phy-reference-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.28 PHY profile and channel state
+
+The next `0x28` bytes of `PhyCoreState` are now an exact shared layout:
+
+```text
+0x0400994c +0x00 u8 primary state
+           +0x02 u8 active profile
+           +0x03 u8 transition phase/status
+           +0x06 u16 selected channel
+           +0x0d u8 profile-0 readiness
+           +0x10 u8 auxiliary observation
+           +0x11 u8 transition gate
+           +0x13 u8 calibration stage
+           +0x14 u8 profile-0 state
+           +0x15 u8 profile-1 readiness
+           +0x16 u16 profile-1 channel
+           +0x20 u32 retained reference word
+0x04009974 end
+```
+
+Production PHY, configuration, scan, and startup-observation paths now derive
+these addresses from `dtcm.rs`. The standalone extension diagnostic retains one
+explicit profile literal and is recorded as an allowed diagnostic-only source.
+All volatile widths, branch order, and state-transition writes remain exact.
+
+`tools/check-phy-profile-layout.py` covers the complete block, rejects other
+production literals and synthesized base/stride forms, and pins 17 linked
+literal words plus 37 decoded literal-load xrefs. The complete ELF remains
+byte-identical to the qualified PHY-reference parent, so no hardware rerun is
+required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-phy-profile-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-phy-profile-final-check.log
+          2bdbd126bbaf833092e5f7a22fdcb297f538437eba6b56bce03f45c53a4f6819
+manifest  tools/phy-profile-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
