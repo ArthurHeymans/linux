@@ -200,7 +200,7 @@ static SCAN: SharedScan = SharedScan(UnsafeCell::new(ScanStorage::new()));
 #[cfg(target_arch = "arm")]
 fn set_vendor_scan_active(active: bool) {
     unsafe {
-        (0x0400_860c as *mut u8).write_volatile(u8::from(active));
+        crate::dtcm::shared_ptr::<u8>(crate::dtcm::vendor_scan_state()).write_volatile(u8::from(active));
         if active {
             crate::tx::set_scheduler_bits(1 << 10);
         } else {

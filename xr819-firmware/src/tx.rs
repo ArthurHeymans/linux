@@ -5694,7 +5694,7 @@ pub unsafe fn service_class6_probe_completion(context: u32) {
     unsafe {
         let header = ((context as usize + 0x1c) as *const u32).read_volatile();
         let frame_type = (header as *const u16).read_volatile() as u8;
-        if frame_type != 0x50 && (0x0400_860c as *const u8).read_volatile() != 0 {
+        if frame_type != 0x50 && crate::dtcm::shared_ptr::<u8>(crate::dtcm::vendor_scan_state()).read_volatile() != 0 {
             raise_scheduler_bits(1 << 10);
         }
     }

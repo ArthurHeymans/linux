@@ -512,12 +512,12 @@ opaque_family!(
     0x50
 );
 
-/// Deliberately opaque because the `0x68`-byte command-15 upload at `+0x00`
-/// and the `0x20`-byte channel-switch control view at `+0x64` overlap by four
-/// bytes. Two ordinary fields would falsely claim simultaneous ownership.
+/// Command-15 blob whose last four bytes overlap channel-switch control.
+/// Later bytes are shared by JOIN, scan, register-save, and TX-buffer state.
 #[repr(C, align(4))]
 struct CommandChannelSwitchOverlay {
-    storage: OpaqueBytes<0x84>,
+    upload_prefix: OpaqueBytes<0x64>, overlay_head: SharedU32, channel_switch_active: SharedU8, interface: SharedU8, opaque_6a: OpaqueBytes<0x02>, mode: SharedU8, countdown: SharedU8, channel: SharedU16,
+    join_mode: SharedU8, join_flags: SharedU8, saved_register_context: SharedU16, rate_configuration: SharedU32, scan_state: SharedU8, scan_flags: SharedU8, opaque_7a: OpaqueBytes<0x01>, tx_buffer_free_count: SharedU8, scan_word: SharedU32, tail_word: SharedU32,
 }
 
 opaque_family!(
@@ -1791,6 +1791,40 @@ const fn lmc_request_status(index: usize) -> Option<DtcmAddress> {
     } else { None }
 }
 
+const fn command_channel_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, command_channel_switch) + offset,
+    )
+}
+
+pub(crate) const fn saved_register_context() -> DtcmAddress {
+    command_channel_field(core::mem::offset_of!(
+        CommandChannelSwitchOverlay,
+        saved_register_context
+    ))
+}
+
+pub(crate) const fn vendor_scan_state() -> DtcmAddress {
+    command_channel_field(core::mem::offset_of!(CommandChannelSwitchOverlay, scan_state))
+}
+
+#[cfg(test)]
+const fn command_upload_start() -> DtcmAddress {
+    command_channel_field(core::mem::offset_of!(CommandChannelSwitchOverlay, upload_prefix))
+}
+#[cfg(test)]
+const fn channel_switch_active() -> DtcmAddress {
+    command_channel_field(core::mem::offset_of!(CommandChannelSwitchOverlay, channel_switch_active))
+}
+#[cfg(test)]
+const fn channel_switch_channel() -> DtcmAddress {
+    command_channel_field(core::mem::offset_of!(CommandChannelSwitchOverlay, channel))
+}
+#[cfg(test)]
+const fn command_overlay_tail() -> DtcmAddress {
+    command_channel_field(core::mem::offset_of!(CommandChannelSwitchOverlay, tail_word))
+}
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -1955,6 +1989,22 @@ const _: () = {
     assert_type_layout!(HostTxContexts, 0x2b20, 4);
     assert_type_layout!(PreCommandQuarantine, 0x50, 4);
     assert_type_layout!(CommandChannelSwitchOverlay, 0x84, 4);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, upload_prefix) == 0x00);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, overlay_head) == 0x64);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, channel_switch_active) == 0x68);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, interface) == 0x69);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, mode) == 0x6c);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, countdown) == 0x6d);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, channel) == 0x6e);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, join_mode) == 0x70);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, join_flags) == 0x71);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, saved_register_context) == 0x72);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, rate_configuration) == 0x74);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, scan_state) == 0x78);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, scan_flags) == 0x79);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, tx_buffer_free_count) == 0x7b);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, scan_word) == 0x7c);
+    assert!(core::mem::offset_of!(CommandChannelSwitchOverlay, tail_word) == 0x80);
     assert_type_layout!(LmcControlRoots, 0x180, 4);
     assert_type_layout!(HostContextAccounting, 0x18, 4);
     assert!(core::mem::offset_of!(HostContextAccounting, opaque_00) == 0x00);
@@ -2402,6 +2452,17 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn command_upload_and_channel_scan_overlay_addresses_are_exact() {
+        assert_eq!(command_upload_start().get(), 0x0400_8594);
+        assert_eq!(channel_switch_active().get(), 0x0400_85fc);
+        assert_eq!(saved_register_context().get(), 0x0400_8606);
+        assert_eq!(channel_switch_channel().get(), 0x0400_8602);
+        assert_eq!(vendor_scan_state().get(), 0x0400_860c);
+        assert_eq!(command_overlay_tail().get(), 0x0400_8614);
+        assert_eq!(command_overlay_tail().get() + 4, 0x0400_8618);
     }
 
     #[test]

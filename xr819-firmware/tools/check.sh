@@ -26,6 +26,7 @@ python3 tools/check-address-literals.py
 python3 tools/check-low-mac-pas-layout.py
 python3 tools/check-vif-layout.py
 python3 tools/check-host-context-layout.py
+python3 tools/check-command-channel-overlay.py
 python3 tools/check-link-sequence-layout.py
 python3 tools/check-join-scan-layout.py
 python3 tools/check-ba-lmc-pending-layout.py
@@ -42,6 +43,7 @@ python3 tools/check-dtcm-layout.py "$ELF" "$PACKED"
 python3 tools/check-low-mac-pas-layout.py "$ELF"
 python3 tools/check-vif-layout.py "$ELF"
 python3 tools/check-host-context-layout.py "$ELF"
+python3 tools/check-command-channel-overlay.py "$ELF"
 python3 tools/check-link-sequence-layout.py "$ELF"
 python3 tools/check-join-scan-layout.py "$ELF"
 python3 tools/check-ba-lmc-pending-layout.py "$ELF"
@@ -98,6 +100,15 @@ if [[ -n "${XR819_JOIN_SCAN_PARENT_ELF:-}" ]]; then
     "$XR819_JOIN_SCAN_PARENT_ELF" "$ELF"
 else
   echo "== JOIN/scan codegen gate skipped: set XR819_JOIN_SCAN_PARENT_ELF to the qualified BA/link/event ELF =="
+fi
+
+if [[ -n "${XR819_COMMAND_CHANNEL_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed command/channel parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/command-channel-codegen-manifest.json \
+    "$XR819_COMMAND_CHANNEL_PARENT_ELF" "$ELF"
+else
+  echo "== command/channel codegen gate skipped: set XR819_COMMAND_CHANNEL_PARENT_ELF to the qualified JOIN/scan ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then

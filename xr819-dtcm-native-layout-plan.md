@@ -2478,3 +2478,54 @@ manifest  tools/join-scan-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.19 Command upload and channel/JOIN/scan overlay
+
+The range `0x04008594..0x04008618` is now represented as one explicit overlay
+rather than an undifferentiated byte array. The WSM command-15 handler uploads
+`0x68` bytes at `0x04008594`; the final four uploaded bytes simultaneously form
+the head of the channel-switch control view at `0x040085f8`.
+
+The decoded tail is:
+
+```text
++0x64 channel-switch overlay head / uploaded blob tail
++0x68 channel-switch active
++0x69 interface
++0x6c mode
++0x6d countdown
++0x6e channel
++0x70 JOIN mode
++0x71 JOIN flags
++0x72 saved register context
++0x74 rate configuration
++0x78 scan state
++0x79 scan flags
++0x7b TX-buffer free-count overlay
++0x7c scan word
++0x80 tail word
+```
+
+The translated MAC register-save path and scan activity publication now derive
+`0x04008606` and `0x0400860c` from the typed layout. Their volatile widths and
+observation order remain unchanged. The whole object remains shared with
+retained command upload, channel-switch, JOIN, scan, register-save, and
+TX-buffer code; no safe complete-record reference is exposed.
+
+`tools/check-command-channel-overlay.py` rejects production literals and
+synthesized command/channel roots outside `dtcm.rs`, and pins five linked
+literals plus six decoded xrefs. The full ELF remains byte-identical to the
+qualified JOIN/scan parent, so no hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-command-channel-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-command-channel-final-check.log
+          6c43760f1b4fe15d34957055c0e5398b096511dc8ae265b44bf59c81497bcf7b
+manifest  tools/command-channel-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

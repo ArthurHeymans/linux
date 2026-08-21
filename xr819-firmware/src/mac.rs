@@ -424,7 +424,7 @@ unsafe fn save_register_context() {
         write_u32(crate::platform::mac_register(0x1408), read_u32(0x0400_207c));
         write_u32(
             crate::platform::mac_register(0x140c),
-            u32::from(read_u16(0x0400_8606)),
+            u32::from(read_u16(crate::dtcm::saved_register_context().get())),
         );
         write_u32(crate::platform::mac_register(0x1410), read_u32(0x0400_2080));
         write_u32(crate::platform::mac_register(0x1400), read_u32(0x0400_2084));
