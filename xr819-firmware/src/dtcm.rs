@@ -133,7 +133,9 @@ struct InitializedVendorImage {
     host_pas_ring: HostPasRing,
     initialized_low_mac_prefix: LowMacGlobalPrefix,
     mac_pipe_records: [MacPipeRecord; 4],
-    initialized_low_mac_tail: OpaqueBytes<0x6fc>,
+    pre_mac_beacon_state: OpaqueBytes<0x1b0>,
+    mac_beacon_state: MacBeaconState,
+    initialized_low_mac_tail: OpaqueBytes<0x50c>,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
@@ -186,6 +188,8 @@ struct LowMacGlobalPrefix { fifo_control: SharedU8, fifo_status: SharedU8, rate_
 struct MacPipeSlot { state_word: SharedU32, opaque_04: OpaqueBytes<0x08>, frame: SharedU32, auxiliary: SharedU32, command: SharedU32 }
 #[repr(C, align(4))]
 struct MacPipeRecord { current_slot: SharedU8, opaque_01: OpaqueBytes<0x02>, state: SharedU8, opaque_04: SharedU32, hardware_ring: SharedU32, slots: [MacPipeSlot; 4] }
+#[repr(C, align(4))]
+struct MacBeaconState { opaque_00: OpaqueBytes<0x08>, response_commands: [SharedU32; 2], opaque_10: OpaqueBytes<0x18>, state: SharedU32, secondary_command: SharedU32, control: SharedU32, selector: SharedU32, mode: SharedU8, opaque_39: OpaqueBytes<0x03>, completion_word: SharedU32 }
 #[repr(C, align(4))]
 struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
 #[repr(C, align(4))]
@@ -1667,6 +1671,15 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const MAC_BEACON_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_beacon_state));
+pub(crate) const MAC_BEACON_RESPONSE_COMMANDS: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, response_commands));
+pub(crate) const fn mac_beacon_response_command(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(MAC_BEACON_RESPONSE_COMMANDS.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const MAC_BEACON_CONTROL_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, state));
+pub(crate) const MAC_BEACON_SECONDARY_COMMAND: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, secondary_command));
+pub(crate) const MAC_BEACON_CONTROL: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, control));
+pub(crate) const MAC_BEACON_SELECTOR: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, selector));
+pub(crate) const MAC_BEACON_MODE: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, mode));
+pub(crate) const MAC_BEACON_COMPLETION_WORD: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, completion_word));
 pub(crate) const LOW_MAC_GLOBAL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix));
 pub(crate) const LOW_MAC_FIFO_STATUS: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, fifo_status));
 pub(crate) const LOW_MAC_LEGACY_MODE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode));
@@ -3141,7 +3154,17 @@ const _: () = {
     assert!(core::mem::offset_of!(MacPipeRecord, state) == 0x03);
     assert!(core::mem::offset_of!(MacPipeRecord, hardware_ring) == 0x08);
     assert!(core::mem::offset_of!(MacPipeRecord, slots) == 0x0c);
-    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x18d0);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_beacon_state) == 0x18d0);
+    assert!(core::mem::offset_of!(InitializedVendorImage, mac_beacon_state) == 0x1a80);
+    assert!(core::mem::size_of::<MacBeaconState>() == 0x40);
+    assert!(core::mem::offset_of!(MacBeaconState, response_commands) == 0x08);
+    assert!(core::mem::offset_of!(MacBeaconState, state) == 0x28);
+    assert!(core::mem::offset_of!(MacBeaconState, secondary_command) == 0x2c);
+    assert!(core::mem::offset_of!(MacBeaconState, control) == 0x30);
+    assert!(core::mem::offset_of!(MacBeaconState, selector) == 0x34);
+    assert!(core::mem::offset_of!(MacBeaconState, mode) == 0x38);
+    assert!(core::mem::offset_of!(MacBeaconState, completion_word) == 0x3c);
+    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x1ac0);
     assert!(
         core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) + 0x7ec == 0x1e6c
     );
@@ -3774,6 +3797,21 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_mac_beacon_state_addresses_are_exact() {
+        assert_eq!(MAC_BEACON_STATE.get(), 0x0400_1a80);
+        assert_eq!(mac_beacon_response_command(0).unwrap().get(), 0x0400_1a88);
+        assert_eq!(mac_beacon_response_command(1).unwrap().get(), 0x0400_1a8c);
+        assert!(mac_beacon_response_command(2).is_none());
+        assert_eq!(MAC_BEACON_CONTROL_STATE.get(), 0x0400_1aa8);
+        assert_eq!(MAC_BEACON_SECONDARY_COMMAND.get(), 0x0400_1aac);
+        assert_eq!(MAC_BEACON_CONTROL.get(), 0x0400_1ab0);
+        assert_eq!(MAC_BEACON_SELECTOR.get(), 0x0400_1ab4);
+        assert_eq!(MAC_BEACON_MODE.get(), 0x0400_1ab8);
+        assert_eq!(MAC_BEACON_COMPLETION_WORD.get(), 0x0400_1abc);
+        assert_eq!(MAC_BEACON_COMPLETION_WORD.get() + 4, 0x0400_1ac0);
     }
 
     #[test]

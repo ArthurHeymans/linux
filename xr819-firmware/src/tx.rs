@@ -248,7 +248,7 @@ fn publication_bisect_reached(reached: u8) -> bool {
     let configured = unsafe { *ACTIVE_PUBLICATION_BISECT_STAGE.0.get() };
     publication_bisect_matches(configured, reached)
 }
-const MAC_BEACON_STATE: u32 = 0x0400_1a80;
+const MAC_BEACON_STATE: u32 = crate::dtcm::MAC_BEACON_STATE.get() as u32;
 const MAC_BEACON_CONFIG: u32 = crate::dtcm::LOW_MAC_RUNTIME_ROOT.get() as u32;
 const MAC_BEACON_TIMER: u32 = crate::platform::mac_register(0x0e00) as u32;
 
@@ -2106,10 +2106,10 @@ pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, 
             write_u32(0x0400_1d50, read_u32(PIPE_RECORDS as usize + 0x14));
             let _ = backend.find_rx_frame_by_subtype(0x80);
             if read_u32(0x0400_1ae8) != 0 {
-                let control = read_u32(0x0400_1ab0) & !1;
-                write_u32(0x0400_1ab0, control);
+                let control = read_u32(crate::dtcm::MAC_BEACON_CONTROL.get()) & !1;
+                write_u32(crate::dtcm::MAC_BEACON_CONTROL.get(), control);
                 write_u32(crate::platform::mac_register(0x0a00), control);
-                write_u32(0x0400_1aa8, 1);
+                write_u32(crate::dtcm::MAC_BEACON_CONTROL_STATE.get(), 1);
             }
         }
         service_txp_pipe_tx_status(status, backend);
@@ -5589,14 +5589,14 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
     unsafe {
         match event_type {
             0x19 => {
-                let state = read_u32(0x0400_1aa8);
+                let state = read_u32(crate::dtcm::MAC_BEACON_CONTROL_STATE.get());
                 if state == 4 {
                     let pending = crate::dtcm::scheduler_pending_events().get() as usize;
                     write_u32(pending, read_u32(pending) | (1 << 24));
                 } else if state != 5 {
                     service_mac_beacon_event();
                 }
-                write_u32(0x0400_1aa8, 1);
+                write_u32(crate::dtcm::MAC_BEACON_CONTROL_STATE.get(), 1);
             }
             0x35 if read_u8(crate::dtcm::radio_timer_state().get()) == 2 => {
                 write_u8(crate::dtcm::radio_timer_state().get(), 4);
@@ -5628,7 +5628,7 @@ pub unsafe fn service_mac_sideband() {
 /// # Safety
 /// DTCM event state must be mapped.
 pub unsafe fn archive_mac_event(raw: u32) {
-    unsafe { (0x0400_1abc as *mut u32).write_volatile(raw) }
+    unsafe { (crate::dtcm::MAC_BEACON_COMPLETION_WORD.get() as *mut u32).write_volatile(raw) }
 }
 
 /// Vendor `0x9070` hardware-idle predicate used only by the event-drain tail.

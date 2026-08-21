@@ -516,7 +516,7 @@ pub unsafe fn program_scan_station_mode() {
     unsafe {
         // Final publication at 0xfa34 in `mac_apply_channel_and_vif_config`.
         write_u16(SHARED + 8, 0x1000);
-        write_u32(0x0400_1ab4, 0x0018_0180);
+        write_u32(crate::dtcm::MAC_BEACON_SELECTOR.get(), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
         write_u32(crate::platform::mac_register(0x0204), 0x0019_8000);
@@ -558,7 +558,7 @@ pub unsafe fn program_joined_station_mode() {
     unsafe {
         let mode = active_station_mode_word();
         write_u32(0x0400_1ae4, mode);
-        write_u32(0x0400_1ab4, 0x0018_0180);
+        write_u32(crate::dtcm::MAC_BEACON_SELECTOR.get(), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
         write_u32(crate::platform::mac_register(0x0204), 0x0019_8000);
@@ -738,11 +738,11 @@ pub unsafe fn begin_unjoined_scan_radio_stop() {
         let previous = crate::tx::disable_irq_fiq_save();
         write_u16(SHARED + 8, 0);
         write_u16(0x0400_1572, 0);
-        write_u32(0x0400_1ab0, 0);
-        write_u8(0x0400_1ab8, 4);
+        write_u32(crate::dtcm::MAC_BEACON_CONTROL.get(), 0);
+        write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 4);
         write_u32(crate::platform::mac_register(0x0a28), 0);
         write_u32(crate::platform::mac_register(0x0a00), 0x1030_0000);
-        write_u32(crate::platform::mac_register(0x0a04), read_u32(0x0400_1ab4));
+        write_u32(crate::platform::mac_register(0x0a04), read_u32(crate::dtcm::MAC_BEACON_SELECTOR.get()));
         for index in 0..32 {
             write_u32(
                 packet_ram::response_pointer(index),
@@ -861,10 +861,10 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u8(SHARED + 5, 0);
         write_u32(0x0400_18d0, 0);
         write_u32(0x0400_18d4, 0);
-        write_u8(0x0400_1ab8, 2);
+        write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 2);
         write_u32(SHARED + 0x10, 0);
         write_u32(SHARED + 0x14, 0);
-        for address in [0x0400_1aa8, 0x0400_1aac, 0x0400_1ab0, 0x0400_1ab4] {
+        for address in [crate::dtcm::MAC_BEACON_CONTROL_STATE.get(), crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get(), crate::dtcm::MAC_BEACON_CONTROL.get(), crate::dtcm::MAC_BEACON_SELECTOR.get()] {
             write_u32(address, 0);
         }
 
@@ -1089,10 +1089,10 @@ unsafe fn install_response_descriptors() {
         set_pipe_enabled(0x0c);
         let first = packet_offset(packet_ram::response_command(11));
         let second = packet_offset(packet_ram::response_command(12));
-        write_u32(0x0400_1a88, first);
-        write_u32(0x0400_1a8c, second);
-        write_u32(0x0400_1aac, first);
-        write_u32(0x0400_1ab0, second);
+        write_u32(crate::dtcm::MAC_BEACON_RESPONSE_COMMANDS.get(), first);
+        write_u32(crate::dtcm::MAC_BEACON_RESPONSE_COMMANDS.get() + 4, second);
+        write_u32(crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get(), first);
+        write_u32(crate::dtcm::MAC_BEACON_CONTROL.get(), second);
     }
 }
 
@@ -1135,7 +1135,7 @@ unsafe fn program_mode_registers() {
     let wide = mode & (1 << 18) != 0;
     let selector = if wide { 0x001c_0783 } else { 0x0018_0783 };
     unsafe {
-        write_u32(0x0400_1ab4, selector);
+        write_u32(crate::dtcm::MAC_BEACON_SELECTOR.get(), selector);
         write_u32(crate::platform::mac_register(0x0a04), selector);
         write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
         write_u32(

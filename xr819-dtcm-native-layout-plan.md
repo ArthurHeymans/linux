@@ -4315,3 +4315,28 @@ manifest  tools/low-mac-global-prefix-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.75 MAC beacon control state
+
+The `0x40` bytes at `0x04001a80..0x04001ac0` are now an exact
+`MacBeaconState`. It names two response-command words, the event/control state,
+secondary command, control and selector words, mode byte, and completion word.
+Unresolved prefix/interior bytes remain explicit opaque quarantine.
+
+MAC startup, station-mode programming, response-descriptor installation, TX
+status handling, beacon-event handling, and completion publication now derive
+these addresses from the physical layout. Existing volatile widths, event
+ordering, and raw state arithmetic are unchanged.
+`tools/check-mac-beacon-state-layout.py` pins four linked interior addresses and
+their complete decoded xref multiset. The complete ELF and packed image remain
+byte-identical to the qualified low-MAC-global-prefix parent, so no hardware
+rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-beacon-state-final-check.log
+          0721c7be2f2c085f2f8025ec2b6e7cf9ea81034883b9c6c39955fc1788232cff
+manifest  tools/mac-beacon-state-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
