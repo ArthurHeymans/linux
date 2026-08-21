@@ -154,7 +154,7 @@ const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get() a
 #[cfg(not(target_arch = "arm"))]
 const PIPE_RETRY_RANDOM_STATE: u32 = crate::dtcm::initialized_random_lfsr().get() as u32;
 const PIPE_RECORDS: u32 = crate::dtcm::LOW_MAC_GLOBAL.get() as u32;
-const CURRENT_PIPE: u32 = 0x0400_1f78;
+const CURRENT_PIPE: u32 = crate::dtcm::MAC_CURRENT_PIPE.get() as u32;
 const CURRENT_PIPE_RECORD: u32 = CURRENT_PIPE + 0x0c;
 const CURRENT_SLOT: u32 = CURRENT_PIPE + 0x10;
 const PIPE_IRQ_PENDING: u32 = crate::platform::mac_register(0x0e84) as u32;
@@ -164,7 +164,7 @@ const PIPE_QUANTUM: u32 = 0x0000_0fff;
 const PIPE_BUSY: u32 = PIPE_RECORDS + 7;
 const QUEUE_BACKOFF_TABLE: u32 = crate::dtcm::QUEUE_TO_ACCESS_CATEGORY.get() as u32; const ACCESS_CATEGORY_QUEUE_TABLE: u32 = crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32;
 const PIPE_STATUS_COUNTER: u32 = 0xfff0_1aa4;
-const PIPE_STATUS_ACCOUNTING: u32 = 0x0400_1f7c;
+const PIPE_STATUS_ACCOUNTING: u32 = crate::dtcm::MAC_STATUS_ACCOUNTING.get() as u32;
 const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
 // `txp_pipe_advance_slot` acknowledges with `-((0x1110 << pipe) + 0x10)`, which
 // is a different lane from the `0x100 << pipe` publication ownership mask.
@@ -4509,8 +4509,8 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 backend.link_set_state(link, 10);
             }
             let descriptor = read_u32(slot + 0x10);
-            write_u32(descriptor as usize, read_u32(0x0400_1f90));
-            write_u32(0x0400_1f90, descriptor);
+            write_u32(descriptor as usize, read_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()));
+            write_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get(), descriptor);
         }
 
         backend.rate_recovery_on_success(first_frame_node, status);
@@ -4611,7 +4611,7 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                         infallible_to_never(backend.invalid_link_assertion());
                     }
                 } else {
-                    let fifo = read_u32(0x0400_1f84) as usize;
+                    let fifo = read_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get()) as usize;
                     if read_u8(fifo + 2) == read_u8(fifo + 1) && link < 8 {
                         let entry = ba_table + usize::from(link) * 0x38;
                         write_u32(entry + 0x18, 0);
@@ -4703,7 +4703,7 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
                 !pipe_cursor_invariant_holds(packed),
             );
         }
-        write_u8(0x0400_1f8c + usize::from(pipe), 0);
+        write_u8(crate::dtcm::MAC_PIPE_EVENT_FLAGS.get() + usize::from(pipe), 0);
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 4 {
             dispatch_phy_command_3();
             write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), 2);
@@ -5026,13 +5026,13 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
         };
         write_u32(penalty, read_u32(penalty).wrapping_add(addition));
 
-        let parameter0 = read_u32(0x0400_1fc0);
+        let parameter0 = read_u32(crate::dtcm::MAC_ACCOUNTING_PARAMETER0.get());
         let evaluation_window = ((parameter0 >> 16) & 0xff).wrapping_mul(200);
         if completed < evaluation_window && read_u32(penalty) <= 0x400 {
             return;
         }
 
-        let parameter1 = read_u32(0x0400_1fc4);
+        let parameter1 = read_u32(crate::dtcm::MAC_ACCOUNTING_PARAMETER1.get());
         let weighted_penalty = read_u32(penalty).wrapping_mul(100);
         let weighted_total = short_retries.wrapping_mul(completed);
         let (mut next, minimum) = tala_reduction_at_decision(
@@ -5043,47 +5043,47 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
             (parameter0 >> 8) & 0xff,
         );
 
-        let sample_count = read_u32(0x0400_1f80);
-        let sample_divisor = read_u32(0x0400_1f7c);
+        let sample_count = read_u32(crate::dtcm::MAC_SAMPLE_COUNT.get());
+        let sample_divisor = read_u32(crate::dtcm::MAC_STATUS_ACCOUNTING.get());
         if sample_count.wrapping_add(sample_divisor) == 0 {
-            if read_u8(0x0400_1f79) != 0
-                && read_u16(0x0400_1fb4) < 50
+            if read_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1) != 0
+                && read_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get()) < 50
                 && read_u32(tries_total)
                     .wrapping_add(read_u32(success))
                     .wrapping_mul(80)
                     < read_u32(tries_total).wrapping_mul(100)
             {
-                write_u8(0x0400_1f79, 0);
+                write_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1, 0);
             }
         } else {
             let sample = sample_count.wrapping_mul(600) / sample_count.wrapping_add(sample_divisor);
             let average =
-                sample.wrapping_add(u32::from(read_u16(0x0400_1fb4)).wrapping_mul(4)) / 10;
-            write_u16(0x0400_1fb4, average as u16);
+                sample.wrapping_add(u32::from(read_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get())).wrapping_mul(4)) / 10;
+            write_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get(), average as u16);
             if average > 75 {
-                write_u8(0x0400_1f79, 1);
+                write_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1, 1);
             }
-            write_u32(0x0400_1f80, 0);
-            write_u32(0x0400_1f7c, 0);
+            write_u32(crate::dtcm::MAC_SAMPLE_COUNT.get(), 0);
+            write_u32(crate::dtcm::MAC_STATUS_ACCOUNTING.get(), 0);
         }
 
-        let control = read_u8(0x0400_1fbc);
+        let control = read_u8(crate::dtcm::MAC_SILICON_CONTROL.get());
         if weighted_total.wrapping_mul(parameter1 & 0xff) >> 1 < weighted_penalty {
             write_u8(crate::dtcm::TALA_ACCOUNTING.get() + interface, 0);
             if control & 2 == 0 {
-                write_u8(0x0400_1fbc, control | 1);
+                write_u8(crate::dtcm::MAC_SILICON_CONTROL.get(), control | 1);
             }
         } else {
             let streak_address = crate::dtcm::TALA_ACCOUNTING.get() + interface;
             let streak = read_u8(streak_address).wrapping_add(1);
             write_u8(streak_address, streak);
             if ((parameter0 >> 24) & 0x0f) <= u32::from(streak) {
-                write_u8(0x0400_1f79, 1);
-                let average = read_u16(0x0400_1fb4);
-                write_u16(0x0400_1fb4, average.wrapping_sub(average >> 5));
+                write_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1, 1);
+                let average = read_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get());
+                write_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get(), average.wrapping_sub(average >> 5));
                 next = next.wrapping_add(1) & 0xff;
                 if control & 2 != 0 {
-                    write_u8(0x0400_1fbc, control | 1);
+                    write_u8(crate::dtcm::MAC_SILICON_CONTROL.get(), control | 1);
                 }
             }
         }

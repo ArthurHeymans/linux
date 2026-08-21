@@ -138,7 +138,8 @@ struct InitializedVendorImage {
     mac_wake_runtime_state: MacWakeRuntimeState,
     pre_mac_phy_command_state: OpaqueBytes<0x208>,
     mac_phy_command_state: MacPhyCommandState,
-    initialized_low_mac_tail: OpaqueBytes<0x270>,
+    pre_mac_runtime_accounting: OpaqueBytes<0x21c>,
+    mac_runtime_accounting: MacRuntimeAccountingState,
     scheduler_exclusion_state: SchedulerExclusionState,
     scheduler_event_island: SchedulerEventIsland,
     initialized_tail: OpaqueBytes<0x60>,
@@ -197,6 +198,12 @@ struct MacBeaconState { opaque_00: OpaqueBytes<0x08>, response_commands: [Shared
 struct MacWakeRuntimeState { opaque_00: OpaqueBytes<0x08>, timer: TimerEntry, phy_state: SharedU8, transition_pending: SharedU8, restore_pending: SharedU8, opaque_1f: SharedU8, opaque_20: SharedU32, mode: SharedU32, control: SharedU32, retry_rate_map: [SharedU8; 22], opaque_42: OpaqueBytes<0x02>, edca_slot_timing: SharedU32 }
 #[repr(C, align(4))]
 struct MacPhyCommandState { opaque_00: OpaqueBytes<0x02>, radio_stop_state: SharedU8, opaque_03: SharedU8, sideband_capture: SharedU32, timer: TimerEntry, operation_state: SharedU32, operation_command: SharedU8, opaque_21: OpaqueBytes<0x07>, operation_output_state: SharedU8, opaque_29: OpaqueBytes<0x03>, operation_timeout: SharedU32, dispatch_command: [SharedU8; 8], dispatch_output_state: SharedU8, dispatch_output_flags: SharedU8, opaque_3a: OpaqueBytes<0x02>, dispatch_output_timeout: SharedU32, completion_status: SharedU32, opaque_44: SharedU32, interface: SharedU8, opaque_49: OpaqueBytes<0x03> }
+#[repr(C, align(4))]
+struct SoftwareRecordNode { next: SharedU32, packet_record: SharedU32 }
+#[repr(C, align(4))]
+struct SoftwareRecordFreeList { head: SharedU32, nodes: [SoftwareRecordNode; 4] }
+#[repr(C, align(4))]
+struct MacRuntimeAccountingState { current_pipe: SharedU32, status_accounting: SharedU32, sample_count: SharedU32, current_pipe_record: SharedU32, current_slot: SharedU32, pipe_event_flags: [SharedU8; 4], software_records: SoftwareRecordFreeList, average: SharedU16, opaque_3e: OpaqueBytes<0x06>, silicon_control: SharedU8, opaque_45: OpaqueBytes<0x03>, parameter0: SharedU32, parameter1: SharedU32, opaque_50: SharedU32 }
 #[repr(C, align(4))]
 struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion: SharedU32 }
 #[repr(C, align(4))]
@@ -1678,6 +1685,18 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const MAC_RUNTIME_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_runtime_accounting));
+pub(crate) const MAC_CURRENT_PIPE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_pipe));
+pub(crate) const MAC_STATUS_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, status_accounting));
+pub(crate) const MAC_SAMPLE_COUNT: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, sample_count));
+pub(crate) const MAC_CURRENT_PIPE_RECORD: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_pipe_record));
+pub(crate) const MAC_CURRENT_SLOT: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_slot));
+pub(crate) const MAC_PIPE_EVENT_FLAGS: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, pipe_event_flags));
+pub(crate) const MAC_SOFTWARE_RECORDS: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, software_records));
+pub(crate) const MAC_ACCOUNTING_AVERAGE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, average));
+pub(crate) const MAC_SILICON_CONTROL: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, silicon_control));
+pub(crate) const MAC_ACCOUNTING_PARAMETER0: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, parameter0));
+pub(crate) const MAC_ACCOUNTING_PARAMETER1: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, parameter1));
 pub(crate) const MAC_PHY_COMMAND_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_phy_command_state));
 pub(crate) const MAC_RADIO_STOP_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, radio_stop_state));
 pub(crate) const MAC_SIDEBAND_CAPTURE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, sideband_capture));
@@ -3218,7 +3237,21 @@ const _: () = {
     assert!(core::mem::offset_of!(MacPhyCommandState, dispatch_output_timeout) == 0x3c);
     assert!(core::mem::offset_of!(MacPhyCommandState, completion_status) == 0x40);
     assert!(core::mem::offset_of!(MacPhyCommandState, interface) == 0x48);
-    assert!(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_tail) == 0x1d5c);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_runtime_accounting) == 0x1d5c);
+    assert!(core::mem::offset_of!(InitializedVendorImage, mac_runtime_accounting) == 0x1f78);
+    assert!(core::mem::size_of::<SoftwareRecordNode>() == 0x08);
+    assert!(core::mem::size_of::<SoftwareRecordFreeList>() == 0x24);
+    assert!(core::mem::offset_of!(SoftwareRecordFreeList, nodes) == 0x04);
+    assert!(core::mem::size_of::<MacRuntimeAccountingState>() == 0x54);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, status_accounting) == 0x04);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, sample_count) == 0x08);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, current_pipe_record) == 0x0c);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, pipe_event_flags) == 0x14);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, software_records) == 0x18);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, average) == 0x3c);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, silicon_control) == 0x44);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, parameter0) == 0x48);
+    assert!(core::mem::offset_of!(MacRuntimeAccountingState, parameter1) == 0x4c);
     assert!(
         core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix) + 0x7ec == 0x1e6c
     );
@@ -3851,6 +3884,23 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_mac_runtime_accounting_addresses_are_exact() {
+        assert_eq!(MAC_RUNTIME_ACCOUNTING.get(), 0x0400_1f78);
+        assert_eq!(MAC_CURRENT_PIPE.get(), 0x0400_1f78);
+        assert_eq!(MAC_STATUS_ACCOUNTING.get(), 0x0400_1f7c);
+        assert_eq!(MAC_SAMPLE_COUNT.get(), 0x0400_1f80);
+        assert_eq!(MAC_CURRENT_PIPE_RECORD.get(), 0x0400_1f84);
+        assert_eq!(MAC_CURRENT_SLOT.get(), 0x0400_1f88);
+        assert_eq!(MAC_PIPE_EVENT_FLAGS.get(), 0x0400_1f8c);
+        assert_eq!(MAC_SOFTWARE_RECORDS.get(), 0x0400_1f90);
+        assert_eq!(MAC_ACCOUNTING_AVERAGE.get(), 0x0400_1fb4);
+        assert_eq!(MAC_SILICON_CONTROL.get(), 0x0400_1fbc);
+        assert_eq!(MAC_ACCOUNTING_PARAMETER0.get(), 0x0400_1fc0);
+        assert_eq!(MAC_ACCOUNTING_PARAMETER1.get(), 0x0400_1fc4);
+        assert_eq!(MAC_RUNTIME_ACCOUNTING.get() + 0x54, 0x0400_1fcc);
     }
 
     #[test]

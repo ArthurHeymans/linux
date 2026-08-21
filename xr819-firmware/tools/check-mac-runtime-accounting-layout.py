@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-evidence gates for scheduler/event/timer and adjacent PHY state.
+"""Drift-evidence gates for initialized MAC runtime accounting.
 
 The source check covers production code in the project's Rust, Python, shell,
 C/C++, assembly, linker-script, build, and TOML files. Individual Rust items
@@ -21,8 +21,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEDULER_EVENT_RANGE = (0x04001FCC, 0x04002018)
-SYNTHESIZED = {0x1FCC, 0x1FD0, 0x1FD4, 0x1FD8, 0x1FE6, 0x1FF0, 0x1FF4, 0x1FFC, 0x2014, 0x2018}
+MAC_RUNTIME_ACCOUNTING_RANGE = (0x04001F78, 0x04001FCC)
+SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx",
@@ -31,52 +31,30 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
-    "tools/check-host-context-layout.py",
-    "tools/check-link-sequence-layout.py",
-    "tools/check-ba-lmc-pending-layout.py",
-    "tools/check-ba-session-layout.py",
-    "tools/check-ba-link-event-layout.py",
-    "tools/check-join-scan-layout.py",
-    "tools/check-command-channel-overlay.py",
-    "tools/check-lmc-control-layout.py",
-    "tools/check-peer-pipe-layout.py",
     "tools/check-mac-runtime-accounting-layout.py",
-    "tools/check-scheduler-event-layout.py",
 }
-ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {
-    "src/bin/hif_extension_probe.rs": {0x04001FF0, 0x04002000, 0x04002004},
-    "tools/test-pack-sectioned-elf.py": {0x04002000},
-}
+ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
-    "SCHEDULER_EVENT_BASE",
-    "SCHEDULER_TIMER_HEAD",
+    "MAC_RUNTIME_ACCOUNTING_BASE",
+    "MAC_SOFTWARE_RECORDS_BASE",
+    "MAC_ACCOUNTING_PARAMETER_BASE",
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04001FCC: 3, 0x04001FD4: 5, 0x04001FD8: 1, 0x04001FE6: 1,
-     0x04001FF0: 2, 0x04001FF4: 1, 0x04001FFC: 1, 0x04002014: 2}
-)
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
-    {
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001FCC): 1,
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04001FD4): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx21program_pipe_eligible', 0x04001FCC): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21start_scheduler_timer', 0x04002014): 3,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx22cancel_scheduler_timer', 0x04001FD4): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27claim_scheduler_mask_atomic', 0x04001FD4): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04002014): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy22prepare_rf_mode0_stage', 0x04001FF0): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25finish_channel_transition', 0x04001FD8): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25program_all_tx_gain_slots', 0x04001FF0): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy29initialize_mac_software_state', 0x04001FE6): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy29initialize_mac_software_state', 0x04001FFC): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x04001FF4): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware8platform19scheduler_event_irq', 0x04001FD4): 1,
-        ('rust_main', 0x04001FCC): 6,
-        ('xr819_raise_scheduler_bits', 0x04001FD4): 1,
-    }
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
+    0x04001F78: 7,
+    0x04001F84: 1,
+    0x04001F90: 1,
+    0x04001FBC: 6,
+})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
+    ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_', 0x04001F84): 2,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26enter_mac_fatal_quiescence', 0x04001F78): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001F78): 14,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001FBC): 8,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25initialize_mac_core_mode0', 0x04001FBC): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware8platform18prepare_packet_dma', 0x04001F90): 1,
+})
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:
@@ -199,7 +177,7 @@ def production_code(relative: str, code: str) -> str:
 
 
 def in_family(value: int) -> bool:
-    return SCHEDULER_EVENT_RANGE[0] <= value < SCHEDULER_EVENT_RANGE[1]
+    return MAC_RUNTIME_ACCOUNTING_RANGE[0] <= value < MAC_RUNTIME_ACCOUNTING_RANGE[1]
 
 
 def check_source() -> None:
@@ -221,14 +199,14 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if (in_family(value) or value in SYNTHESIZED) and value not in ALLOWED_SOURCE_LITERALS.get(relative, set()):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: scheduler-event literal {match.group()} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: MAC-runtime-accounting literal {match.group()} is outside dtcm.rs")
         for form in FORBIDDEN_FORMS:
             for match in re.finditer(rf"\b{re.escape(form)}\b", code):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: synthesized scheduler-event form {form} is outside dtcm.rs")
+                failures.append(f"{relative}:{line}: synthesized MAC-runtime-accounting form {form} is outside dtcm.rs")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"SCHEDULER EVENT SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"MAC RUNTIME ACCOUNTING SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -299,9 +277,9 @@ def check_elf(path: Path, dump: bool) -> None:
             f"extra={dict(xrefs - ALLOWED_DECODED_XREFS)!r} actual={dict(xrefs)!r}"
         )
     if failures:
-        raise SystemExit("SCHEDULER EVENT LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
+        raise SystemExit("MAC RUNTIME ACCOUNTING LINKED DRIFT GATE FAILED\n" + "\n".join(failures))
     print(
-        "SCHEDULER EVENT LINKED DRIFT-EVIDENCE GATE PASSED "
+        "MAC RUNTIME ACCOUNTING LINKED DRIFT-EVIDENCE GATE PASSED "
         f"literals={sum(literals.values())} decoded_xrefs={sum(xrefs.values())}"
     )
 
@@ -320,4 +298,4 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"scheduler-event drift gate failed: {error}")
+        raise SystemExit(f"MAC-runtime-accounting drift gate failed: {error}")

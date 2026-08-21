@@ -4393,3 +4393,30 @@ manifest  tools/mac-phy-command-state-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.78 MAC runtime accounting state
+
+The final initialized-image bytes at `0x04001f78..0x04001fcc` are now an exact
+`MacRuntimeAccountingState`. It names the current-pipe word and overlapping
+sample flag, status/sample counters, current record and slot, four pipe-event
+bytes, the packet software-record free list, rolling average, silicon-control
+byte, and two accounting parameters.
+
+The free list is modeled physically as one head word followed by four
+`next`/packet-record node pairs, matching the retained overlapping initialization
+loop. Platform DMA setup, TX completion/recycling, pipe events, TALA accounting,
+and PHY silicon-mode setup now derive these addresses from the initialized-image
+layout. Existing list publication, volatile widths, wrapping counters, and
+unchecked arithmetic remain unchanged. `tools/check-mac-runtime-accounting-layout.py`
+pins four linked addresses and the complete decoded xref multiset. The complete
+ELF and packed image remain byte-identical to the qualified MAC-PHY-command-state
+parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-runtime-accounting-final-check.log
+          db227a43c82a125d4bf25d100afbba58e612927af4807fa1aac062d8b815cc05
+manifest  tools/mac-runtime-accounting-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

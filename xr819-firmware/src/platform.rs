@@ -743,9 +743,9 @@ pub fn prepare_packet_dma() {
 
     // Vendor `0xf6 -> 0x4c6`: four software-owned packet-RAM records.
     // The final record terminates the free list rather than wrapping.
-    register32(0x0400_1f90).set(0x0400_1f94);
+    register32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()).set(crate::dtcm::MAC_SOFTWARE_RECORDS.get() as u32 + 4);
     for index in 0..4 {
-        let record = 0x0400_1f90 + index * 8;
+        let record = crate::dtcm::MAC_SOFTWARE_RECORDS.get() + index * 8;
         register32(record + 4).set(if index == 3 {
             0
         } else {

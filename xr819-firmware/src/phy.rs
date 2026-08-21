@@ -4490,7 +4490,7 @@ pub unsafe fn initialize_mac_core_mode0() {
 
     unsafe {
         (0x0aba_805c as *mut u32).write_volatile(0x2708_2026);
-        let silicon_mode = (0x0400_1fbc as *const u8).read_volatile();
+        let silicon_mode = (crate::dtcm::MAC_SILICON_CONTROL.get() as *const u8).read_volatile();
         let timing = if silicon_mode == 2 {
             0x03a0_00a0
         } else {

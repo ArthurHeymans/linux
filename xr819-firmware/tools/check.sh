@@ -55,6 +55,7 @@ python3 tools/check-low-mac-global-prefix-layout.py
 python3 tools/check-mac-beacon-state-layout.py
 python3 tools/check-mac-wake-runtime-layout.py
 python3 tools/check-mac-phy-command-state-layout.py
+python3 tools/check-mac-runtime-accounting-layout.py
 python3 tools/check-phy-reference-layout.py
 python3 tools/check-phy-profile-layout.py
 python3 tools/check-phy-measurement-layout.py
@@ -114,6 +115,7 @@ python3 tools/check-low-mac-global-prefix-layout.py "$ELF"
 python3 tools/check-mac-beacon-state-layout.py "$ELF"
 python3 tools/check-mac-wake-runtime-layout.py "$ELF"
 python3 tools/check-mac-phy-command-state-layout.py "$ELF"
+python3 tools/check-mac-runtime-accounting-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"
 python3 tools/check-phy-profile-layout.py "$ELF"
 python3 tools/check-phy-measurement-layout.py "$ELF"
@@ -571,6 +573,15 @@ if [[ -n "${XR819_MAC_PHY_COMMAND_STATE_PARENT_ELF:-}" ]]; then
     "$XR819_MAC_PHY_COMMAND_STATE_PARENT_ELF" "$ELF"
 else
   echo "== MAC-PHY-command-state codegen gate skipped: set XR819_MAC_PHY_COMMAND_STATE_PARENT_ELF to the qualified MAC-wake-runtime ELF =="
+fi
+
+if [[ -n "${XR819_MAC_RUNTIME_ACCOUNTING_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed MAC-runtime-accounting parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/mac-runtime-accounting-codegen-manifest.json \
+    "$XR819_MAC_RUNTIME_ACCOUNTING_PARENT_ELF" "$ELF"
+else
+  echo "== MAC-runtime-accounting codegen gate skipped: set XR819_MAC_RUNTIME_ACCOUNTING_PARENT_ELF to the qualified MAC-PHY-command-state ELF =="
 fi
 
 if [[ -n "${XR819_B6_ELF:-}" ]]; then
