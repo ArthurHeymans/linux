@@ -583,7 +583,7 @@ pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
             u32::from(u16::from_le_bytes([bssid[4], bssid[5]])),
         );
         write_u32(crate::platform::mac_register(0x0044), 0x101);
-        write_u16(0x0400_8ae0, 3);
+        write_u16(crate::dtcm::mac_bssid_mode().get(), 3);
     }
 }
 

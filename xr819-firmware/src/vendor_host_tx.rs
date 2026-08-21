@@ -391,15 +391,15 @@ pub unsafe fn enqueue_post_crypto(retained: &mut RetainedHostTx) -> Result<(), P
 
     let previous = unsafe { crate::tx::disable_irq_fiq_save() };
     unsafe {
-        const PENDING: u32 = 0x0400_8ad8;
-        let tail = read_live_u32(PENDING + 4);
+        let (pending_head, pending_tail) = (crate::dtcm::pending_tx_head().get() as u32, crate::dtcm::pending_tx_tail().get() as u32);
+        let tail = read_live_u32(pending_tail);
         write_host_u32(context.intrusive_next(), 0);
         if tail == 0 {
-            write_live_u32(PENDING, context.raw());
+            write_live_u32(pending_head, context.raw());
         } else {
             write_context_link(tail, context.raw());
         }
-        write_live_u32(PENDING + 4, context.raw());
+        write_live_u32(pending_tail, context.raw());
         write_host_u32(context.ownership_bits(), read_host_u32(context.ownership_bits()) | 0x20);
         if read_host_u8(context.more()) == 0 {
             const SCHEDULER_EVENTS: u32 = 0x0400_1fd4;
@@ -419,9 +419,9 @@ unsafe fn remove_pending_context(
     _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     context: HostContextAddress,
 ) -> Result<(), CancelError> {
-    const PENDING: u32 = 0x0400_8ad8;
+    let (pending_head, pending_tail) = (crate::dtcm::pending_tx_head().get() as u32, crate::dtcm::pending_tx_tail().get() as u32);
     let mut prior = 0_u32;
-    let mut current = unsafe { read_live_u32(PENDING) };
+    let mut current = unsafe { read_live_u32(pending_head) };
     while current != 0 && current != context.raw() {
         prior = current;
         current = unsafe { read_context_link(current) };
@@ -432,12 +432,12 @@ unsafe fn remove_pending_context(
     let next = unsafe { read_context_link(current) };
     unsafe {
         if prior == 0 {
-            write_live_u32(PENDING, next);
+            write_live_u32(pending_head, next);
         } else {
             write_context_link(prior, next);
         }
-        if read_live_u32(PENDING + 4) == current {
-            write_live_u32(PENDING + 4, prior);
+        if read_live_u32(pending_tail) == current {
+            write_live_u32(pending_tail, prior);
         }
         write_context_link(current, 0);
     }

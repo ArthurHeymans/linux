@@ -635,7 +635,7 @@ struct VolatileRadioOwnerIo;
 #[cfg(target_arch = "arm")]
 impl RadioOwnerIo for VolatileRadioOwnerIo {
     #[inline(always)]
-    fn read_owner(&mut self) -> u32 { read_u32(0x0400_8b20) }
+    fn read_owner(&mut self) -> u32 { read_u32(crate::dtcm::radio_owner().get()) }
 
     #[inline(always)]
     fn write_owner(&mut self, address: usize, value: u32) {
@@ -650,9 +650,9 @@ fn publish_radio_owner_with_io<I: RadioOwnerIo>(owner: u32, io: &mut I) -> bool 
     if current_owner != 0 && current_owner != owner {
         return false;
     }
-    io.write_owner(0x0400_8b20, owner);
-    io.write_owner(0x0400_8b24, 0);
-    io.write_owner(0x0400_8b2c, 0);
+    io.write_owner(crate::dtcm::radio_owner().get(), owner);
+    io.write_owner(crate::dtcm::radio_wait_head().get(), 0);
+    io.write_owner(crate::dtcm::deferred_radio_owner().get(), 0);
     true
 }
 
@@ -774,8 +774,8 @@ pub unsafe fn teardown(interface: u8) -> bool {
     deactivate_record(record);
     let owner = record.radio_owner().get() as u32;
     unsafe {
-        if read_u32(0x0400_8b20) == owner { write_u32(0x0400_8b20, 0); }
-        if read_u32(0x0400_8b2c) == owner { write_u32(0x0400_8b2c, 0); }
+        let radio_owner = crate::dtcm::radio_owner().get(); if read_u32(radio_owner) == owner { write_u32(radio_owner, 0); }
+        let deferred_owner = crate::dtcm::deferred_radio_owner().get(); if read_u32(deferred_owner) == owner { write_u32(deferred_owner, 0); }
     }
     publish_teardown_pas_with_io(interface, !any_active(), &mut VolatilePasOperationIo);
     true

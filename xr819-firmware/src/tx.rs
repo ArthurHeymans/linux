@@ -4305,8 +4305,8 @@ pub trait BaCompletionEffects {
     fn find_pipe_by_mac_upper(&mut self, mac_upper: u32) -> Option<u32>;
 }
 
-fn lmc_message_address(index: u8) -> u32 {
-    (0x0400_8bb8_usize + usize::from(index) * 0x2c) as u32
+#[cfg(test)] fn lmc_message_address(index: u8) -> u32 {
+    crate::dtcm::lmc_message_unchecked(usize::from(index)).raw()
 }
 
 fn lmc_vif_address(interface: usize) -> usize {
@@ -4325,19 +4325,19 @@ fn infallible_to_never(value: core::convert::Infallible) -> ! {
 /// # Safety
 /// FIQ/IRQ exclusion equivalent to the vendor save/restore pair must be held,
 /// and the message ring at `0x04008ad8` must be initialized.
-pub unsafe fn allocate_lmc_message<F>(allocation_failed: F) -> Option<u32>
+pub unsafe fn allocate_lmc_message<F>(allocation_failed: F) -> Option<crate::dtcm::LmcMessageAddress>
 where
     F: FnOnce(),
 {
     unsafe {
-        let state = 0x0400_8ad8_usize;
-        let producer = read_u8(state + 0xd3).wrapping_add(1) & 0x0f;
-        if read_u8(state + 0xd4) == producer {
+        let producer_address = crate::dtcm::lmc_message_producer().get();
+        let producer = read_u8(producer_address).wrapping_add(1) & 0x0f;
+        if read_u8(crate::dtcm::lmc_message_consumer().get()) == producer {
             allocation_failed();
             return None;
         }
-        write_u8(state + 0xd3, producer);
-        Some(lmc_message_address(producer))
+        write_u8(producer_address, producer);
+        Some(crate::dtcm::lmc_message_unchecked(usize::from(producer)))
     }
 }
 
@@ -4784,17 +4784,17 @@ pub unsafe fn release_lmc_radio_scheduler<B: RadioCompletionEffects>(owner: u32,
     unsafe {
         let owner_address = owner as usize;
         let interface = usize::from(read_u8(owner_address + 0x0d));
-        let released_vif = lmc_vif_address(interface);
+        let released_vif = lmc_vif_address(interface); let deferred_owner = crate::dtcm::deferred_radio_owner().get(); let radio_owner = crate::dtcm::radio_owner().get();
         if read_u16(released_vif + 0x30) != 0 {
-            write_u32(0x0400_8b2c, owner);
+            write_u32(deferred_owner, owner);
             return;
         }
-        write_u32(0x0400_8b2c, 0);
-        if read_u32(0x0400_8b20) != owner {
+        write_u32(deferred_owner, 0);
+        if read_u32(radio_owner) != owner {
             infallible_to_never(backend.radio_owner_mismatch());
         }
 
-        write_u32(0x0400_8b20, 0);
+        write_u32(radio_owner, 0);
         write_u8(owner_address + 0x22, 0);
         write_u8(
             crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get(),
@@ -4806,18 +4806,18 @@ pub unsafe fn release_lmc_radio_scheduler<B: RadioCompletionEffects>(owner: u32,
         for interface in 0..3_usize {
             let vif = lmc_vif_address(interface);
             if read_u16(vif + 0x52) == read_u16(released_vif + 0x42) && read_u8(vif + 0x66) == 2 {
-                write_u32(0x0400_8b20, (vif + 0x44) as u32);
+                write_u32(radio_owner, (vif + 0x44) as u32);
                 write_u8(vif + 0x66, 3);
                 return;
             }
         }
 
-        let pending = read_u32(0x0400_8b24);
+        let radio_wait_head = crate::dtcm::radio_wait_head().get(); let pending = read_u32(radio_wait_head);
         if pending == 0 {
             return;
         }
-        write_u32(0x0400_8b20, pending);
-        write_u32(0x0400_8b24, read_u32(pending as usize + 4));
+        write_u32(radio_owner, pending);
+        write_u32(radio_wait_head, read_u32(pending as usize + 4));
         write_u8(pending as usize + 0x22, 3);
         backend.tbtt_post_process(read_u8(pending as usize + 0x0d));
     }
@@ -5166,23 +5166,23 @@ where
                     write_u32(stats, read_u32(stats).wrapping_add(1));
                     if backend.completion_messages_enabled()
                         && (flags >> 20) & 3 != 0
-                        && read_u8(0x0400_8ba8) & 1 != 0
+                        && read_u8(crate::dtcm::lmc_message_control().get()) & 1 != 0
                     {
                         if let Some(message) =
                             allocate_lmc_message(|| backend.message_allocation_failed())
                         {
-                            let message = message as usize;
-                            write_u8(message, 7);
-                            write_u8(message + 0x28, interface as u8);
-                            write_u8(message + 4, read_u8(context.tid_address()));
-                            write_u8(message + 0x29, read_u8(context.completion_byte_6c_address()));
+                            // The allocator returns the typed record selected by the producer cursor.
+                            write_u8(message.kind().get(), 7);
+                            write_u8(message.interface().get(), interface as u8);
+                            write_u8(message.completion_tid().get(), read_u8(context.tid_address()));
+                            write_u8(message.completion_state().get(), read_u8(context.completion_byte_6c_address()));
                             let queue = usize::from(read_u8(context.access_category_address()));
-                            write_u8(message + 5, read_u8(0x0400_02e0 + queue));
-                            write_u16(message + 6, read_u16(context.sequence_number_address()) << 4);
+                            write_u8(message.completion_queue().get(), read_u8(0x0400_02e0 + queue));
+                            write_u16(message.completion_sequence().get(), read_u16(context.sequence_number_address()) << 4);
                             let header = read_u32(context.frame_address_address()) as usize;
-                            write_u16(message + 8, read_u16(header + 4));
-                            write_u16(message + 0x0a, read_u16(header + 6));
-                            write_u16(message + 0x0c, read_u16(header + 8));
+                            write_u16(message.completion_mac_word(0).unwrap().get(), read_u16(header + 4));
+                            write_u16(message.completion_mac_word(1).unwrap().get(), read_u16(header + 6));
+                            write_u16(message.completion_mac_word(2).unwrap().get(), read_u16(header + 8));
                             raise_scheduler_bits(1 << 22);
                         }
                     }
@@ -5225,7 +5225,7 @@ where
 
         if active_pas_contexts() == 0 && backend.completion_idle_policy_enabled() {
             start_phy_operation_7(backend);
-            let owner = read_u32(0x0400_8b2c);
+            let owner = read_u32(crate::dtcm::deferred_radio_owner().get());
             if owner != 0 {
                 release_lmc_radio_scheduler(owner, backend);
             }
@@ -5471,11 +5471,11 @@ where
             set_active_internal_contexts(active_internal_contexts().wrapping_sub(1));
         }
 
-        let pending_queue = 0x0400_8ad8 as *mut u8;
-        if pending_queue.add(0x0b).read_volatile() != 0 {
+        let pending_service = crate::dtcm::shared_ptr::<u8>(crate::dtcm::pending_service_needed());
+        if pending_service.read_volatile() != 0 {
             service_pending_queue();
         }
-        let control = pending_queue.add(0xd0);
+        let control = crate::dtcm::shared_ptr::<u8>(crate::dtcm::lmc_message_control());
         let value = control.read_volatile();
         if value & 4 != 0 {
             control.write_volatile(value & 0xfb);
@@ -5598,8 +5598,8 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
                 }
                 write_u32(0x0400_1aa8, 1);
             }
-            0x35 if read_u8(0x0400_8b95) == 2 => {
-                write_u8(0x0400_8b95, 4);
+            0x35 if read_u8(crate::dtcm::radio_timer_state().get()) == 2 => {
+                write_u8(crate::dtcm::radio_timer_state().get(), 4);
                 let pending = 0x0400_1fd4_usize;
                 write_u32(pending, read_u32(pending) | (1 << 31));
             }
@@ -6735,16 +6735,16 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
             return Err(ProbeBuildError::InvalidContextPointer);
         };
         let previous = mask_irq_fiq_terminal();
-        let pending = 0x0400_8ad8_usize;
-        let old_head = read_u32(pending);
-        let old_tail = read_u32(pending + 4);
+        let (pending_head, pending_tail) = (crate::dtcm::pending_tx_head().get(), crate::dtcm::pending_tx_tail().get());
+        let old_head = read_u32(pending_head);
+        let old_tail = read_u32(pending_tail);
 
         // `txq_list_insert(context, queue, 2)` prepends to the pending list.
         write_u32(host.intrusive_next().get(), old_head);
         if old_tail == 0 {
-            write_u32(pending + 4, context);
+            write_u32(pending_tail, context);
         }
-        write_u32(pending, context);
+        write_u32(pending_head, context);
         write_u32(
             host.ownership_bits().get(),
             read_u32(host.ownership_bits().get()) | 0x20,
@@ -6753,9 +6753,9 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
         // The joined/active task accepts this frame, removes the same head,
         // and passes it through `tx_frame_done_release`.
         let next = read_u32(host.intrusive_next().get());
-        write_u32(pending, next);
-        if read_u32(pending + 4) == context {
-            write_u32(pending + 4, if next == 0 { 0 } else { old_tail });
+        write_u32(pending_head, next);
+        if read_u32(pending_tail) == context {
+            write_u32(pending_tail, if next == 0 { 0 } else { old_tail });
         }
         write_u32(host.intrusive_next().get(), 0);
         write_u32(

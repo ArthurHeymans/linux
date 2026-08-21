@@ -2275,3 +2275,69 @@ checks    /tmp/xr819-link-final-check.log
 manifest  tools/link-sequence-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.15 BA/LMC/pending structural layout
+
+The coupled fixed-DTCM range `0x04008ab8..0x04008e78` is now represented by
+three documented shared-quarantine layouts rather than opaque byte families:
+
+```text
+0x04008ab8..0x04008ad8  BaLmcHeader
+  +0x02 request-slot index
+  +0x03 pending-request count
+  +0x04/+0x08/+0x0c request words
+  +0x14 TIM flags
+  +0x16 request flags
+  +0x18 JOIN retry state
+  +0x19 scan state
+  +0x1b BA policy enable
+0x04008ad8..0x04008bb8  PendingBaLmcState
+  +0x00/+0x04 pending TX head/tail
+  +0x08 MAC BSSID mode
+  +0x0b pending-service gate
+  +0x48 current radio owner
+  +0x4c radio wait-list head
+  +0x54 deferred radio owner
+  +0xbc..+0xc7 radio role/timer state
+  +0xd0 LMC message controls
+  +0xd1/+0xd2 BA counters
+  +0xd3/+0xd4 LMC producer/consumer
+0x04008bb8..0x04008e78  16 polymorphic LMC messages, stride 0x2c
+  +0x00 kind
+  +0x01 flags
+  +0x04..+0x27 kind-specific payload
+  +0x28 interface
+  +0x29 completion state
+```
+
+The pending-list insertion/removal paths, JOIN radio-owner publication,
+inter-VIF radio handoff, MAC BSSID publication, LMC ring allocation, type-7
+completion message construction, completion-return wakeup, and radio timer
+transition now derive addresses from `dtcm.rs`. Retained vendor and IRQ/FIQ code
+still owns the same bytes, so APIs return volatile addresses and deliberately
+preserve the parent's list ordering, cursor arithmetic, and unchecked ring
+index calculation. No references to complete shared records are created.
+
+`0x04008e78..0x04008f18` remains opaque. Decompiled BA session consumers reach
+that following area, so the message-record boundary does not imply that the BA
+state machine is exclusively owned or movable.
+
+`tools/check-ba-lmc-pending-layout.py` rejects direct and synthesized family
+addresses outside `dtcm.rs` and pins eight linked literals and ten decoded
+literal xrefs. `tools/ba-lmc-pending-codegen-manifest.json` pins the complete
+197-symbol parent/candidate inventory. The ELF and packed image are
+byte-for-byte identical to the hardware-qualified link-state parent, so no
+additional hardware run is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-ba-lmc-pending-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-ba-lmc-final-check.log
+          55c07ff9441f4af46f4a7733a9d524bf4d7167b2824bc24a00cec15a4caad895
+manifest  tools/ba-lmc-pending-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

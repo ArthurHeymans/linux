@@ -588,27 +588,27 @@ opaque_family!(
     WsmResponseScratch,
     0xa0
 );
-opaque_family!(
-    /// BA/LMC global header.
-    BaLmcHeader,
-    0x20
-);
-opaque_family!(
-    /// Shared pending-list, BA, LMC, scheduler, and radio state.
-    PendingBaLmcState,
-    0xe0
-);
-
+/// BA/LMC request accounting and protocol flags shared with retained code.
 #[repr(C, align(4))]
-struct LmcMessage {
-    storage: OpaqueBytes<LMC_MESSAGE_SIZE>,
+struct BaLmcHeader {
+    opaque_00: OpaqueBytes<0x02>, request_slot_index: SharedU8, pending_request_count: SharedU8,
+    request_sequence: SharedU32, request_word_08: SharedU32, request_word_0c: SharedU32,
+    request_meta_10: OpaqueBytes<0x04>, tim_flags: SharedU16, request_flags: SharedU16,
+    join_retry_state: SharedU8, scan_state: SharedU8, opaque_1a: OpaqueBytes<0x01>,
+    ba_policy_enabled: SharedU8, opaque_1c: OpaqueBytes<0x04>,
 }
-
+/// Pending TX list, radio arbitration, timers, and LMC ring cursors.
 #[repr(C, align(4))]
-struct LmcMessages {
-    records: [LmcMessage; LMC_MESSAGE_COUNT],
+struct PendingBaLmcState {
+    pending_head: SharedU32, pending_tail: SharedU32, mac_bssid_mode: SharedU16, opaque_0a: OpaqueBytes<0x01>, pending_service_needed: SharedU8, opaque_0c: OpaqueBytes<0x3c>,
+    radio_owner: SharedU32, radio_wait_head: SharedU32, opaque_50: OpaqueBytes<0x04>, deferred_radio_owner: SharedU32, opaque_58: OpaqueBytes<0x64>,
+    radio_role_state: SharedU8, radio_timer_state: SharedU8, radio_timer_interface: SharedU8, power_state_complete: SharedU8, radio_timer_deadline: SharedU32, radio_timer_sample: SharedU32,
+    opaque_c8: OpaqueBytes<0x08>, message_control: SharedU8, ba_session_count: SharedU8, ba_active_count: SharedU8, message_producer: SharedU8, message_consumer: SharedU8, opaque_d5: OpaqueBytes<0x0b>,
 }
-
+#[repr(C, align(4))]
+struct LmcMessage { kind: SharedU8, flags: SharedU8, opaque_02: OpaqueBytes<0x02>, payload: OpaqueBytes<0x24>, interface: SharedU8, completion_state: SharedU8, opaque_2a: OpaqueBytes<0x02> }
+#[repr(C, align(4))]
+struct LmcMessages { records: [LmcMessage; LMC_MESSAGE_COUNT] }
 opaque_family!(
     /// Occupied undecoded bytes after the LMC message records.
     PostLmcQuarantine,
@@ -1564,6 +1564,142 @@ pub(crate) fn shared_ptr<T>(address: DtcmAddress) -> *mut T {
     }
 }
 
+/// Address of one fixed-DTCM polymorphic LMC message record.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LmcMessageAddress(DtcmAddress);
+
+const fn ba_lmc_header_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(core::mem::offset_of!(DtcmLayout, ba_lmc_header) + offset)
+}
+
+const fn pending_ba_lmc_field(offset: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(core::mem::offset_of!(DtcmLayout, pending_ba_lmc) + offset)
+}
+
+#[cfg(test)]
+pub(crate) const fn ba_policy_enabled() -> DtcmAddress {
+    ba_lmc_header_field(core::mem::offset_of!(BaLmcHeader, ba_policy_enabled))
+}
+
+pub(crate) const fn pending_tx_head() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, pending_head))
+}
+
+pub(crate) const fn pending_tx_tail() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, pending_tail))
+}
+
+pub(crate) const fn mac_bssid_mode() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, mac_bssid_mode))
+}
+
+pub(crate) const fn pending_service_needed() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(
+        PendingBaLmcState,
+        pending_service_needed
+    ))
+}
+
+pub(crate) const fn radio_owner() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, radio_owner))
+}
+
+pub(crate) const fn radio_wait_head() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, radio_wait_head))
+}
+
+pub(crate) const fn deferred_radio_owner() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(
+        PendingBaLmcState,
+        deferred_radio_owner
+    ))
+}
+
+pub(crate) const fn radio_timer_state() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, radio_timer_state))
+}
+
+pub(crate) const fn lmc_message_control() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, message_control))
+}
+
+pub(crate) const fn lmc_message_producer() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, message_producer))
+}
+
+pub(crate) const fn lmc_message_consumer() -> DtcmAddress {
+    pending_ba_lmc_field(core::mem::offset_of!(PendingBaLmcState, message_consumer))
+}
+
+#[cfg(test)]
+pub(crate) const fn lmc_message(index: usize) -> Option<LmcMessageAddress> {
+    if index < LMC_MESSAGE_COUNT {
+        Some(lmc_message_unchecked(index))
+    } else {
+        None
+    }
+}
+
+/// Intentionally preserves the vendor ring-index address calculation.
+pub(crate) const fn lmc_message_unchecked(index: usize) -> LmcMessageAddress {
+    LmcMessageAddress(DtcmAddress::from_offset_unchecked(
+        core::mem::offset_of!(DtcmLayout, lmc_messages)
+            + core::mem::offset_of!(LmcMessages, records)
+            + index * core::mem::size_of::<LmcMessage>(),
+    ))
+}
+
+impl LmcMessageAddress {
+    const fn field(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn raw(self) -> u32 {
+        self.0.get() as u32
+    }
+
+    pub(crate) const fn kind(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LmcMessage, kind))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn flags(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LmcMessage, flags))
+    }
+
+    pub(crate) const fn completion_tid(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LmcMessage, payload))
+    }
+
+    pub(crate) const fn completion_queue(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LmcMessage, payload) + 1)
+    }
+
+    pub(crate) const fn completion_sequence(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LmcMessage, payload) + 2)
+    }
+
+    pub(crate) const fn completion_mac_word(self, index: usize) -> Option<DtcmAddress> {
+        if index < 3 {
+            Some(self.field(
+                core::mem::offset_of!(LmcMessage, payload) + 4 + index * 2,
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn interface(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LmcMessage, interface))
+    }
+
+    pub(crate) const fn completion_state(self) -> DtcmAddress {
+        self.field(core::mem::offset_of!(LmcMessage, completion_state))
+    }
+}
+
 macro_rules! assert_type_layout {
     ($type:ty, $size:expr, $align:expr) => {
         assert!(core::mem::size_of::<$type>() == $size);
@@ -1757,8 +1893,41 @@ const _: () = {
     assert_type_layout!(JoinScanControl, 0x40, 4);
     assert_type_layout!(WsmResponseScratch, 0xa0, 4);
     assert_type_layout!(BaLmcHeader, 0x20, 4);
+    assert!(core::mem::offset_of!(BaLmcHeader, request_slot_index) == 0x02);
+    assert!(core::mem::offset_of!(BaLmcHeader, pending_request_count) == 0x03);
+    assert!(core::mem::offset_of!(BaLmcHeader, request_sequence) == 0x04);
+    assert!(core::mem::offset_of!(BaLmcHeader, request_word_08) == 0x08);
+    assert!(core::mem::offset_of!(BaLmcHeader, request_word_0c) == 0x0c);
+    assert!(core::mem::offset_of!(BaLmcHeader, tim_flags) == 0x14);
+    assert!(core::mem::offset_of!(BaLmcHeader, request_flags) == 0x16);
+    assert!(core::mem::offset_of!(BaLmcHeader, join_retry_state) == 0x18);
+    assert!(core::mem::offset_of!(BaLmcHeader, scan_state) == 0x19);
+    assert!(core::mem::offset_of!(BaLmcHeader, ba_policy_enabled) == 0x1b);
     assert_type_layout!(PendingBaLmcState, 0xe0, 4);
+    assert!(core::mem::offset_of!(PendingBaLmcState, pending_head) == 0x00);
+    assert!(core::mem::offset_of!(PendingBaLmcState, pending_tail) == 0x04);
+    assert!(core::mem::offset_of!(PendingBaLmcState, mac_bssid_mode) == 0x08);
+    assert!(core::mem::offset_of!(PendingBaLmcState, pending_service_needed) == 0x0b);
+    assert!(core::mem::offset_of!(PendingBaLmcState, radio_owner) == 0x48);
+    assert!(core::mem::offset_of!(PendingBaLmcState, radio_wait_head) == 0x4c);
+    assert!(core::mem::offset_of!(PendingBaLmcState, deferred_radio_owner) == 0x54);
+    assert!(core::mem::offset_of!(PendingBaLmcState, radio_role_state) == 0xbc);
+    assert!(core::mem::offset_of!(PendingBaLmcState, radio_timer_state) == 0xbd);
+    assert!(core::mem::offset_of!(PendingBaLmcState, radio_timer_interface) == 0xbe);
+    assert!(core::mem::offset_of!(PendingBaLmcState, power_state_complete) == 0xbf);
+    assert!(core::mem::offset_of!(PendingBaLmcState, radio_timer_deadline) == 0xc0);
+    assert!(core::mem::offset_of!(PendingBaLmcState, radio_timer_sample) == 0xc4);
+    assert!(core::mem::offset_of!(PendingBaLmcState, message_control) == 0xd0);
+    assert!(core::mem::offset_of!(PendingBaLmcState, ba_session_count) == 0xd1);
+    assert!(core::mem::offset_of!(PendingBaLmcState, ba_active_count) == 0xd2);
+    assert!(core::mem::offset_of!(PendingBaLmcState, message_producer) == 0xd3);
+    assert!(core::mem::offset_of!(PendingBaLmcState, message_consumer) == 0xd4);
     assert_type_layout!(LmcMessage, LMC_MESSAGE_SIZE, 4);
+    assert!(core::mem::offset_of!(LmcMessage, kind) == 0x00);
+    assert!(core::mem::offset_of!(LmcMessage, flags) == 0x01);
+    assert!(core::mem::offset_of!(LmcMessage, payload) == 0x04);
+    assert!(core::mem::offset_of!(LmcMessage, interface) == 0x28);
+    assert!(core::mem::offset_of!(LmcMessage, completion_state) == 0x29);
     assert_type_layout!(LmcMessages, 0x2c0, 4);
     assert_type_layout!(PostLmcQuarantine, 0xa0, 4);
     assert_type_layout!(BaLinkEventState, 0x30, 4);
@@ -2111,6 +2280,40 @@ mod tests {
         assert!(link_sequence_counter(0, 16).is_none());
         assert_eq!(internal_link_bitmap().get(), 0x0400_89d0);
         assert_eq!(internal_link_bitmap().get() + 8, 0x0400_89d8);
+    }
+
+    #[test]
+    fn pending_ba_lmc_and_message_addresses_follow_the_decoded_layout() {
+        assert_eq!(ba_policy_enabled().get(), 0x0400_8ad3);
+        assert_eq!(pending_tx_head().get(), 0x0400_8ad8);
+        assert_eq!(pending_tx_tail().get(), 0x0400_8adc);
+        assert_eq!(mac_bssid_mode().get(), 0x0400_8ae0);
+        assert_eq!(pending_service_needed().get(), 0x0400_8ae3);
+        assert_eq!(radio_owner().get(), 0x0400_8b20);
+        assert_eq!(radio_wait_head().get(), 0x0400_8b24);
+        assert_eq!(deferred_radio_owner().get(), 0x0400_8b2c);
+        assert_eq!(radio_timer_state().get(), 0x0400_8b95);
+        assert_eq!(lmc_message_control().get(), 0x0400_8ba8);
+        assert_eq!(lmc_message_producer().get(), 0x0400_8bab);
+        assert_eq!(lmc_message_consumer().get(), 0x0400_8bac);
+
+        let first = lmc_message(0).unwrap();
+        let last = lmc_message(LMC_MESSAGE_COUNT - 1).unwrap();
+        assert_eq!(first.raw(), 0x0400_8bb8);
+        assert_eq!(first.kind().get(), 0x0400_8bb8);
+        assert_eq!(first.flags().get(), 0x0400_8bb9);
+        assert_eq!(first.completion_tid().get(), 0x0400_8bbc);
+        assert_eq!(first.completion_queue().get(), 0x0400_8bbd);
+        assert_eq!(first.completion_sequence().get(), 0x0400_8bbe);
+        assert_eq!(first.completion_mac_word(0).unwrap().get(), 0x0400_8bc0);
+        assert_eq!(first.completion_mac_word(2).unwrap().get(), 0x0400_8bc4);
+        assert_eq!(first.interface().get(), 0x0400_8be0);
+        assert_eq!(first.completion_state().get(), 0x0400_8be1);
+        assert_eq!(last.raw(), 0x0400_8e4c);
+        assert_eq!(last.completion_state().get(), 0x0400_8e75);
+        assert_eq!(last.raw() + LMC_MESSAGE_SIZE as u32, 0x0400_8e78);
+        assert!(lmc_message(LMC_MESSAGE_COUNT).is_none());
+        assert!(first.completion_mac_word(3).is_none());
     }
 
     #[test]
