@@ -363,7 +363,8 @@ struct VifRecord {
     owner_flags: SharedU32,
     reserved_60: OpaqueBytes<0x6>,
     activity_state: SharedU8,
-    timer_and_join_state: OpaqueBytes<0x85>,
+    opaque_067: OpaqueBytes<0x49>,
+    operating_timers: [TimerEntry; 3],
     ssid_length: SharedU32,
     ssid: [SharedU8; 0x20],
     dtim_period: SharedU8,
@@ -386,7 +387,9 @@ struct VifRecord {
     buffered_links: SharedU16,
     reserved_162: OpaqueBytes<0x2>,
     link_gate: SharedU8,
-    opaque_tail: OpaqueBytes<0x24b>,
+    opaque_165: OpaqueBytes<0x1f>,
+    link_timers: [TimerEntry; 2],
+    opaque_1ac: OpaqueBytes<0x204>,
 }
 
 #[repr(C, align(4))]
@@ -1513,6 +1516,7 @@ impl VifRecordAddress {
     pub(crate) const fn owner_deadline(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, owner_deadline)) }
     pub(crate) const fn owner_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, owner_flags)) }
     pub(crate) const fn activity_state(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, activity_state)) }
+    pub(crate) const fn operating_timer(self, index: usize) -> Option<DtcmAddress> { if index < 3 { Some(self.field(core::mem::offset_of!(VifRecord, operating_timers) + index * core::mem::size_of::<TimerEntry>())) } else { None } }
     pub(crate) const fn ssid_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, ssid_length)) }
     pub(crate) const fn ssid_byte(self, index: usize) -> Option<DtcmAddress> { if index < 32 { Some(self.field(core::mem::offset_of!(VifRecord, ssid) + index)) } else { None } }
     pub(crate) const fn dtim_period(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, dtim_period)) }
@@ -1530,6 +1534,7 @@ impl VifRecordAddress {
     pub(crate) const fn awake_links(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, awake_links)) }
     pub(crate) const fn buffered_links(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, buffered_links)) }
     pub(crate) const fn link_gate(self) -> DtcmAddress { self.field(core::mem::offset_of!(VifRecord, link_gate)) }
+    pub(crate) const fn link_timer(self, index: usize) -> Option<DtcmAddress> { if index < 2 { Some(self.field(core::mem::offset_of!(VifRecord, link_timers) + index * core::mem::size_of::<TimerEntry>())) } else { None } }
 }
 
 pub(crate) const fn vif_record(interface: usize) -> Option<VifRecordAddress> {
@@ -2012,7 +2017,8 @@ const _: () = {
     assert!(core::mem::offset_of!(VifRecord, owner_flags) == 0x05c);
     assert!(core::mem::offset_of!(VifRecord, reserved_60) == 0x060);
     assert!(core::mem::offset_of!(VifRecord, activity_state) == 0x066);
-    assert!(core::mem::offset_of!(VifRecord, timer_and_join_state) == 0x067);
+    assert!(core::mem::offset_of!(VifRecord, opaque_067) == 0x067);
+    assert!(core::mem::offset_of!(VifRecord, operating_timers) == 0x0b0);
     assert!(core::mem::offset_of!(VifRecord, ssid_length) == 0x0ec);
     assert!(core::mem::offset_of!(VifRecord, ssid) == 0x0f0);
     assert!(core::mem::offset_of!(VifRecord, dtim_period) == 0x110);
@@ -2035,7 +2041,9 @@ const _: () = {
     assert!(core::mem::offset_of!(VifRecord, buffered_links) == 0x160);
     assert!(core::mem::offset_of!(VifRecord, reserved_162) == 0x162);
     assert!(core::mem::offset_of!(VifRecord, link_gate) == 0x164);
-    assert!(core::mem::offset_of!(VifRecord, opaque_tail) == 0x165);
+    assert!(core::mem::offset_of!(VifRecord, opaque_165) == 0x165);
+    assert!(core::mem::offset_of!(VifRecord, link_timers) == 0x184);
+    assert!(core::mem::offset_of!(VifRecord, opaque_1ac) == 0x1ac);
     assert_type_layout!(VifRecords, 0xb10, 4);
     assert_type_layout!(PostVifQuarantine, 0x107c, 4);
     assert_type_layout!(HifRequestAddress, 4, 4);
@@ -2483,6 +2491,12 @@ mod tests {
         assert_eq!(first.wake_reinit_flag().get() + 0x3b0, second.wake_reinit_flag().get());
         assert_eq!(first.scan_rate_config().get() + 0x3c6, second.wake_reinit_flag().get());
         assert_eq!(third.link_gate().get(), 0x0400_475c);
+        assert_eq!(first.operating_timer(0).unwrap().get(), 0x0400_3f48);
+        assert_eq!(first.operating_timer(2).unwrap().get(), 0x0400_3f70);
+        assert_eq!(first.link_timer(0).unwrap().get(), 0x0400_401c);
+        assert_eq!(first.link_timer(1).unwrap().get(), 0x0400_4030);
+        assert!(first.operating_timer(3).is_none());
+        assert!(first.link_timer(2).is_none());
         assert!(vif_record(3).is_none());
         assert!(first.rate_byte(8).is_none());
         assert!(first.own_mac_byte(6).is_none());

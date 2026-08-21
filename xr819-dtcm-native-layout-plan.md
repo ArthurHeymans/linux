@@ -492,7 +492,7 @@ Known offsets from `src/vif.rs`:
 
 **Initialization:** `fw_global_state_init` initializes two operating VIFs; `fw_timers_and_tasks_init` writes interface IDs for all three and timer objects for VIFs 0 and 1. Rust startup initializes a translated subset. Record 2 is a synthetic/P2P-device/scan slot and is not semantically identical to records 0 and 1.
 
-**Status:** shared/mixed. A partial typed prefix is useful for documentation, but any full `VifRecord` must preserve embedded timer layouts, intrusive ownership, and fields mutated by interrupts and untranslated tasks. It needs `UnsafeCell`/volatile access behind a VIF/MAC-domain guard.
+**Status:** shared/mixed. The five proven embedded timers now use the common structural `TimerEntry` layout, while surrounding JOIN/link state remains opaque. The complete record still preserves intrusive ownership and fields mutated by interrupts and untranslated tasks. It needs volatile access behind a VIF/MAC-domain guard; no safe complete-record reference is exposed.
 
 The count/stride can be asserted now:
 
@@ -2722,6 +2722,48 @@ packed    /tmp/xr819-scheduler-support-layout.bin
 checks    /tmp/xr819-scheduler-support-final-check.log
           9e6754f2846170cde03642025f3bd063d688dbbce8c747ea346bd1012adbe83c
 manifest  tools/scheduler-support-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.24 Embedded VIF timers
+
+Each physical `0x3b0`-byte VIF record now exposes five proven `TimerEntry`
+layouts:
+
+```text
++0x0b0 timer 0
++0x0c4 timer 1
++0x0d8 timer 2
++0x184 link timer 0
++0x198 link timer 1
+```
+
+The first group exactly fills `+0x0b0..+0x0ec`; the second fills
+`+0x184..+0x1ac`. Surrounding bytes remain opaque. Every timer retains the
+common `next`, `previous_link`, `deadline`, `callback`, and `context` fields,
+without creating references to state concurrently mutated by retained timer,
+task, IRQ, or FIQ paths.
+
+All three physical records retain the exact `0x3b0` stride. Record 2 remains a
+synthetic/P2P-device/scan slot and is not assigned the operating semantics of
+records 0 and 1 merely because its bytes share the same physical layout.
+
+`tools/check-vif-timer-layout.py` covers the fifteen disjoint timer extents,
+rejects production literals and synthesized timer-base forms, and records one
+aligned in-range word with no decoded literal-load xref. The complete ELF
+remains byte-identical to the qualified scheduler-support parent, so no
+hardware rerun is required.
+
+Final deterministic artifacts:
+
+```text
+ELF       /tmp/xr819-link-state/xr819-firmware/target/thumbv5te-none-eabi/release/hif-startup
+          cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    /tmp/xr819-vif-timer-layout.bin
+          711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-vif-timer-final-check.log
+          ca6b1b828a41bafaba3533ba9761586388a85a0f592d401c86a03eafa1cf3727
+manifest  tools/vif-timer-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
