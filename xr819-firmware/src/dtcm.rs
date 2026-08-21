@@ -133,7 +133,8 @@ struct InitializedVendorImage {
     host_pas_ring: HostPasRing,
     initialized_low_mac_prefix: LowMacGlobalPrefix,
     mac_pipe_records: [MacPipeRecord; 4],
-    pre_mac_beacon_state: OpaqueBytes<0x1b0>,
+    mac_tx_queue_state: MacTxQueueState,
+    pre_mac_beacon_state: OpaqueBytes<0x1a8>,
     mac_beacon_state: MacBeaconState,
     mac_wake_runtime_state: MacWakeRuntimeState,
     pre_mac_phy_command_state: OpaqueBytes<0x208>,
@@ -194,6 +195,8 @@ struct LowMacGlobalPrefix { fifo_control: SharedU8, fifo_status: SharedU8, rate_
 struct MacPipeSlot { state_word: SharedU32, opaque_04: OpaqueBytes<0x08>, frame: SharedU32, auxiliary: SharedU32, command: SharedU32 }
 #[repr(C, align(4))]
 struct MacPipeRecord { current_slot: SharedU8, opaque_01: OpaqueBytes<0x02>, state: SharedU8, opaque_04: SharedU32, hardware_ring: SharedU32, slots: [MacPipeSlot; 4] }
+#[repr(C, align(4))]
+struct MacTxQueueState { head: SharedU32, tail: SharedU32 }
 #[repr(C, align(4))]
 struct MacBeaconState { opaque_00: OpaqueBytes<0x08>, response_commands: [SharedU32; 2], opaque_10: OpaqueBytes<0x18>, state: SharedU32, secondary_command: SharedU32, control: SharedU32, selector: SharedU32, mode: SharedU8, opaque_39: OpaqueBytes<0x03>, completion_word: SharedU32 }
 #[repr(C, align(4))]
@@ -1689,6 +1692,9 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+pub(crate) const MAC_TX_QUEUE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_tx_queue_state));
+pub(crate) const MAC_TX_QUEUE_HEAD: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, head));
+pub(crate) const MAC_TX_QUEUE_TAIL: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, tail));
 pub(crate) const MAC_RETRY_HARDWARE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_retry_hardware_state));
 pub(crate) const MAC_RUNTIME_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_runtime_accounting));
 pub(crate) const MAC_CURRENT_PIPE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_pipe));
@@ -3207,7 +3213,11 @@ const _: () = {
     assert!(core::mem::offset_of!(MacPipeRecord, state) == 0x03);
     assert!(core::mem::offset_of!(MacPipeRecord, hardware_ring) == 0x08);
     assert!(core::mem::offset_of!(MacPipeRecord, slots) == 0x0c);
-    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_beacon_state) == 0x18d0);
+    assert!(core::mem::offset_of!(InitializedVendorImage, mac_tx_queue_state) == 0x18d0);
+    assert!(core::mem::size_of::<MacTxQueueState>() == 0x08);
+    assert!(core::mem::offset_of!(MacTxQueueState, head) == 0x00);
+    assert!(core::mem::offset_of!(MacTxQueueState, tail) == 0x04);
+    assert!(core::mem::offset_of!(InitializedVendorImage, pre_mac_beacon_state) == 0x18d8);
     assert!(core::mem::offset_of!(InitializedVendorImage, mac_beacon_state) == 0x1a80);
     assert!(core::mem::size_of::<MacBeaconState>() == 0x40);
     assert!(core::mem::offset_of!(MacBeaconState, response_commands) == 0x08);
@@ -3893,6 +3903,14 @@ mod tests {
         assert_eq!(scheduler_handler(31).unwrap().get(), 0x0400_2230);
         assert_eq!(scheduler_handler(31).unwrap().get() + 4, 0x0400_2234);
         assert!(scheduler_handler(32).is_none());
+    }
+
+    #[test]
+    fn initialized_mac_tx_queue_addresses_are_exact() {
+        assert_eq!(MAC_TX_QUEUE_STATE.get(), 0x0400_18d0);
+        assert_eq!(MAC_TX_QUEUE_HEAD.get(), 0x0400_18d0);
+        assert_eq!(MAC_TX_QUEUE_TAIL.get(), 0x0400_18d4);
+        assert_eq!(MAC_TX_QUEUE_TAIL.get() + 4, 0x0400_18d8);
     }
 
     #[test]

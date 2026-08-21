@@ -4444,3 +4444,25 @@ manifest  tools/mac-retry-hardware-state-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
 
+### A.80 MAC TX queue state
+
+The two retained queue pointers at `0x040018d0..0x040018d8` are now an exact
+`MacTxQueueState` head/tail pair. Decompiled `txq_remove_frame_by_link_seq`
+updates the same words when unlinking a matching frame; Rust startup clears both
+before retained queue consumers can run.
+
+The startup writes now derive from the initialized-image layout while preserving
+the original two 32-bit stores and their order. The linked image folds them to a
+single root literal; `tools/check-mac-tx-queue-state-layout.py` pins that root and
+its decoded xref. The complete ELF and packed image remain byte-identical to the
+qualified MAC-retry-hardware-state parent, so no hardware rerun is required.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-tx-queue-final-check.log
+          105cce2d9b88ad64853dc0da94a44924f4726c97f9715f767914c34850073d03
+manifest  tools/mac-tx-queue-state-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+

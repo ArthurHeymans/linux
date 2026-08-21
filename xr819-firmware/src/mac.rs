@@ -859,8 +859,8 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u8(SHARED + 4, 0);
         write_u16(SHARED + 2, 0x13);
         write_u8(SHARED + 5, 0);
-        write_u32(0x0400_18d0, 0);
-        write_u32(0x0400_18d4, 0);
+        write_u32(crate::dtcm::MAC_TX_QUEUE_HEAD.get(), 0);
+        write_u32(crate::dtcm::MAC_TX_QUEUE_TAIL.get(), 0);
         write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 2);
         write_u32(SHARED + 0x10, 0);
         write_u32(SHARED + 0x14, 0);
