@@ -42,6 +42,7 @@ OWNER_FILES = {
     "tools/check-peer-pipe-layout.py",
     "tools/check-mac-runtime-accounting-layout.py",
     "tools/check-scheduler-event-layout.py",
+    "tools/check-initialized-scheduler-tail-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {
     "src/bin/hif_extension_probe.rs": {0x04001FF0, 0x04002000, 0x04002004},

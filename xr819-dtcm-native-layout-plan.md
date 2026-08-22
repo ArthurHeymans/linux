@@ -6076,3 +6076,80 @@ checks    /tmp/xr819-rate-pair-table-final-check.log
 manifest  tools/initialized-rate-pair-table-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.109 Initialized scheduler tail
+
+The initialized vendor COPY-image interval `0x04002018..0x04002078` is now
+structurally represented by the exact private, non-derived `SchedulerTail`,
+size `0x60`, alignment 4, replacing the former `initialized_tail:
+OpaqueBytes<0x60>` as the final `InitializedVendorImage` field. Sub-record
+split, each with its own root:
+
+- `opaque_2018: OpaqueBytes<0x10>` (`0x04002018..0x04002028`): no observed
+  accessor; the reference map jumps from the scheduler timer list head at
+  `0x04002014` straight to `0x04002028`.
+- `hardware_timer_guard: SharedU32` at `0x04002028`: read by vendor
+  `timer_start` as `*(DAT_0000f310 + 0x14)` exactly when the just-armed timer
+  became list head, gating the `0x0ac0001c/0x0ac00014/0xc1` hardware timer
+  programming sequence. The retained Rust translation
+  `tx::start_scheduler_timer` mirrors this with one raw literal
+  (`read_u32(0x0400_2028)`), pinned as the slice's only sanctioned consumer
+  line and function; in codegen it compiles to `ldr r0, [r4, #0x14]` from the
+  pool root `0x04002014` (owned by the adjacent scheduler-event checker), so
+  no linked literal falls inside this interval and both linked multisets are
+  pinned empty.
+- `rf_calibration_bytes: [SharedU8; 32]` at `0x0400202c..0x0400204c`: read
+  byte-wise by `dbg_expand_byte_table` (`DAT_000168d0`, loop bound `0x20`)
+  into MMIO `0x0abb8300` before `reg_write_list_apply(0x04000e90)`, and
+  rebuilt byte-wise from TLV type `0x22` payloads (length check `#0x22`) by
+  the `tlv_dispatch_table` handler tail at `0x177d6` (`DAT_000178d4`).
+- `opaque_204c: OpaqueBytes<0x04>`: no observed accessor.
+- `error_event_counts: [SharedU32; 10]` at `0x04002050..0x04002078` (ending
+  exactly at the interval end): ten u32 counters accumulated in
+  `event_send_error_0x34`'s compiler-inlined tail (`0x103e..0x10ba`, pool
+  `DAT_00010d8`), each adding one byte lane of an event payload read from
+  `0x09c00600` (outside DTCM) via `strb` extractions at bit offsets
+  0/8/16/24.
+
+`InitializedVendorImage` remains size `0x2078`, alignment 4; `DtcmLayout`
+and `SharedDtcmState` remain size `0xa000`, alignment 4. Initial COPY values
+are unknown; writer closure is not claimed — vendor, IRQ/FIQ, computed,
+indirect, and generic HIF/debug mutation remain possible. No production
+address constant, pointer, reference, accessor, or ownership API was added;
+the pre-existing `tx.rs` consumer is pinned unchanged.
+
+`tools/check-initialized-scheduler-tail-layout.py` owns exactly
+`[0x04002018, 0x04002078)`. It source-pins the exact non-derived declaration,
+image field split, compile-time assertions, focused process-local test,
+physical boundaries (`0x02018/0x02028/0x0202c/0x0204c/0x02050/0x02078`), and
+unchanged enclosing/global layouts. Its adversarial self-tests reject
+deleted/swapped compile-time and focused-test mappings, direct/transitive
+const/static/type/renamed-import/grouped-import aliases, constructor offsets,
+raw pointers, and operational APIs. Its linked-literal multiset is derived
+from decoded PC-relative loads only (not an aligned-word scan) because the
+retained `.text` at `0x6418` contains the instruction pair
+`movs r0, #0x67; lsls r0, #0x10` forming the in-range word `0x04002067` —
+the same data/instruction-coincidence precedent as `check-vif-layout.py`.
+It recognizes the scheduler-event checker range
+`[0x04001fcc, 0x04002018)` and was added to that checker's owner set; the
+runtime-register/backoff checker's owner set gained it for the shared
+`0x04002078` boundary.
+
+Focused default (241 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass. Complete software-only `tools/check.sh`, the Thumb release build,
+the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-scheduler-tail-final-check.log
+manifest  tools/initialized-scheduler-tail-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
