@@ -68,6 +68,7 @@ python3 tools/check-mac-runtime-accounting-layout.py
 python3 tools/check-mac-retry-hardware-state-layout.py
 python3 tools/check-mac-tx-queue-state-layout.py
 python3 tools/check-initialized-rate-policies-layout.py
+python3 tools/check-initialized-debug-platform-local-tail-layout.py
 python3 tools/check-phy-descriptor-gain-records-layout.py
 python3 tools/check-ampdu-completion-control-layout.py
 python3 tools/check-phy-reference-layout.py
@@ -142,6 +143,7 @@ python3 tools/check-mac-runtime-accounting-layout.py "$ELF"
 python3 tools/check-mac-retry-hardware-state-layout.py "$ELF"
 python3 tools/check-mac-tx-queue-state-layout.py "$ELF"
 python3 tools/check-initialized-rate-policies-layout.py "$ELF"
+python3 tools/check-initialized-debug-platform-local-tail-layout.py "$ELF"
 python3 tools/check-phy-descriptor-gain-records-layout.py "$ELF"
 python3 tools/check-ampdu-completion-control-layout.py "$ELF"
 python3 tools/check-phy-reference-layout.py "$ELF"

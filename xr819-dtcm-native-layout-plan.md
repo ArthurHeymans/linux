@@ -1,6 +1,6 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** fixed configuration-apply flags word structurally decoded at `0x0400141c..0x04001420`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. The complete ELF and packed image retain their qualified hashes. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
+**Status:** fixed platform-local dump tail structurally decoded at `0x04001454..0x0400145c`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, and complete exact-parent text-symbol delta gating pass. The complete ELF and packed image retain their qualified hashes. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
 **Firmware lineage:** candidate based directly on `8940467e9cdc` (`Model VIF state in Rust`), itself atop qualified low-MAC/PAS. The exact parent was rebuilt from revision files for code-generation comparison; no rejected patch was applied.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
@@ -303,6 +303,9 @@ Within `0x04000000..0x04002078`:
 | `0x04001410..0x0400141c` | three shared `u32` words | fixed TX-confirm aggregation state; raw words remain quarantine values, not safe pointers |
 | `0x0400141c..0x04001420` | one shared `u32` | fixed configuration-apply flags word; bits remain open semantics |
 | `0x04001420..0x04001440` | eight shared `u32` words | control words; `0x04001428` host-download state, former PRNG at `0x0400142c`, timer offset at `0x0400143c` |
+| `0x04001440..0x04001454` | `0x14` opaque COPY bytes | unresolved prefix inside the overlapping platform-local dump; not allocated or decoded |
+| `0x04001454..0x0400145c` | two shared `u32` words | fixed platform-local dump tail; shared quarantine with unknown COPY values and writer closure |
+| `0x0400145c..0x0400156c` | PHY descriptors/gain records | unchanged separately checked initialized PHY island |
 | `0x04001680...` | mixed | low-MAC shared root and four pipe families |
 | `0x04001e6c` | `u32` within larger root | retry/drain control; known untranslated writers |
 | `0x04001fcc` | `u32` | global scheduler/radio exclusion mask, extremely high fan-out |
@@ -5530,5 +5533,70 @@ packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-retry-path-counter-check.log
           bbb5e8a95d5fcaf33467dca7ac4d8093fedc090144cd47842162222c04a7b8d5
 manifest  tools/initialized-retry-path-counter-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.101 Fixed platform-local dump tail
+
+The vendor COPY-image interval `0x04001440..0x0400145c` is now split without
+relocation into an opaque `0x14`-byte prefix at `0x04001440..0x04001454` and the
+exact private, non-derived shared-quarantine `DebugPlatformLocalTail` at
+`0x04001454..0x0400145c`. The tail has size `0x08`, alignment 4, and exactly two
+`SharedU32` fields: `platform_local_word_2c +0x00` at `0x04001454` and
+`platform_local_word_30 +0x04` at `0x04001458`. The separately evidenced PHY
+threshold descriptors remain adjacent at `0x0400145c`; their checker still owns
+only `[0x0400145c, 0x0400156c)`. `InitializedVendorImage` remains size `0x2078`
+and alignment 4, while `DtcmLayout` and `SharedDtcmState` remain size `0xa000`
+and alignment 4.
+
+`/tmp/xr819-dtcm-refs.out:327-330` records a 32-bit write at `0x04001454` and a
+32-bit read plus two 32-bit writes at `0x04001458`. In
+`xr819-decompilation/annotated-main.c:27223-27230`, the retained debug routine
+dumps the overlapping `PlatformLocal` view rooted at `0x04001428` for exactly
+`0x34` bytes, then performs ordered full-width zero stores at offsets `+0x2c`
+and `+0x30`. Lines 28168-28175 perform an exact 32-bit read at `+0x30` followed
+by an exact 32-bit zero store. The overlap establishes the two physical tail
+words only; it does not justify a complete owning `PlatformLocal` type. The
+vendor COPY values are unknown, as is writer closure. Generic HIF/debug and
+vendor, IRQ, or FIQ mutation remain possible.
+
+Both words retain the existing `UnsafeCell<MaybeUninit<u32>>` representation.
+No production constant, pointer, reference, accessor, read/write/clear/reset or
+initialization helper, generic offset, slice, iterator, semantic value type, or
+safe ownership API was added. In particular, no safe reference to state that
+vendor or interrupt code can mutate exists. The retained dump-before-clear and
+read-before-clear sequences remain vendor behavior and were not translated;
+therefore their exact 32-bit widths and operation order are unchanged. The
+opaque prefix remains evidence-free quarantine, and no other bytes were
+decoded.
+
+`tools/check-initialized-debug-platform-local-tail-layout.py` owns exactly
+`[0x04001454, 0x0400145c)`. It pins the declaration, exact image-field split,
+compile-time and focused-test inventories, physical boundaries, opaque-prefix
+size/end, PHY adjacency, and unchanged enclosing layouts. Adversarial self-tests
+reject removed or swapped fields, derives, duplicate or old opaque inventory,
+direct and transitive const/static/type/import aliases, raw physical and
+relative-offset constructors, pointers/references, operational APIs, generic
+offsets, slices, and iterators. Its aligned linked-literal and decoded
+PC-relative-xref multisets are empty. Empty linked sets are drift evidence only,
+never proof of writer closure. The PHY descriptor checker recognizes the exact
+preceding owner range without broadening its own range.
+
+The focused default and `vendor-host-tx-diagnostics` process-local tests,
+standalone source and linked checker modes, complete software gate, Thumb
+release build, stack/layout gates, exact-parent complete text-symbol/codegen
+comparison, and fresh OTA packing pass all succeed. Complete-file identity,
+not symbol-only identity, confirms no binary drift. Exact volatile widths,
+MMIO/barrier/interrupt order, wrapping/unchecked arithmetic, initialization
+order, request ownership, and all 30 HIF inputs remain unchanged. TALA
+relocation and `0x04002984..0x04003050` were untouched. No target or hardware
+test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-debug-platform-local-tail-check.log
+          e42f65a0e6c33a9ae94b2d37a7c5c31efd8c5519aa8296d2cc89600611d42db3
+manifest  tools/initialized-debug-platform-local-tail-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```

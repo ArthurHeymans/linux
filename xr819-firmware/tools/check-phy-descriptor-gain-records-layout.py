@@ -22,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PHY_DESCRIPTOR_GAIN_RECORD_RANGE = (0x0400145C, 0x0400156C)
+PLATFORM_LOCAL_TAIL_RANGE = (0x04001454, 0x0400145C)
 SYNTHESIZED: set[int] = set()
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -31,6 +32,7 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "tools/check-initialized-debug-platform-local-tail-layout.py",
     "tools/check-phy-descriptor-gain-records-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
@@ -172,6 +174,10 @@ def in_family(value: int) -> bool:
 def check_source() -> None:
     paths = source_paths()
     failures: list[str] = []
+    dtcm = " ".join((ROOT / "src/dtcm.rs").read_text().split())
+    preceding = " ".join("pre_phy_channel_threshold_descriptors: OpaqueBytes<0x14>, debug_platform_local_tail: DebugPlatformLocalTail".split())
+    if preceding not in dtcm or PLATFORM_LOCAL_TAIL_RANGE != (0x04001454, 0x0400145C):
+        failures.append("src/dtcm.rs: exact preceding platform-local-tail owner/range changed")
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
         if relative in OWNER_FILES:
