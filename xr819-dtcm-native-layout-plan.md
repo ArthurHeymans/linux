@@ -6009,3 +6009,70 @@ checks    /tmp/xr819-rf-mode-halfword-table-final-check.log
 manifest  tools/initialized-rf-mode-halfword-table-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.108 Fixed rate attribute pair table
+
+The initialized vendor COPY-image interval `0x040001c0..0x04000200` is now
+structurally represented by the exact private, non-derived `RatePairTable`,
+size `0x40`, alignment 4, whose `pairs: [[SharedU8; 2]; 31]` occupies
+`0x040001c0..0x040001fe` and whose trailing `opaque_3e: OpaqueBytes<0x02>`
+covers the two unevidenced bytes `0x040001fe..0x04000200`. It replaces the
+former opaque `pre_initialized_rate_policies: OpaqueBytes<0x40>`. The typed
+`rate_attributes: [SharedU8; 22]` still ends exactly at `0x040001c0`, and
+`InitializedRatePolicies` remains adjacent at `0x04000200`;
+`InitializedVendorImage` remains size `0x2078`, alignment 4; `DtcmLayout`
+and `SharedDtcmState` remain size `0xa000`, alignment 4.
+
+The schema is rooted at literal-pool word `DAT_00008724 = 0x040001aa` (the
+rate-attributes base) plus the fixed displacement `0x16`: vendor
+`pas_program_rate_tables` reads byte pairs `*(base + index * 2)` and
+`*(base + index * 2 + 1)` under a static `index < 0x1f` loop, i.e. exactly
+31 pairs covering `0x040001c0..0x040001fe`, and feeds them (combined with
+per-rate PHY-class bytes) into `pas_build_rate_entry` programming. The Ghidra
+computed-reference inventory records the READ targets `0x040001c0..0x040001c3`
+(first iterations); a whole-binary scan found no aligned .text word in
+`[0x040001c0, 0x04000200)` loaded as a literal. The final two bytes have no
+observed accessor and remain exact `OpaqueBytes<0x02>`. The initial COPY
+values are unknown; writer closure is not claimed — vendor, IRQ/FIQ,
+computed, indirect, and generic HIF/debug mutation remain possible.
+
+No production operation was added or changed, so no production address
+constant, pointer, reference, accessor, or ownership API exists for this
+interval; exact volatile widths, initialization order, wrapping arithmetic,
+request ownership, and all 30 HIF inputs are unchanged.
+
+`tools/check-initialized-rate-pair-table-layout.py` owns exactly
+`[0x040001c0, 0x04000200)`. It source-pins the exact non-derived declaration,
+image field split, compile-time assertions, focused process-local test,
+physical boundaries (`0x01c0`, `0x0200`), pair-array extent `0x3e`, and
+unchanged enclosing/global layouts. Its adversarial self-tests reject
+deleted/swapped compile-time and focused-test mappings, direct/transitive
+const/static/type/renamed-import/grouped-import aliases, constructor offsets,
+raw pointers, and operational APIs. The PAS-view offset `0x1d8` inside
+`ba_pipe_record_address_unchecked` numerically collides with this interval's
+relative range; that pre-existing function is explicitly exempted with
+justification. It recognizes the adjacent TX-rate-table checker range
+`[0x04000138, 0x040001c0)` and was added to the rate-policy checker's owner
+set for the shared `0x04000200` boundary. Its aligned linked-literal and
+decoded PC-relative-xref multisets are pinned empty; emptiness is drift
+evidence only, never writer closure.
+
+Focused default (240 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass. Complete software-only `tools/check.sh`, the Thumb release build,
+the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-rate-pair-table-final-check.log
+          e3286aba173e258c504fea38b0e6bc8a680dfa49b99724c4f9a1f8e7f013ab61
+manifest  tools/initialized-rate-pair-table-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

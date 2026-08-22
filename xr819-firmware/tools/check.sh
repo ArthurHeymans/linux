@@ -66,6 +66,7 @@ python3 tools/check-initialized-phy-watchdog-counter-layout.py
 python3 tools/check-initialized-mac-aggregate-slot-tables-layout.py
 python3 tools/check-initialized-mac-pipe-tails-layout.py
 python3 tools/check-initialized-rf-mode-halfword-table-layout.py
+python3 tools/check-initialized-rate-pair-table-layout.py
 python3 tools/check-initialized-interface-2-radio-latch-layout.py
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py
 python3 tools/check-initialized-measurement-dwell-timer-layout.py
@@ -155,6 +156,7 @@ python3 tools/check-initialized-phy-watchdog-counter-layout.py "$ELF"
 python3 tools/check-initialized-mac-aggregate-slot-tables-layout.py "$ELF"
 python3 tools/check-initialized-mac-pipe-tails-layout.py "$ELF"
 python3 tools/check-initialized-rf-mode-halfword-table-layout.py "$ELF"
+python3 tools/check-initialized-rate-pair-table-layout.py "$ELF"
 python3 tools/check-initialized-interface-2-radio-latch-layout.py "$ELF"
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py "$ELF"
 python3 tools/check-initialized-measurement-dwell-timer-layout.py "$ELF"
@@ -631,6 +633,15 @@ if [[ -n "${XR819_INITIALIZED_INTERFACE_2_RADIO_LATCH_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_INTERFACE_2_RADIO_LATCH_PARENT_ELF" "$ELF"
 else
   echo "== initialized-interface-2-radio-latch codegen gate skipped: set XR819_INITIALIZED_INTERFACE_2_RADIO_LATCH_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_RATE_PAIR_TABLE_PARENT_ELF:-}" ]]; then
+  echo "== supplemental initialized-rate-pair-table exact-parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-rate-pair-table-codegen-manifest.json \
+    "$XR819_INITIALIZED_RATE_PAIR_TABLE_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-rate-pair-table codegen gate skipped: set XR819_INITIALIZED_RATE_PAIR_TABLE_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
 fi
 
 if [[ -n "${XR819_INITIALIZED_RF_MODE_HALFWORD_TABLE_PARENT_ELF:-}" ]]; then

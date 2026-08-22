@@ -32,6 +32,7 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-initialized-rate-policies-layout.py",
+    "tools/check-initialized-rate-pair-table-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
