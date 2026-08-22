@@ -26,7 +26,7 @@ SOURCE_EXTENSIONS = {
     ".ldh", ".x", ".toml", ".mk",
 }
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
-OWNER_FILES = {"src/dtcm.rs", "tools/check-measurement-workspace-layout.py"}
+OWNER_FILES = {"src/dtcm.rs", "tools/check-measurement-workspace-layout.py", "tools/check-initialized-ps-wake-guard-layout.py"}
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
@@ -46,7 +46,7 @@ REQUIRED_INVENTORY = (
     "scan_request_prefix: OpaqueBytes<0x01>",
     "scan_request_mode: SharedU8",
     "opaque_2a: OpaqueBytes<0x3e>",
-    "pre_measurement_workspace: OpaqueBytes<0x14>",
+    "ps_wake_guard_words: PsWakeGuardWords",
     "measurement_workspace: MeasurementWorkspace",
     "tx_aggregate_expiration_delta: TxAggregateExpirationDelta",
     "debug_command_descriptors: InitializedDebugCommandDescriptors",
@@ -70,7 +70,7 @@ REQUIRED_INVENTORY = (
     "offset_of!(MeasurementWorkspace, elapsed_timestamp_words) == 0x20",
     "offset_of!(MeasurementWorkspace, scan_request_prefix) == 0x28",
     "offset_of!(MeasurementWorkspace, scan_request_mode) == 0x29",
-    "offset_of!(InitializedVendorImage, pre_measurement_workspace) == 0x10e4",
+    "offset_of!(InitializedVendorImage, ps_wake_guard_words) == 0x10e4",
     "offset_of!(InitializedVendorImage, measurement_workspace) == 0x10f8",
     "offset_of!(InitializedVendorImage, tx_aggregate_expiration_delta) == 0x1160",
     "offset_of!(InitializedVendorImage, debug_command_descriptors) == 0x1164",

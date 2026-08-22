@@ -6353,3 +6353,66 @@ checks    /tmp/xr819-tx-gain-rssi-final-check.log
 manifest  tools/initialized-tx-gain-rssi-table-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.113 Power-save wake-guard words
+
+The opaque `pre_measurement_workspace: OpaqueBytes<0x14>` at
+`[0x040010e4, 0x040010f8)` becomes the exact private, non-derived
+`PsWakeGuardWords { word_10e4: SharedU32, opaque_04: OpaqueBytes<0x04>,
+word_10ec: SharedU32, word_10f0: SharedU32, opaque_10:
+OpaqueBytes<0x04> }` (size `0x14`, alignment 4).
+
+Accessor enumeration is complete by construction: a whole-binary scan found
+exactly three PC-relative loads of the two literal-pool words holding the
+root `0x040010e4` (`DAT_00004e9c`, `DAT_000145f4`, `DAT_00014890`):
+
+- `word_10e4`: vendor `ps_schedule_next_tbtt_wake` applies `*root + 10` as
+  the minimum guard on the computed TBTT wake deadline.
+- `word_10ec`: read twice inside vendor `task_143a6` (the scheduler event
+  task, whose jump table Ghidra could not recover — these branches were
+  found by the pool-load scan): summed with `word_10f0` plus `0x400` and
+  stored into the structure at `0x04008afc`, and doubled and subtracted from
+  a wake deadline bound.
+- `word_10f0`: only in that sum.
+
+The words at +0x04 and +0x10 have no observed accessor and stay exact
+`OpaqueBytes<0x04>`.
+
+One sanctioned linked literal is pinned: `mac::initialize_tx_pipe_state`
+writes `DURATION_QUANTUM_POINTERS + pipe * 4`; LLVM emits the loop with base
+word `0x040010e4` and negative register offsets (-16..-4), so the pool word
+VALUE lands inside this interval while every store targets the
+duration-quantum-pointers interval below. No byte of this record is written
+through it. No other production operation touches the interval; initial COPY
+values are loader-owned; no writer closure is claimed — computed, indirect,
+generic HIF/debug, vendor, IRQ/FIQ mutation remain possible.
+
+`tools/check-initialized-ps-wake-guard-layout.py` owns exactly
+`[0x040010e4, 0x040010f8)`. It source-pins the exact non-derived declaration,
+image field split, compile-time assertions, focused process-local test,
+physical boundaries `0x10e4/0x10ec/0x10f0/0x10f8`, and unchanged
+enclosing/global layouts. Its adversarial self-tests reject deleted/swapped
+compile-time and focused-test mappings, direct/transitive const/static/type/
+renamed-import/grouped-import aliases, constructor offsets, raw pointers, and
+operational APIs. It recognizes the measurement-workspace checker's renamed
+boundary assertion, and both the measurement-workspace and duration-quantum-
+pointers checkers' owner sets gained it for the shared boundaries.
+
+Focused default (242 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (243). Complete software-only `tools/check.sh`, the Thumb release
+build, the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-ps-wake-guard-final-check.log
+manifest  tools/initialized-ps-wake-guard-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

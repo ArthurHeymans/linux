@@ -69,6 +69,7 @@ python3 tools/check-initialized-rf-mode-halfword-table-layout.py
 python3 tools/check-initialized-register-write-lists-layout.py
 python3 tools/check-initialized-rf-scale-tables-layout.py
 python3 tools/check-initialized-tx-gain-rssi-table-layout.py
+python3 tools/check-initialized-ps-wake-guard-layout.py
 python3 tools/check-initialized-rate-pair-table-layout.py
 python3 tools/check-initialized-scheduler-tail-layout.py
 python3 tools/check-initialized-interface-2-radio-latch-layout.py
@@ -163,6 +164,7 @@ python3 tools/check-initialized-rf-mode-halfword-table-layout.py "$ELF"
 python3 tools/check-initialized-register-write-lists-layout.py "$ELF"
 python3 tools/check-initialized-rf-scale-tables-layout.py "$ELF"
 python3 tools/check-initialized-tx-gain-rssi-table-layout.py "$ELF"
+python3 tools/check-initialized-ps-wake-guard-layout.py "$ELF"
 python3 tools/check-initialized-rate-pair-table-layout.py "$ELF"
 python3 tools/check-initialized-scheduler-tail-layout.py "$ELF"
 python3 tools/check-initialized-interface-2-radio-latch-layout.py "$ELF"
@@ -659,6 +661,15 @@ if [[ -n "${XR819_INITIALIZED_RATE_PAIR_TABLE_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_RATE_PAIR_TABLE_PARENT_ELF" "$ELF"
 else
   echo "== initialized-rate-pair-table codegen gate skipped: set XR819_INITIALIZED_RATE_PAIR_TABLE_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
+fi
+
+if [[ -n "${XR819_PS_WAKE_GUARD_PARENT_ELF:-}" ]]; then
+  echo "== supplemental initialized-ps-wake-guard exact-parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-ps-wake-guard-codegen-manifest.json \
+    "$XR819_PS_WAKE_GUARD_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-ps-wake-guard codegen gate skipped: set XR819_PS_WAKE_GUARD_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
 fi
 
 if [[ -n "${XR819_TX_GAIN_RSSI_TABLE_PARENT_ELF:-}" ]]; then
