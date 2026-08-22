@@ -6222,3 +6222,73 @@ checks    /tmp/xr819-register-write-lists-final-check.log
 manifest  tools/initialized-register-write-lists-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.111 RF scale halfword tables
+
+The opaque region between the register-write lists and the measurement-area
+roots is narrowed: `register_write_lists_suffix: OpaqueBytes<0x214>`
+`[0x04000ec0, 0x040010d4)` becomes `pre_rf_scale_tables:
+OpaqueBytes<0xc8>` `[0x04000ec0, 0x04000f88)`, two exact private,
+non-derived `RfScaleHalfwordTable { entries: [SharedU16; 64] }` values
+(size `0x80`, alignment 2):
+
+- `rf_scale_table_a` `[0x04000f88, 0x04001008)`: rooted at literal-pool word
+  `DAT_00019614 = 0x04000f88`; vendor `rf_scale_by_tbl_a` computes
+  `(value * sample_i16) >> 5`.
+- `rf_scale_table_b` `[0x04001008, 0x04001088)`: same shape at
+  `DAT_00019614 + 0x80`; vendor `rf_scale_by_tbl_b`.
+
+The sole caller, `rf_dft_correlate_samples` (measurement DFT correlation),
+masks every running index with `& 0x3f` after each increment, proving the
+64-entry extent of both tables — stronger than the unchecked-index slices.
+`post_rf_scale_tables: OpaqueBytes<0x4c>` `[0x04001088, 0x040010d4)` keeps
+the pointer-target region consumed by `phy_select_rate_tables`
+(stores `0x040010a8 - 0x20/-0x18/+0x10` into phy state) and the
+`phy_compute_tx_gain_and_rssi` DATA root at `0x040010a8` opaque for later
+slices.
+
+One retained Rust consumer is pinned unchanged: `phy::rf_init_stage_a_mode0`
+mirrors vendor `rf_init_stage_a`'s non-primary-mode branch by storing the
+pointer VALUE `0x0400_1000` into RF SRAM state (`write_u32(BASE - 0x28,
+...)`). After LLVM inlines it into `prepare_rf_mode0_stage`, the pool word
+is attributed to that outer symbol; it is a stored pointer never dereferenced
+by retained code, so byte typing is unaffected. The aligned interval has no
+other accessor (whole-binary pool scan found only the `DAT_00019614` root;
+the ref map lists only `rf_scale_by_tbl_a/b` DATA targets).
+
+Initial COPY values are loader-owned; no writer closure is claimed —
+computed, indirect, generic HIF/debug, vendor, IRQ/FIQ mutation remain
+possible.
+
+`tools/check-initialized-rf-scale-tables-layout.py` owns exactly
+`[0x04000f88, 0x04001088)`. It source-pins the exact non-derived declaration,
+image field split, compile-time assertions, focused process-local test,
+physical boundaries `0x0f88/0x1008/0x1088`, neighbor sizes `0xc8`/`0x4c`,
+and unchanged enclosing/global layouts. Its adversarial self-tests reject
+deleted/swapped compile-time and focused-test mappings, direct/transitive
+const/static/type/renamed-import/grouped-import aliases, constructor offsets,
+raw pointers, and operational APIs. Its linked-literal multiset is derived
+from decoded PC-relative loads only and pins exactly the one sanctioned
+pointer-value store with its post-inlining symbol attribution; residuals are
+drift evidence, never writer closure. The register-write-lists checker's
+inventories were narrowed to stop at the shared `0x04000ec0` boundary so the
+two gates compose without overlap.
+
+Focused default (241 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (242). Complete software-only `tools/check.sh`, the Thumb release
+build, the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-rf-scale-tables-final-check.log
+manifest  tools/initialized-rf-scale-tables-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

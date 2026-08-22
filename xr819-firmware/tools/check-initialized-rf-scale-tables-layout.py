@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""Source/linked drift evidence for exactly [0x04000E48, 0x04000EC0).
+"""Source/linked drift evidence for exactly [0x04000F88, 0x04001088).
 
-Two adjacent {address, value} register-write lists interpreted by vendor
-reg_write_list_apply (iterate until address == 0xffffffff):
+Two adjacent 64-entry i16 RF scale tables read by vendor rf_dft_correlate_
+samples during measurement DFT correlation:
 
-- PhyCalSubstateRegisterWriteList [0x04000e48, 0x04000e90): eight pairs plus
-  terminator; rooted at DAT_000174ac and applied by phy_cal_apply_substate
-  when the substate byte at DAT_000174a8 (0x0400994c) + 2 equals 2.
-- DbgExpandRegisterWriteList [0x04000e90, 0x04000ec0): five pairs plus
-  terminator; rooted at DAT_000168d4 and applied by dbg_expand_byte_table
-  after copying the RF calibration payload to MMIO.
+- rf_scale_table_a [0x04000f88, 0x04001008): rooted at DAT_00019614, read as
+  (value * sample * 2^-(signed)) >> 5 by rf_scale_by_tbl_a.
+- rf_scale_table_b [0x04001008, 0x04001088): same shape at DAT_00019614 +
+  0x80, read by rf_scale_by_tbl_b.
 
-The retained rf_write_iq_corr_regs unchecked u32 lookahead reads the first
-address word of the phy-cal list (root documented in dtcm.rs). The pair
-counts are proven by the terminated lists in the recovered initialization
-snapshot; the initial COPY values themselves remain loader-owned and no
-writer closure is claimed: computed, indirect, generic HIF/debug, vendor,
-IRQ, and FIQ mutation remain possible. The linked-literal and decoded PC-relative-xref
-multisets are derived from decoded loads only and are pinned empty.
+The sole caller masks every index with & 0x3f after each increment, proving
+the 64-entry extent of both tables; the interval below (pre_rf_scale_tables)
+and above (post_rf_scale_tables, next direct root rf_init_stage_a DATA at
+0x040010a8 region / phy_select_rate_tables pointer targets at 0x04001088)
+bounds them exactly. Note: vendor rf_init_stage_a stores the pointer VALUE
+0x04001000 into RF SRAM state in the non-primary mode branch -- an opaque
+consumer path that changes no byte typing here.
+
+The initial COPY values are loader-owned; no writer closure is claimed:
+computed, indirect, generic HIF/debug, vendor, IRQ, and FIQ mutation remain
+possible. The linked-literal and decoded PC-relative-xref multisets are
+derived from decoded loads only and pinned empty.
 """
 
 from __future__ import annotations
@@ -31,8 +34,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04000E48, 0x04000EC0)
-OFFSETS = range(0xE48, 0xEC0)
+RANGE = (0x04000F88, 0x04001088)
+OFFSETS = range(0xF88, 0x1088)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc",
@@ -42,53 +45,50 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
-    "tools/check-initialized-register-write-lists-layout.py",
+    "tools/check-initialized-rf-scale-tables-layout.py",
 }
 ADJACENT_DECLARATIONS = {
-    "tools/check-initialized-iq-calibration-gain-indices-layout.py": "INITIALIZED_IQ_CALIBRATION_GAIN_INDICES_RANGE = (0x04000E18, 0x04000E48)",
+    "tools/check-initialized-register-write-lists-layout.py": "(0x04000E48, 0x04000EC0)",
 }
-SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
-SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
+SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
+    "src/phy.rs": {"write_u32(BASE - 0x28, 0x0400_1000);"},
+}
+SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
+    "src/phy.rs": {"rf_init_stage_a_mode0"},
+}
 # No linked literals fall inside this interval: the guard word is reached
 # relative to the scheduler timer list head root (owned by the adjacent
 # checker), so both multisets are pinned empty.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
-STRUCT = '#[repr(C, align(4))] struct PhyCalSubstateRegisterWriteList { writes: [RegisterWrite; 8], terminator_address: SharedU32, terminator_opaque: SharedU32 } #[repr(C, align(4))] struct DbgExpandRegisterWriteList { writes: [RegisterWrite; 5], terminator_address: SharedU32, terminator_opaque: SharedU32 }'
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001000: 1})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
+    ("_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy22prepare_rf_mode0_stage", 0x04001000): 1,
+})
+STRUCT = '#[repr(C, align(2))] struct RfScaleHalfwordTable { entries: [SharedU16; 64] }'
 REQUIRED = (
     STRUCT,
-    "phy_cal_substate_register_write_list: PhyCalSubstateRegisterWriteList",
-    "dbg_expand_register_write_list: DbgExpandRegisterWriteList",
-    "assert_type_layout!(SharedU32, 0x04, 4)",
-    "assert_type_layout!(PhyCalSubstateRegisterWriteList, 0x48, 4)",
-    "offset_of!(PhyCalSubstateRegisterWriteList, writes) == 0",
-    "size_of::<[RegisterWrite; 8]>() == 0x40",
-    "offset_of!(PhyCalSubstateRegisterWriteList, terminator_address) == 0x40",
-    "assert_type_layout!(DbgExpandRegisterWriteList, 0x30, 4)",
-    "offset_of!(DbgExpandRegisterWriteList, writes) == 0",
-    "size_of::<[RegisterWrite; 5]>() == 0x28",
-    "offset_of!(DbgExpandRegisterWriteList, terminator_address) == 0x28",
-    "offset_of!(InitializedVendorImage, phy_cal_substate_register_write_list) == 0x0e48",
-    "offset_of!(InitializedVendorImage, dbg_expand_register_write_list) == 0x0e90",
+    "rf_scale_table_a: RfScaleHalfwordTable",
+    "rf_scale_table_b: RfScaleHalfwordTable",
+    "pre_rf_scale_tables: OpaqueBytes<0xc8>",
+    "post_rf_scale_tables: OpaqueBytes<0x4c>",
+    "assert_type_layout!(SharedU16, 0x02, 2)",
+    "assert_type_layout!(RfScaleHalfwordTable, 0x80, 2)",
+    "offset_of!(RfScaleHalfwordTable, entries) == 0",
     "offset_of!(InitializedVendorImage, pre_rf_scale_tables) == 0x0ec0",
+    "size_of::<OpaqueBytes<0xc8>>() == 0xc8",
+    "offset_of!(InitializedVendorImage, rf_scale_table_a) == 0x0f88",
+    "offset_of!(InitializedVendorImage, rf_scale_table_b) == 0x1008",
+    "offset_of!(InitializedVendorImage, post_rf_scale_tables) == 0x1088",
+    "size_of::<OpaqueBytes<0x4c>>() == 0x4c",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
     "fn register_write_lists_after_iq_gain_indices_are_exact()",
-    "size_of::<PhyCalSubstateRegisterWriteList>(), 0x48",
-    "align_of::<PhyCalSubstateRegisterWriteList>(), 4",
-    "size_of::<[RegisterWrite; 8]>(), 0x40",
-    "terminator_address), 0x40",
-    "cal, 0x0400_0e48",
-    "size_of::<PhyCalSubstateRegisterWriteList>(), 0x0400_0e90",
-    "size_of::<DbgExpandRegisterWriteList>(), 0x30",
-    "align_of::<DbgExpandRegisterWriteList>(), 4",
-    "size_of::<[RegisterWrite; 5]>(), 0x28",
-    "terminator_address), 0x28",
-    "dbg, 0x0400_0e90",
-    "size_of::<DbgExpandRegisterWriteList>(), 0x0400_0ec0",
-    "pre_rf_scale_tables), 0x0400_0ec0",
-    "DURATION_QUANTUM_POINTERS.get(), 0x0400_10d4",
+    "size_of::<RfScaleHalfwordTable>(), 0x80",
+    "align_of::<RfScaleHalfwordTable>(), 2",
+    "rf_scale_table_a), 0x0400_0f88",
+    "size_of::<RfScaleHalfwordTable>(), 0x0400_1008",
+    "rf_scale_table_b), 0x0400_1008",
+    "size_of::<RfScaleHalfwordTable>(), 0x0400_1088",
     "size_of::<InitializedVendorImage>(), 0x2078",
     "align_of::<InitializedVendorImage>(), 4",
     "size_of::<DtcmLayout>(), DTCM_STATE_SIZE",
@@ -96,21 +96,18 @@ REQUIRED = (
     "size_of::<SharedDtcmState>(), DTCM_STATE_SIZE",
     "align_of::<SharedDtcmState>(), 4",
 )
-PHYSICAL = (0x04000E48, 0x04000E90, 0x04000EC0)
+PHYSICAL = (0x04000F88, 0x04001008, 0x04001088)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    "assert!(core::mem::offset_of!(InitializedVendorImage, phy_cal_substate_register_write_list) == 0x0e48);",
-    "assert_type_layout!(PhyCalSubstateRegisterWriteList, 0x48, 4);",
-    "assert!(core::mem::offset_of!(PhyCalSubstateRegisterWriteList, writes) == 0);",
-    "assert!(core::mem::size_of::<[RegisterWrite; 8]>() == 0x40);",
-    "assert!(core::mem::offset_of!(PhyCalSubstateRegisterWriteList, terminator_address) == 0x40);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, phy_cal_substate_register_write_list) + core::mem::size_of::<PhyCalSubstateRegisterWriteList>() == 0x0400_0e90);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, dbg_expand_register_write_list) == 0x0e90);",
-    "assert_type_layout!(DbgExpandRegisterWriteList, 0x30, 4);",
-    "assert!(core::mem::offset_of!(DbgExpandRegisterWriteList, writes) == 0);",
-    "assert!(core::mem::size_of::<[RegisterWrite; 5]>() == 0x28);",
-    "assert!(core::mem::offset_of!(DbgExpandRegisterWriteList, terminator_address) == 0x28);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, dbg_expand_register_write_list) + core::mem::size_of::<DbgExpandRegisterWriteList>() == 0x0400_0ec0);",
     "assert!(core::mem::offset_of!(InitializedVendorImage, pre_rf_scale_tables) == 0x0ec0);",
+    "assert!(core::mem::size_of::<OpaqueBytes<0xc8>>() == 0xc8);",
+    "assert_type_layout!(RfScaleHalfwordTable, 0x80, 2);",
+    "assert!(core::mem::offset_of!(RfScaleHalfwordTable, entries) == 0);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) == 0x0f88);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + core::mem::size_of::<RfScaleHalfwordTable>() == 0x0400_1008);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) == 0x1008);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) + core::mem::size_of::<RfScaleHalfwordTable>() == 0x0400_1088);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, post_rf_scale_tables) == 0x1088);",
+    "assert!(core::mem::size_of::<OpaqueBytes<0x4c>>() == 0x4c);",
 )
 FOCUSED_TEST_INVENTORY = (
     'let image = DTCM_STATE_BASE;',
@@ -130,6 +127,21 @@ FOCUSED_TEST_INVENTORY = (
     'assert_eq!(core::mem::offset_of!(DbgExpandRegisterWriteList, terminator_address), 0x28);',
     'assert_eq!(dbg, 0x0400_0e90);',
     'assert_eq!(dbg + core::mem::size_of::<DbgExpandRegisterWriteList>(), 0x0400_0ec0);',
+    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, pre_rf_scale_tables), 0x0400_0ec0);',
+    'assert_eq!(core::mem::size_of::<OpaqueBytes<0xc8>>(), 0xc8);',
+    'assert_eq!(core::mem::size_of::<RfScaleHalfwordTable>(), 0x80);',
+    'assert_eq!(core::mem::align_of::<RfScaleHalfwordTable>(), 2);',
+    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a), 0x0400_0f88);',
+    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + core::mem::size_of::<RfScaleHalfwordTable>(), 0x0400_1008);',
+    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b), 0x0400_1008);',
+    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) + core::mem::size_of::<RfScaleHalfwordTable>(), 0x0400_1088);',
+    'assert_eq!(DURATION_QUANTUM_POINTERS.get(), 0x0400_10d4);',
+    'assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078);',
+    'assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4);',
+    'assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE);',
+    'assert_eq!(core::mem::align_of::<DtcmLayout>(), 4);',
+    'assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE);',
+    'assert_eq!(core::mem::align_of::<SharedDtcmState>(), 4);',
 )
 
 
@@ -224,18 +236,18 @@ def check_exact_inventory_regression(source: str) -> None:
 
     compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[5])
     compile_swap = normalized(compile_scope).replace(
-        compile_item, compile_item.replace("== 0x0400_0e90", "== 0x0400_0e88"), 1
+        compile_item, compile_item.replace("== 0x0400_1008", "== 0x0400_1006"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[15])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[21])
     test_address_swap = normalized(test_scope).replace(
         test_address_item,
-        swapped_once(test_address_item, "0x0400_0e90", "0x0400_0e88"),
+        swapped_once(test_address_item, "0x0400_0f88", "0x0400_0f86"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[16])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[24])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
-        swapped_once(test_extent_item, "0x0400_0ec0", "0x0400_0eb8"),
+        swapped_once(test_extent_item, "0x0400_1088", "0x0400_1086"),
         1,
     )
 
@@ -282,7 +294,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"MacPipeTail", "RegisterWriteListsView", "register_write_lists",
+    views = {"MacPipeTail", "RfScaleHalfwordTable", "rf_scale_table_a", "rf_scale_table_b",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -307,19 +319,19 @@ def functions_consuming_family(code: str, views: set[str]) -> list[str]:
 
 def check_alias_tracking_regression() -> None:
     fixtures = (
-        ("const ROOT: usize = register_write_lists; const NEXT: usize = ROOT; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ROOT", "NEXT"}, ["leak"]),
-        ("static ROOT: usize = 0x0400_0e90; static NEXT: usize = ROOT; fn leak() -> usize { NEXT }", {"ROOT", "NEXT"}, ["leak"]),
-        ("type Hidden = RegisterWriteListsView; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
-        ("use crate::dtcm::RegisterWriteListsView as Hidden; const ROOT: usize = register_write_lists; fn leak(_: Hidden) -> usize { ROOT }", {"Hidden", "ROOT"}, ["leak"]),
-        ("use crate::dtcm::{RegisterWriteListsView as Hidden, register_write_lists as Root}; const NEXT: usize = Root; fn leak(_: Hidden) -> usize { NEXT }", {"Hidden", "Root", "NEXT"}, ["leak"]),
-        ("use crate::{dtcm::{RegisterWriteListsView as Hidden}}; fn leak(_: Hidden) {}", {"Hidden"}, ["leak"]),
-        ("fn leak() -> *mut u32 { (DTCM_STATE_BASE + 0xe70) as *mut u32 }", set(), ["leak"]),
-        ("const ENTRY: usize = DTCM_STATE_BASE + 0xe70; const NEXT: usize = ENTRY; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn leak() -> *mut u32 { DtcmAddress::from_offset(0xe70).cast_mut() }", set(), ["leak"]),
-        ("const ENTRY: DtcmAddress = DtcmAddress::from_offset(0xe70); const NEXT: DtcmAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn leak() -> usize { DtcmAddress::from_offset_unchecked(0xe70).get() }", set(), ["leak"]),
-        ("use crate::{dtcm::{DtcmAddress as HiddenAddress}}; const ENTRY: HiddenAddress = HiddenAddress::from_offset(0xe70); const NEXT: HiddenAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_0e90 as *mut u32, 0) } }", set(), ["reset"]),
+        ("const ROOT: usize = rf_scale_table_a; const NEXT: usize = ROOT; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ROOT", "NEXT"}, ["leak"]),
+        ("static ROOT: usize = 0x0400_1008; static NEXT: usize = ROOT; fn leak() -> usize { NEXT }", {"ROOT", "NEXT"}, ["leak"]),
+        ("type Hidden = RfScaleHalfwordTable; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
+        ("use crate::dtcm::RfScaleHalfwordTable as Hidden; const ROOT: usize = rf_scale_table_a; fn leak(_: Hidden) -> usize { ROOT }", {"Hidden", "ROOT"}, ["leak"]),
+        ("use crate::dtcm::{RfScaleHalfwordTable as Hidden, rf_scale_table_a as Root}; const NEXT: usize = Root; fn leak(_: Hidden) -> usize { NEXT }", {"Hidden", "Root", "NEXT"}, ["leak"]),
+        ("use crate::{dtcm::{RfScaleHalfwordTable as Hidden}}; fn leak(_: Hidden) {}", {"Hidden"}, ["leak"]),
+        ("fn leak() -> *mut u32 { (DTCM_STATE_BASE + 0xfa8) as *mut u32 }", set(), ["leak"]),
+        ("const ENTRY: usize = DTCM_STATE_BASE + 0xfa8; const NEXT: usize = ENTRY; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn leak() -> *mut u32 { DtcmAddress::from_offset(0xfa8).cast_mut() }", set(), ["leak"]),
+        ("const ENTRY: DtcmAddress = DtcmAddress::from_offset(0xfa8); const NEXT: DtcmAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn leak() -> usize { DtcmAddress::from_offset_unchecked(0xfa8).get() }", set(), ["leak"]),
+        ("use crate::{dtcm::{DtcmAddress as HiddenAddress}}; const ENTRY: HiddenAddress = HiddenAddress::from_offset(0xfa8); const NEXT: HiddenAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_1008 as *mut u32, 0) } }", set(), ["reset"]),
     )
     for fixture, expected_aliases, expected_functions in fixtures:
         views, _ = family_aliases(fixture)
@@ -353,20 +365,12 @@ def check_source() -> None:
         spelling = f"0x{physical >> 16:04x}_{physical & 0xffff:04x}"
         if spelling not in source:
             failures.append(f"src/dtcm.rs: missing physical address/boundary {spelling}")
-    cal_declaration = re.search(r"#\[repr\(C, align\(4\)\)\] struct PhyCalSubstateRegisterWriteList \{[^}]*\}", source)
-    dbg_declaration = re.search(r"#\[repr\(C, align\(4\)\)\] struct DbgExpandRegisterWriteList \{[^}]*\}", source)
-    expected_declarations = (
-        "#[repr(C, align(4))] struct PhyCalSubstateRegisterWriteList { writes: [RegisterWrite; 8], terminator_address: SharedU32, terminator_opaque: SharedU32 }",
-        "#[repr(C, align(4))] struct DbgExpandRegisterWriteList { writes: [RegisterWrite; 5], terminator_address: SharedU32, terminator_opaque: SharedU32 }",
-    )
-    if (cal_declaration is None or dbg_declaration is None
-            or normalized(cal_declaration.group()) != normalized(expected_declarations[0])
-            or normalized(dbg_declaration.group()) != normalized(expected_declarations[1])):
-        failures.append("src/dtcm.rs: register write lists must be the exact private non-derived inventory")
-    if (source.count("struct PhyCalSubstateRegisterWriteList") != 1
-            or source.count("struct DbgExpandRegisterWriteList") != 1
-            or "post_initialized_iq_calibration_gain_indices" in source):
-        failures.append("src/dtcm.rs: removed opaque split or duplicate register write lists remain")
+    declaration = re.search(r"#\[repr\(C, align\(2\)\)\] struct RfScaleHalfwordTable \{[^}]*\}", source)
+    if declaration is None or normalized(declaration.group()) != normalized(STRUCT) or "derive" in declaration.group():
+        failures.append("src/dtcm.rs: RfScaleHalfwordTable must be the exact private non-derived inventory")
+    if (source.count("struct RfScaleHalfwordTable") != 1
+            or "register_write_lists_suffix" in source):
+        failures.append("src/dtcm.rs: removed opaque split or duplicate rf scale tables remain")
     for relative, exact in ADJACENT_DECLARATIONS.items():
         if exact not in (ROOT / relative).read_text():
             failures.append(f"{relative}: adjacent checker range changed from {exact}")
@@ -383,7 +387,7 @@ def check_source() -> None:
             failures.append(f"additional scheduler tail {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
     if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
-        failures.append("production impl for RegisterWriteListsView is forbidden")
+        failures.append("production impl for RfScaleHalfwordTable is forbidden")
     for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
         if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
             failures.append(f"direct scheduler tail const/static alias is forbidden: {match.group(1)}")
@@ -392,12 +396,12 @@ def check_source() -> None:
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b(?!\s*:)", re.I)
     for relative, code in rust.items():
         # start_scheduler_timer (tx.rs) is the retained Rust translation of
-        # vendor timer_start; it reads exactly the guard word 0x0400_0e90 that
+        # vendor timer_start; it reads exactly the guard word 0x0400_1008 that
         # timer_start itself reads, via the single pinned consumer line below.
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:
-            failures.append(f"{relative}: unsanctioned production function over register write list storage: {function}")
+            failures.append(f"{relative}: unsanctioned production function over rf scale table storage: {function}")
         sanctioned_lines = SANCTIONED_CONSUMER_LINES.get(relative, set())
         for line_number, line in enumerate(code.splitlines(), 1):
             if normalized(line) in sanctioned_lines:
@@ -425,7 +429,7 @@ def check_source() -> None:
                     continue
                 failures.append(f"{relative}:{line_number}: scheduler tail physical literal {match.group()} is outside reviewed owners")
     if failures: raise SystemExit("\n".join(failures))
-    print(f"INITIALIZED REGISTER WRITE LISTS SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"RF SCALE TABLES SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -458,9 +462,9 @@ def check_elf(path: Path, dump: bool) -> None:
         print(f"ALLOWED_DECODED_XREFS={dict(sorted(xrefs.items()))!r}")
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
-        raise SystemExit(f"INITIALIZED REGISTER WRITE LISTS LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+        raise SystemExit(f"RF SCALE TABLES LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
     residual_literals, residual_xrefs = literals - ALLOWED_LINKED_LITERALS, xrefs - ALLOWED_DECODED_XREFS
-    print(f"INITIALIZED REGISTER WRITE LISTS LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
+    print(f"RF SCALE TABLES LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
 
 
 def main() -> None:
@@ -476,4 +480,4 @@ def main() -> None:
 if __name__ == "__main__":
     try: main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"initialized-register-write-lists drift gate failed: {error}")
+        raise SystemExit(f"initialized-rf-scale-tables drift gate failed: {error}")
