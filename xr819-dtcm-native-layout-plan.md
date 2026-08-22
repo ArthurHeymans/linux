@@ -5934,3 +5934,78 @@ image log /tmp/xr819-mac-pipe-tails-image.log
 manifest  tools/initialized-mac-pipe-tails-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.107 Fixed RF mode halfword table
+
+The initialized vendor COPY-image interval `0x04000dd0..0x04000e18` is now
+structurally represented by the exact private, non-derived
+`RfModeHalfwordTable`, size `0x48`, alignment 2, whose `entries:
+[SharedU16; 36]` occupies the whole interval. The preceding opaque island
+shrinks from `OpaqueBytes<0x70>` to `OpaqueBytes<0x28>` at
+`0x04000da8..0x04000dd0` (the self-terminating TLV dispatch records passed by
+`tlv_dispatch_default`; record count not statically evidenced, left opaque);
+`InitializedIqCalibrationGainIndices` remains adjacent at `0x04000e18`.
+`InitializedVendorImage` remains size `0x2078`, alignment 4; `DtcmLayout` and
+`SharedDtcmState` remain size `0xa000`, alignment 4; the plan's opaque/island
+size sum assertion is updated to `0x28 + 0x48` in place of `0x70`.
+
+The schema is rooted at literal-pool word `DAT_00018c2c = 0x04000dd0`, loaded
+only at PCs `0x188a4/0x1892c` inside vendor `rf_save_band_regs`: both profile
+branches compute `*(u16 *)(0x04000dd0 + (snapshot_mode & 0xff) * 2)` — an
+unchecked byte index with stride 2 — and derive synth parameters as
+`value * 0x400 + offset`. A whole-binary scan found no other aligned .text
+word in `[0x04000dd0, 0x04000e18)` and no other accessor. The interval is
+bounded below by the TLV island and above by the independently rooted IQ
+calibration gain indices; no bound on valid indices is claimed, so the table
+is physical occupation of exactly 36 halfwords, not a claim that every index
+is valid.
+
+The retained Rust consumer is migrated: `phy.rs`
+`run_vendor_dynamic_mode_calibration` previously read the raw literal
+`0x0400_0de8 as *const u16` (the fixed mode-zero entry, snapshot field 12)
+and now reads `(RF_MODE_HALFWORD_TABLE.get() + 12 * 2) as *const u16`, the
+exact pattern already accepted for `PIPE_RETRY_TIMING_TABLE`. LLVM folds the
+typed constant to the identical aligned literal `0x04000de8` in the identical
+function, proven by complete-file identity: the candidate ELF remains
+byte-identical to the qualified parent (`cmp` clean). This is the slice's one
+narrow address API, required by an existing production consumer.
+
+The initial COPY values are unknown (the vendor loader initializes this
+interval; the flat custom image does not reproduce those bytes), writer
+closure is incomplete: vendor, IRQ/FIQ, computed, indirect, and generic
+HIF/debug mutation remain possible. No pointer/reference/slice/iterator/
+reset/init API was added beyond the single root constant above.
+
+`tools/check-initialized-rf-mode-halfword-table-layout.py` owns exactly
+`[0x04000dd0, 0x04000e18)`. It source-pins the exact non-derived declaration,
+image split, compile-time assertions (including the folded-address assert),
+focused process-local test, physical boundaries `0x0da8/0x0dd0/0x0de8/
+0x0e16/0x0e18`, and unchanged enclosing/global layouts. Its adversarial
+self-tests reject deleted/swapped compile-time and focused-test mappings,
+direct/transitive const/static/type/renamed-import/grouped-import aliases,
+constructor offsets, raw pointers, and operational APIs; the sanctioned root
+constant and its single consumer line are pinned explicitly, and every other
+production function over the family is rejected. It was added to the IQ
+calibration checker's owner set for the shared `0x04000e18` boundary literal.
+Its linked-literal multiset is pinned to exactly the one sanctioned fold with
+residual literals and decoded xrefs pinned empty; residuals are drift
+evidence, never writer closure.
+
+Focused default (239 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass. Complete software-only `tools/check.sh`, the Thumb release build,
+the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-rf-mode-halfword-table-final-check.log
+manifest  tools/initialized-rf-mode-halfword-table-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

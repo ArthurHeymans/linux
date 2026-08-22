@@ -1999,7 +1999,7 @@ unsafe fn run_vendor_dynamic_mode_calibration() {
     // into the halfword table at 0x04000dd0. The DFT phase seeds and all search
     // steps likewise come directly from the stack image built there.
     let control_configuration = 0x07ff_0110_u32;
-    let table_value = unsafe { (0x0400_0de8 as *const u16).read_volatile() as u32 };
+    let table_value = unsafe { ((crate::dtcm::RF_MODE_HALFWORD_TABLE.get() + 12 * 2) as *const u16).read_volatile() as u32 };
     let sample_width_shift = unsafe { (crate::dtcm::phy_sample_width().get() as *const u16).read_volatile() as u8 };
     let configuration = DynamicIqHardwareCalibrationConfiguration {
         alternate_profile: false,
