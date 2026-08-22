@@ -54,6 +54,7 @@ OWNER_FILES = {
     "tools/check-debug-console-layout.py",
     "tools/check-initialized-measurement-control-reset-words-layout.py",
     "tools/check-ampdu-telemetry-layout.py",
+    "tools/check-initialized-retry-path-counter-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
@@ -192,8 +193,11 @@ def in_family(value: int) -> bool:
 
 
 def check_source() -> None:
-    paths = source_paths()
     failures: list[str] = []
+    retry_checker = (ROOT / "tools/check-initialized-retry-path-counter-layout.py").read_text()
+    if "(0x040012C8, 0x040012CC)" not in retry_checker:
+        failures.append("adjacent retry-path-counter checker no longer begins at 0x040012c8")
+    paths = source_paths()
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
         if relative in OWNER_FILES:

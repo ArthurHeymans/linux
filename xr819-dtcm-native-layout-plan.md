@@ -5273,9 +5273,10 @@ tables with neutral names and offsets: `table_00 +0x000`, `table_01 +0x020`,
 extent `0x20`, with physical roots `0x040012cc`, `0x040012ec`, `0x0400130c`,
 `0x0400132c`, `0x0400134c`, `0x0400136c`, `0x0400138c`, `0x040013ac`,
 `0x040013cc`, and `0x040013ec`. The final boundary remains `0x0400140c`.
-The preceding word `0x040012c8..0x040012cc` remains opaque and unchanged;
-A-MPDU telemetry still ends at `0x040012c8`, and A-MPDU completion control
-still begins at `0x0400140c`.
+The preceding word `0x040012c8..0x040012cc` is independently represented by
+the fixed retry-path quarantine view in Appendix A.100; A-MPDU telemetry still
+ends at `0x040012c8`, and A-MPDU completion control still begins at
+`0x0400140c`.
 
 The independent map inventory at `/tmp/xr819-dtcm-refs.out:263-282` pins every
 table root with paired accesses and pins the next decoded root at lines 283-284.
@@ -5291,8 +5292,9 @@ accesses only, not exclusive semantics or writer closure. The ten roots' exact
 `0x20` spacing, u32 width, four-byte stride, and eight-entry mask establish the
 complete interior shape without evidence-free bytes.
 
-The old `OpaqueBytes<0x144>` image suffix was split into the still-opaque
-`OpaqueBytes<0x04>` predecessor and the typed quarantine bank. Vendor COPY
+The old `OpaqueBytes<0x144>` image suffix was first split into a four-byte
+predecessor and the typed quarantine bank; Appendix A.100 now independently
+decodes that predecessor without changing this bank's range. Vendor COPY
 initialization is retained; no initialization, reset, pointer, reference, safe
 reference, value accessor, read/write method, slice, iterator, generic offset,
 or semantic production API was added. Vendor code, IRQ/FIQ paths, and generic
@@ -5466,4 +5468,67 @@ ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
 packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
 checks    /tmp/xr819-configuration-apply-flags-check.log
 manifest  tools/initialized-configuration-apply-flags-codegen-manifest.json
+```
+
+### A.100 Fixed retry-path counter word
+
+The initialized vendor COPY-image word `0x040012c8..0x040012cc` is now
+structurally represented by the exact private, non-derived `RetryPathCounter`,
+size `0x04` and alignment 4. Its sole field, `count +0x00`, is one `SharedU32`
+at physical address `0x040012c8`. `AmpduTelemetryCounters` still ends exactly
+at `0x040012c8`, and `PerTidTelemetryBank` still begins at `0x040012cc` and owns
+only its unchanged `0x140`-byte range. `InitializedVendorImage` remains size
+`0x2078`, alignment 4; `DtcmLayout` and `SharedDtcmState` remain size `0xa000`,
+alignment 4.
+
+The complete retained direct-target inventory at `/tmp/xr819-dtcm-refs.out:
+261-262` records a 32-bit read at PC `0x000095fc` and a 32-bit write at PC
+`0x00009600`, both in `txp_pipe_tx_done_retry`. The corresponding retained body
+at `xr819-decompilation/annotated-main.c:11370-11374` performs the full-width
+read, wrapping increment, and full-width write of `DAT_000098cc + 0x28`, then
+increments the separate `pbVar5 + 8` word, then assigns `local_1c = 1`, in that
+order. Lines 11230-11266 establish only the observed TX-done/retry-path role.
+The vendor COPY operation still initializes the containing interval, but this
+word's initial value is unknown. Generic HIF/debug access and vendor, IRQ, or
+FIQ mutation remain possible, so the evidence does not establish writer
+closure or exclusive semantics.
+
+`SharedU32` remains the existing `UnsafeCell<MaybeUninit<u32>>`-backed shared
+quarantine view. No retained RMW was translated, and no production literal,
+address constant, accessor, pointer conversion, reference, read/write/reset or
+initialization API, generic offset, slice, iterator, or ownership claim was
+added. In particular, no safe reference to vendor/IRQ/FIQ-mutated state is
+created, and unknown neighboring bytes and extents remain opaque.
+
+`tools/check-initialized-retry-path-counter-layout.py` owns exactly
+`[0x040012c8, 0x040012cc)`. It pins the exact declaration and image replacement,
+compile-time and focused-test inventories, exact field address and boundaries,
+and unchanged enclosing layouts. It rejects derives, duplicate and old opaque
+declarations, operational APIs, and direct or transitive const/static/type,
+renamed or grouped import, constructor, and raw-pointer aliases through
+adversarial self-tests. Both the physical address and every DTCM-relative byte
+offset in the word are source-gated. Its aligned linked-literal and decoded
+PC-relative-xref multisets are empty; that emptiness is drift evidence, never
+writer closure. `check-ampdu-telemetry-layout.py` retains only
+`[0x040012a0, 0x040012c8)`, while
+`check-initialized-per-tid-telemetry-bank-layout.py` retains only
+`[0x040012cc, 0x0400140c)`; both recognize the new exact adjacent owner without
+broadening their ownership.
+
+Focused default and `vendor-host-tx-diagnostics` process-local tests,
+standalone source and linked checker modes, complete software-only
+`tools/check.sh`, the Thumb release build and exact-parent codegen gate, and a
+fresh OTA packing pass all succeed. The exact-parent manifest is supplemental;
+complete-file identity confirms no binary drift. All exact volatile widths,
+MMIO/barrier/interrupt order, wrapping/unchecked arithmetic, initialization
+order, request ownership, and all 30 HIF inputs are unchanged. TALA relocation
+and `0x04002984..0x04003050` were untouched. No target or hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-retry-path-counter-check.log
+          bbb5e8a95d5fcaf33467dca7ac4d8093fedc090144cd47842162222c04a7b8d5
+manifest  tools/initialized-retry-path-counter-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```

@@ -35,6 +35,7 @@ python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
 python3 tools/check-initialized-hif-control-layout.py
 python3 tools/check-ampdu-telemetry-layout.py
+python3 tools/check-initialized-retry-path-counter-layout.py
 python3 tools/check-initialized-per-tid-telemetry-bank-layout.py
 python3 tools/check-initialized-tx-confirm-aggregation-state-layout.py
 python3 tools/check-initialized-configuration-apply-flags-layout.py
@@ -108,6 +109,7 @@ python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
 python3 tools/check-initialized-hif-control-layout.py "$ELF"
 python3 tools/check-ampdu-telemetry-layout.py "$ELF"
+python3 tools/check-initialized-retry-path-counter-layout.py "$ELF"
 python3 tools/check-initialized-per-tid-telemetry-bank-layout.py "$ELF"
 python3 tools/check-initialized-tx-confirm-aggregation-state-layout.py "$ELF"
 python3 tools/check-initialized-configuration-apply-flags-layout.py "$ELF"

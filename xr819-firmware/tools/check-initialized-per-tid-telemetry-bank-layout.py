@@ -30,6 +30,7 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-initialized-per-tid-telemetry-bank-layout.py",
+    "tools/check-initialized-retry-path-counter-layout.py",
 }
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
@@ -41,11 +42,11 @@ STRUCT = (
 )
 REQUIRED = (
     STRUCT,
-    "pre_per_tid_telemetry_bank: OpaqueBytes<0x04>, per_tid_telemetry_bank: PerTidTelemetryBank",
+    "retry_path_counter: RetryPathCounter, per_tid_telemetry_bank: PerTidTelemetryBank",
     "assert_type_layout!(SharedU32, 0x04, 4)",
     "assert_type_layout!(PerTidTelemetryBank, 0x140, 4)",
     "size_of::<[SharedU32; 8]>() == 0x20",
-    "offset_of!(InitializedVendorImage, pre_per_tid_telemetry_bank) == 0x12c8",
+    "offset_of!(InitializedVendorImage, retry_path_counter) == 0x12c8",
     "offset_of!(InitializedVendorImage, per_tid_telemetry_bank) == 0x12cc",
     "offset_of!(InitializedVendorImage, ampdu_completion_control) == 0x140c",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
@@ -56,8 +57,8 @@ REQUIRED = (
     "align_of::<PerTidTelemetryBank>(), 4",
     "size_of::<[SharedU32; 8]>() / core::mem::size_of::<SharedU32>(), 8",
     "roots.windows(2)",
-    "pre_per_tid_telemetry_bank), 0x0400_12c8",
-    "size_of::<OpaqueBytes<0x04>>(), 4",
+    "retry_path_counter), 0x0400_12c8",
+    "size_of::<RetryPathCounter>(), 4",
     "let bank = image + core::mem::offset_of!(InitializedVendorImage, per_tid_telemetry_bank)",
     "AMPDU_TELEMETRY_COUNTERS.get() + core::mem::size_of::<AmpduTelemetryCounters>(), 0x0400_12c8",
     "AMPDU_COMPLETION_CONTROL.get(), 0x0400_140c",
@@ -227,12 +228,15 @@ def check_source() -> None:
     declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\]\s*struct\s+PerTidTelemetryBank\s*\{[^}]*\}", source)
     if declaration is None or normalized(declaration.group()) != normalized(STRUCT) or "derive" in declaration.group():
         failures.append("src/dtcm.rs: PerTidTelemetryBank must be the exact private non-derived inventory")
-    if source.count("struct PerTidTelemetryBank") != 1 or "OpaqueBytes<0x144>" in source:
+    if source.count("struct PerTidTelemetryBank") != 1 or "OpaqueBytes<0x144>" in source or "pre_per_tid_telemetry_bank:" in source:
         failures.append("src/dtcm.rs: old opaque extent or duplicate bank remains")
     telemetry_checker = (ROOT / "tools/check-ampdu-telemetry-layout.py").read_text()
     completion_checker = (ROOT / "tools/check-ampdu-completion-control-layout.py").read_text()
     if "(0x040012A0, 0x040012C8)" not in telemetry_checker:
         failures.append("adjacent A-MPDU telemetry checker no longer ends at 0x040012c8")
+    retry_checker = (ROOT / "tools/check-initialized-retry-path-counter-layout.py").read_text()
+    if "(0x040012C8, 0x040012CC)" not in retry_checker:
+        failures.append("adjacent retry-path-counter checker no longer owns exactly 0x040012c8..0x040012cc")
     if "(0x0400140C, 0x04001410)" not in completion_checker:
         failures.append("adjacent A-MPDU completion-control checker no longer begins at 0x0400140c")
     paths = source_paths()
