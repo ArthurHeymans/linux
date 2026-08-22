@@ -5207,3 +5207,54 @@ checks    /tmp/xr819-measurement-dwell-timer-final-check.log
 manifest  tools/initialized-measurement-dwell-timer-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.96 Fixed measurement-control reset words
+
+The initialized COPY-image interval `0x04001294..0x040012a0` is now represented
+by three separate `SharedU32` quarantine fields at tail offsets `+0x54`,
+`+0x58`, and `+0x5c` (physical `0x04001294`, `0x04001298`, and
+`0x0400129c`). Separate words deliberately avoid claiming an array, richer
+record, or individual semantics. Combining the reference-map PCs with
+`measure_ctl_reset` fixes its three full-word zero stores in execution order as
+`0x04001294`, `0x0400129c`, then `0x04001298`; Rust does not translate,
+invoke, or reorder them. There are no evidenced readers and no writer closure.
+The COPY-image initial values remain unknown and must not be inferred to be
+zero.
+
+The preceding `0x04001290..0x04001294` remains four opaque bytes: only the byte
+at `0x04001290` has separate JOIN/beacon evidence, while the other three bytes
+have no exact evidence. The enclosing `InitializedMultiVifBeaconTimerTail`
+remains based at `0x04001240`, size `0x60`, alignment 4; the dwell timer still
+ends at `0x04001290`, and A-MPDU storage still begins at `0x040012a0`. No
+pointer, reference, safe reference, value, accessor, function, slice, iterator,
+initialization, validation, read, write, or reset API was added. These fields
+remain shared vendor/IRQ/FIQ quarantine views rather than exclusive Rust
+ownership.
+
+`tools/check-initialized-measurement-control-reset-words-layout.py` owns exactly
+`[0x04001294, 0x040012a0)`. It requires the exact non-derived inventory,
+offsets, boundaries, assertions, focused process-local test, and unchanged
+global layouts; rejects operational APIs and direct/transitive const, static,
+type, renamed-import, and grouped-import aliases with adversarial self-tests;
+source-gates physical literals; and pins empty aligned linked-literal and
+decoded PC-relative-xref multisets. Empty linked sets are drift evidence, never
+writer closure. The neighboring timer checkers retain their prior ranges and
+alias/adversarial protections. The exact-parent manifest remains supplemental
+to complete-file identity.
+
+Default and `vendor-host-tx-diagnostics` focused process-local tests, standalone
+source and linked checker phases, full software-only `tools/check.sh`, the Thumb
+release build, exact-parent codegen gate, and fresh OTA packing pass. Request
+ownership, all 30 HIF inputs, exact volatile widths, MMIO/barrier/interrupt and
+initialization order, and wrapping/unchecked arithmetic remain unchanged
+because no production operation was added. TALA relocation and
+`0x04002984..0x04003050` were not touched. No target or hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-measurement-control-reset-words-repair-check.log
+          c85f8dc3d0b20598f7fdc4ffe7d4c80d06000a3af05c2b4c921b3e20a47ba80e
+manifest  tools/initialized-measurement-control-reset-words-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

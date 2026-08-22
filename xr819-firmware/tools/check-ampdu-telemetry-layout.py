@@ -52,6 +52,7 @@ OWNER_FILES = {
     "tools/check-phy-table-control-layout.py",
     "tools/check-runtime-register-backoff-layout.py",
     "tools/check-debug-console-layout.py",
+    "tools/check-initialized-measurement-control-reset-words-layout.py",
     "tools/check-ampdu-telemetry-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}

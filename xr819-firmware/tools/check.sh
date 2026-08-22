@@ -61,6 +61,7 @@ python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-initialized-phy-watchdog-counter-layout.py
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py
 python3 tools/check-initialized-measurement-dwell-timer-layout.py
+python3 tools/check-initialized-measurement-control-reset-words-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
 python3 tools/check-low-mac-global-prefix-layout.py
@@ -138,6 +139,7 @@ python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-initialized-phy-watchdog-counter-layout.py "$ELF"
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py "$ELF"
 python3 tools/check-initialized-measurement-dwell-timer-layout.py "$ELF"
+python3 tools/check-initialized-measurement-control-reset-words-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
 python3 tools/check-low-mac-global-prefix-layout.py "$ELF"
@@ -580,6 +582,15 @@ if [[ -n "${XR819_INITIALIZED_MEASUREMENT_DWELL_TIMER_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_MEASUREMENT_DWELL_TIMER_PARENT_ELF" "$ELF"
 else
   echo "== initialized-measurement-dwell-timer codegen gate skipped: set XR819_INITIALIZED_MEASUREMENT_DWELL_TIMER_PARENT_ELF to the qualified current parent ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_MEASUREMENT_CONTROL_RESET_WORDS_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-measurement-control-reset-words parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-measurement-control-reset-words-codegen-manifest.json \
+    "$XR819_INITIALIZED_MEASUREMENT_CONTROL_RESET_WORDS_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-measurement-control-reset-words codegen gate skipped: set XR819_INITIALIZED_MEASUREMENT_CONTROL_RESET_WORDS_PARENT_ELF to the qualified current parent ELF =="
 fi
 
 if [[ -n "${XR819_HOST_PAS_RING_PARENT_ELF:-}" ]]; then

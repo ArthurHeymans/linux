@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source/linked drift evidence for [0x04001250, 0x04001264).
+"""Source/linked drift evidence for [0x04001294, 0x040012A0).
 
 This pins source ownership plus empty aligned linked-literal and decoded
 PC-relative-xref multisets. Empty linked sets are drift evidence, not writer
@@ -18,7 +18,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04001250, 0x04001264)
+RANGE = (0x04001294, 0x040012A0)
+OWNED_OFFSETS = {0x1294, 0x1298, 0x129C}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc",
@@ -27,29 +28,17 @@ SOURCE_EXTENSIONS = {
 }
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
-    "src/dtcm.rs",
-    "tools/check-initialized-multi-vif-beacon-timer-layout.py",
+    "tools/check-initialized-measurement-control-reset-words-layout.py",
 }
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 REQUIRED = (
     "#[repr(C, align(4))] struct InitializedMultiVifBeaconTimerTail { opaque_00: OpaqueBytes<0x10>, timer: TimerEntry, opaque_24: OpaqueBytes<0x18>, measurement_dwell_timer: TimerEntry, opaque_50: OpaqueBytes<0x04>, measurement_control_word_0: SharedU32, measurement_control_word_1: SharedU32, measurement_control_word_2: SharedU32 }",
-    "struct TimerEntry { next: SharedU32, previous_link: SharedU32, deadline: SharedU32, callback: SharedU32, context: SharedU32 }",
     "phy_watchdog_counter: PhyWatchdogCounter, multi_vif_beacon_timer_tail: InitializedMultiVifBeaconTimerTail",
     "ampdu_counters: AmpduTelemetryCounters",
-    "pub(crate) const MULTI_VIF_BEACON_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, timer));",
-    "assert_type_layout!(TimerEntry, 0x14, 4)",
-    "offset_of!(TimerEntry, next) == 0x00",
-    "offset_of!(TimerEntry, previous_link) == 0x04",
-    "offset_of!(TimerEntry, deadline) == 0x08",
-    "offset_of!(TimerEntry, callback) == 0x0c",
-    "offset_of!(TimerEntry, context) == 0x10",
+    "assert_type_layout!(SharedU32, 0x04, 4)",
     "assert_type_layout!(InitializedMultiVifBeaconTimerTail, 0x60, 4)",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_00) == 0",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, timer) == 0x10",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_24) == 0x24",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_dwell_timer) == 0x3c",
     "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50) == 0x50",
     "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_0) == 0x54",
     "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_1) == 0x58",
@@ -59,17 +48,18 @@ REQUIRED = (
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
-    "fn initialized_multi_vif_beacon_timer_address_is_exact()",
-    "size_of::<TimerEntry>(), 0x14",
-    "align_of::<TimerEntry>(), 4",
-    "MULTI_VIF_BEACON_TIMER.get(), 0x0400_1250",
-    "MULTI_VIF_BEACON_TIMER.get() + core::mem::size_of::<TimerEntry>(), 0x0400_1264",
-    "[0x00, 0x10, 0x24, 0x3c, 0x50, 0x54, 0x58, 0x5c]",
+    "fn initialized_measurement_control_reset_words_are_exact()",
+    "let tail = DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail)",
+    "assert_eq!(tail, 0x0400_1240)",
+    "MEASUREMENT_DWELL_TIMER.get() + core::mem::size_of::<TimerEntry>(), 0x0400_1290",
+    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50), 0x0400_1290",
     "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50) + core::mem::size_of::<OpaqueBytes<0x04>>(), 0x0400_1294",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_0) + core::mem::size_of::<SharedU32>(), 0x0400_1298",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_1) + core::mem::size_of::<SharedU32>(), 0x0400_129c",
+    "[0x0400_1294, 0x0400_1298, 0x0400_129c]",
+    "size_of::<SharedU32>(), 0x04",
     "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_2) + core::mem::size_of::<SharedU32>(), 0x0400_12a0",
     "AMPDU_TELEMETRY_COUNTERS.get(), 0x0400_12a0",
+    "size_of::<InitializedMultiVifBeaconTimerTail>(), 0x60",
+    "align_of::<InitializedMultiVifBeaconTimerTail>(), 4",
     "size_of::<InitializedVendorImage>(), 0x2078",
     "align_of::<InitializedVendorImage>(), 4",
     "size_of::<DtcmLayout>(), DTCM_STATE_SIZE",
@@ -77,14 +67,19 @@ REQUIRED = (
     "size_of::<SharedDtcmState>(), DTCM_STATE_SIZE",
     "align_of::<SharedDtcmState>(), 4",
 )
-FORBIDDEN_IDENTIFIERS = (
-    "multi_vif_beacon_timer_ptr", "multi_vif_beacon_timer_pointer",
-    "multi_vif_beacon_timer_ref", "multi_vif_beacon_timer_mut",
-    "multi_vif_beacon_timer_value", "multi_vif_beacon_timer_read",
-    "multi_vif_beacon_timer_write", "multi_vif_beacon_timer_offset",
-    "multi_vif_beacon_timer_generic_offset", "multi_vif_beacon_timer_unchecked",
-    "multi_vif_beacon_timer_slice", "multi_vif_beacon_timer_iter",
-    "multi_vif_beacon_timer_get", "multi_vif_beacon_timer_set",
+ALLOWED_COMPILE_ASSERTIONS = (
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50) + core::mem::size_of::<OpaqueBytes<0x04>>() == 0x0400_1294);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_0) + core::mem::size_of::<SharedU32>() == 0x0400_1298);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_1) + core::mem::size_of::<SharedU32>() == 0x0400_129c);",
+)
+FORBIDDEN_IDENTIFIERS = tuple(
+    f"measurement_control_word_{index}_{suffix}"
+    for index in range(3)
+    for suffix in (
+        "ptr", "pointer", "ref", "mut", "value", "read", "write", "reset",
+        "init", "offset", "generic_offset", "unchecked", "slice", "iter",
+        "get", "set",
+    )
 )
 
 
@@ -163,24 +158,33 @@ def rust_use_aliases(code: str) -> list[tuple[str, str]]:
     return aliases
 
 
-def timer_view_aliases(code: str) -> tuple[set[str], list[tuple[str, str]]]:
+def owned_address_literals(code: str) -> list[int]:
+    values = [int(match.group().replace("_", ""), 16) for match in LITERAL.finditer(code)]
+    return [value for value in values if in_range(value) or value in OWNED_OFFSETS]
+
+
+def timer_view_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
     declarations = [
-        match.groups()
-        for match in re.finditer(
-            r"\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\s*:[^=;]+\s*=\s*([^;]*);",
-            code,
+        (kind, name, initializer)
+        for kind, pattern in (
+            ("const", r"\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\s*:[^=;]+\s*=\s*([^;]*);"),
+            ("static", r"\bstatic\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:[^=;]+\s*=\s*([^;]*);"),
+            ("type", r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]*);"),
         )
+        for name, initializer in re.findall(pattern, code)
     ]
     imported_aliases = rust_use_aliases(code)
     views = {
         "InitializedMultiVifBeaconTimerTail",
-        "MULTI_VIF_BEACON_TIMER",
-        "multi_vif_beacon_timer_tail",
+        "measurement_control_word_0",
+        "measurement_control_word_1",
+        "measurement_control_word_2",
+        *(name for _, name, initializer in declarations if owned_address_literals(initializer)),
     }
     while True:
         aliases = {
             name
-            for name, initializer in declarations
+            for _, name, initializer in declarations
             if set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", initializer)) & views
         }
         aliases |= {
@@ -207,54 +211,84 @@ def functions_consuming_timer_view(code: str, views: set[str]) -> list[str]:
         while index < len(code) and depth:
             depth += (code[index] == "{") - (code[index] == "}")
             index += 1
-        if view_pattern.search(code[start.start():index]):
+        body = code[start.start():index]
+        if view_pattern.search(body) or owned_address_literals(body):
             consumers.append(start.group(1))
     return consumers
 
 
 def check_alias_tracking_regression() -> None:
     fixture = """
-        const MULTI_VIF_BEACON_TIMER: DtcmAddress =
-            InitializedMultiVifBeaconTimerTail::timer;
-        const TIMER_ALIAS: DtcmAddress = MULTI_VIF_BEACON_TIMER;
-        const SECOND_ALIAS: DtcmAddress = TIMER_ALIAS;
-        fn generic_view() -> *mut u32 { SECOND_ALIAS.get() as *mut u32 }
+        const WORD_ALIAS: usize = measurement_control_word_0;
+        const SECOND_ALIAS: usize = WORD_ALIAS;
+        fn generic_view() -> *mut u32 { SECOND_ALIAS as *mut u32 }
     """
     views, _ = timer_view_aliases(fixture)
-    if not {"TIMER_ALIAS", "SECOND_ALIAS"} <= views or functions_consuming_timer_view(
+    if not {"WORD_ALIAS", "SECOND_ALIAS"} <= views or functions_consuming_timer_view(
         fixture, views
     ) != ["generic_view"]:
-        raise SystemExit(
-            "checker self-test failed: aliased multi-VIF timer API was accepted"
-        )
+        raise SystemExit("checker self-test failed: transitive word alias was accepted")
     renamed_import = """
-        use crate::dtcm::MULTI_VIF_BEACON_TIMER as TIMER_IMPORT;
-        const IMPORT_ALIAS: DtcmAddress = TIMER_IMPORT;
-        fn imported_view() -> usize { IMPORT_ALIAS.get() }
+        use crate::dtcm::measurement_control_word_1 as WORD_IMPORT;
+        const IMPORT_ALIAS: usize = WORD_IMPORT;
+        fn imported_view() -> usize { IMPORT_ALIAS }
     """
     views, _ = timer_view_aliases(renamed_import)
-    if not {"TIMER_IMPORT", "IMPORT_ALIAS"} <= views or functions_consuming_timer_view(
+    if not {"WORD_IMPORT", "IMPORT_ALIAS"} <= views or functions_consuming_timer_view(
         renamed_import, views
     ) != ["imported_view"]:
-        raise SystemExit(
-            "checker self-test failed: renamed imported timer alias was accepted"
-        )
+        raise SystemExit("checker self-test failed: renamed word import was accepted")
     grouped_import = """
         use crate::dtcm::{
-            MULTI_VIF_BEACON_TIMER as GROUP_TIMER,
+            measurement_control_word_2 as GROUP_WORD,
             InitializedMultiVifBeaconTimerTail as GROUP_TAIL,
         };
-        const TRANSITIVE_GROUP_TIMER: DtcmAddress = GROUP_TIMER;
-        fn grouped_view() -> usize { TRANSITIVE_GROUP_TIMER.get() }
+        const TRANSITIVE_GROUP_WORD: usize = GROUP_WORD;
+        fn grouped_view() -> usize { TRANSITIVE_GROUP_WORD }
         fn grouped_type_view(_: GROUP_TAIL) {}
     """
     views, _ = timer_view_aliases(grouped_import)
-    if not {"GROUP_TIMER", "GROUP_TAIL", "TRANSITIVE_GROUP_TIMER"} <= views or functions_consuming_timer_view(
+    if not {"GROUP_WORD", "GROUP_TAIL", "TRANSITIVE_GROUP_WORD"} <= views or functions_consuming_timer_view(
         grouped_import, views
     ) != ["grouped_view", "grouped_type_view"]:
-        raise SystemExit(
-            "checker self-test failed: grouped imported timer aliases were accepted"
-        )
+        raise SystemExit("checker self-test failed: grouped aliases were accepted")
+    static_alias = """
+        static HIDDEN_WORD: usize = measurement_control_word_0;
+        static SECOND_HIDDEN_WORD: usize = HIDDEN_WORD;
+        fn hidden_address() -> usize { SECOND_HIDDEN_WORD }
+    """
+    views, declarations = timer_view_aliases(static_alias)
+    if not {"HIDDEN_WORD", "SECOND_HIDDEN_WORD"} <= views or not any(
+        kind == "static" and name == "HIDDEN_WORD" for kind, name, _ in declarations
+    ) or functions_consuming_timer_view(static_alias, views) != ["hidden_address"]:
+        raise SystemExit("checker self-test failed: static word alias was accepted")
+    type_alias = """
+        type HiddenTail = InitializedMultiVifBeaconTimerTail;
+        type SecondHiddenTail = HiddenTail;
+        fn hidden_tail(_: SecondHiddenTail) {}
+    """
+    views, declarations = timer_view_aliases(type_alias)
+    if not {"HiddenTail", "SecondHiddenTail"} <= views or not any(
+        kind == "type" and name == "HiddenTail" for kind, name, _ in declarations
+    ) or functions_consuming_timer_view(type_alias, views) != ["hidden_tail"]:
+        raise SystemExit("checker self-test failed: type alias was accepted")
+    raw_physical_write = """
+        fn reset() { unsafe { core::ptr::write_volatile(0x0400_1294 as *mut u32, 0) } }
+    """
+    views, _ = timer_view_aliases(raw_physical_write)
+    if functions_consuming_timer_view(raw_physical_write, views) != ["reset"]:
+        raise SystemExit("checker self-test failed: raw physical pointer/write API was accepted")
+    renamed_offset = """
+        const RAW_WORD: DtcmAddress = DtcmAddress::from_offset(0x1294);
+        const RENAMED_WORD: DtcmAddress = RAW_WORD;
+        const TRANSITIVE_WORD: DtcmAddress = RENAMED_WORD;
+        fn hidden_offset_api() -> DtcmAddress { TRANSITIVE_WORD }
+    """
+    views, declarations = timer_view_aliases(renamed_offset)
+    if not {"RAW_WORD", "RENAMED_WORD", "TRANSITIVE_WORD"} <= views or not any(
+        kind == "const" and name == "RAW_WORD" for kind, name, _ in declarations
+    ) or functions_consuming_timer_view(renamed_offset, views) != ["hidden_offset_api"]:
+        raise SystemExit("checker self-test failed: renamed/transitive DTCM offset API was accepted")
 
 
 def source_paths() -> list[Path]:
@@ -271,8 +305,8 @@ def check_source() -> None:
     source = (ROOT / "src/dtcm.rs").read_text()
     compact = normalized(source)
     failures = [f"src/dtcm.rs: missing exact inventory: {item}" for item in REQUIRED if normalized(item) not in compact]
-    if source.count("struct InitializedMultiVifBeaconTimerTail") != 1 or source.count("const MULTI_VIF_BEACON_TIMER:") != 1:
-        failures.append("src/dtcm.rs: timer-tail struct and sole address constant must each occur exactly once")
+    if source.count("struct InitializedMultiVifBeaconTimerTail") != 1:
+        failures.append("src/dtcm.rs: measurement-control words require exactly one enclosing tail struct")
     declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\] struct InitializedMultiVifBeaconTimerTail \{ opaque_00: OpaqueBytes<0x10>, timer: TimerEntry, opaque_24: OpaqueBytes<0x18>, measurement_dwell_timer: TimerEntry, opaque_50: OpaqueBytes<0x04>, measurement_control_word_0: SharedU32, measurement_control_word_1: SharedU32, measurement_control_word_2: SharedU32 \}", source)
     if declaration is None or "derive" in declaration.group():
         failures.append("src/dtcm.rs: InitializedMultiVifBeaconTimerTail must be the exact non-derived quarantine struct")
@@ -285,48 +319,63 @@ def check_source() -> None:
         if path.suffix == ".rs"
     }
     production = rust_production["src/dtcm.rs"]
+    checked_rust = dict(rust_production)
+    for assertion in ALLOWED_COMPILE_ASSERTIONS:
+        if production.count(assertion) != 1:
+            failures.append(f"src/dtcm.rs: reviewed compile-time boundary assertion is not unique: {assertion}")
+        checked_rust["src/dtcm.rs"] = checked_rust["src/dtcm.rs"].replace(
+            assertion, re.sub(r"[^\n]", " ", assertion)
+        )
     for relative, code in rust_production.items():
         for identifier in FORBIDDEN_IDENTIFIERS:
             if re.search(rf"\b{identifier}\b", code):
-                failures.append(f"{relative}: forbidden multi-VIF timer API {identifier}")
-        for match in re.finditer(r"(?:pub(?:\(crate\))?\s+)?(?:const\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*multi_vif_beacon_timer[A-Za-z0-9_]*)", code, re.I):
-            failures.append(f"{relative}: multi-VIF timer function API is forbidden: {match.group(1)}")
-    # Reject renamed constants, including transitive aliases of the sole address
-    # constant, and generic functions that hide this view behind an
-    # evidence-free API name anywhere in production Rust. Compile-time
-    # assertions are unnamed constants.
+                failures.append(f"{relative}: forbidden measurement-control word API {identifier}")
+        for match in re.finditer(r"(?:pub(?:\(crate\))?\s+)?(?:const\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*measurement_control_(?:word|reset)[A-Za-z0-9_]*)", code, re.I):
+            failures.append(f"{relative}: measurement-control function API is forbidden: {match.group(1)}")
+    # Reject renamed constants, statics, and type aliases, including transitive
+    # aliases of the sole address/type views, plus generic functions that hide
+    # these views behind an evidence-free API name anywhere in production Rust.
+    # Compile-time assertions are unnamed constants.
     timer_views, constant_declarations = timer_view_aliases(
-        "\n".join(rust_production.values())
+        "\n".join(checked_rust.values())
     )
-    for name, _ in constant_declarations:
-        if name in timer_views and name not in {"MULTI_VIF_BEACON_TIMER", "MEASUREMENT_DWELL_TIMER"}:
-            failures.append(f"additional multi-VIF timer constant is forbidden: {name}")
+    for kind, name, _ in constant_declarations:
+        if name in timer_views and not (
+            kind == "const"
+            and name in {"MEASUREMENT_DWELL_TIMER", "MULTI_VIF_BEACON_TIMER"}
+        ):
+            failures.append(f"additional measurement-control word {kind} alias is forbidden: {name}")
     timer_view_pattern = re.compile(
         rf"\b(?:{'|'.join(sorted(map(re.escape, timer_views)))})\b"
     )
-    for relative, code in rust_production.items():
+    for relative, code in checked_rust.items():
         for function in functions_consuming_timer_view(code, timer_views):
-            failures.append(f"{relative}: function API over the multi-VIF timer is forbidden: {function}")
+            failures.append(f"{relative}: function API over measurement-control storage is forbidden: {function}")
         for line_number, line in enumerate(code.splitlines(), 1):
-            if timer_view_pattern.search(line) is None:
-                continue
-            if re.search(r"\*(?:const|mut)|&(?:mut\s+)?|read(?:_volatile)?\s*\(|write(?:_volatile)?\s*\(|unchecked|\b(?:slice|iter)\b", line):
-                failures.append(f"{relative}:{line_number}: pointer/reference/value/read/write/unchecked multi-VIF timer API")
+            if timer_view_pattern.search(line) is not None and re.search(r"\*(?:const|mut)|&(?:mut\s+)?|read(?:_volatile)?\s*\(|write(?:_volatile)?\s*\(|unchecked|\b(?:slice|iter)\b", line):
+                failures.append(f"{relative}:{line_number}: pointer/reference/value/read/write/unchecked measurement-control API")
+            for value in owned_address_literals(line):
+                if value in OWNED_OFFSETS:
+                    failures.append(
+                        f"{relative}:{line_number}: raw measurement-control DTCM offset literal 0x{value:x} is forbidden"
+                    )
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
         if relative in OWNER_FILES:
             continue
-        code = code_only(path.read_text(errors="replace"), path.suffix in {".py", ".sh", ".toml"}, path.suffix in {".py", ".sh", ".toml"})
-        if relative.endswith(".rs"):
-            code = mask_test_module(code)
+        code = checked_rust[relative] if relative.endswith(".rs") else code_only(
+            path.read_text(errors="replace"),
+            path.suffix in {".py", ".sh", ".toml"},
+            path.suffix in {".py", ".sh", ".toml"},
+        )
         for match in LITERAL.finditer(code):
             value = int(match.group().replace("_", ""), 16)
             if in_range(value):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: multi-VIF beacon timer physical literal {match.group()} is outside reviewed owners")
+                failures.append(f"{relative}:{line}: measurement-control physical literal {match.group()} is outside reviewed owners")
     if failures:
         raise SystemExit("\n".join(failures))
-    print(f"INITIALIZED MULTI-VIF BEACON TIMER SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"INITIALIZED MEASUREMENT CONTROL RESET WORDS SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -361,8 +410,8 @@ def check_elf(path: Path, dump: bool) -> None:
         print(f"ALLOWED_DECODED_XREFS={dict(sorted(xrefs.items()))!r}")
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
-        raise SystemExit(f"INITIALIZED MULTI-VIF BEACON TIMER LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
-    print("INITIALIZED MULTI-VIF BEACON TIMER LINKED DRIFT-EVIDENCE GATE PASSED literals=0 decoded_xrefs=0")
+        raise SystemExit(f"INITIALIZED MEASUREMENT CONTROL RESET WORDS LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+    print("INITIALIZED MEASUREMENT CONTROL RESET WORDS LINKED DRIFT-EVIDENCE GATE PASSED literals=0 decoded_xrefs=0")
 
 
 def main() -> None:
@@ -378,4 +427,4 @@ def main() -> None:
 if __name__ == "__main__":
     try: main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"initialized-multi-VIF-beacon-timer drift gate failed: {error}")
+        raise SystemExit(f"initialized-measurement-control-reset-words drift gate failed: {error}")
