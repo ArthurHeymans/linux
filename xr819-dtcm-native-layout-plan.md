@@ -6416,3 +6416,62 @@ checks    /tmp/xr819-ps-wake-guard-final-check.log
 manifest  tools/initialized-ps-wake-guard-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.114 TLV dispatch handler table
+
+The opaque island `post_initialized_phy_gain_source_records:
+OpaqueBytes<0x28>` at `[0x04000da8, 0x04000dd0)` becomes the exact private,
+non-derived `TlvDispatchHandlerTable { entries: [TlvDispatchHandlerEntry;
+4], terminator_key: SharedU32, terminator_handler: SharedU32 }` (size
+`0x28`, alignment 4), where `TlvDispatchHandlerEntry { key: SharedU32,
+handler: SharedU32 }` is the 8-byte record shape walked by vendor
+`tlv_dispatch_table` (`for (pcVar2 = param_2; *(int *)(pcVar2 + 4) != 0;
+pcVar2 += 8) if (*pcVar2 == tag) call handler`).
+
+The root is literal-pool word `DAT_0001752c = 0x04000da8`, loaded exactly
+once (PC `0x17522`) inside `tlv_dispatch_default` and passed as the handler
+table. The recovered initialization snapshot shows exactly four populated
+entries (keys 0, 1, 3, 4; handlers `0x000175d3/0x00017565/0x000177f5/
+0x00017535`, all inside the `tlv_dispatch_default` code blob) followed by
+the all-zero terminator entry, bounding the table at exactly
+`[0x04000da8, 0x04000dd0)`. A whole-binary scan found no other accessor
+(one incidental never-loaded word `0x04000db5`).
+
+No production operation was added or changed; no address constant, pointer,
+reference, accessor, or ownership API exists for this interval. Initial COPY
+values are loader-owned (the snapshot proves the extent; the Rust image
+keeps them `MaybeUninit`); no writer closure is claimed — computed,
+indirect, generic HIF/debug, vendor, IRQ/FIQ mutation remain possible.
+
+`tools/check-initialized-tlv-handler-table-layout.py` owns exactly
+`[0x04000da8, 0x04000dd0)`. It source-pins both exact non-derived
+declarations, the image field split, compile-time assertions, a dedicated
+focused process-local test, physical boundaries `0x0da8/0x0dc8/0x0dd0`, and
+unchanged enclosing/global layouts. Its adversarial self-tests reject
+deleted/swapped compile-time and focused-test mappings, direct/transitive
+const/static/type/renamed-import/grouped-import aliases, constructor
+offsets, raw pointers, and operational APIs. Its linked-literal and decoded-
+xref multisets are derived from decoded PC-relative loads only and pinned
+empty; emptiness is drift evidence, never writer closure. The rf-mode-
+halfword and phy-gain-source checkers' owner sets gained it for the shared
+`0x04000da8` boundary, and its adjacent declarations pin both neighbors'
+current range texts.
+
+Focused default (243 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass. Complete software-only `tools/check.sh`, the Thumb release
+build, the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-tlv-final-check.log
+manifest  tools/initialized-tlv-handler-table-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

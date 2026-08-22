@@ -30,6 +30,7 @@ SOURCE_EXTENSIONS = {
 }
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
+    "tools/check-initialized-tlv-handler-table-layout.py",
     "src/dtcm.rs",
     "tools/check-initialized-phy-gain-source-layout.py",
 }
