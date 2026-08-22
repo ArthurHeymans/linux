@@ -31,6 +31,7 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "tools/check-initialized-tx-gain-rssi-table-layout.py",
     "tools/check-duration-quantum-pointers-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}

@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
-"""Source/linked drift evidence for exactly [0x04000F88, 0x04001088).
+"""Source/linked drift evidence for exactly [0x040010A8, 0x040010D4).
 
-Two adjacent 64-entry i16 RF scale tables read by vendor rf_dft_correlate_
-samples during measurement DFT correlation:
-
-- rf_scale_table_a [0x04000f88, 0x04001008): rooted at DAT_00019614, read as
-  (value * sample * 2^-(signed)) >> 5 by rf_scale_by_tbl_a.
-- rf_scale_table_b [0x04001008, 0x04001088): same shape at DAT_00019614 +
-  0x80, read by rf_scale_by_tbl_b.
-
-The sole caller masks every index with & 0x3f after each increment, proving
-the 64-entry extent of both tables; the interval below (pre_rf_scale_tables)
-and above (post_rf_scale_tables, next direct root rf_init_stage_a DATA at
-0x040010a8 region / phy_select_rate_tables pointer targets at 0x04001088)
-bounds them exactly. Note: vendor rf_init_stage_a stores the pointer VALUE
-0x04001000 into RF SRAM state in the non-primary mode branch -- an opaque
-consumer path that changes no byte typing here.
+A 22-entry shared-u16 table read by vendor phy_compute_tx_gain_and_rssi
+(pool DAT_00019a68 = 0x040010a8): after phy_compute_rssi produces a metric,
+the code loads ldrh [base + (metric >> 2) * 2] and stores the halfword as
+the final gain/rssi output. The halfword index is unchecked, so no bound on
+valid indices is claimed; the extent is physical occupation of exactly
+[0x040010a8, 0x040010d4), bounded below by the opaque rate-pointer targets
+0x04001088..0x040010a8 (consumed only through RF-state pointer stores from
+phy_select_rate_tables and retained mode-0 init) and above by
+duration_quantum_pointers at 0x040010d4.
 
 The initial COPY values are loader-owned; no writer closure is claimed:
 computed, indirect, generic HIF/debug, vendor, IRQ, and FIQ mutation remain
-possible. The linked-literal and decoded PC-relative-xref multisets are
-derived from decoded loads only and pinned empty.
+possible. No production operation touches this interval. The linked-literal
+and decoded PC-relative-xref multisets are derived from decoded loads only
+and pinned empty.
 """
 
 from __future__ import annotations
@@ -34,8 +29,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04000F88, 0x04001088)
-OFFSETS = range(0xF88, 0x1088)
+RANGE = (0x040010A8, 0x040010D4)
+OFFSETS = range(0x10A8, 0x10D4)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc",
@@ -45,52 +40,38 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
-    "tools/check-initialized-rf-scale-tables-layout.py",
+    "tools/check-initialized-tx-gain-rssi-table-layout.py",
 }
 ADJACENT_DECLARATIONS = {
-    "tools/check-initialized-register-write-lists-layout.py": "(0x04000E48, 0x04000EC0)",
+    "tools/check-initialized-tx-gain-rssi-table-layout.py": "(0x04000F88, 0x04001088)",
 }
-SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
-    "src/phy.rs": {"write_u32(BASE - 0x28, 0x0400_1000);"},
-}
-SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
-    "src/phy.rs": {"rf_init_stage_a_mode0"},
-}
+SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
+SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
 # No linked literals fall inside this interval: the guard word is reached
 # relative to the scheduler timer list head root (owned by the adjacent
 # checker), so both multisets are pinned empty.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001000: 1})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ("_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy22prepare_rf_mode0_stage", 0x04001000): 1,
-})
-STRUCT = '#[repr(C, align(2))] struct RfScaleHalfwordTable { entries: [SharedU16; 64] }'
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
+STRUCT = '#[repr(C, align(2))] struct TxGainRssiHalfwordTable { entries: [SharedU16; 22] }'
 REQUIRED = (
     STRUCT,
-    "rf_scale_table_a: RfScaleHalfwordTable",
-    "rf_scale_table_b: RfScaleHalfwordTable",
-    "pre_rf_scale_tables: OpaqueBytes<0xc8>",
-    "rate_pointer_targets: OpaqueBytes<0x20>",
     "tx_gain_rssi_halfword_table: TxGainRssiHalfwordTable",
+    "rate_pointer_targets: OpaqueBytes<0x20>",
     "assert_type_layout!(SharedU16, 0x02, 2)",
-    "assert_type_layout!(RfScaleHalfwordTable, 0x80, 2)",
-    "offset_of!(RfScaleHalfwordTable, entries) == 0",
-    "offset_of!(InitializedVendorImage, pre_rf_scale_tables) == 0x0ec0",
-    "size_of::<OpaqueBytes<0xc8>>() == 0xc8",
-    "offset_of!(InitializedVendorImage, rf_scale_table_a) == 0x0f88",
-    "offset_of!(InitializedVendorImage, rf_scale_table_b) == 0x1008",
-    "offset_of!(InitializedVendorImage, rate_pointer_targets) == 0x1088",
+    "assert_type_layout!(TxGainRssiHalfwordTable, 0x2c, 2)",
+    "offset_of!(TxGainRssiHalfwordTable, entries) == 0",
     "size_of::<OpaqueBytes<0x20>>() == 0x20",
+    "offset_of!(InitializedVendorImage, rate_pointer_targets) == 0x1088",
     "offset_of!(InitializedVendorImage, tx_gain_rssi_halfword_table) == 0x10a8",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
     "fn register_write_lists_after_iq_gain_indices_are_exact()",
-    "size_of::<RfScaleHalfwordTable>(), 0x80",
-    "align_of::<RfScaleHalfwordTable>(), 2",
-    "rf_scale_table_a), 0x0400_0f88",
-    "size_of::<RfScaleHalfwordTable>(), 0x0400_1008",
-    "rf_scale_table_b), 0x0400_1008",
-    "size_of::<RfScaleHalfwordTable>(), 0x0400_1088",
+    "size_of::<TxGainRssiHalfwordTable>(), 0x2c",
+    "align_of::<TxGainRssiHalfwordTable>(), 2",
+    "tx_gain_rssi_halfword_table), 0x0400_10a8",
+    "tx_gain_rssi_halfword_table) + core::mem::size_of::<TxGainRssiHalfwordTable>(), 0x0400_10d4",
+    "DURATION_QUANTUM_POINTERS.get(), 0x0400_10d4",
     "size_of::<InitializedVendorImage>(), 0x2078",
     "align_of::<InitializedVendorImage>(), 4",
     "size_of::<DtcmLayout>(), DTCM_STATE_SIZE",
@@ -98,45 +79,23 @@ REQUIRED = (
     "size_of::<SharedDtcmState>(), DTCM_STATE_SIZE",
     "align_of::<SharedDtcmState>(), 4",
 )
-PHYSICAL = (0x04000F88, 0x04001008, 0x04001088)
+PHYSICAL = (0x040010A8, 0x040010D4)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    "assert!(core::mem::offset_of!(InitializedVendorImage, pre_rf_scale_tables) == 0x0ec0);",
-    "assert!(core::mem::size_of::<OpaqueBytes<0xc8>>() == 0xc8);",
-    "assert_type_layout!(RfScaleHalfwordTable, 0x80, 2);",
-    "assert!(core::mem::offset_of!(RfScaleHalfwordTable, entries) == 0);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) == 0x0f88);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + core::mem::size_of::<RfScaleHalfwordTable>() == 0x0400_1008);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) == 0x1008);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) + core::mem::size_of::<RfScaleHalfwordTable>() == 0x0400_1088);",
     "assert!(core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets) == 0x1088);",
     "assert!(core::mem::size_of::<OpaqueBytes<0x20>>() == 0x20);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, tx_gain_rssi_halfword_table) == 0x10a8);",
+    "assert_type_layout!(TxGainRssiHalfwordTable, 0x2c, 2);",
+    "assert!(core::mem::offset_of!(TxGainRssiHalfwordTable, entries) == 0);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, tx_gain_rssi_halfword_table) + core::mem::size_of::<TxGainRssiHalfwordTable>() == 0x0400_10d4);",
 )
 FOCUSED_TEST_INVENTORY = (
-    'let image = DTCM_STATE_BASE;',
-    'let cal = image + core::mem::offset_of!(InitializedVendorImage, phy_cal_substate_register_write_list);',
-    'let dbg = image + core::mem::offset_of!(InitializedVendorImage, dbg_expand_register_write_list);',
-    'assert_eq!(core::mem::size_of::<PhyCalSubstateRegisterWriteList>(), 0x48);',
-    'assert_eq!(core::mem::align_of::<PhyCalSubstateRegisterWriteList>(), 4);',
-    'assert_eq!(core::mem::offset_of!(PhyCalSubstateRegisterWriteList, writes), 0);',
-    'assert_eq!(core::mem::size_of::<[RegisterWrite; 8]>(), 0x40);',
-    'assert_eq!(core::mem::offset_of!(PhyCalSubstateRegisterWriteList, terminator_address), 0x40);',
-    'assert_eq!(cal, 0x0400_0e48);',
-    'assert_eq!(cal + core::mem::size_of::<PhyCalSubstateRegisterWriteList>(), 0x0400_0e90);',
-    'assert_eq!(core::mem::size_of::<DbgExpandRegisterWriteList>(), 0x30);',
-    'assert_eq!(core::mem::align_of::<DbgExpandRegisterWriteList>(), 4);',
-    'assert_eq!(core::mem::offset_of!(DbgExpandRegisterWriteList, writes), 0);',
-    'assert_eq!(core::mem::size_of::<[RegisterWrite; 5]>(), 0x28);',
-    'assert_eq!(core::mem::offset_of!(DbgExpandRegisterWriteList, terminator_address), 0x28);',
-    'assert_eq!(dbg, 0x0400_0e90);',
-    'assert_eq!(dbg + core::mem::size_of::<DbgExpandRegisterWriteList>(), 0x0400_0ec0);',
-    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, pre_rf_scale_tables), 0x0400_0ec0);',
-    'assert_eq!(core::mem::size_of::<OpaqueBytes<0xc8>>(), 0xc8);',
-    'assert_eq!(core::mem::size_of::<RfScaleHalfwordTable>(), 0x80);',
-    'assert_eq!(core::mem::align_of::<RfScaleHalfwordTable>(), 2);',
-    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a), 0x0400_0f88);',
-    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + core::mem::size_of::<RfScaleHalfwordTable>(), 0x0400_1008);',
-    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b), 0x0400_1008);',
-    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) + core::mem::size_of::<RfScaleHalfwordTable>(), 0x0400_1088);',
+    "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets), 0x0400_1088);",
+    "assert_eq!(core::mem::size_of::<OpaqueBytes<0x20>>(), 0x20);",
+    "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, tx_gain_rssi_halfword_table), 0x0400_10a8);",
+    "assert_eq!(core::mem::size_of::<TxGainRssiHalfwordTable>(), 0x2c);",
+    "assert_eq!(core::mem::align_of::<TxGainRssiHalfwordTable>(), 2);",
+    "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, tx_gain_rssi_halfword_table) + core::mem::size_of::<TxGainRssiHalfwordTable>(), 0x0400_10d4);",
+    "assert_eq!(DURATION_QUANTUM_POINTERS.get(), 0x0400_10d4);",
 )
 
 
@@ -231,18 +190,18 @@ def check_exact_inventory_regression(source: str) -> None:
 
     compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[5])
     compile_swap = normalized(compile_scope).replace(
-        compile_item, compile_item.replace("== 0x0400_1008", "== 0x0400_1006"), 1
+        compile_item, compile_item.replace("== 0x0400_10d4", "== 0x0400_10d2"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[21])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[2])
     test_address_swap = normalized(test_scope).replace(
         test_address_item,
-        swapped_once(test_address_item, "0x0400_0f88", "0x0400_0f86"),
+        swapped_once(test_address_item, "0x0400_10a8", "0x0400_10a6"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[24])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[5])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
-        swapped_once(test_extent_item, "0x0400_1088", "0x0400_1086"),
+        swapped_once(test_extent_item, "0x0400_10d4", "0x0400_10d2"),
         1,
     )
 
@@ -289,7 +248,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"MacPipeTail", "RfScaleHalfwordTable", "rf_scale_table_a", "rf_scale_table_b",
+    views = {"MacPipeTail", "TxGainRssiHalfwordTable",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -314,19 +273,19 @@ def functions_consuming_family(code: str, views: set[str]) -> list[str]:
 
 def check_alias_tracking_regression() -> None:
     fixtures = (
-        ("const ROOT: usize = rf_scale_table_a; const NEXT: usize = ROOT; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ROOT", "NEXT"}, ["leak"]),
-        ("static ROOT: usize = 0x0400_1008; static NEXT: usize = ROOT; fn leak() -> usize { NEXT }", {"ROOT", "NEXT"}, ["leak"]),
-        ("type Hidden = RfScaleHalfwordTable; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
-        ("use crate::dtcm::RfScaleHalfwordTable as Hidden; const ROOT: usize = rf_scale_table_a; fn leak(_: Hidden) -> usize { ROOT }", {"Hidden", "ROOT"}, ["leak"]),
-        ("use crate::dtcm::{RfScaleHalfwordTable as Hidden, rf_scale_table_a as Root}; const NEXT: usize = Root; fn leak(_: Hidden) -> usize { NEXT }", {"Hidden", "Root", "NEXT"}, ["leak"]),
-        ("use crate::{dtcm::{RfScaleHalfwordTable as Hidden}}; fn leak(_: Hidden) {}", {"Hidden"}, ["leak"]),
-        ("fn leak() -> *mut u32 { (DTCM_STATE_BASE + 0xfa8) as *mut u32 }", set(), ["leak"]),
-        ("const ENTRY: usize = DTCM_STATE_BASE + 0xfa8; const NEXT: usize = ENTRY; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn leak() -> *mut u32 { DtcmAddress::from_offset(0xfa8).cast_mut() }", set(), ["leak"]),
-        ("const ENTRY: DtcmAddress = DtcmAddress::from_offset(0xfa8); const NEXT: DtcmAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn leak() -> usize { DtcmAddress::from_offset_unchecked(0xfa8).get() }", set(), ["leak"]),
-        ("use crate::{dtcm::{DtcmAddress as HiddenAddress}}; const ENTRY: HiddenAddress = HiddenAddress::from_offset(0xfa8); const NEXT: HiddenAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_1008 as *mut u32, 0) } }", set(), ["reset"]),
+        ("type A = TxGainRssiHalfwordTable; type B = A; fn leak(_: B) {}", {"A", "B"}, ["leak"]),
+        ("static ROOT: usize = 0x0400_10c0; static NEXT: usize = ROOT; fn leak() -> usize { NEXT }", {"ROOT", "NEXT"}, ["leak"]),
+        ("type Hidden = TxGainRssiHalfwordTable; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
+        ("use crate::dtcm::TxGainRssiHalfwordTable as Hidden; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
+        ("use crate::dtcm::{TxGainRssiHalfwordTable as H1}; type H2 = H1; const N: usize = core::mem::size_of::<H2>(); fn leak(_: H2) -> usize { N }", {"H1", "H2", "N"}, ["leak"]),
+        ("use crate::{dtcm::{TxGainRssiHalfwordTable as Hidden}}; fn leak(_: Hidden) {}", {"Hidden"}, ["leak"]),
+        ("fn leak() -> *mut u32 { (DTCM_STATE_BASE + 0x10c4) as *mut u32 }", set(), ["leak"]),
+        ("const ENTRY: usize = DTCM_STATE_BASE + 0x10c4; const NEXT: usize = ENTRY; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn leak() -> *mut u32 { DtcmAddress::from_offset(0x10c4).cast_mut() }", set(), ["leak"]),
+        ("const ENTRY: DtcmAddress = DtcmAddress::from_offset(0x10c4); const NEXT: DtcmAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn leak() -> usize { DtcmAddress::from_offset_unchecked(0x10c4).get() }", set(), ["leak"]),
+        ("use crate::{dtcm::{DtcmAddress as HiddenAddress}}; const ENTRY: HiddenAddress = HiddenAddress::from_offset(0x10c4); const NEXT: HiddenAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_10c0 as *mut u32, 0) } }", set(), ["reset"]),
     )
     for fixture, expected_aliases, expected_functions in fixtures:
         views, _ = family_aliases(fixture)
@@ -360,12 +319,12 @@ def check_source() -> None:
         spelling = f"0x{physical >> 16:04x}_{physical & 0xffff:04x}"
         if spelling not in source:
             failures.append(f"src/dtcm.rs: missing physical address/boundary {spelling}")
-    declaration = re.search(r"#\[repr\(C, align\(2\)\)\] struct RfScaleHalfwordTable \{[^}]*\}", source)
+    declaration = re.search(r"#\[repr\(C, align\(2\)\)\] struct TxGainRssiHalfwordTable \{[^}]*\}", source)
     if declaration is None or normalized(declaration.group()) != normalized(STRUCT) or "derive" in declaration.group():
-        failures.append("src/dtcm.rs: RfScaleHalfwordTable must be the exact private non-derived inventory")
-    if (source.count("struct RfScaleHalfwordTable") != 1
-            or "register_write_lists_suffix" in source):
-        failures.append("src/dtcm.rs: removed opaque split or duplicate rf scale tables remain")
+        failures.append("src/dtcm.rs: TxGainRssiHalfwordTable must be the exact private non-derived inventory")
+    if (source.count("struct TxGainRssiHalfwordTable") != 1
+            or "post_rf_scale_tables" in source):
+        failures.append("src/dtcm.rs: removed opaque split or duplicate tx gain rssi tables remain")
     for relative, exact in ADJACENT_DECLARATIONS.items():
         if exact not in (ROOT / relative).read_text():
             failures.append(f"{relative}: adjacent checker range changed from {exact}")
@@ -391,12 +350,12 @@ def check_source() -> None:
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b(?!\s*:)", re.I)
     for relative, code in rust.items():
         # start_scheduler_timer (tx.rs) is the retained Rust translation of
-        # vendor timer_start; it reads exactly the guard word 0x0400_1008 that
+        # vendor timer_start; it reads exactly the guard word 0x0400_10c0 that
         # timer_start itself reads, via the single pinned consumer line below.
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:
-            failures.append(f"{relative}: unsanctioned production function over rf scale table storage: {function}")
+            failures.append(f"{relative}: unsanctioned production function over tx gain rssi table storage: {function}")
         sanctioned_lines = SANCTIONED_CONSUMER_LINES.get(relative, set())
         for line_number, line in enumerate(code.splitlines(), 1):
             if normalized(line) in sanctioned_lines:
@@ -424,7 +383,7 @@ def check_source() -> None:
                     continue
                 failures.append(f"{relative}:{line_number}: scheduler tail physical literal {match.group()} is outside reviewed owners")
     if failures: raise SystemExit("\n".join(failures))
-    print(f"RF SCALE TABLES SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"TX GAIN RSSI TABLE SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -457,9 +416,9 @@ def check_elf(path: Path, dump: bool) -> None:
         print(f"ALLOWED_DECODED_XREFS={dict(sorted(xrefs.items()))!r}")
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
-        raise SystemExit(f"RF SCALE TABLES LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+        raise SystemExit(f"TX GAIN RSSI TABLE LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
     residual_literals, residual_xrefs = literals - ALLOWED_LINKED_LITERALS, xrefs - ALLOWED_DECODED_XREFS
-    print(f"RF SCALE TABLES LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
+    print(f"TX GAIN RSSI TABLE LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
 
 
 def main() -> None:
@@ -475,4 +434,4 @@ def main() -> None:
 if __name__ == "__main__":
     try: main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"initialized-rf-scale-tables drift gate failed: {error}")
+        raise SystemExit(f"initialized-tx-gain-rssi-table drift gate failed: {error}")

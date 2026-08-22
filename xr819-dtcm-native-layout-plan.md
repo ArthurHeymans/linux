@@ -6292,3 +6292,64 @@ checks    /tmp/xr819-rf-scale-tables-final-check.log
 manifest  tools/initialized-rf-scale-tables-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.112 TX gain/RSSI halfword table
+
+The former `post_rf_scale_tables: OpaqueBytes<0x4c>` at
+`[0x04001088, 0x040010d4)` is split into:
+
+- `rate_pointer_targets: OpaqueBytes<0x20>` `[0x04001088, 0x040010a8)`:
+  pointer-target region consumed only through RF-state pointer stores.
+  Vendor `phy_select_rate_tables` stores `0x040010a8 - 0x20/-0x18` (and
+  `+ 0x10`) into phy state slots `+0x18/+0x1c`, selecting between
+  flag-dependent base pairs; the retained mode-0 init writes the constants
+  `0x04001088/0x04001098` into the already-typed `PhyTableControlState`
+  slots. No in-binary code loads through these pointers, so internal
+  structure is unevidenced and stays opaque.
+- `tx_gain_rssi_halfword_table: TxGainRssiHalfwordTable { entries:
+  [SharedU16; 22] }` `[0x040010a8, 0x040010d4)`, size `0x2c`, alignment 2:
+  rooted at literal-pool word `DAT_00019a68 = 0x040010a8`; vendor
+  `phy_compute_tx_gain_and_rssi` loads `ldrh [base + (metric >> 2) * 2]`
+  from the `phy_compute_rssi` output metric and stores the halfword as the
+  final gain/RSSI output word. The halfword index is unchecked — exactly the
+  accepted A.107 situation — so no bound on valid indices is claimed; the
+  extent is physical occupation bounded above by
+  `duration_quantum_pointers` at `0x040010d4`.
+
+No production operation was added or changed; no address constant, pointer,
+reference, accessor, or ownership API exists for either interval. Initial
+COPY values are loader-owned; no writer closure is claimed — computed,
+indirect, generic HIF/debug, vendor, IRQ/FIQ mutation remain possible.
+
+`tools/check-initialized-tx-gain-rssi-table-layout.py` owns exactly
+`[0x040010a8, 0x040010d4)`. It source-pins the exact non-derived declaration,
+image field split, compile-time assertions, focused process-local test,
+physical boundaries `0x10a8/0x10d4`, neighbor size `0x20`, and unchanged
+enclosing/global layouts. Its adversarial self-tests reject deleted/swapped
+compile-time and focused-test mappings, direct/transitive const/static/type/
+renamed-import/grouped-import aliases, constructor offsets, raw pointers, and
+operational APIs. Its linked-literal and decoded-xref multisets are derived
+from decoded PC-relative loads only and pinned empty; emptiness is drift
+evidence, never writer closure. The rf-scale checker's inventories were
+narrowed to its own interval so the two gates compose without overlap, and
+the duration-quantum-pointers checker's owner set gained this checker for
+the shared `0x040010d4` boundary.
+
+Focused default (241 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (242). Complete software-only `tools/check.sh`, the Thumb release
+build, the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-tx-gain-rssi-final-check.log
+manifest  tools/initialized-tx-gain-rssi-table-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
