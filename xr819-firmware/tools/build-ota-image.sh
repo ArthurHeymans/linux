@@ -55,6 +55,7 @@ python3 tools/check-tx-aggregate-expiration-delta-layout.py
 python3 tools/check-initialized-debug-command-descriptors-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-initialized-phy-watchdog-counter-layout.py
+python3 tools/check-initialized-mac-aggregate-slot-tables-layout.py
 python3 tools/check-initialized-interface-2-radio-latch-layout.py
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py
 python3 tools/check-initialized-measurement-dwell-timer-layout.py
@@ -133,6 +134,7 @@ python3 tools/check-tx-aggregate-expiration-delta-layout.py "$ELF"
 python3 tools/check-initialized-debug-command-descriptors-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-initialized-phy-watchdog-counter-layout.py "$ELF"
+python3 tools/check-initialized-mac-aggregate-slot-tables-layout.py "$ELF"
 python3 tools/check-initialized-interface-2-radio-latch-layout.py "$ELF"
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py "$ELF"
 python3 tools/check-initialized-measurement-dwell-timer-layout.py "$ELF"
@@ -180,6 +182,15 @@ if [[ -n "${XR819_INITIALIZED_INTERFACE_2_RADIO_LATCH_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_INTERFACE_2_RADIO_LATCH_PARENT_ELF" "$ELF"
 else
   echo "== initialized-interface-2-radio-latch codegen gate skipped: set XR819_INITIALIZED_INTERFACE_2_RADIO_LATCH_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_MAC_AGGREGATE_SLOT_TABLES_PARENT_ELF:-}" ]]; then
+  echo "== supplemental initialized-MAC-aggregate-slot-tables exact-parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-mac-aggregate-slot-tables-codegen-manifest.json \
+    "$XR819_INITIALIZED_MAC_AGGREGATE_SLOT_TABLES_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-MAC-aggregate-slot-tables codegen gate skipped: set XR819_INITIALIZED_MAC_AGGREGATE_SLOT_TABLES_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
 fi
 
 if [[ -n "${XR819_INITIALIZED_DTIM_CAPTURE_LATCH_PARENT_ELF:-}" ]]; then

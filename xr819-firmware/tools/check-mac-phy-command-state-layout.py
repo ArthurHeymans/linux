@@ -32,6 +32,7 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-mac-phy-command-state-layout.py",
+    "tools/check-initialized-mac-aggregate-slot-tables-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

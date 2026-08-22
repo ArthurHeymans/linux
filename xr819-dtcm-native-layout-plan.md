@@ -5755,3 +5755,92 @@ checks    /tmp/xr819-interface-2-radio-latch-final-check.log
           f845e9ef84789b712f6f451d6b45afb92c39e12602e71f013a298cdbcb735adc
 manifest  tools/initialized-interface-2-radio-latch-codegen-manifest.json
 ```
+
+### A.105 Fixed per-queue TX aggregate slot tables
+
+The initialized vendor COPY-image interval `0x04001b10..0x04001d10` is now
+structurally represented by the exact private, non-derived
+`MacAggregateSlotTables`, size `0x200` and alignment 4, whose single field
+`queues: [[SharedU32; 16]; 8]` occupies the whole interval. The preceding
+opaque prefix shrinks from `OpaqueBytes<0x208>` to an unchanged-in-role
+`OpaqueBytes<0x08>` at `0x04001b08..0x04001b10`; `MacPhyCommandState` remains
+adjacent at `0x04001d10`. `InitializedVendorImage` remains size `0x2078`,
+alignment 4; `DtcmLayout` and `SharedDtcmState` remain size `0xa000`,
+alignment 4.
+
+The schema is rooted at the low-MAC/global context base `0x04001680`: every
+observed access resolves to `0x04001680 + queue * 0x40 + slot * 4 + 0x490`
+with `queue < 8` and `slot < 0x10`. The direct-target inventory at
+`/tmp/xr819-dtcm-refs.out` records reads/writes at `0x1b10`, `0x1b14`,
+`0x1b38`, `0x1b3c`, `0x1b48`, and `0x1b4c` from `txq_build_aggregate_lists`
+(PCs `0xa352..0xa4bc`), a read/write pair at `0x1b10`/`0x1b14`/`0x1b50` from
+`tx_flush_all_queues` (PCs `0xeae`/`0xebe`), DATA targets at `0x1b10` from
+`bab_process_ba_bitmap` (PC `0x7b9c`) and `txp_fn_4425`/`txp_fn_4155`
+(PCs `0x448`/`0x1026a`). Disassembly of the vendor image pins the bounds:
+`tx_flush_all_queues` clears exactly 8 queues of 16 words under
+`irq_fiq_disable_save`; the append path in `txq_build_aggregate_lists` stores
+a frame-record pointer with an explicit `queue < 8` guard; its compaction and
+mode-0 clear loops scan exactly `slot < 0x10`; `txp_fn_4155`/`txp_fn_4425`
+clear one queue's 16 slots via literal-pool base `0x04001680` (pool words at
+`0x504` and `0x10520`). All accesses are full-width u32 operations on raw
+record pointers; Rust models each slot as one opaque `SharedU32` value and
+dereferences nothing, so no pointer-value API exists.
+
+The eight prefix bytes `0x04001b08..0x04001b10` stay opaque: vendor
+`pas_build_rate_tables` writes a second-stream fallback byte table there
+(`strb` loop over indices `0xe..0x15` at g_fw_ctx+`0x47a+idx`, PC `0x8670`),
+but no reader is evidenced, so those bytes remain quarantine rather than a
+typed table. The separate root `0x04001d00` (`DAT_0000a0c8`,
+`DAT_000129fc`, `DAT_0000fdb0`) is used by `txp_pipe_tx_start`,
+`mac_radio_stop`, and `ind_080D_tx_trace` only at offsets `>= +0x12`
+(i.e. inside already-typed or separately bounded territory); no access lands
+inside this slice through it. A whole-binary scan of the vendor image found
+no aligned .text word equal to any address in `[0x04001b10, 0x04001d10)`
+except incidental mid-instruction byte coincidences (`0x04001b80` once,
+`0x04001c40` four times) that no LDR-literal targets; the candidate ELF's
+aligned-literal multiset for the range is empty. The initial COPY values are
+frame-record pointers established at runtime; writer closure is not claimed,
+and vendor, IRQ/FIQ, computed, indirect, and generic HIF/debug mutation
+remain possible.
+
+No production address constant, accessor, pointer conversion, reference,
+read/write/reset/initialization helper, generic offset, slice, iterator, or
+ownership API was added, so exact volatile widths, MMIO/barrier/interrupt and
+initialization order, wrapping/unchecked arithmetic, request ownership, and
+all 30 HIF inputs are unchanged because no production operation was touched.
+
+`tools/check-initialized-mac-aggregate-slot-tables-layout.py` owns exactly
+`[0x04001b10, 0x04001d10)`. It source-pins the exact non-derived declaration,
+image split, compile-time assertions, focused process-local test, every
+physical address and boundary (`0x1b08`, `0x1b10`, `0x1cd0`, `0x1d0c`,
+`0x1d10`), and unchanged enclosing/global layouts. It rejects operational
+APIs and direct/transitive const, static, type, renamed-import,
+grouped-import, constructor-offset, and raw-pointer aliases with adversarial
+self-tests. Family literals are permitted only in `src/dtcm.rs` and this
+checker; it precisely recognizes the adjacent MAC-wake-runtime checker range
+`[0x04001ac0, 0x04001b08)` and MAC-PHY-command checker range
+`[0x04001d10, 0x04001d5c)` without broadening either, and it was added to the
+MAC-PHY-command checker's owner set for the shared `0x04001d10` boundary
+literal. Its aligned linked-literal and decoded PC-relative-xref multisets are
+both pinned empty. Their emptiness is drift evidence, not writer closure.
+
+The focused default (236 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass. Complete software-only `tools/check.sh`, the Thumb release build,
+the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all 197 unchanged, and is byte-identical
+to the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-aggregate-slot-tables-final-check.log
+          4bea4bb2166d8ca39e162b35e6fdf8d81d7e3aea56803fc5fcff1ffe132bb419
+image log /tmp/xr819-mac-aggregate-slot-tables-image.log
+manifest  tools/initialized-mac-aggregate-slot-tables-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
