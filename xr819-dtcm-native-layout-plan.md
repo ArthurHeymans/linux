@@ -6475,3 +6475,71 @@ checks    /tmp/xr819-tlv-final-check.log
 manifest  tools/initialized-tlv-handler-table-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.115 Initialized prefix tables
+
+The image-leading opaque `pre_duration_tables: OpaqueBytes<0x138>` at
+`[0x04000000, 0x04000138)` splits into:
+
+- `mac_slot_timing_patch_list: MacSlotTimingPatchList { entries:
+  [MacSlotTimingPatchEntry; 11] }` `[0x04000000, 0x04000058)` (entry =
+  `{pointer: SharedU32, patch_word: SharedU32}`, size `0x58`): applied by
+  vendor `mac_program_slot_timings`' tail loop (root `DAT_0000f7ac`, static
+  count `0xb`): `*pointer = patch_word`; every recovered pointer targets
+  `0x09c00xxx` MMIO (RF timing registers). Vendor
+  `mac_program_timing_regs` additionally stores the pointer VALUE
+  `0x04000004` into a config structure field — value-only, never
+  dereferenced in-binary.
+- `pac_duration_quanta: PacDurationQuanta { quanta: [SharedU32; 8] }`
+  `[0x04000058, 0x04000078)`: read by vendor `pac_phy_calc_duration` as
+  `*(u32 *)(0x04000020 + mode * 4)` under `fw_assert` bounds
+  `14 <= mode < 22` — the assertion proves both the eight-entry extent and
+  the exact index domain.
+- `prefix_suffix: OpaqueBytes<0xc0>` `[0x04000078, 0x04000138)`: no observed
+  accessor (whole-binary scan: no other loaded pool word in the interval);
+  stays opaque.
+
+Ghidra DATA/PARAM references at `pas_reprogram_all_vif_rate_tables` (PC
+`0x7f82`: `movs`/`lsls` producing `0x04000000` as a bitfield value) and
+`mac_pipe_irq_service` (PC `0x9c12`) are value coincidences, not accesses.
+
+Retained Rust pins one sanctioned source literal:
+`mac::program_before_scan_channel` stores the pointer VALUE `0x0400_0000`
+into MMIO register `0x0270`, mirroring vendor hardware table pointing. No
+production operation was added or changed; initial COPY values are
+loader-owned; no writer closure is claimed.
+
+Checker-specific limitation, documented in the checker itself: because this
+interval starts AT the DTCM base, relative-offset traps (`DTCM_STATE_BASE +
+0x2c`, `from_offset(0x2c)`) are undetectable — every small integer would
+look like an offset — so the relative arm of `owned_literals` is disabled
+and files legitimately referencing `0x04000000`-family constants as region
+base or MMIO table values (platform/tx/vendor_host_tx/download, linker
+script, pack tools) are reviewed owners. Coverage comes from the exact
+source inventory, contiguous compile-time/focused-test mapping checks, and
+the decoded-load linked gate.
+
+`tools/check-initialized-prefix-tables-layout.py` owns exactly
+`[0x04000000, 0x04000138)`. Its adversarial self-tests reject deleted/
+swapped compile-time and focused-test mappings, family-name aliases,
+constructor offsets, raw pointers, and operational APIs. The tx-rate-tables
+checker's owner set gained it for the shared `0x04000138` boundary.
+
+Focused default (244 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (245). Complete software-only `tools/check.sh`, the Thumb release
+build, the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-prefix-tables-final-check.log
+manifest  tools/initialized-prefix-tables-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

@@ -31,6 +31,7 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "tools/check-initialized-prefix-tables-layout.py",
     "tools/check-initialized-tx-rate-tables-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
