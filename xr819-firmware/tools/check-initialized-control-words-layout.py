@@ -33,7 +33,12 @@ OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-initialized-control-words-layout.py",
     "tools/check-initialized-tx-confirm-aggregation-state-layout.py",
+    "tools/check-initialized-configuration-apply-flags-layout.py",
 }
+PRECEDING_OWNER = (
+    "tools/check-initialized-configuration-apply-flags-layout.py",
+    "(0x0400141C, 0x04001420)",
+)
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
     "INITIALIZED_CONTROL_WORDS_BASE",
@@ -186,6 +191,9 @@ def in_family(value: int) -> bool:
 def check_source() -> None:
     paths = source_paths()
     failures: list[str] = []
+    preceding_path, preceding_range = PRECEDING_OWNER
+    if preceding_range not in (ROOT / preceding_path).read_text():
+        failures.append(f"{preceding_path}: preceding checker range changed from {preceding_range}")
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
         if relative in OWNER_FILES:

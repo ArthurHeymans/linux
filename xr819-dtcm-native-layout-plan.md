@@ -1,6 +1,6 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** fixed initialized multi-VIF beacon timer structurally decoded at `0x04001250..0x04001264`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
+**Status:** fixed configuration-apply flags word structurally decoded at `0x0400141c..0x04001420`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. The complete ELF and packed image retain their qualified hashes. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
 **Firmware lineage:** candidate based directly on `8940467e9cdc` (`Model VIF state in Rust`), itself atop qualified low-MAC/PAS. The exact parent was rebuilt from revision files for code-generation comparison; no rejected patch was applied.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
@@ -300,7 +300,9 @@ Within `0x04000000..0x04002078`:
 | `0x0400123c..0x04001240` | one shared `u32` | fixed PHY watchdog count; wrapping increment and reset observed |
 | `0x04001250..0x04001264` | five shared `u32` words | fixed multi-VIF beacon `TimerEntry`; surrounding `0x04001240..0x04001250` and `0x04001264..0x040012a0` remain opaque |
 | `0x040012a0..0x040012c8` | `0x28` | exported AMPDU counters table |
-| `0x04001420...` | mixed | control words; `0x04001428` host-download state, former PRNG at `0x0400142c`, timer offset at `0x0400143c` |
+| `0x04001410..0x0400141c` | three shared `u32` words | fixed TX-confirm aggregation state; raw words remain quarantine values, not safe pointers |
+| `0x0400141c..0x04001420` | one shared `u32` | fixed configuration-apply flags word; bits remain open semantics |
+| `0x04001420..0x04001440` | eight shared `u32` words | control words; `0x04001428` host-download state, former PRNG at `0x0400142c`, timer offset at `0x0400143c` |
 | `0x04001680...` | mixed | low-MAC shared root and four pipe families |
 | `0x04001e6c` | `u32` within larger root | retry/drain control; known untranslated writers |
 | `0x04001fcc` | `u32` | global scheduler/radio exclusion mask, extremely high fan-out |
@@ -5358,9 +5360,9 @@ does not reorder publication, flush, HIF-buffer updates, or raw-address
 arithmetic.
 
 The record starts exactly where `AmpduCompletionControl` ends at
-`0x0400140c..0x04001410`. The independent `0x0400141c` word remains a four-byte
-opaque suffix at `0x0400141c..0x04001420`; reference-map lines 299-304 assign it
-to separate debug/configuration code, so it is not absorbed. Existing
+`0x0400140c..0x04001410`. The independent `0x0400141c` word is not part of this record; Appendix A.99
+represents it as the adjacent configuration-apply flags word based on separate
+debug/configuration references at reference-map lines 299-304.
 `InitializedControlWords` still begins at `0x04001420`. No production literal
 was migrated: Rust has no consumer of `0x04001410`, `0x04001414`, or
 `0x04001418`, and unrelated `0x09c01410` MAC MMIO literals remain untouched.
@@ -5404,4 +5406,64 @@ checks    /tmp/xr819-tx-confirm-aggregation-state-check.log
           5e8a45d1adc2caa3e18e7219f77e204d2180b6d46aa74f45e7931c65924196fc
 manifest  tools/initialized-tx-confirm-aggregation-state-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.99 Fixed configuration-apply flags word
+
+The initialized vendor COPY-image interval `0x0400141c..0x04001420` is now
+structurally represented by the exact private, non-derived
+`ConfigurationApplyFlags`, size `0x04` and alignment 4. Its only field,
+`flags +0x00`, is exactly one `SharedU32` at `0x0400141c`. The record begins
+where `TxConfirmAggregationState` ends and ends where `InitializedControlWords`
+begins at `0x04001420`. `InitializedVendorImage` remains size `0x2078`,
+alignment 4; `DtcmLayout` and `SharedDtcmState` remain size `0xa000`, alignment
+4. This is one physical-word interpretation, not evidence for a containing
+configuration record.
+
+`/tmp/xr819-dtcm-refs.out:299-304` records exactly six direct full-width
+references: three in `dbg_stats_config_apply` and three in
+`wsm_h_09_configuration_impl`. `annotated-main.c:22422-22432` preserves the
+vendor sequence of an unconditional 32-bit store of 1, three separate
+conditional `u16` request copies and their calls, then a 32-bit read/OR-2/write
+RMW. Lines 24566-24576 and 24598-24600 preserve snapshot, full 32-bit clear,
+optional TLV dispatch, conditional re-read, and later bit-1 status selection in
+that order. No Rust operation implements or changes this behavior. The shared
+base-plus-`0x3c` interpretation starts at `0x040013e0` and overlaps existing
+telemetry, A-MPDU, and TX-confirm interpretations; it therefore proves only
+this physical word. Neither bit 0 nor bit 1 is assigned a closed enum or
+stronger semantics, and no initialization value or writer closure is claimed.
+
+The field remains `UnsafeCell<MaybeUninit<u32>>`-backed shared quarantine for
+vendor, IRQ, and FIQ mutation. No production address constant, pointer,
+reference, value, read/write helper, bit helper, constructor, generic offset,
+slice, iterator, reset, initializer, API, or overlapping `0x040013e0` base was
+added. No safe reference or exclusive Rust ownership is exposed.
+
+`tools/check-initialized-configuration-apply-flags-layout.py` owns exactly
+`[0x0400141c, 0x04001420)`. It source-pins the private declaration, image field,
+compile-time assertions, focused process-local test, exact addresses and
+boundaries, and unchanged enclosing/global layouts. Its adversarial self-tests
+reject direct and transitive const/static/type/import aliases, constructors,
+raw pointers, and operational APIs. The adjacent TX-confirm and initialized
+control checkers recognize this exact owner without broadening their ranges.
+The aligned linked-literal and decoded PC-relative-xref multisets are pinned
+empty; emptiness is drift evidence, not writer closure.
+
+The focused default and `vendor-host-tx-diagnostics` process-local tests pass,
+as do standalone source and linked checker modes, complete software-only
+`tools/check.sh`, the Thumb release build, exact-parent complete text-symbol
+and codegen comparison, and fresh `build-ota-image.sh` packing. The exact-parent
+manifest reports 197 parent and candidate text symbols, all unchanged, with
+exact IRQ/barrier and reviewed memory-operation sequences. Complete-file
+identity, rather than symbol-only identity, confirms unchanged volatile widths,
+MMIO/barrier/interrupt and initialization order, wrapping/unchecked arithmetic,
+request ownership, and all 30 HIF inputs. TALA relocation and
+`0x04002984..0x04003050` were untouched; evidence-free bytes remain opaque. No
+target or hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-configuration-apply-flags-check.log
+manifest  tools/initialized-configuration-apply-flags-codegen-manifest.json
 ```

@@ -37,6 +37,7 @@ python3 tools/check-initialized-hif-control-layout.py
 python3 tools/check-ampdu-telemetry-layout.py
 python3 tools/check-initialized-per-tid-telemetry-bank-layout.py
 python3 tools/check-initialized-tx-confirm-aggregation-state-layout.py
+python3 tools/check-initialized-configuration-apply-flags-layout.py
 python3 tools/check-initialized-control-words-layout.py
 python3 tools/check-queue-pipe-mappings-layout.py
 python3 tools/check-duration-quantum-pointers-layout.py
@@ -109,6 +110,7 @@ python3 tools/check-initialized-hif-control-layout.py "$ELF"
 python3 tools/check-ampdu-telemetry-layout.py "$ELF"
 python3 tools/check-initialized-per-tid-telemetry-bank-layout.py "$ELF"
 python3 tools/check-initialized-tx-confirm-aggregation-state-layout.py "$ELF"
+python3 tools/check-initialized-configuration-apply-flags-layout.py "$ELF"
 python3 tools/check-initialized-control-words-layout.py "$ELF"
 python3 tools/check-queue-pipe-mappings-layout.py "$ELF"
 python3 tools/check-duration-quantum-pointers-layout.py "$ELF"

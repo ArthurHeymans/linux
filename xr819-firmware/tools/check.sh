@@ -45,6 +45,7 @@ python3 tools/check-initialized-hif-control-layout.py
 python3 tools/check-ampdu-telemetry-layout.py
 python3 tools/check-initialized-per-tid-telemetry-bank-layout.py
 python3 tools/check-initialized-tx-confirm-aggregation-state-layout.py
+python3 tools/check-initialized-configuration-apply-flags-layout.py
 python3 tools/check-initialized-control-words-layout.py
 python3 tools/check-queue-pipe-mappings-layout.py
 python3 tools/check-duration-quantum-pointers-layout.py
@@ -125,6 +126,7 @@ python3 tools/check-initialized-hif-control-layout.py "$ELF"
 python3 tools/check-ampdu-telemetry-layout.py "$ELF"
 python3 tools/check-initialized-per-tid-telemetry-bank-layout.py "$ELF"
 python3 tools/check-initialized-tx-confirm-aggregation-state-layout.py "$ELF"
+python3 tools/check-initialized-configuration-apply-flags-layout.py "$ELF"
 python3 tools/check-initialized-control-words-layout.py "$ELF"
 python3 tools/check-queue-pipe-mappings-layout.py "$ELF"
 python3 tools/check-duration-quantum-pointers-layout.py "$ELF"
@@ -523,6 +525,15 @@ if [[ -n "${XR819_INITIALIZED_TX_CONFIRM_AGGREGATION_STATE_PARENT_ELF:-}" ]]; th
     "$XR819_INITIALIZED_TX_CONFIRM_AGGREGATION_STATE_PARENT_ELF" "$ELF"
 else
   echo "== initialized-TX-confirm-aggregation-state codegen gate skipped: set XR819_INITIALIZED_TX_CONFIRM_AGGREGATION_STATE_PARENT_ELF to the exact parent ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_CONFIGURATION_APPLY_FLAGS_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-configuration-apply-flags parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-configuration-apply-flags-codegen-manifest.json \
+    "$XR819_INITIALIZED_CONFIGURATION_APPLY_FLAGS_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-configuration-apply-flags codegen gate skipped: set XR819_INITIALIZED_CONFIGURATION_APPLY_FLAGS_PARENT_ELF to the exact parent ELF =="
 fi
 
 if [[ -n "${XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF:-}" ]]; then

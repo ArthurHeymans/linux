@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source/linked drift evidence for [0x04001410, 0x0400141c).
+"""Source/linked drift evidence for [0x0400141c, 0x04001420).
 
 The linked aligned-literal and decoded PC-relative-xref multisets are pinned
 empty. Empty linked sets are drift evidence, not writer closure: computed,
@@ -17,8 +17,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04001410, 0x0400141C)
-OFFSETS = range(0x1410, 0x141C)
+RANGE = (0x0400141C, 0x04001420)
+OFFSETS = range(0x141C, 0x1420)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc",
@@ -28,41 +28,34 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "tools/check-initialized-configuration-apply-flags-layout.py",
     "tools/check-initialized-tx-confirm-aggregation-state-layout.py",
+    "tools/check-initialized-control-words-layout.py",
 }
 ADJACENT_DECLARATIONS = {
-    "tools/check-ampdu-completion-control-layout.py": "(0x0400140C, 0x04001410)",
-    "tools/check-initialized-configuration-apply-flags-layout.py": "(0x0400141C, 0x04001420)",
+    "tools/check-initialized-tx-confirm-aggregation-state-layout.py": "(0x04001410, 0x0400141C)",
+    "tools/check-initialized-control-words-layout.py": "(0x04001420, 0x04001440)",
 }
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
-FIELDS = ("state", "pending_message_raw", "append_cursor_raw")
-STRUCT = (
-    "#[repr(C, align(4))] struct TxConfirmAggregationState { "
-    "state: SharedU32, pending_message_raw: SharedU32, append_cursor_raw: SharedU32 }"
-)
+STRUCT = "#[repr(C, align(4))] struct ConfigurationApplyFlags { flags: SharedU32 }"
 REQUIRED = (
     STRUCT,
-    "tx_confirm_aggregation_state: TxConfirmAggregationState",
     "configuration_apply_flags: ConfigurationApplyFlags",
     "assert_type_layout!(SharedU32, 0x04, 4)",
-    "assert_type_layout!(TxConfirmAggregationState, 0x0c, 4)",
-    "offset_of!(TxConfirmAggregationState, state) == 0x00",
-    "offset_of!(TxConfirmAggregationState, pending_message_raw) == 0x04",
-    "offset_of!(TxConfirmAggregationState, append_cursor_raw) == 0x08",
-    "offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) == 0x1410",
+    "assert_type_layout!(ConfigurationApplyFlags, 0x04, 4)",
+    "offset_of!(ConfigurationApplyFlags, flags) == 0x00",
     "offset_of!(InitializedVendorImage, configuration_apply_flags) == 0x141c",
+    "offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) + core::mem::size_of::<TxConfirmAggregationState>() == 0x0400_141c",
     "offset_of!(InitializedVendorImage, control_words) == 0x1420",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
-    "fn initialized_tx_confirm_aggregation_state_addresses_are_exact()",
-    "size_of::<TxConfirmAggregationState>(), 0x0c",
-    "align_of::<TxConfirmAggregationState>(), 4",
-    "fields.windows(2)",
-    "AMPDU_COMPLETION_CONTROL.get(), 0x0400_140c",
-    "AMPDU_COMPLETION_CONTROL.get() + core::mem::size_of::<AmpduCompletionControl>(), 0x0400_1410",
-    "offset_of!(InitializedVendorImage, configuration_apply_flags), 0x0400_141c",
+    "fn initialized_configuration_apply_flags_address_is_exact()",
+    "size_of::<ConfigurationApplyFlags>(), 0x04",
+    "align_of::<ConfigurationApplyFlags>(), 4",
+    "offset_of!(ConfigurationApplyFlags, flags), 0x00",
+    "offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) + core::mem::size_of::<TxConfirmAggregationState>(), 0x0400_141c",
     "offset_of!(InitializedVendorImage, control_words), 0x0400_1420",
     "size_of::<InitializedVendorImage>(), 0x2078",
     "align_of::<InitializedVendorImage>(), 4",
@@ -71,24 +64,14 @@ REQUIRED = (
     "size_of::<SharedDtcmState>(), DTCM_STATE_SIZE",
     "align_of::<SharedDtcmState>(), 4",
 )
-PHYSICAL = (0x0400140C, 0x04001410, 0x04001414, 0x04001418, 0x0400141C, 0x04001420)
+PHYSICAL = (0x0400141C, 0x04001420)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    "assert_type_layout!(SharedU32, 0x04, 4);",
-    "assert_type_layout!(TxConfirmAggregationState, 0x0c, 4);",
-    "assert!(core::mem::offset_of!(TxConfirmAggregationState, state) == 0x00);",
-    "assert!(core::mem::offset_of!(TxConfirmAggregationState, pending_message_raw) == 0x04);",
-    "assert!(core::mem::offset_of!(TxConfirmAggregationState, append_cursor_raw) == 0x08);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) == 0x1410);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) + core::mem::offset_of!(TxConfirmAggregationState, state) == 0x0400_1410);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) + core::mem::offset_of!(TxConfirmAggregationState, pending_message_raw) == 0x0400_1414);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) + core::mem::offset_of!(TxConfirmAggregationState, append_cursor_raw) == 0x0400_1418);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) + core::mem::size_of::<TxConfirmAggregationState>() == 0x0400_141c);",
     "assert_type_layout!(ConfigurationApplyFlags, 0x04, 4);",
     "assert!(core::mem::offset_of!(ConfigurationApplyFlags, flags) == 0x00);",
     "assert!(core::mem::offset_of!(InitializedVendorImage, configuration_apply_flags) == 0x141c);",
     "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, configuration_apply_flags) == 0x0400_141c);",
     "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, configuration_apply_flags) + core::mem::offset_of!(ConfigurationApplyFlags, flags) == 0x0400_141c);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, configuration_apply_flags) + core::mem::size_of::<ConfigurationApplyFlags>() == 0x0400_1420);", 
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, configuration_apply_flags) + core::mem::size_of::<ConfigurationApplyFlags>() == 0x0400_1420);",
     "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, control_words) == 0x0400_1420);",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4);",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4);",
@@ -96,20 +79,17 @@ COMPILE_TIME_PHYSICAL_INVENTORY = (
 )
 FOCUSED_TEST_INVENTORY = (
     "let image = DTCM_STATE_BASE;",
-    "let record = image + core::mem::offset_of!(InitializedVendorImage, tx_confirm_aggregation_state);",
-    "let fields = [record + core::mem::offset_of!(TxConfirmAggregationState, state), record + core::mem::offset_of!(TxConfirmAggregationState, pending_message_raw), record + core::mem::offset_of!(TxConfirmAggregationState, append_cursor_raw)];",
+    "let record = image + core::mem::offset_of!(InitializedVendorImage, configuration_apply_flags);",
+    "let field = record + core::mem::offset_of!(ConfigurationApplyFlags, flags);",
     "assert_eq!(core::mem::size_of::<SharedU32>(), 4);",
     "assert_eq!(core::mem::align_of::<SharedU32>(), 4);",
-    "assert_eq!(core::mem::size_of::<TxConfirmAggregationState>(), 0x0c);",
-    "assert_eq!(core::mem::align_of::<TxConfirmAggregationState>(), 4);",
-    "assert_eq!([core::mem::offset_of!(TxConfirmAggregationState, state), core::mem::offset_of!(TxConfirmAggregationState, pending_message_raw), core::mem::offset_of!(TxConfirmAggregationState, append_cursor_raw)], [0x00, 0x04, 0x08]);",
-    "assert_eq!(fields, [0x0400_1410, 0x0400_1414, 0x0400_1418]);",
-    "for pair in fields.windows(2) { assert_eq!(pair[0] + core::mem::size_of::<SharedU32>(), pair[1]); }",
-    "assert_eq!(record, 0x0400_1410);",
-    "assert_eq!(record + core::mem::size_of::<TxConfirmAggregationState>(), 0x0400_141c);",
-    "assert_eq!(AMPDU_COMPLETION_CONTROL.get(), 0x0400_140c);",
-    "assert_eq!(AMPDU_COMPLETION_CONTROL.get() + core::mem::size_of::<AmpduCompletionControl>(), 0x0400_1410);",
-    "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, configuration_apply_flags), 0x0400_141c);",
+    "assert_eq!(core::mem::size_of::<ConfigurationApplyFlags>(), 0x04);",
+    "assert_eq!(core::mem::align_of::<ConfigurationApplyFlags>(), 4);",
+    "assert_eq!(core::mem::offset_of!(ConfigurationApplyFlags, flags), 0x00);",
+    "assert_eq!(record, 0x0400_141c);",
+    "assert_eq!(field, 0x0400_141c);",
+    "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, tx_confirm_aggregation_state) + core::mem::size_of::<TxConfirmAggregationState>(), 0x0400_141c);",
+    "assert_eq!(record + core::mem::size_of::<ConfigurationApplyFlags>(), 0x0400_1420);",
     "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, control_words), 0x0400_1420);",
     "assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078);",
     "assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4);",
@@ -188,13 +168,13 @@ def exact_inventory_present(scope: str, inventory: tuple[str, ...]) -> bool:
 
 
 def swapped_once(source: str, left: str, right: str) -> str:
-    sentinel = "__TX_CONFIRM_LAYOUT_SWAP__"
+    sentinel = "__CONFIGURATION_APPLY_FLAGS_LAYOUT_SWAP__"
     return source.replace(left, sentinel, 1).replace(right, left, 1).replace(sentinel, right, 1)
 
 
 def check_exact_inventory_regression(source: str) -> None:
     compile_scope = mask_test_module(source)
-    test_scope = named_function(source, "initialized_tx_confirm_aggregation_state_addresses_are_exact")
+    test_scope = named_function(source, "initialized_configuration_apply_flags_address_is_exact")
     if test_scope is None:
         raise SystemExit("checker self-test failed: focused test extraction failed")
     for label, scope, inventory in (
@@ -209,25 +189,17 @@ def check_exact_inventory_regression(source: str) -> None:
             if exact_inventory_present(mutated, inventory):
                 raise SystemExit(f"checker self-test failed: deleted {label} mapping was accepted: {item}")
 
-    compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[6])
+    compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[4])
     compile_swap = normalized(compile_scope).replace(
-        compile_item, compile_item.replace("0x0400_1410", "0x0400_1414"), 1
+        compile_item, compile_item.replace("0x0400_141c", "0x0400_1420"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[8])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[9])
     test_address_swap = normalized(test_scope).replace(
-        test_address_item,
-        swapped_once(test_address_item, "0x0400_1410", "0x0400_1414"),
-        1,
+        test_address_item, test_address_item.replace("0x0400_141c", "0x0400_1420"), 1
     )
     test_field_item = normalized(FOCUSED_TEST_INVENTORY[2])
     test_field_swap = normalized(test_scope).replace(
-        test_field_item,
-        swapped_once(
-            test_field_item,
-            "core::mem::offset_of!(TxConfirmAggregationState, state)",
-            "core::mem::offset_of!(TxConfirmAggregationState, pending_message_raw)",
-        ),
-        1,
+        test_field_item, test_field_item.replace("ConfigurationApplyFlags, flags", "ConfigurationApplyFlags, missing_flags"), 1
     )
     if exact_inventory_present(compile_swap, COMPILE_TIME_PHYSICAL_INVENTORY):
         raise SystemExit("checker self-test failed: swapped compile-time field/address mappings were accepted")
@@ -250,11 +222,9 @@ def in_range(value: int) -> bool:
 def owned_literals(code: str) -> list[int]:
     values = [int(match.group().replace("_", ""), 16) for match in LITERAL.finditer(code)]
     physical = [value for value in values if in_range(value)]
-    relative_context = re.search(
-        r"\bDTCM_STATE_BASE\b|"
-        r"\b(?:[A-Za-z_][A-Za-z0-9_]*::)*from_offset(?:_unchecked)?\s*\(", code,
-    )
-    relative = [value for value in values if value in OFFSETS] if relative_context else []
+    # Bare fixed offsets must seed alias tracking even when their DTCM address
+    # constructor or raw-pointer consumer appears in a later declaration.
+    relative = [value for value in values if value in OFFSETS]
     return physical + relative
 
 
@@ -279,7 +249,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"TxConfirmAggregationState", "tx_confirm_aggregation_state",
+    views = {"ConfigurationApplyFlags", "configuration_apply_flags",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -288,6 +258,12 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         expanded = views | aliases
         if expanded == views: return views, declarations
         views = expanded
+
+
+def forbidden_family_declarations(
+    declarations: list[tuple[str, str, str]], views: set[str]
+) -> set[str]:
+    return {name for _, name, _ in declarations if name in views}
 
 
 def functions_consuming_family(code: str, views: set[str]) -> list[str]:
@@ -304,24 +280,39 @@ def functions_consuming_family(code: str, views: set[str]) -> list[str]:
 
 def check_alias_tracking_regression() -> None:
     fixtures = (
-        ("const ROOT: usize = tx_confirm_aggregation_state; const NEXT: usize = ROOT; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ROOT", "NEXT"}, ["leak"]),
-        ("static ROOT: usize = 0x0400_1410; static NEXT: usize = ROOT; fn leak() -> usize { NEXT }", {"ROOT", "NEXT"}, ["leak"]),
-        ("type Hidden = TxConfirmAggregationState; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
-        ("use crate::dtcm::TxConfirmAggregationState as Hidden; const ROOT: usize = tx_confirm_aggregation_state; fn leak(_: Hidden) -> usize { ROOT }", {"Hidden", "ROOT"}, ["leak"]),
-        ("use crate::dtcm::{TxConfirmAggregationState as Hidden, tx_confirm_aggregation_state as Root}; const NEXT: usize = Root; fn leak(_: Hidden) -> usize { NEXT }", {"Hidden", "Root", "NEXT"}, ["leak"]),
-        ("use crate::{dtcm::{TxConfirmAggregationState as Hidden}}; fn leak(_: Hidden) {}", {"Hidden"}, ["leak"]),
-        ("fn leak() -> *mut u32 { (DTCM_STATE_BASE + 0x1414) as *mut u32 }", set(), ["leak"]),
-        ("const ENTRY: usize = DTCM_STATE_BASE + 0x1414; const NEXT: usize = ENTRY; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn leak() -> *mut u32 { DtcmAddress::from_offset(0x1418).cast_mut() }", set(), ["leak"]),
-        ("const ENTRY: DtcmAddress = DtcmAddress::from_offset(0x1418); const NEXT: DtcmAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn leak() -> usize { DtcmAddress::from_offset_unchecked(0x1418).get() }", set(), ["leak"]),
-        ("use crate::{dtcm::{DtcmAddress as HiddenAddress}}; const ENTRY: HiddenAddress = HiddenAddress::from_offset(0x1414); const NEXT: HiddenAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
-        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_1410 as *mut u32, 0) } }", set(), ["reset"]),
+        ("const ROOT: usize = configuration_apply_flags; const NEXT: usize = ROOT; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ROOT", "NEXT"}, ["leak"]),
+        ("static ROOT: usize = 0x0400_141c; static NEXT: usize = ROOT; fn leak() -> usize { NEXT }", {"ROOT", "NEXT"}, ["leak"]),
+        ("const FLAGS_OFFSET: usize = 0x141c;", {"FLAGS_OFFSET"}, []),
+        ("static FLAGS_OFFSET: usize = 0x141f;", {"FLAGS_OFFSET"}, []),
+        ("const FLAGS_OFFSET: usize = 0x141c; const NEXT: usize = FLAGS_OFFSET; fn leak() -> usize { NEXT }", {"FLAGS_OFFSET", "NEXT"}, ["leak"]),
+        ("const FLAGS_OFFSET: usize = 0x141c; const ADDRESS: DtcmAddress = DtcmAddress::from_offset(FLAGS_OFFSET); fn leak() -> *mut u32 { ADDRESS.get() as *mut u32 }", {"FLAGS_OFFSET", "ADDRESS"}, ["leak"]),
+        ("type Hidden = ConfigurationApplyFlags; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
+        ("use crate::dtcm::ConfigurationApplyFlags as Hidden; const ROOT: usize = configuration_apply_flags; fn leak(_: Hidden) -> usize { ROOT }", {"Hidden", "ROOT"}, ["leak"]),
+        ("use crate::dtcm::{ConfigurationApplyFlags as Hidden, configuration_apply_flags as Root}; const NEXT: usize = Root; fn leak(_: Hidden) -> usize { NEXT }", {"Hidden", "Root", "NEXT"}, ["leak"]),
+        ("use crate::{dtcm::{ConfigurationApplyFlags as Hidden}}; fn leak(_: Hidden) {}", {"Hidden"}, ["leak"]),
+        ("fn leak() -> *mut u32 { (DTCM_STATE_BASE + 0x141c) as *mut u32 }", set(), ["leak"]),
+        ("const ENTRY: usize = DTCM_STATE_BASE + 0x141c; const NEXT: usize = ENTRY; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn leak() -> *mut u32 { DtcmAddress::from_offset(0x141c).cast_mut() }", set(), ["leak"]),
+        ("const ENTRY: DtcmAddress = DtcmAddress::from_offset(0x141c); const NEXT: DtcmAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn leak() -> usize { DtcmAddress::from_offset_unchecked(0x141c).get() }", set(), ["leak"]),
+        ("use crate::{dtcm::{DtcmAddress as HiddenAddress}}; const ENTRY: HiddenAddress = HiddenAddress::from_offset(0x141c); const NEXT: HiddenAddress = ENTRY; fn leak() -> usize { NEXT.get() }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_141c as *mut u32, 0) } }", set(), ["reset"]),
     )
     for fixture, expected_aliases, expected_functions in fixtures:
         views, _ = family_aliases(fixture)
         if not expected_aliases <= views or functions_consuming_family(fixture, views) != expected_functions:
             raise SystemExit("checker self-test failed: alias, constructor-offset, or raw-pointer family API was accepted")
+
+    rejected_offsets = (
+        ("const FLAGS_OFFSET: usize = 0x141c;", {"FLAGS_OFFSET"}),
+        ("static FLAGS_OFFSET: usize = 0x141f;", {"FLAGS_OFFSET"}),
+        ("const FLAGS_OFFSET: usize = 0x141c; const NEXT: usize = FLAGS_OFFSET;", {"FLAGS_OFFSET", "NEXT"}),
+        ("const FLAGS_OFFSET: usize = 0x141c; const ADDRESS: DtcmAddress = DtcmAddress::from_offset(FLAGS_OFFSET); fn raw() -> *mut u32 { ADDRESS.get() as *mut u32 }", {"FLAGS_OFFSET", "ADDRESS"}),
+    )
+    for fixture, expected_rejections in rejected_offsets:
+        views, declarations = family_aliases(fixture)
+        if forbidden_family_declarations(declarations, views) != expected_rejections:
+            raise SystemExit("checker self-test failed: bare or split fixed-offset alias was accepted")
 
 
 def check_source() -> None:
@@ -329,32 +320,32 @@ def check_source() -> None:
     compact = normalized(source)
     failures = [f"src/dtcm.rs: missing exact inventory: {item}" for item in REQUIRED if normalized(item) not in compact]
     compile_scope = mask_test_module(source)
-    focused_test = named_function(source, "initialized_tx_confirm_aggregation_state_addresses_are_exact")
+    focused_test = named_function(source, "initialized_configuration_apply_flags_address_is_exact")
     failures.extend(
         f"src/dtcm.rs: missing exact compile-time physical mapping: {item}"
         for item in missing_inventory(compile_scope, COMPILE_TIME_PHYSICAL_INVENTORY)
     )
     if not exact_inventory_present(compile_scope, COMPILE_TIME_PHYSICAL_INVENTORY):
-        failures.append("src/dtcm.rs: exact contiguous compile-time TX-confirm layout assertion inventory changed")
+        failures.append("src/dtcm.rs: exact contiguous configuration-apply-flags compile-time assertion inventory changed")
     if focused_test is None:
-        failures.append("src/dtcm.rs: focused TX-confirm aggregation layout test is missing")
+        failures.append("src/dtcm.rs: focused configuration-apply flags layout test is missing")
     else:
         failures.extend(
             f"src/dtcm.rs: focused test missing exact mapping/extent: {item}"
             for item in missing_inventory(focused_test, FOCUSED_TEST_INVENTORY)
         )
         if not exact_inventory_present(focused_test, FOCUSED_TEST_INVENTORY):
-            failures.append("src/dtcm.rs: exact contiguous focused TX-confirm layout test inventory changed")
+            failures.append("src/dtcm.rs: exact contiguous focused configuration-apply-flags test inventory changed")
     check_exact_inventory_regression(source)
     for physical in PHYSICAL:
         spelling = f"0x{physical >> 16:04x}_{physical & 0xffff:04x}"
         if spelling not in source:
             failures.append(f"src/dtcm.rs: missing physical address/boundary {spelling}")
-    declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\]\s*struct\s+TxConfirmAggregationState\s*\{[^}]*\}", source)
+    declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\]\s*struct\s+ConfigurationApplyFlags\s*\{[^}]*\}", source)
     if declaration is None or normalized(declaration.group()) != normalized(STRUCT) or "derive" in declaration.group():
-        failures.append("src/dtcm.rs: TxConfirmAggregationState must be the exact private non-derived inventory")
-    if source.count("struct TxConfirmAggregationState") != 1 or "pre_control_words:" in source:
-        failures.append("src/dtcm.rs: removed opaque suffix or duplicate TX-confirm state remains")
+        failures.append("src/dtcm.rs: ConfigurationApplyFlags must be the exact private non-derived inventory")
+    if source.count("struct ConfigurationApplyFlags") != 1 or "pre_control_words:" in source:
+        failures.append("src/dtcm.rs: removed opaque word or duplicate configuration-apply-flags record remains")
     for relative, exact in ADJACENT_DECLARATIONS.items():
         if exact not in (ROOT / relative).read_text():
             failures.append(f"{relative}: adjacent checker range changed from {exact}")
@@ -365,27 +356,28 @@ def check_source() -> None:
     rust["src/dtcm.rs"] = rust["src/dtcm.rs"].replace(STRUCT, " " * len(STRUCT))
     production = "\n".join(rust.values())
     views, declarations = family_aliases(production)
+    forbidden_declarations = forbidden_family_declarations(declarations, views)
     for kind, name, _ in declarations:
-        if name in views:
-            failures.append(f"additional TX-confirm aggregation {kind} alias is forbidden: {name}")
+        if name in forbidden_declarations:
+            failures.append(f"additional configuration-apply flags {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
-    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*TxConfirmAggregationState", production):
-        failures.append("production impl for TxConfirmAggregationState is forbidden")
+    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*ConfigurationApplyFlags", production):
+        failures.append("production impl for ConfigurationApplyFlags is forbidden")
     for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
         if view_pattern.search(match.group()):
-            failures.append(f"direct TX-confirm aggregation const/static alias is forbidden: {match.group(1)}")
-    for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*aggregation_state[A-Za-z0-9_]*)", production, re.I):
-        failures.append(f"named TX-confirm aggregation production API is forbidden: {match.group(1)}")
+            failures.append(f"direct configuration-apply flags const/static alias is forbidden: {match.group(1)}")
+    for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*(?:configuration_apply|apply_flags|configuration_flags|flags_word)[A-Za-z0-9_]*)", production, re.I):
+        failures.append(f"named configuration-apply flags production API is forbidden: {match.group(1)}")
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b", re.I)
     for relative, code in rust.items():
         for function in functions_consuming_family(code, views):
-            failures.append(f"{relative}: production function API over TX-confirm aggregation storage is forbidden: {function}")
+            failures.append(f"{relative}: production function API over configuration-apply flags storage is forbidden: {function}")
         for line_number, line in enumerate(code.splitlines(), 1):
             if view_pattern.search(line) and forbidden_operation.search(line):
                 failures.append(f"{relative}:{line_number}: pointer/reference/read/write/value/init/offset/slice API is forbidden")
             for value in owned_literals(line):
                 if value in OFFSETS and relative != "src/dtcm.rs":
-                    failures.append(f"{relative}:{line_number}: raw TX-confirm DTCM offset 0x{value:x} is forbidden")
+                    failures.append(f"{relative}:{line_number}: raw configuration-apply-flags DTCM offset 0x{value:x} is forbidden")
 
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
@@ -399,9 +391,9 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if in_range(value):
                 line = code.count("\n", 0, match.start()) + 1
-                failures.append(f"{relative}:{line}: TX-confirm aggregation physical literal {match.group()} is outside reviewed owners")
+                failures.append(f"{relative}:{line}: configuration-apply flags physical literal {match.group()} is outside reviewed owners")
     if failures: raise SystemExit("\n".join(failures))
-    print(f"INITIALIZED TX-CONFIRM AGGREGATION STATE SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"INITIALIZED CONFIGURATION-APPLY FLAGS SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -436,8 +428,8 @@ def check_elf(path: Path, dump: bool) -> None:
         print(f"ALLOWED_DECODED_XREFS={dict(sorted(xrefs.items()))!r}")
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
-        raise SystemExit(f"INITIALIZED TX-CONFIRM AGGREGATION STATE LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
-    print("INITIALIZED TX-CONFIRM AGGREGATION STATE LINKED DRIFT-EVIDENCE GATE PASSED literals=0 decoded_xrefs=0")
+        raise SystemExit(f"INITIALIZED CONFIGURATION-APPLY FLAGS LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+    print("INITIALIZED CONFIGURATION-APPLY FLAGS LINKED DRIFT-EVIDENCE GATE PASSED literals=0 decoded_xrefs=0")
 
 
 def main() -> None:
@@ -453,4 +445,4 @@ def main() -> None:
 if __name__ == "__main__":
     try: main()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"initialized-TX-confirm-aggregation-state drift gate failed: {error}")
+        raise SystemExit(f"initialized-configuration-apply-flags drift gate failed: {error}")
