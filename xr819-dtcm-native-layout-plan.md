@@ -1,6 +1,6 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** fixed initialized PHY watchdog counter structurally decoded through `0x04001240`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
+**Status:** fixed initialized multi-VIF beacon timer structurally decoded at `0x04001250..0x04001264`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, complete exact-parent text-symbol delta gating, and normalized clean-B6 checks pass. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
 **Firmware lineage:** candidate based directly on `8940467e9cdc` (`Model VIF state in Rust`), itself atop qualified low-MAC/PAS. The exact parent was rebuilt from revision files for code-generation comparison; no rejected patch was applied.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
@@ -298,6 +298,7 @@ Within `0x04000000..0x04002078`:
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
 | `0x0400123c..0x04001240` | one shared `u32` | fixed PHY watchdog count; wrapping increment and reset observed |
+| `0x04001250..0x04001264` | five shared `u32` words | fixed multi-VIF beacon `TimerEntry`; surrounding `0x04001240..0x04001250` and `0x04001264..0x040012a0` remain opaque |
 | `0x040012a0..0x040012c8` | `0x28` | exported AMPDU counters table |
 | `0x04001420...` | mixed | control words; `0x04001428` host-download state, former PRNG at `0x0400142c`, timer offset at `0x0400143c` |
 | `0x04001680...` | mixed | low-MAC shared root and four pipe families |
@@ -5088,4 +5089,61 @@ checks    /tmp/xr819-phy-watchdog-final-check.log
           3394026cdee1042e65d55ba66f478e534bce447ab2f91bc11b861cc76dcbac18
 manifest  tools/initialized-phy-watchdog-counter-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.94 Fixed initialized multi-VIF beacon timer
+
+The fixed initialized interval `0x04001250..0x04001264` is now represented by
+the already-qualified five-word `TimerEntry` inside the exact non-derived
+`InitializedMultiVifBeaconTimerTail`. `/tmp/xr819-dtcm-refs.out` gives four
+direct roots at `0x04001250`: initialization in `fw_timers_and_tasks_init`,
+cancel and start in `rx_mgmt_frame_handler`, and start in
+`beacon_arm_multi_vif_timer`. `timer_entry_init` writes 32-bit callback `+0x0c`,
+then 32-bit context `+0x10`, then 32-bit previous-link `+0x04`; it does not
+initialize next or deadline. Generic cancel/start retain raw 32-bit intrusive
+links, IRQ/FIQ exclusion, wrapping/unchecked deadline arithmetic, and MMIO
+publication order. No operation or production consumer was added.
+
+The enclosing tail starts at `0x04001240`: opaque prefix `+0x00..+0x10`, timer
+`+0x10..+0x24`, and opaque suffix `+0x24..+0x60`, meeting the independently
+decoded A-MPDU counters at `0x040012a0`. Thus `0x04001240..0x04001250` and
+`0x04001264..0x040012a0`, including the asynchronously written byte at
+`0x0400124f`, remain opaque. The timer and its raw callback/context/link words
+remain shared vendor/IRQ/FIQ quarantine state. No safe reference, pointer,
+reader/writer, callback conversion, validation, initialization, arithmetic, or
+pointee type is exposed; the sole API is the crate-private address-only
+`MULTI_VIF_BEACON_TIMER`, derived exclusively from structural offsets.
+
+`tools/check-initialized-multi-vif-beacon-timer-layout.py` covers exactly the
+half-open range `[0x04001250, 0x04001264)`. It requires the exact type and field
+inventory, enclosing split, sole constant, compile-time assertions, focused
+test, and global sizes; rejects derives and pointer/reference/value/read/write,
+unchecked, generic-offset, slice, iterator, and function APIs; source-gates
+physical literals; and pins empty aligned linked-literal and decoded
+PC-relative-xref multisets. Alias closure covers direct and transitive constants
+plus renamed plain and grouped Rust `use` imports across production files;
+adversarial self-tests pin imported and transitive generic-accessor rejection.
+Empty linked sets are drift evidence, not writer closure. The checker runs in
+source and linked phases of both build scripts.
+The exact-parent manifest is gated by
+`XR819_INITIALIZED_MULTI_VIF_BEACON_TIMER_PARENT_ELF`; symbol/codegen checks are
+supplemental to complete-file identity.
+
+The focused test pins all five `TimerEntry` offsets and its `0x14/4` layout,
+tail offsets and `0x60/4` layout, physical boundaries `0x04001240`,
+`0x04001250`, `0x04001264`, and `0x040012a0`, and all three enclosing global
+sizes and alignments. Default and diagnostic process-local host tests, all
+software-only gates, the Thumb release build, linked checker, exact-parent gate,
+and OTA packing pass. Request ownership, all 30 HIF inputs, volatile widths,
+MMIO/barrier/interrupt order, initialization order, and wrapping/unchecked
+arithmetic remain unchanged because no production operation was added. No
+hardware test was run. No TALA relocation or bytes in
+`0x04002984..0x04003050` changed.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-multi-vif-beacon-timer-final-check.log
+          1f70acf5adc03cf41ce9156650380565a5e27c97698c9da5e97a201d04df2db1
+manifest  tools/initialized-multi-vif-beacon-timer-codegen-manifest.json
 ```

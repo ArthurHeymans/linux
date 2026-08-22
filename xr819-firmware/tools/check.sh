@@ -59,6 +59,7 @@ python3 tools/check-tx-aggregate-expiration-delta-layout.py
 python3 tools/check-initialized-debug-command-descriptors-layout.py
 python3 tools/check-initialized-irq-callbacks-layout.py
 python3 tools/check-initialized-phy-watchdog-counter-layout.py
+python3 tools/check-initialized-multi-vif-beacon-timer-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
 python3 tools/check-low-mac-global-prefix-layout.py
@@ -134,6 +135,7 @@ python3 tools/check-tx-aggregate-expiration-delta-layout.py "$ELF"
 python3 tools/check-initialized-debug-command-descriptors-layout.py "$ELF"
 python3 tools/check-initialized-irq-callbacks-layout.py "$ELF"
 python3 tools/check-initialized-phy-watchdog-counter-layout.py "$ELF"
+python3 tools/check-initialized-multi-vif-beacon-timer-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
 python3 tools/check-low-mac-global-prefix-layout.py "$ELF"
@@ -558,6 +560,15 @@ if [[ -n "${XR819_INITIALIZED_PHY_WATCHDOG_COUNTER_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_PHY_WATCHDOG_COUNTER_PARENT_ELF" "$ELF"
 else
   echo "== initialized-PHY-watchdog-counter codegen gate skipped: set XR819_INITIALIZED_PHY_WATCHDOG_COUNTER_PARENT_ELF to the qualified current parent ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_MULTI_VIF_BEACON_TIMER_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-multi-VIF-beacon-timer parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-multi-vif-beacon-timer-codegen-manifest.json \
+    "$XR819_INITIALIZED_MULTI_VIF_BEACON_TIMER_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-multi-VIF-beacon-timer codegen gate skipped: set XR819_INITIALIZED_MULTI_VIF_BEACON_TIMER_PARENT_ELF to the qualified current parent ELF =="
 fi
 
 if [[ -n "${XR819_HOST_PAS_RING_PARENT_ELF:-}" ]]; then
