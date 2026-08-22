@@ -5844,3 +5844,93 @@ image log /tmp/xr819-mac-aggregate-slot-tables-image.log
 manifest  tools/initialized-mac-aggregate-slot-tables-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.106 Fixed MAC pipe tail records
+
+The initialized vendor COPY-image interval `0x04001d5c..0x04001e6c` is now
+structurally represented by the exact private, non-derived `MacPipeTails`,
+size `0x110` and alignment 4, whose `records: [MacPipeTail; 4]` holds four
+`MacPipeTail` records of size `0x44`, alignment 4, replacing the former
+opaque `pre_mac_retry_hardware_state: OpaqueBytes<0x110>`.
+`MacPhyCommandState` still ends exactly at `0x04001d5c`; the independently
+typed four-byte `MacRetryHardwareState` remains adjacent at `0x04001e6c`;
+`InitializedVendorImage` remains size `0x2078`, alignment 4; `DtcmLayout`
+and `SharedDtcmState` remain size `0xa000`, alignment 4.
+
+The schema is rooted at the low-MAC/global context base `0x04001680`: every
+observed access resolves to `0x04001680 + pipe * 0x44 + field`, with the
+per-record window `[+0x6dc, +0x720)` covering exactly
+`0x04001d5c..0x04001e6c` across pipes 0..3. Direct-target inventory at
+`/tmp/xr819-dtcm-refs.out`: `pipe_setup_entry` DATA targets `0x1d5c/5e/60`
+and `0x1d80/84`; `pipe_clear_entry`, `clear_field_718`,
+`clear_fields_718_and_20`, `link_state_init_all`, and
+`stats_export_pipe_counters` targets `0x1d98`; `stats_export_pipe_counters`
+READs `0x1d98..0x1de0`. Disassembly pins widths and bounds:
+`pipe_setup_entry` writes halfwords `+0x6dc/+0x6de/+0x6e0`, byte `+0x700`
+(pipe type), word `+0x704`, and clears word `+0x718`;
+`pipe_clear_entry` zeroes `+0x718`;
+`stats_export_pipe_counters` reads u32 `+0x6dc`, u32 `+0x6e0` (low half
+used), byte `+0x700`, words `+0x708/+0x70c/+0x710/+0x714/+0x718/+0x71c`,
+zero-tests `+0x718`, all under a static `pipe < 4` loop; the tail copy loop
+refills `+0x708..+0x71c` from MMIO scratch only when `+0x718 != 0`. The
+retained Rust translation `mac::export_pipe_counters` performs the same
+SHARED-relative accesses and is called from
+`mac::reinitialize_after_wake`; LLVM folded its first-iteration
+`record + 0x71c` address into the single aligned literal `0x04001d9c` inside
+the inlined caller, which the checker pins as the pre-existing retained
+consumer. No production operation was added or changed, so exact volatile
+widths, MMIO/barrier/interrupt order, wrapping arithmetic, request ownership,
+and all 30 HIF inputs are unchanged.
+
+Interior bytes without direct evidence remain exact `OpaqueBytes`:
+`+0x6e2` (`OpaqueBytes<0x02>`, read only as the discarded high half of the
+`+0x6e0` word), `+0x6e4..+0x700` (`OpaqueBytes<0x1c>` per record), and
+`+0x701..+0x704` (`OpaqueBytes<0x03>`). The absolute root `0x04001e60`
+(= pipe 3 `+0x714`, pool entries loaded at PCs `0x22c8`, `0x3c26`, `0x9944`,
+`0xa02e`, `0xaa60`) reads/writes the TX-scheduler flag byte inside pipe 3's
+`counter_word_714` high half and the byte just past this interval; that
+overlap establishes only the physical word and stays vendor behavior. The
+COPY initial values are unknown and writer closure is not claimed: vendor,
+IRQ/FIQ, computed, indirect, and generic HIF/debug mutation remain possible.
+
+No production address constant, accessor, pointer conversion, reference,
+read/write/reset/initialization helper, generic offset, slice, iterator, or
+ownership API was added for this interval.
+
+`tools/check-initialized-mac-pipe-tails-layout.py` owns exactly
+`[0x04001d5c, 0x04001e6c)`. It source-pins both non-derived declarations,
+the image field split, compile-time assertions, focused process-local test,
+every physical address and boundary (`0x1d5c`, `0x1da0`, `0x1e28`, `0x1e6c`),
+all fourteen record offsets, and unchanged enclosing/global layouts. It
+rejects operational APIs and direct/transitive const, static, type,
+renamed-import, grouped-import, constructor-offset, and raw-pointer aliases
+with adversarial self-tests. Family literals are permitted only in
+`src/dtcm.rs` and this checker; it precisely recognizes the adjacent
+MAC-PHY-command checker range `[0x04001d10, 0x04001d5c)` and MAC-retry-
+hardware checker range `[0x04001e6c, 0x04001e70)` without broadening either,
+and it was added to the MAC-retry-hardware checker's owner set for the shared
+`0x04001e6c` boundary literal. Its linked-literal multiset is pinned to
+exactly the one pre-existing inlined-consumer entry above with residual
+literals and decoded xrefs pinned empty; residuals are drift evidence, never
+writer closure.
+
+The focused default (237 tests) and `vendor-host-tx-diagnostics`
+process-local tests pass. Complete software-only `tools/check.sh`, the Thumb
+release build, the exact-parent complete text-symbol/codegen comparison, and
+fresh `build-ota-image.sh` packing pass. The exact-parent manifest reports
+197 parent and candidate text symbols, all unchanged, and is byte-identical
+to the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-mac-pipe-tails-final-check.log
+          827707b34c3eeca8294ac9be2fbd32ae5434bee86c2d46a6b60a0317561cec62
+image log /tmp/xr819-mac-pipe-tails-image.log
+manifest  tools/initialized-mac-pipe-tails-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
