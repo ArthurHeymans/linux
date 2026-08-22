@@ -5329,3 +5329,79 @@ checks    /tmp/xr819-per-tid-telemetry-final-check.log
 manifest  tools/initialized-per-tid-telemetry-bank-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.98 Fixed TX-confirm aggregation state
+
+The initialized vendor COPY-image interval `0x04001410..0x0400141c` is now
+structurally represented by the exact private, non-derived
+`TxConfirmAggregationState`, size `0x0c` and alignment 4. Its three contiguous
+shared quarantine words are `state +0x00` (`0x04001410`),
+`pending_message_raw +0x04` (`0x04001414`), and `append_cursor_raw +0x08`
+(`0x04001418`). Each field is exactly one `SharedU32`, preserving the evidenced
+volatile u32 width without padding, safe references, or an exclusive Rust
+ownership claim. `InitializedVendorImage` remains size `0x2078`, alignment 4;
+`DtcmLayout` and `SharedDtcmState` remain size `0xa000`, alignment 4.
+
+The reference inventory at `/tmp/xr819-dtcm-refs.out:285-298` records only
+full-width accesses by `tx_confirm_build_and_send`: three reads and two writes
+at `0x04001410`, five reads and one write at `0x04001414`, and one read and two
+writes at `0x04001418`. `annotated-main.c:13325-13340` first reads the
+completion gate and state; state 1 queues the message, updates the pointed HIF
+message count and 16-bit length, reads the raw append cursor, advances that raw
+cursor by `0x20`, and stores it back. Those 16-bit operations apply to the
+pointed HIF message, not to this DTCM record. Lines 13349-13360 write the raw
+message address, publish the initial append cursor, initialize the pointed HIF
+message, and publish `state` last. Lines 13413-13418 retain the matching flush
+order: read state, send through the quarantined raw message address, then clear
+state. This structural slice translates none of that behavior and therefore
+does not reorder publication, flush, HIF-buffer updates, or raw-address
+arithmetic.
+
+The record starts exactly where `AmpduCompletionControl` ends at
+`0x0400140c..0x04001410`. The independent `0x0400141c` word remains a four-byte
+opaque suffix at `0x0400141c..0x04001420`; reference-map lines 299-304 assign it
+to separate debug/configuration code, so it is not absorbed. Existing
+`InitializedControlWords` still begins at `0x04001420`. No production literal
+was migrated: Rust has no consumer of `0x04001410`, `0x04001414`, or
+`0x04001418`, and unrelated `0x09c01410` MAC MMIO literals remain untouched.
+No production address constant, accessor, pointer conversion, typed HIF-buffer
+dereference, constructor, reset, initialization, read, write, value, reference,
+slice, iterator, lifetime, or ownership API was added. The two raw address
+words remain opaque scalar values, not pointers Rust may dereference.
+
+`tools/check-initialized-tx-confirm-aggregation-state-layout.py` owns exactly
+`[0x04001410, 0x0400141c)`. It source-pins the exact non-derived declaration,
+image split, compile-time assertions, focused process-local test, every field
+address and boundary, and unchanged enclosing/global layouts. It rejects
+operational APIs and direct/transitive const, static, type, renamed-import,
+grouped-import, constructor-offset, and raw-pointer aliases with adversarial
+self-tests. Family literals are permitted only in `src/dtcm.rs` and this
+checker; it precisely recognizes the adjacent A-MPDU completion-control checker
+range `[0x0400140c, 0x04001410)` and initialized-control-words checker range
+`[0x04001420, 0x04001440)` without broadening either. Its aligned linked-literal
+and decoded PC-relative-xref multisets are both pinned empty. Their emptiness is
+drift evidence, not writer closure: vendor, IRQ/FIQ, computed, indirect, and
+generic HIF/debug mutation remain possible.
+
+The focused default and `vendor-host-tx-diagnostics` process-local tests pass.
+The standalone checker passes in source and linked modes with zero linked
+literals and zero decoded xrefs. Complete software-only `tools/check.sh`, the
+Thumb release build, the exact-parent complete text-symbol/codegen comparison,
+and fresh `build-ota-image.sh` packing pass. The exact-parent manifest reports
+197 parent and candidate text symbols, all 197 unchanged, with exact
+IRQ/barrier and reviewed memory-operation sequences. Complete-file ELF and
+fresh packed-image hashes match the fixed identities below; symbol-only
+identity was not used for acceptance. Exact volatile widths,
+MMIO/barrier/interrupt and initialization order, wrapping/unchecked arithmetic,
+request ownership, and all 30 HIF inputs remain unchanged because no production
+operation was added. TALA relocation and `0x04002984..0x04003050` were not
+touched. No target or hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-tx-confirm-aggregation-state-check.log
+          5e8a45d1adc2caa3e18e7219f77e204d2180b6d46aa74f45e7931c65924196fc
+manifest  tools/initialized-tx-confirm-aggregation-state-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
