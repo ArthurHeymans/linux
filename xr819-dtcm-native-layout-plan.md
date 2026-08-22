@@ -6543,3 +6543,72 @@ checks    /tmp/xr819-prefix-tables-final-check.log
 manifest  tools/initialized-prefix-tables-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.115 Initialized image prefix tables
+
+The leading opaque `pre_duration_tables: OpaqueBytes<0x138>` at
+`[0x04000000, 0x04000138)` is split into three records plus a smaller opaque
+suffix:
+
+- `mac_slot_timing_patch_list: MacSlotTimingPatchList` `[0x04000000,
+  0x04000058)`: `entries: [MacSlotTimingPatchEntry; 11]`, each
+  `{pointer: SharedU32, patch_word: SharedU32}`. Vendor
+  `mac_program_slot_timings` applies it in a static `count < 0xb` tail loop:
+  `*pointer = patch_word`; every recovered pointer targets `0x09c00xxx`
+  MMIO. Vendor `mac_program_timing_regs` additionally stores the pointer
+  VALUE `0x04000004` into a config structure field -- value-only, never
+  dereferenced in-binary.
+- `pac_duration_quanta: PacDurationQuanta { quanta: [SharedU32; 8] }`
+  `[0x04000058, 0x04000078)`: vendor `pac_phy_calc_duration` reads
+  `*(u32 *)(0x04000020 + mode * 4)` under `fw_assert(7 < mode - 0xe)`
+  guarding the upper side, i.e. modes 14..21 map exactly onto the eight
+  words -- the assertion proves both extent and index domain.
+- `prefix_suffix: OpaqueBytes<0xc0>` `[0x04000078, 0x04000138)`: no observed
+  accessor (whole-binary scan found no other loaded pool word in the
+  interval).
+
+Ghidra's DATA/PARAM references at `pas_reprogram_all_vif_rate_tables` and
+`mac_pipe_irq_service` are value coincidences (`movs/lsls` producing
+0x04000000 as a bitfield; byte-level artifacts), not accesses. One retained
+Rust consumer is pinned unchanged: `mac::program_before_scan_channel` stores
+the pointer VALUE `0x0400_0000` into MMIO register 0x0270, mirroring vendor
+hardware table pointing; `platform::prepare_mac_receive_hardware` writes an
+MMIO init table whose values numerically include `0x0400_0004`/`0x0400_0000`
+-- MMIO values, not DTCM accesses.
+
+No production operation was added or changed; no address constant, pointer,
+reference, accessor, or ownership API was added for these intervals. Initial
+COPY values are loader-owned; no writer closure is claimed — computed,
+indirect, generic HIF/debug, vendor, IRQ/FIQ mutation remain possible.
+
+`tools/check-initialized-prefix-tables-layout.py` owns exactly
+`[0x04000000, 0x04000138)` with two interval-specific adaptations, both
+documented in the checker: (1) relative-offset evidence is disabled —
+offsets 0x0..0x137 are indistinguishable from arbitrary small integers, so
+the template's relative-literal arm would flood on every constant in the
+codebase; coverage comes from exact declarations, compile-time/focused-test
+contiguity, family-alias tracking, and the linked gate instead; (2) the
+region base constant itself is excluded from owned literals and files whose
+base/MMIO-value references were reviewed are listed as owners. Its linked-
+literal and decoded-xref multisets are derived from decoded PC-relative
+loads only and pinned empty. The duration-quantum-pointers checker's range
+is pinned as its adjacent declaration.
+
+Focused default (244 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (245). Complete software-only `tools/check.sh`, the Thumb release
+build, the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-prefix-tables-final-check.log
+manifest  tools/initialized-prefix-tables-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
