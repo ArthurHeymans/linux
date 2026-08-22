@@ -5147,3 +5147,63 @@ checks    /tmp/xr819-multi-vif-beacon-timer-final-check.log
           1f70acf5adc03cf41ce9156650380565a5e27c97698c9da5e97a201d04df2db1
 manifest  tools/initialized-multi-vif-beacon-timer-codegen-manifest.json
 ```
+
+### A.95 Fixed measurement dwell timer
+
+The initialized fixed interval `0x0400127c..0x04001290` is now represented by
+one already-qualified, non-derived `TimerEntry`. Its five shared 32-bit
+quarantine words remain exactly `next` at `+0x00`, `previous_link` at `+0x04`,
+`deadline` at `+0x08`, `callback` at `+0x0c`, and `context` at `+0x10`.
+`/tmp/xr819-dtcm-refs.out` gives exactly three direct roots at `0x0400127c`:
+initialization and start in `measure_arm_dwell_timer`, and cancellation in
+`task_measure_complete` for measurement states 1 and 6. `timer_entry_init`
+writes callback, then context, then previous-link, all as 32-bit words; it does
+not initialize next or deadline. Generic timer start/cancel evidence preserves
+raw 32-bit intrusive links, IRQ/FIQ exclusion, wrapping/unchecked deadline
+arithmetic, and MMIO publication after list/deadline handling. This establishes
+only a measurement dwell `TimerEntry`, not callback validity, pointee extents,
+writer closure, ownership, or broader semantics.
+
+The enclosing `InitializedMultiVifBeaconTimerTail` remains based at
+`0x04001240`, size `0x60`, alignment 4, and is split exactly as opaque `0x10` +
+multi-VIF `TimerEntry` `0x14` + opaque `0x18` + measurement dwell `TimerEntry`
+`0x14` + opaque `0x10`. Its field offsets are `0x00`, `0x10`, `0x24`, `0x3c`,
+and `0x50`; it still meets the A-MPDU boundary at `0x040012a0`. Thus the
+unsupported predecessor `0x04001264..0x0400127c` and mixed-width successor
+`0x04001290..0x040012a0` remain opaque. TALA and
+`0x04002984..0x04003050` were not changed.
+
+The sole new API, `MEASUREMENT_DWELL_TIMER`, is crate-private and address-only,
+derived from exact enclosing offsets. It adds no production operation,
+pointer, reference, value, initialization, validation, callback conversion,
+reader/writer, generic offset, unchecked accessor, slice, iterator, or function.
+The state remains shared vendor/IRQ/FIQ quarantine storage; no safe reference or
+exclusive Rust ownership is created. Consequently volatile widths,
+MMIO/barrier/interrupt order, initialization order, wrapping arithmetic,
+request ownership, and all 30 HIF inputs remain unchanged.
+
+`tools/check-initialized-measurement-dwell-timer-layout.py` owns exactly the
+half-open range `[0x0400127c, 0x04001290)`. It requires the exact expanded
+enclosing struct, timer inventory, sole new constant, assertions, focused test,
+boundaries, and global layouts; rejects derives and broad or operational APIs;
+tracks direct/transitive constants, statics, type aliases, and renamed
+plain/grouped Rust imports with adversarial self-tests; source-gates physical
+literals; and pins empty aligned
+linked-literal and decoded PC-relative-xref multisets. Empty sets are drift
+evidence, not writer closure. The prior multi-VIF checker continues to own only
+`[0x04001250, 0x04001264)` while accepting the narrowed opaque suffix.
+
+The focused default and `vendor-host-tx-diagnostics` process-local host tests,
+standalone source/linked checkers, complete software-only `check.sh`, exact-parent
+codegen gate, Thumb build, and fresh OTA packing pass. No target or hardware test
+was run. Complete-file identities, not symbol-only identity, remain the strict
+acceptance gate.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-measurement-dwell-timer-final-check.log
+          aacc79fa39a978187fa0f674b883d02e85d8bf987ce3974a24f3efc2cba735a2
+manifest  tools/initialized-measurement-dwell-timer-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
