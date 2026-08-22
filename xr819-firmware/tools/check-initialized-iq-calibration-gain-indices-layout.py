@@ -33,6 +33,7 @@ OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-initialized-iq-calibration-gain-indices-layout.py",
     "tools/check-initialized-rf-mode-halfword-table-layout.py",
+    "tools/check-initialized-register-write-lists-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

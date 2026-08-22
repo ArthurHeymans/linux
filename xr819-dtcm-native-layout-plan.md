@@ -6153,3 +6153,72 @@ checks    /tmp/xr819-scheduler-tail-final-check.log
 manifest  tools/initialized-scheduler-tail-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.110 Register write lists after the IQ calibration gain indices
+
+The opaque suffix `post_initialized_iq_calibration_gain_indices:
+OpaqueBytes<0x28c>` at `[0x04000e48, 0x040010d4)` is split into two exact
+private, non-derived register-write lists plus a smaller opaque suffix:
+
+- `phy_cal_substate_register_write_list: PhyCalSubstateRegisterWriteList`
+  `[0x04000e48, 0x04000e90)`, size `0x48`: `writes: [RegisterWrite; 8]`,
+  `terminator_address: SharedU32`, `terminator_opaque: SharedU32`. Rooted at
+  literal-pool word `DAT_000174ac = 0x04000e48`; vendor
+  `phy_cal_apply_substate` passes it to `reg_write_list_apply` (iterate until
+  address == `0xffffffff`) when the substate byte at `DAT_000174a8`
+  (`0x0400994c`) + 2 equals 2. The recovered initialization snapshot shows
+  exactly eight pairs (MMIO writes into `0x0abb80xx`/`0x0abb81a0`) followed
+  by the all-ones terminator pair, bounding the list at `0x04000e90`.
+- `dbg_expand_register_write_list: DbgExpandRegisterWriteList`
+  `[0x04000e90, 0x04000ec0)`, size `0x30`: five pairs plus terminator.
+  Rooted at `DAT_000168d4 = 0x04000e90`; `dbg_expand_byte_table` passes it to
+  `reg_write_list_apply` after copying the RF calibration payload. The
+  snapshot shows five pairs (`0x0abb82c4..0x0abb8388`) and the terminator at
+  pair index 5, bounding the list at `0x04000ec0`.
+- `register_write_lists_suffix: OpaqueBytes<0x214>` `[0x04000ec0,
+  0x040010d4)`: the remaining unanalyzed region (next direct root is the
+  `rf_scale_by_tbl_a` DATA reference at `0x04000f88`; its resolution is
+  deferred).
+
+The pre-existing documented `rf_write_iq_corr_regs` unchecked u32 lookahead
+at `0x04000e48` is reworded: it reads the first address word of the phy-cal
+substate list. No production operation was added or changed; no address
+constant, pointer, reference, accessor, or ownership API exists for either
+list. Initial COPY values remain loader-owned knowledge (the snapshot bounds
+the extents; the Rust image keeps them `MaybeUninit`), and no writer closure
+is claimed — vendor, IRQ/FIQ, computed, indirect, and generic HIF/debug
+mutation remain possible. A whole-binary pool scan found no other aligned
+literal into `[0x04000e48, 0x04000ec0)` besides the two roots (one unloaded
+incidental word `0x04000eb5`), and the Rust ELF has no linked literals in the
+interval.
+
+`tools/check-initialized-register-write-lists-layout.py` owns exactly
+`[0x04000e48, 0x04000ec0)`. It source-pins both exact non-derived
+declarations, the image field split, compile-time assertions, focused
+process-local test, physical boundaries `0x0e48/0x0e90/0x0ec0`, the suffix
+size `0x214`, and unchanged enclosing/global layouts. Its adversarial
+self-tests reject deleted/swapped compile-time and focused-test mappings,
+direct/transitive const/static/type/renamed-import/grouped-import aliases,
+constructor offsets, raw pointers, and operational APIs. Its linked-literal
+and decoded-xref multisets are derived from decoded PC-relative loads only
+and pinned empty. It was added to the IQ-calibration checker's owner set for
+the shared `0x04000e48` boundary.
+
+Focused default (242 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass. Complete software-only `tools/check.sh`, the Thumb release build,
+the exact-parent complete text-symbol/codegen comparison, and fresh
+`build-ota-image.sh` packing pass. The exact-parent manifest reports 197
+parent and candidate text symbols, all unchanged, and is byte-identical to
+the manifests of the previous slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only identity.
+TALA relocation and `0x04002984..0x04003050` were not touched. No target or
+hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-register-write-lists-final-check.log
+manifest  tools/initialized-register-write-lists-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
