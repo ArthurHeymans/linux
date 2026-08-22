@@ -5666,3 +5666,69 @@ checker   tools/check-initialized-pre-host-pas-radio-stop-word-layout.py
 range     [0x04001572, 0x04001574)
 manifest  tools/initialized-pre-host-pas-radio-stop-word-codegen-manifest.json
 ```
+
+### A.103 Fixed DTIM-capture latch byte
+
+The fixed initialized COPY-image byte `[0x04001290, 0x04001291)` is now
+represented structurally, without relocation, as the private
+`dtim_capture_latch: SharedU8` at `InitializedMultiVifBeaconTimerTail +0x50`.
+The measurement dwell `TimerEntry` still ends at `0x04001290`; the unsupported
+three-byte suffix remains one unchanged `OpaqueBytes<0x03>` at `+0x51`, exactly
+`0x04001291..0x04001294`; and the three measurement-control words remain at
+`+0x54`, `+0x58`, and `+0x5c`, ending at the unchanged A-MPDU boundary
+`0x040012a0`. The tail remains `0x60/4`, `InitializedVendorImage` remains
+`0x2078/4`, and `DtcmLayout` and `SharedDtcmState` remain `0xa000/4`.
+
+The complete supplied direct-target inventory at `/tmp/xr819-dtcm-refs.out:
+236-238` records an exact u8 read at PC `0x00003ec0` and exact u8 store of 1 at
+PC `0x00003eca`, both in `rx_beacon_check_tim_for_us`, plus an exact u8 store of
+0 at PC `0x00014fe6` in `join_complete_sta`. In
+`xr819-decompilation/annotated-main.c:4731-4736`, the retained beacon path reads
+the latch, conditionally stores 1, and only then copies the separate one-byte
+TIM input into VIF `+0x110`. Lines 25995-26018 retain JOIN/VIF/timer
+transitions, then clear this latch, then store 1 to the separate VIF byte. These
+accesses support the neutral capture-latch role and observed order, but do not
+prove boolean closure. The COPY initial value is unknown and writer closure is
+incomplete.
+
+`SharedU8` remains the existing `UnsafeCell<MaybeUninit<u8>>` shared-quarantine
+view. Vendor, IRQ, FIQ, generic HIF/debug, computed, indirect, or other mutation
+may remain. No derive, bool/enum interpretation, initial value, ownership
+claim, safe reference, address constant, pointer, value accessor, reader,
+writer, reset/initialization helper, generic-offset API, slice, iterator, or
+production operation was added. There was no operational Rust source literal
+to migrate, so the retained accesses were not translated. Exact volatile
+widths, MMIO/barrier/interrupt and initialization order, wrapping/unchecked
+arithmetic, request ownership, and all 30 HIF inputs therefore remain
+unchanged.
+
+`tools/check-initialized-dtim-capture-latch-layout.py` owns exactly
+`[0x04001290, 0x04001291)`. It pins the exact non-derived structure and image
+inventory, compile-time assertions, focused exact-address test, widths,
+offsets, adjacent boundaries, and global layouts; source-gates the physical
+byte and DTCM-relative offset; rejects direct/transitive const, static, type,
+renamed-import, pointer/reference/value/read/write/reset/init/generic-offset,
+slice, and iterator APIs with adversarial self-tests; and pins empty aligned
+linked-literal and decoded PC-relative-xref multisets. Empty linked sets are
+drift evidence only, explicitly not writer closure. The neighboring timer and
+measurement-control checkers retain only their existing owned ranges. The
+exact-parent manifest and `XR819_INITIALIZED_DTIM_CAPTURE_LATCH_PARENT_ELF`
+gate are supplemental; symbol/codegen identity does not replace complete-file
+hashes.
+
+Software-only qualification passed: focused default and
+`vendor-host-tx-diagnostics` host tests, standalone source/linked checker,
+Thumb release build, full `tools/check.sh` with the preserved exact parent, and
+fresh OTA packing. No target or hardware test was run. TALA
+relocation and `0x04002984..0x04003050` were not touched.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checker   tools/check-initialized-dtim-capture-latch-layout.py
+range     [0x04001290, 0x04001291)
+checks    /tmp/xr819-dtim-capture-latch-check.log
+          ce7ca611c47123140d8014c153b662cd0dc8caba50608ec6f2fec7ba40c7f939
+manifest  tools/initialized-dtim-capture-latch-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

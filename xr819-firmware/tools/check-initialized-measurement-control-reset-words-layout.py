@@ -34,12 +34,13 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 REQUIRED = (
-    "#[repr(C, align(4))] struct InitializedMultiVifBeaconTimerTail { opaque_00: OpaqueBytes<0x10>, timer: TimerEntry, opaque_24: OpaqueBytes<0x18>, measurement_dwell_timer: TimerEntry, opaque_50: OpaqueBytes<0x04>, measurement_control_word_0: SharedU32, measurement_control_word_1: SharedU32, measurement_control_word_2: SharedU32 }",
+    "#[repr(C, align(4))] struct InitializedMultiVifBeaconTimerTail { opaque_00: OpaqueBytes<0x10>, timer: TimerEntry, opaque_24: OpaqueBytes<0x18>, measurement_dwell_timer: TimerEntry, dtim_capture_latch: SharedU8, opaque_51: OpaqueBytes<0x03>, measurement_control_word_0: SharedU32, measurement_control_word_1: SharedU32, measurement_control_word_2: SharedU32 }",
     "phy_watchdog_counter: PhyWatchdogCounter, multi_vif_beacon_timer_tail: InitializedMultiVifBeaconTimerTail",
     "ampdu_counters: AmpduTelemetryCounters",
     "assert_type_layout!(SharedU32, 0x04, 4)",
     "assert_type_layout!(InitializedMultiVifBeaconTimerTail, 0x60, 4)",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50) == 0x50",
+    "offset_of!(InitializedMultiVifBeaconTimerTail, dtim_capture_latch) == 0x50",
+    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_51) == 0x51",
     "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_0) == 0x54",
     "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_1) == 0x58",
     "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_2) == 0x5c",
@@ -52,8 +53,8 @@ REQUIRED = (
     "let tail = DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail)",
     "assert_eq!(tail, 0x0400_1240)",
     "MEASUREMENT_DWELL_TIMER.get() + core::mem::size_of::<TimerEntry>(), 0x0400_1290",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50), 0x0400_1290",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50) + core::mem::size_of::<OpaqueBytes<0x04>>(), 0x0400_1294",
+    "offset_of!(InitializedMultiVifBeaconTimerTail, dtim_capture_latch), 0x0400_1290",
+    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_51) + core::mem::size_of::<OpaqueBytes<0x03>>(), 0x0400_1294",
     "[0x0400_1294, 0x0400_1298, 0x0400_129c]",
     "size_of::<SharedU32>(), 0x04",
     "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_2) + core::mem::size_of::<SharedU32>(), 0x0400_12a0",
@@ -68,7 +69,7 @@ REQUIRED = (
     "align_of::<SharedDtcmState>(), 4",
 )
 ALLOWED_COMPILE_ASSERTIONS = (
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, opaque_50) + core::mem::size_of::<OpaqueBytes<0x04>>() == 0x0400_1294);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, opaque_51) + core::mem::size_of::<OpaqueBytes<0x03>>() == 0x0400_1294);",
     "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_0) + core::mem::size_of::<SharedU32>() == 0x0400_1298);",
     "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_1) + core::mem::size_of::<SharedU32>() == 0x0400_129c);",
 )
@@ -307,7 +308,7 @@ def check_source() -> None:
     failures = [f"src/dtcm.rs: missing exact inventory: {item}" for item in REQUIRED if normalized(item) not in compact]
     if source.count("struct InitializedMultiVifBeaconTimerTail") != 1:
         failures.append("src/dtcm.rs: measurement-control words require exactly one enclosing tail struct")
-    declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\] struct InitializedMultiVifBeaconTimerTail \{ opaque_00: OpaqueBytes<0x10>, timer: TimerEntry, opaque_24: OpaqueBytes<0x18>, measurement_dwell_timer: TimerEntry, opaque_50: OpaqueBytes<0x04>, measurement_control_word_0: SharedU32, measurement_control_word_1: SharedU32, measurement_control_word_2: SharedU32 \}", source)
+    declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\] struct InitializedMultiVifBeaconTimerTail \{ opaque_00: OpaqueBytes<0x10>, timer: TimerEntry, opaque_24: OpaqueBytes<0x18>, measurement_dwell_timer: TimerEntry, dtim_capture_latch: SharedU8, opaque_51: OpaqueBytes<0x03>, measurement_control_word_0: SharedU32, measurement_control_word_1: SharedU32, measurement_control_word_2: SharedU32 \}", source)
     if declaration is None or "derive" in declaration.group():
         failures.append("src/dtcm.rs: InitializedMultiVifBeaconTimerTail must be the exact non-derived quarantine struct")
     paths = source_paths()
