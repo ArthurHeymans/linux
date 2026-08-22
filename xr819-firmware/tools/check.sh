@@ -66,6 +66,7 @@ python3 tools/check-initialized-phy-watchdog-counter-layout.py
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py
 python3 tools/check-initialized-measurement-dwell-timer-layout.py
 python3 tools/check-initialized-measurement-control-reset-words-layout.py
+python3 tools/check-initialized-pre-host-pas-radio-stop-word-layout.py
 python3 tools/check-host-pas-ring-layout.py
 python3 tools/check-mac-pipe-records-layout.py
 python3 tools/check-low-mac-global-prefix-layout.py
@@ -149,6 +150,7 @@ python3 tools/check-initialized-phy-watchdog-counter-layout.py "$ELF"
 python3 tools/check-initialized-multi-vif-beacon-timer-layout.py "$ELF"
 python3 tools/check-initialized-measurement-dwell-timer-layout.py "$ELF"
 python3 tools/check-initialized-measurement-control-reset-words-layout.py "$ELF"
+python3 tools/check-initialized-pre-host-pas-radio-stop-word-layout.py "$ELF"
 python3 tools/check-host-pas-ring-layout.py "$ELF"
 python3 tools/check-mac-pipe-records-layout.py "$ELF"
 python3 tools/check-low-mac-global-prefix-layout.py "$ELF"
@@ -736,6 +738,15 @@ if [[ -n "${XR819_INITIALIZED_DEBUG_PLATFORM_LOCAL_TAIL_PARENT_ELF:-}" ]]; then
     "$XR819_INITIALIZED_DEBUG_PLATFORM_LOCAL_TAIL_PARENT_ELF" "$ELF"
 else
   echo "== initialized-debug-platform-local-tail codegen gate skipped: set XR819_INITIALIZED_DEBUG_PLATFORM_LOCAL_TAIL_PARENT_ELF to the exact parent ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_PRE_HOST_PAS_RADIO_STOP_WORD_PARENT_ELF:-}" ]]; then
+  echo "== supplemental initialized-pre-host-PAS-radio-stop-word exact-parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-pre-host-pas-radio-stop-word-codegen-manifest.json \
+    "$XR819_INITIALIZED_PRE_HOST_PAS_RADIO_STOP_WORD_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-pre-host-PAS-radio-stop-word codegen gate skipped: set XR819_INITIALIZED_PRE_HOST_PAS_RADIO_STOP_WORD_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
 fi
 
 if [[ -n "${XR819_PHY_DESCRIPTOR_GAIN_RECORDS_PARENT_ELF:-}" ]]; then

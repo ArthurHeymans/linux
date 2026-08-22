@@ -5600,3 +5600,69 @@ checks    /tmp/xr819-debug-platform-local-tail-check.log
 manifest  tools/initialized-debug-platform-local-tail-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.102 Fixed pre-host-PAS radio-stop word
+
+The prior treatment of the whole `0x0400156c..0x04001578` gap as opaque is now
+corrected narrowly, without relocation. `PreHostPasRingObserved` preserves an
+opaque `0x06`-byte prefix at `0x0400156c..0x04001572`, one `SharedU16`
+`radio_stop_word_02` at `0x04001572..0x04001574`, and an opaque `0x04`-byte
+suffix at `0x04001574..0x04001578`. The record is exactly size `0x0c`, alignment
+4; `HostPasRing` remains adjacent at `0x04001578`. The initialized image remains
+size `0x2078`, alignment 4, and both global quarantine layouts remain size
+`0xa000`, alignment 4.
+
+`/tmp/xr819-dtcm-refs.out:345-346` records the byte-indexed parameter root at
+`0x04001570` and the sole direct target access, a write at `0x04001572` in
+`mac_radio_stop`. `xr819-decompilation/annotated-main.c:19076-19082` shows
+`irq_fiq_disable_save()`, then the preceding low-MAC halfword clear, then exact
+`*(undefined2 *)(iVar6 + 2) = 0`, followed by the existing low-MAC state clears.
+The retained Rust path's exact 16-bit zero store remains in that same ordered
+interrupt-disabled sequence. This proves only the physical 16-bit word and its
+operation order.
+
+The lookup rooted at `0x04001570` in `annotated-main.c:12419` remains an
+unchecked byte-indexed interpretation with no locally proven bound; indexes 2
+and 3 overlap the decoded word. It was not translated into an array, bounded,
+or otherwise constrained. Its surrounding bytes and unknown extent remain
+opaque. The containing interval is vendor COPY data, but the initial value is
+unknown and writer closure is incomplete: vendor, IRQ/FIQ, generic HIF/debug,
+and indirect mutation remain possible. `SharedU16` is therefore only an
+`UnsafeCell<MaybeUninit<u16>>`-backed shared quarantine view, not exclusive
+ownership or a safe reference.
+
+The sole new production item is the crate-private derived address constant
+`RADIO_STOP_WORD_02`; it has no Rust operational consumer. No pointer,
+reference, accessor, value/read/write/reset/initialization function, generic
+offset, byte-table, count, stride, slice, iterator, or ownership API was added.
+The existing exact-width ordered radio-stop write is source-pinned rather than
+rewritten through the structural view.
+
+`tools/check-initialized-pre-host-pas-radio-stop-word-layout.py` owns exactly
+`[0x04001572, 0x04001574)`. It pins the exact private non-derived structure,
+image split, sole constant, compile-time assertions, focused exact-address
+test, opaque boundaries, host-PAS adjacency, retained exact 16-bit store, and
+unchanged global layouts. Its adversarial self-tests reject direct/transitive
+aliases and pointer/reference/read/write/value/reset/init, generic-offset,
+table/count/stride/slice/iterator APIs. After separately pinning the one
+pre-existing exact-width Rust writer, the structural addition's aligned
+linked-literal and decoded PC-relative-xref residual multisets are empty; that
+emptiness is drift evidence only, never writer closure. The exact-parent symbol manifest and
+`XR819_INITIALIZED_PRE_HOST_PAS_RADIO_STOP_WORD_PARENT_ELF` gate are supplemental
+to mandatory complete-file identity.
+
+Default and `vendor-host-tx-diagnostics` process-local host tests, standalone
+source/linked checker modes, complete `tools/check.sh`, the Thumb release build
+with the qualified parent gate, and a fresh OTA packing pass pass. No target or
+hardware test was run. Volatile widths, MMIO/barrier/interrupt and
+initialization order, wrapping/unchecked arithmetic, request ownership, and all
+30 HIF inputs remain unchanged. TALA relocation and
+`0x04002984..0x04003050` were untouched.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checker   tools/check-initialized-pre-host-pas-radio-stop-word-layout.py
+range     [0x04001572, 0x04001574)
+manifest  tools/initialized-pre-host-pas-radio-stop-word-codegen-manifest.json
+```
