@@ -5258,3 +5258,74 @@ checks    /tmp/xr819-measurement-control-reset-words-repair-check.log
 manifest  tools/initialized-measurement-control-reset-words-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.97 Fixed per-TID telemetry bank
+
+The initialized vendor COPY-image interval `0x040012cc..0x0400140c` is now
+structurally represented as a private, non-derived `PerTidTelemetryBank`, size
+`0x140` and alignment 4. It contains exactly ten contiguous `[SharedU32; 8]`
+tables with neutral names and offsets: `table_00 +0x000`, `table_01 +0x020`,
+`table_02 +0x040`, `table_03 +0x060`, `table_04 +0x080`, `table_05 +0x0a0`,
+`table_06 +0x0c0`, `table_07 +0x0e0`, `table_08 +0x100`, and
+`table_09 +0x120`. Each table therefore has eight four-byte entries and exact
+extent `0x20`, with physical roots `0x040012cc`, `0x040012ec`, `0x0400130c`,
+`0x0400132c`, `0x0400134c`, `0x0400136c`, `0x0400138c`, `0x040013ac`,
+`0x040013cc`, and `0x040013ec`. The final boundary remains `0x0400140c`.
+The preceding word `0x040012c8..0x040012cc` remains opaque and unchanged;
+A-MPDU telemetry still ends at `0x040012c8`, and A-MPDU completion control
+still begins at `0x0400140c`.
+
+The independent map inventory at `/tmp/xr819-dtcm-refs.out:263-282` pins every
+table root with paired accesses and pins the next decoded root at lines 283-284.
+`annotated-main.c:13383-13410` shows observed `tx_confirm_build_and_send` u32
+read-modify-write roles at relative offsets `+0x2c`, `+0x8c`, `+0xac`,
+`+0xcc`, and `+0x10c`: respectively observed failed, successful, retried,
+retried-more-than-once, and accumulated-retry accounting. Lines 14578-14595
+and 14818-14825 show observed `rx_mgmt_frame_handler` u32 RMW roles at
+`+0x4c`, `+0x6c`, and `+0xec`, indexed by `(tid & 7) * 4`; lines 13200-13208
+and 13232-13236 show observed `rx_indication_build_and_send` u32 RMW roles at
+`+0x12c` and `+0x14c` with the same stride. These roles describe observed
+accesses only, not exclusive semantics or writer closure. The ten roots' exact
+`0x20` spacing, u32 width, four-byte stride, and eight-entry mask establish the
+complete interior shape without evidence-free bytes.
+
+The old `OpaqueBytes<0x144>` image suffix was split into the still-opaque
+`OpaqueBytes<0x04>` predecessor and the typed quarantine bank. Vendor COPY
+initialization is retained; no initialization, reset, pointer, reference, safe
+reference, value accessor, read/write method, slice, iterator, generic offset,
+or semantic production API was added. Vendor code, IRQ/FIQ paths, and generic
+HIF/debug paths may still mutate these shared bytes. The original exact
+volatile u32 widths and read-modify-write order remain untranslated and
+unchanged, as do MMIO/barrier/interrupt order, wrapping/unchecked arithmetic,
+initialization order, request ownership, and all 30 HIF inputs.
+
+`tools/check-initialized-per-tid-telemetry-bank-layout.py` owns exactly
+`[0x040012cc, 0x0400140c)`. It requires the exact non-derived inventory, image
+split, compile-time assertions, focused exact-address test, all roots and
+boundaries, and unchanged enclosing/global layouts. It rejects operational APIs
+and direct/transitive const, static, type, renamed-import, grouped-import, and
+raw-pointer aliases with adversarial self-tests. DTCM-relative offsets passed to
+qualified, unchecked, renamed, or nested-group-imported `DtcmAddress`
+constructors are also treated as owned literals, including non-root interior
+addresses and transitive aliases. It source-gates physical literals and pins
+empty aligned linked-literal and decoded PC-relative-xref
+multisets. Empty linked sets are drift evidence, never writer closure. It
+recognizes the adjacent A-MPDU telemetry checker ending at `0x040012c8` and the
+A-MPDU completion-control checker beginning at `0x0400140c` without broadening
+either range. The exact-parent codegen manifest is supplemental and does not
+replace complete ELF and packed-image identity.
+
+Focused default and `vendor-host-tx-diagnostics` process-local tests, the
+standalone source/linked checker, complete software-only `tools/check.sh`, Thumb
+release build, exact-parent codegen comparison, and fresh OTA packing are the
+qualification set. No target or hardware test is permitted or was run. TALA
+relocation and `0x04002984..0x04003050` remain untouched.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-per-tid-telemetry-final-check.log
+          439ddf90637ff7a16115aa5408004fc4613bfa66b846c523eb9007f0d6ee9f46
+manifest  tools/initialized-per-tid-telemetry-bank-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```

@@ -43,6 +43,7 @@ python3 tools/check-power-save-layout.py
 python3 tools/check-hif-mic-layout.py
 python3 tools/check-initialized-hif-control-layout.py
 python3 tools/check-ampdu-telemetry-layout.py
+python3 tools/check-initialized-per-tid-telemetry-bank-layout.py
 python3 tools/check-initialized-control-words-layout.py
 python3 tools/check-queue-pipe-mappings-layout.py
 python3 tools/check-duration-quantum-pointers-layout.py
@@ -121,6 +122,7 @@ python3 tools/check-power-save-layout.py "$ELF"
 python3 tools/check-hif-mic-layout.py "$ELF"
 python3 tools/check-initialized-hif-control-layout.py "$ELF"
 python3 tools/check-ampdu-telemetry-layout.py "$ELF"
+python3 tools/check-initialized-per-tid-telemetry-bank-layout.py "$ELF"
 python3 tools/check-initialized-control-words-layout.py "$ELF"
 python3 tools/check-queue-pipe-mappings-layout.py "$ELF"
 python3 tools/check-duration-quantum-pointers-layout.py "$ELF"
@@ -501,6 +503,15 @@ if [[ -n "${XR819_AMPDU_TELEMETRY_PARENT_ELF:-}" ]]; then
     "$XR819_AMPDU_TELEMETRY_PARENT_ELF" "$ELF"
 else
   echo "== A-MPDU-telemetry codegen gate skipped: set XR819_AMPDU_TELEMETRY_PARENT_ELF to the qualified initialized-HIF-control ELF =="
+fi
+
+if [[ -n "${XR819_INITIALIZED_PER_TID_TELEMETRY_BANK_PARENT_ELF:-}" ]]; then
+  echo "== complete reviewed initialized-per-TID-telemetry-bank parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/initialized-per-tid-telemetry-bank-codegen-manifest.json \
+    "$XR819_INITIALIZED_PER_TID_TELEMETRY_BANK_PARENT_ELF" "$ELF"
+else
+  echo "== initialized-per-TID-telemetry-bank codegen gate skipped: set XR819_INITIALIZED_PER_TID_TELEMETRY_BANK_PARENT_ELF to the exact parent ELF =="
 fi
 
 if [[ -n "${XR819_INITIALIZED_CONTROL_WORDS_PARENT_ELF:-}" ]]; then
