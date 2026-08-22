@@ -1,6 +1,6 @@
 # XR819 DTCM native-layout migration plan
 
-**Status:** fixed platform-local dump tail structurally decoded at `0x04001454..0x0400145c`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, and complete exact-parent text-symbol delta gating pass. The complete ELF and packed image retain their qualified hashes. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
+**Status:** fixed interface-2 radio latch structurally decoded at `0x0400124f..0x04001250`; default/diagnostic process-local host tests, source/linked drift-evidence gates, stack checks, and complete exact-parent text-symbol delta gating pass. The complete ELF and packed image retain their qualified hashes. No hardware run was performed or permitted. Fixed ABI identity and mixed volatile ownership remain; address movement and exclusive ownership are out of scope.  
 **Firmware lineage:** candidate based directly on `8940467e9cdc` (`Model VIF state in Rust`), itself atop qualified low-MAC/PAS. The exact parent was rebuilt from revision files for code-generation comparison; no rejected patch was applied.  
 **Vendor container:** `/tmp/fw_xr819.bin`, SHA-256 `3e2462d476c9dfcb907cda1ba81d0a6d1bbee5e3207bdc1911ec5042d96fdfca`, size `0x1fe44`.  
 **Primary local evidence:** `xr819-decompilation/annotated-main.c`, `xr819-decompilation/annotated-tcm.c`, the container above, `xr819/ghidra-fw-main.bin.gzf`, `xr819/xr819-tcm.bin.gzf`, current Rust source and ELF, revision history, and rejected patches in `/tmp`. No web sources were used.
@@ -298,7 +298,8 @@ Within `0x04000000..0x04002078`:
 | `0x040011ac..0x040011b4` | 8 bytes | HIF/control shadow and adjacent initialized state |
 | `0x040011bc..0x0400123c` | 32 `u32` | IRQ callback table, reverse-indexed by IRQ |
 | `0x0400123c..0x04001240` | one shared `u32` | fixed PHY watchdog count; wrapping increment and reset observed |
-| `0x04001250..0x04001264` | five shared `u32` words | fixed multi-VIF beacon `TimerEntry`; surrounding `0x04001240..0x04001250` and `0x04001264..0x040012a0` remain opaque |
+| `0x0400124f..0x04001250` | one shared `u8` | fixed interface-2 radio latch; COPY value and writer closure remain unknown |
+| `0x04001250..0x04001264` | five shared `u32` words | fixed multi-VIF beacon `TimerEntry`; surrounding `0x04001240..0x0400124f` and `0x04001264..0x040012a0` remain opaque |
 | `0x040012a0..0x040012c8` | `0x28` | exported AMPDU counters table |
 | `0x04001410..0x0400141c` | three shared `u32` words | fixed TX-confirm aggregation state; raw words remain quarantine values, not safe pointers |
 | `0x0400141c..0x04001420` | one shared `u32` | fixed configuration-apply flags word; bits remain open semantics |
@@ -5113,7 +5114,7 @@ The enclosing tail starts at `0x04001240`: opaque prefix `+0x00..+0x10`, timer
 `+0x10..+0x24`, and opaque suffix `+0x24..+0x60`, meeting the independently
 decoded A-MPDU counters at `0x040012a0`. Thus `0x04001240..0x04001250` and
 `0x04001264..0x040012a0`, including the asynchronously written byte at
-`0x0400124f`, remain opaque. The timer and its raw callback/context/link words
+`0x0400124f`, remained opaque in this then-current slice. This claim is superseded for exactly that byte by A.104; the surrounding extents remain opaque. The timer and its raw callback/context/link words
 remain shared vendor/IRQ/FIQ quarantine state. No safe reference, pointer,
 reader/writer, callback conversion, validation, initialization, arithmetic, or
 pointee type is exposed; the sole API is the crate-private address-only
@@ -5731,4 +5732,26 @@ checks    /tmp/xr819-dtim-capture-latch-check.log
           ce7ca611c47123140d8014c153b662cd0dc8caba50608ec6f2fec7ba40c7f939
 manifest  tools/initialized-dtim-capture-latch-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
+
+### A.104 Fixed interface-2 radio latch byte
+
+The fixed initialized COPY-image byte `[0x0400124f, 0x04001250)` is now represented structurally, without relocation, as the private `interface_2_radio_latch: SharedU8` at `InitializedMultiVifBeaconTimerTail +0x0f`. The preceding bytes `0x04001240..0x0400124f` remain one opaque prefix, the existing multi-VIF `TimerEntry` remains at `+0x10` (`0x04001250..0x04001264`), and every later tail field is unchanged: `opaque_24` at `+0x24`, `measurement_dwell_timer` at `+0x3c`, `dtim_capture_latch` at `+0x50`, `opaque_51` at `+0x51`, and the measurement-control words at `+0x54`, `+0x58`, and `+0x5c`. In particular, `0x04001291..0x04001294` remains opaque. The tail remains `0x60/4`, `InitializedVendorImage` remains `0x2078/4`, and `DtcmLayout` and `SharedDtcmState` remain `0xa000/4`; the A-MPDU boundary remains `0x040012a0`.
+
+The complete supplied direct-target inventory at `/tmp/xr819-dtcm-refs.out:222-228` contains five byte-width WRITE targets (`vif_tbtt_post_process`, `mac_program_channel_for_vifs_ex`, `task_13b58`, `vif_teardown`, and `lmc_p2p_timer_restart`), one byte-width READ target (`lmc_sched_request_radio`), and one PARAM/root target. Decompiled bodies in `xr819-decompilation/annotated-main.c:2616-2680`, `7611-7627`, `24433-24461`, `25760-25802`, `26470-26494`, and `32550-32569` show a read while deciding whether to release interface-2 radio ownership, stores of 1 when interface 2 is selected or processed, and stores of 0 during task, teardown, and P2P-timer transitions. This supports a neutral shared u8 latch, not bool/enum semantics, a known COPY initial value, or complete writer closure.
+
+`SharedU8` remains the existing `UnsafeCell<MaybeUninit<u8>>` quarantine view for vendor/IRQ/FIQ-mutated state. No derive, production address constant, pointer, reference, safe reference, reader, writer, reset/init/value accessor, generic offset, slice, iterator, bool, enum, ownership API, or production operation was added. The structural split therefore preserves exact volatile widths, MMIO/barrier/interrupt order, wrapping/unchecked arithmetic, initialization order, request ownership, and all 30 HIF inputs.
+
+`tools/check-initialized-interface-2-radio-latch-layout.py` owns exactly `[0x0400124f, 0x04001250)`. It pins the private non-derived structure, exact field width and offsets, adjacent boundaries, focused test and unchanged enclosing/global layouts; source-gates physical and DTCM-relative literals; rejects direct/transitive const, static, type and renamed-import aliases plus operational and broad APIs using adversarial self-tests; and pins empty aligned linked-literal and decoded PC-relative-xref multisets. Those empty sets are drift evidence only, never writer closure. It runs in source and linked phases of `tools/check.sh` and `tools/build-ota-image.sh`. The supplemental exact-parent text-symbol gate uses `tools/initialized-interface-2-radio-latch-codegen-manifest.json` and `XR819_INITIALIZED_INTERFACE_2_RADIO_LATCH_PARENT_ELF`; symbol identity does not replace complete-file acceptance.
+
+The focused default and `vendor-host-tx-diagnostics` process-local host tests, standalone source/linked checker, Thumb release build, full `tools/check.sh` with the saved exact parent, and fresh OTA packing pass. No target or hardware test was run. TALA relocation and `0x04002984..0x04003050` were untouched.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checker   tools/check-initialized-interface-2-radio-latch-layout.py
+range     [0x0400124f, 0x04001250)
+checks    /tmp/xr819-interface-2-radio-latch-final-check.log
+          f845e9ef84789b712f6f451d6b45afb92c39e12602e71f013a298cdbcb735adc
+manifest  tools/initialized-interface-2-radio-latch-codegen-manifest.json
 ```

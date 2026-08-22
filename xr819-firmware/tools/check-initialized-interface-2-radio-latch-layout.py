@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source/linked drift evidence for exactly [0x04001290, 0x04001291).
+"""Source/linked drift evidence for exactly [0x0400124F, 0x04001250).
 
 Empty aligned linked-literal and decoded PC-relative-xref multisets are drift
  evidence only, explicitly not writer closure.
@@ -15,13 +15,13 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04001290, 0x04001291)
-OFFSETS = {0x1290}
+RANGE = (0x0400124F, 0x04001250)
+OFFSETS = {0x124f}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {".rs", ".py", ".sh", ".c", ".h", ".S", ".s", ".asm", ".inc", ".ld", ".x", ".toml", ".mk"}
 OWNER_FILES = {
     "src/dtcm.rs",
-    "tools/check-initialized-dtim-capture-latch-layout.py",
+    "tools/check-initialized-interface-2-radio-latch-layout.py",
     "tools/check-initialized-multi-vif-beacon-timer-layout.py",
     "tools/check-initialized-measurement-dwell-timer-layout.py",
     "tools/check-initialized-measurement-control-reset-words-layout.py",
@@ -41,12 +41,6 @@ ASSERTIONS = (
     "assert!(core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_0) == 0x54);",
     "assert!(core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_1) == 0x58);",
     "assert!(core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_2) == 0x5c);",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_dwell_timer) + core::mem::size_of::<TimerEntry>() == 0x0400_1290",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, dtim_capture_latch) + core::mem::size_of::<SharedU8>() == 0x0400_1291",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, opaque_51) + core::mem::size_of::<OpaqueBytes<0x03>>() == 0x0400_1294",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_0) + core::mem::size_of::<SharedU32>() == 0x0400_1298",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_1) + core::mem::size_of::<SharedU32>() == 0x0400_129c",
-    "offset_of!(InitializedMultiVifBeaconTimerTail, measurement_control_word_2) + core::mem::size_of::<SharedU32>() == 0x0400_12a0",
     "offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) == 0x1240",
     "offset_of!(InitializedVendorImage, ampdu_counters) == 0x12a0",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4);",
@@ -54,22 +48,23 @@ ASSERTIONS = (
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4);",
 )
 TEST_ITEMS = (
-    "fn initialized_dtim_capture_latch_address_is_exact()",
+    "fn initialized_interface_2_radio_latch_address_is_exact()",
     "let tail = DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail)",
+    "let latch = tail + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, interface_2_radio_latch)",
+    "let timer = tail + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, timer)",
     "tail, 0x0400_1240",
-    "MEASUREMENT_DWELL_TIMER.get() + core::mem::size_of::<TimerEntry>(), 0x0400_1290",
-    "[0x50, 0x51, 0x54, 0x58, 0x5c]",
+    "size_of::<OpaqueBytes<0x0f>>(), 0x0400_124f",
+    "latch, 0x0400_124f",
+    "latch + core::mem::size_of::<SharedU8>(), 0x0400_1250",
+    "timer, 0x0400_1250",
+    "timer + core::mem::size_of::<TimerEntry>(), 0x0400_1264",
+    "[0x00, 0x0f, 0x10, 0x24, 0x3c, 0x50, 0x51, 0x54, 0x58, 0x5c]",
     "size_of::<SharedU8>(), 0x01",
     "align_of::<SharedU8>(), 1",
-    "latch, 0x0400_1290",
-    "latch + core::mem::size_of::<SharedU8>(), 0x0400_1291",
-    "size_of::<OpaqueBytes<0x03>>(), 0x03",
-    "opaque, 0x0400_1291",
-    "opaque + core::mem::size_of::<OpaqueBytes<0x03>>(), 0x0400_1294",
-    "[0x0400_1294, 0x0400_1298, 0x0400_129c]",
     "size_of::<InitializedMultiVifBeaconTimerTail>(), 0x60",
     "align_of::<InitializedMultiVifBeaconTimerTail>(), 4",
-    "AMPDU_TELEMETRY_COUNTERS.get(), 0x0400_12a0",
+    "offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail), 0x1240",
+    "offset_of!(InitializedVendorImage, ampdu_counters), 0x12a0",
     "size_of::<InitializedVendorImage>(), 0x2078",
     "align_of::<InitializedVendorImage>(), 4",
     "size_of::<DtcmLayout>(), DTCM_STATE_SIZE",
@@ -127,8 +122,8 @@ def aliases_and_consumers(code: str) -> tuple[set[str], list[str]]:
     declarations: list[tuple[str, str]] = []
     for pattern in (r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_]\w*)\s*:[^=;]+\s*=\s*([^;]*);", r"\btype\s+([A-Za-z_]\w*)\s*=\s*([^;]*);"):
         declarations.extend(re.findall(pattern, code))
-    imports = re.findall(r"\b(?:dtim_capture_latch|InitializedMultiVifBeaconTimerTail)\s+as\s+([A-Za-z_]\w*)", code)
-    aliases = {"InitializedMultiVifBeaconTimerTail", "dtim_capture_latch", *imports}
+    imports = re.findall(r"\b(?:interface_2_radio_latch|InitializedMultiVifBeaconTimerTail)\s+as\s+([A-Za-z_]\w*)", code)
+    aliases = {"InitializedMultiVifBeaconTimerTail", "interface_2_radio_latch", *imports}
     aliases |= {name for name, init in declarations if any(int(x.replace("_", ""), 16) in OFFSETS for x in LITERAL.findall(init))}
     while True:
         expanded = aliases | {name for name, init in declarations if set(re.findall(r"\b[A-Za-z_]\w*\b", init)) & aliases}
@@ -148,12 +143,12 @@ def aliases_and_consumers(code: str) -> tuple[set[str], list[str]]:
 
 def self_tests() -> None:
     fixtures = (
-        "const ROOT: usize = 0x1290; const NEXT: usize = ROOT; fn leak() -> *mut u8 { NEXT as *mut u8 }",
-        "static ROOT: usize = 0x1290; fn read() -> u8 { ROOT as u8 }",
+        "const ROOT: usize = 0x124f; const NEXT: usize = ROOT; fn leak() -> *mut u8 { NEXT as *mut u8 }",
+        "static ROOT: usize = 0x124f; fn read() -> u8 { ROOT as u8 }",
         "type Hidden = InitializedMultiVifBeaconTimerTail; fn borrow(_: &Hidden) {}",
-        "use crate::dtcm::dtim_capture_latch as HIDDEN; fn write() { core::ptr::write_volatile(HIDDEN as *mut u8, 1) }",
-        "fn reset() { unsafe { core::ptr::write_volatile(0x0400_1290 as *mut u8, 0) } }",
-        "fn init(index: usize) -> usize { 0x1290usize.wrapping_add(index) }",
+        "use crate::dtcm::interface_2_radio_latch as HIDDEN; fn write() { core::ptr::write_volatile(HIDDEN as *mut u8, 1) }",
+        "fn reset() { unsafe { core::ptr::write_volatile(0x0400_124f as *mut u8, 0) } }",
+        "fn init(index: usize) -> usize { 0x124fusize.wrapping_add(index) }",
         "fn slice(_: InitializedMultiVifBeaconTimerTail) -> core::iter::Empty<u8> { core::iter::empty() }",
     )
     for fixture in fixtures:
@@ -174,16 +169,16 @@ def check_source() -> None:
     declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\]\s*struct\s+InitializedMultiVifBeaconTimerTail\s*\{[^}]*\}", source)
     if declaration is None or normalized(declaration.group()) != normalized(STRUCT) or "derive" in declaration.group():
         failures.append("InitializedMultiVifBeaconTimerTail must be the exact private non-derived inventory")
-    if source.count("struct InitializedMultiVifBeaconTimerTail") != 1 or source.count("dtim_capture_latch: SharedU8") != 1 or "DTIM_CAPTURE_LATCH" in source:
+    if source.count("struct InitializedMultiVifBeaconTimerTail") != 1 or source.count("interface_2_radio_latch: SharedU8") != 1 or "INTERFACE_2_RADIO_LATCH" in source:
         failures.append("old, duplicate, or address-constant latch inventory is forbidden")
-    test = named_function(source, "initialized_dtim_capture_latch_address_is_exact")
+    test = named_function(source, "initialized_interface_2_radio_latch_address_is_exact")
     if test is None or any(normalized(item) not in normalized(test) for item in TEST_ITEMS): failures.append("focused exact-address test inventory changed")
     production = mask_tests(code_only(source, rust=True)).replace(STRUCT, " " * len(STRUCT))
     aliases, consumers = aliases_and_consumers(production)
-    allowed_aliases = {"InitializedMultiVifBeaconTimerTail", "dtim_capture_latch", "MEASUREMENT_DWELL_TIMER", "MULTI_VIF_BEACON_TIMER"}
+    allowed_aliases = {"InitializedMultiVifBeaconTimerTail", "interface_2_radio_latch", "MEASUREMENT_DWELL_TIMER", "MULTI_VIF_BEACON_TIMER"}
     if aliases != allowed_aliases: failures.append(f"direct/transitive latch aliases are forbidden: {sorted(aliases - allowed_aliases)}")
     if consumers: failures.append(f"production latch operational consumers are forbidden: {consumers}")
-    forbidden = re.compile(r"\b(?:dtim_capture_latch|DTIM_CAPTURE_LATCH)[A-Za-z0-9_]*(?:ptr|pointer|ref|mut|value|read|write|reset|init|offset|unchecked|slice|iter|get|set)\b", re.I)
+    forbidden = re.compile(r"\b(?:interface_2_radio_latch|INTERFACE_2_RADIO_LATCH)[A-Za-z0-9_]*(?:ptr|pointer|ref|mut|value|read|write|reset|init|offset|unchecked|slice|iter|get|set)\b", re.I)
     for path in source_paths():
         relative = path.relative_to(ROOT).as_posix()
         code = mask_tests(code_only(path.read_text(errors="replace"), rust=True)) if path.suffix == ".rs" else code_only(path.read_text(errors="replace"), path.suffix in {".py", ".sh", ".toml"})
@@ -193,9 +188,9 @@ def check_source() -> None:
             value = int(match.group().replace("_", ""), 16)
             if RANGE[0] <= value < RANGE[1] or value in OFFSETS:
                 failures.append(f"{relative}:{code.count(chr(10), 0, match.start()) + 1}: owned latch literal/offset outside reviewed owners")
-        if relative.endswith(".rs") and re.search(r"\b(?:dtim_capture_latch|DTIM_CAPTURE_LATCH)\b", code): failures.append(f"{relative}: latch alias or API outside owner")
+        if relative.endswith(".rs") and re.search(r"\b(?:interface_2_radio_latch|INTERFACE_2_RADIO_LATCH)\b", code): failures.append(f"{relative}: latch alias or API outside owner")
     if failures: raise SystemExit("\n".join(failures))
-    print(f"INITIALIZED DTIM-CAPTURE LATCH SOURCE DRIFT-EVIDENCE GATE PASSED files={len(source_paths())}")
+    print(f"INITIALIZED INTERFACE-2 RADIO LATCH SOURCE DRIFT-EVIDENCE GATE PASSED files={len(source_paths())}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -223,10 +218,10 @@ def main() -> None:
     if args.elf:
         literals, xrefs = linked_literals(args.elf), decoded_xrefs(args.elf)
         if args.dump: print(f"ALLOWED_LINKED_LITERALS={dict(literals)!r}\nALLOWED_DECODED_XREFS={dict(xrefs)!r}"); return
-        if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS: raise SystemExit(f"INITIALIZED DTIM-CAPTURE LATCH LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
-        print("INITIALIZED DTIM-CAPTURE LATCH LINKED DRIFT-EVIDENCE GATE PASSED literals=0 decoded_xrefs=0 not_writer_closure=1")
+        if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS: raise SystemExit(f"INITIALIZED INTERFACE-2 RADIO LATCH LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+        print("INITIALIZED INTERFACE-2 RADIO LATCH LINKED DRIFT-EVIDENCE GATE PASSED literals=0 decoded_xrefs=0 not_writer_closure=1")
 
 
 if __name__ == "__main__":
     try: main()
-    except (OSError, subprocess.CalledProcessError) as error: raise SystemExit(f"initialized-DTIM-capture-latch drift gate failed: {error}")
+    except (OSError, subprocess.CalledProcessError) as error: raise SystemExit(f"initialized-interface-2-radio-latch drift gate failed: {error}")
