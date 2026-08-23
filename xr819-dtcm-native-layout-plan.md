@@ -6841,3 +6841,45 @@ pass. Complete-file ELF identity was used for acceptance
 (`cec5f4be...`, packed `711c7b98...`); TALA relocation and
 `0x04002984..0x04003050` were not touched. No target or hardware test was
 run.
+
+### A.120 Vendor debug-console strings
+
+The opaque `pre_aes_descriptors: OpaqueBytes<0x60>` at
+`[0x040007a4, 0x04000804)` is not AES data at all -- it is plain ASCII
+vendor console content, renamed to `debug_console_strings:
+DebugConsoleStrings`:
+
+- `console_help_text: OpaqueBytes<0x50>` `[0x040007a4, 0x040007f4)`:
+  "Commands are case sensitive. A comment starts with # and ends at
+  end-of-line.\n" plus NUL and padding; printed verbatim by vendor
+  `dbg_console_execute` (PC 0x15b10, pool word 0x15d0c = 0x040007a4).
+- `hex_digits: OpaqueBytes<0x10>` `[0x040007f4, 0x04000804)`:
+  "0123456789ABCDEF"; no direct decoded load was found, so the consumer
+  (presumed console hex formatting) is documented as presumed but
+  unproven.
+
+NOT YET PORTED -- the Rust image has its own console; struct docs state
+this explicitly.
+
+Also investigated and left untouched this round: `[0x1440, 0x145c)` is
+all-zero scratch with a single boot-time initializer (PC 0xc60) and stays
+opaque; the `pre_host_pas_ring` lead (0x04001570 readers) resolved to
+debug-side functions against the already-typed record.
+
+No production operation was added or changed; initial COPY values are
+loader-owned and no writer closure is claimed.
+
+`tools/check-debug-console-strings-layout.py` owns exactly
+[0x040007a4, 0x04000804) with the standard adaptations (relative-offset
+evidence disabled). Its linked-literal and decoded-xref multisets are
+pinned empty. Adjacent checkers pinning shared boundaries (0x040007a4,
+0x040007f4 with vendor-debug-tables; 0x04000804 with aes-transfer-class)
+are mutually cross-pinned via OWNER_FILES entries.
+
+Focused default (245 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (246). Complete software-only `tools/check.sh` (276 gate-pass
+lines), the Thumb release build, and fresh `build-ota-image.sh` packing
+pass. Complete-file ELF identity was used for acceptance
+(`cec5f4be...`, packed `711c7b98...`); TALA relocation and
+`0x04002984..0x04003050` were not touched. No target or hardware test was
+run.

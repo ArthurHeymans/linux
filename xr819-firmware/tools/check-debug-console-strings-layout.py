@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
-Adversarial drift gate for the vendor debug/exception tables at
-[0x040009de, 0x04000b60) (interval A.119).
+Adversarial drift gate for the vendor console strings at
+[0x040007a4, 0x04000804) (interval A.120).
 
 Owned interval:
-  [0x040009de, 0x04000b28)  VendorDebugEncodedBanner
-      encoded_banner         OpaqueBytes<0x14a> (UART banner, dbg_print_banner)
-  [0x04000b28, 0x04000b3c)  ExceptionReasonNames
-      names                  [SharedU32; 5]    (exc_print_dump reason < 5)
-  [0x04000b3c, 0x04000b60)  HwTimerDebugTables
-      divisor_table          OpaqueBytes<0x1c> (halfword at +2 per 4B group)
-      channel_config_words   [SharedU32; 2]    (phy_set_channel_full ldm)
+  [0x040007a4, 0x04000804)  DebugConsoleStrings
+      console_help_text      OpaqueBytes<0x50> ("Commands are case sensitive...")
+      hex_digits             OpaqueBytes<0x10> ("0123456789ABCDEF")
 
 Interval-specific adaptations: offsets are indistinguishable from arbitrary
-small integers so the template's relative-offset evidence arm is disabled;
-the banner base 0x9de is only 2-aligned so the banner struct uses align(2).
-None of this machinery is ported yet -- no Rust consumer exists, so the
-linked-literal and decoded-xref multisets start pinned empty.
+small integers so the template's relative-offset evidence arm is disabled.
+Not yet ported -- the Rust image has its own console; linked-literal and
+decoded-xref multisets start pinned empty.
 """
 
 from __future__ import annotations
@@ -31,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Three owned sub-intervals: banner, exception-reason names, timer/channel.
-RANGE = (0x040009de, 0x04000b28, 0x04000b28, 0x04000b3c, 0x04000b3c, 0x04000b60)
+RANGE = (0x040007a4, 0x04000804)
 OFFSETS = range(0x0, 0x48)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -42,12 +37,15 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "tools/check-debug-console-strings-layout.py",
     "tools/check-vendor-debug-tables-layout.py",
     # Adjacent-interval owner pinning the shared 0x04000b60 boundary.
     "tools/check-phy-gain-register-write-lists-layout.py",
-    # Adjacent-region owner whose PHYSICAL constants spell 0x040007a4
+    # Adjacent-interval owner whose PHYSICAL constants spell 0x040007a4
     # and 0x040007f4.
-    "tools/check-debug-console-strings-layout.py",
+    "tools/check-vendor-debug-tables-layout.py",
+    # Adjacent-interval owner pinning the shared 0x04000804 boundary.
+    "tools/check-aes-transfer-class-layout.py",
 }
 ADJACENT_DECLARATIONS = {
     "tools/check-pas-rate-static-tables-layout.py": "(0x0400014C, 0x04000194)",
@@ -59,47 +57,28 @@ SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
 # appearance of an in-interval literal or decoded xref fails the gate.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
-STRUCT = '#[repr(C, align(2))] struct VendorDebugEncodedBanner { encoded_banner: OpaqueBytes<0x14a> } #[repr(C, align(4))] struct ExceptionReasonNames { names: [SharedU32; 5] } #[repr(C, align(4))] struct HwTimerDebugTables { divisor_table: OpaqueBytes<0x1c>, channel_config_words: [SharedU32; 2] }'
+STRUCT = '#[repr(C, align(4))] struct DebugConsoleStrings { console_help_text: OpaqueBytes<0x50>, hex_digits: OpaqueBytes<0x10> }'
 REQUIRED = (
-    "vendor_debug_encoded_banner: VendorDebugEncodedBanner",
-    "exception_reason_names: ExceptionReasonNames",
-    "hw_timer_debug_tables: HwTimerDebugTables",
+    "debug_console_strings: DebugConsoleStrings",
+    "aes_transfer_classes: AesTransferClassTable",
     "assert_type_layout!(SharedU32, 0x04, 4)",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, vendor_debug_encoded_banner) == 0x09de);",
-    "assert_type_layout!(VendorDebugEncodedBanner, 0x14a, 2);",
-    "assert!(core::mem::offset_of!(VendorDebugEncodedBanner, encoded_banner) == 0);",
-    "assert!(core::mem::size_of::<OpaqueBytes<0x14a>>() == 0x14a);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0b28);",
-    "assert_type_layout!(ExceptionReasonNames, 0x14, 4);",
-    "assert!(core::mem::offset_of!(ExceptionReasonNames, names) == 0);",
-    "assert!(core::mem::size_of::<[SharedU32; 5]>() == 0x14);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0400_0b28);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) == 0x0b3c);",
-    "assert_type_layout!(HwTimerDebugTables, 0x24, 4);",
-    "assert!(core::mem::offset_of!(HwTimerDebugTables, divisor_table) == 0x00);",
-    "assert!(core::mem::size_of::<OpaqueBytes<0x1c>>() == 0x1c);",
-    "assert!(core::mem::offset_of!(HwTimerDebugTables, channel_config_words) == 0x1c);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) + core::mem::size_of::<HwTimerDebugTables>() == 0x0400_0b60);",
-    "offset_of!(InitializedVendorImage, phy_gain_register_write_lists) == 0x0b60",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, debug_console_strings) == 0x07a4);",
+    "assert_type_layout!(DebugConsoleStrings, 0x60, 4);",
+    "assert!(core::mem::offset_of!(DebugConsoleStrings, console_help_text) == 0x00);",
+    "assert!(core::mem::size_of::<OpaqueBytes<0x50>>() == 0x50);",
+    "assert!(core::mem::offset_of!(DebugConsoleStrings, hex_digits) == 0x50);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, debug_console_strings) + core::mem::size_of::<DebugConsoleStrings>() == 0x0400_0804);",
+    "offset_of!(InitializedVendorImage, aes_transfer_classes) == 0x0804",
     "initialized_prefix_tables_are_exact",
 )
-PHYSICAL = (0x040009de, 0x04000b28, 0x04000b3c, 0x04000b58, 0x04000b60)
+PHYSICAL = (0x040007a4, 0x040007f4, 0x04000804)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    'assert!(core::mem::offset_of!(InitializedVendorImage, vendor_debug_encoded_banner) == 0x09de);',
-    'assert_type_layout!(VendorDebugEncodedBanner, 0x14a, 2);',
-    'assert!(core::mem::offset_of!(VendorDebugEncodedBanner, encoded_banner) == 0);',
-    'assert!(core::mem::size_of::<OpaqueBytes<0x14a>>() == 0x14a);',
-    'assert!(core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0b28);',
-    'assert_type_layout!(ExceptionReasonNames, 0x14, 4);',
-    'assert!(core::mem::offset_of!(ExceptionReasonNames, names) == 0);',
-    'assert!(core::mem::size_of::<[SharedU32; 5]>() == 0x14);',
-    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0400_0b28);',
-    'assert!(core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) == 0x0b3c);',
-    'assert_type_layout!(HwTimerDebugTables, 0x24, 4);',
-    'assert!(core::mem::offset_of!(HwTimerDebugTables, divisor_table) == 0x00);',
-    'assert!(core::mem::size_of::<OpaqueBytes<0x1c>>() == 0x1c);',
-    'assert!(core::mem::offset_of!(HwTimerDebugTables, channel_config_words) == 0x1c);',
-    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) + core::mem::size_of::<HwTimerDebugTables>() == 0x0400_0b60);',
+    'assert!(core::mem::offset_of!(InitializedVendorImage, debug_console_strings) == 0x07a4);',
+    'assert_type_layout!(DebugConsoleStrings, 0x60, 4);',
+    'assert!(core::mem::offset_of!(DebugConsoleStrings, console_help_text) == 0x00);',
+    'assert!(core::mem::size_of::<OpaqueBytes<0x50>>() == 0x50);',
+    'assert!(core::mem::offset_of!(DebugConsoleStrings, hex_digits) == 0x50);',
+    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, debug_console_strings) + core::mem::size_of::<DebugConsoleStrings>() == 0x0400_0804);',
 )
 
 # The ring-cursor-map asserts are interleaved with the visible_completion_words
@@ -219,18 +198,18 @@ def check_exact_inventory_regression(source: str) -> None:
 
     compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[0])
     compile_swap = normalized(compile_scope).replace(
-        compile_item, compile_item.replace("== 0x09de", "== 0x09dc"), 1
+        compile_item, compile_item.replace("== 0x07a4", "== 0x07a2"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[1])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[13])
     test_address_swap = normalized(test_scope).replace(
         test_address_item,
-        swapped_once(test_address_item, "0x0400_09de", "0x0400_09dc"),
+        swapped_once(test_address_item, "0x0400_07a4", "0x0400_07a2"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[12])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[18])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
-        swapped_once(test_extent_item, "0x0400_0b60", "0x0400_0b5e"),
+        swapped_once(test_extent_item, "0x0400_0804", "0x0400_0802"),
         1,
     )
 
@@ -275,7 +254,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"VendorDebugEncodedBanner", "ExceptionReasonNames", "HwTimerDebugTables",
+    views = {"DebugConsoleStrings",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -313,11 +292,10 @@ def check_alias_tracking_regression() -> None:
     # relative arm is disabled (see owned_literals). Only family-name
     # aliases and in-range physical literals are tracked.
     fixtures = (
-        ("type R = VendorDebugEncodedBanner; const ROOT: usize = core::mem::size_of::<R>(); const NEXT: usize = ROOT; fn leak(_: R) -> usize { NEXT }", {"R", "ROOT", "NEXT"}, ["leak"]),
-        ("type A = ExceptionReasonNames; type B = A; fn leak(_: B) {}", {"A", "B"}, ["leak"]),
-        ("use crate::dtcm::HwTimerDebugTables as Hidden; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
-        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_0b40 as *mut u32, 0) } }", set(), ["reset"]),
-        ("const ENTRY: usize = 0x0400_0b40; const NEXT: usize = ENTRY; fn leak() -> usize { NEXT }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("type R = DebugConsoleStrings; const ROOT: usize = core::mem::size_of::<R>(); const NEXT: usize = ROOT; fn leak(_: R) -> usize { NEXT }", {"R", "ROOT", "NEXT"}, ["leak"]),
+        ("use crate::dtcm::DebugConsoleStrings as Hidden; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
+        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_07f4 as *mut u32, 0) } }", set(), ["reset"]),
+        ("const ENTRY: usize = 0x0400_07f4; const NEXT: usize = ENTRY; fn leak() -> usize { NEXT }", {"ENTRY", "NEXT"}, ["leak"]),
     )
     for fixture, expected_aliases, expected_functions in fixtures:
         views, _ = family_aliases(fixture)
@@ -355,23 +333,13 @@ def check_source() -> None:
     def canon(text: str) -> str:
         return normalized(re.sub(r",?\s*\}", "}", text))
     stripped = re.sub(r"\s*///[^\n]*", "", source)
-    declarations = [
-        re.search(r"#\[repr\(C, align\(2\)\)\]\s*struct VendorDebugEncodedBanner \{[^}]*\}", stripped),
-        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct ExceptionReasonNames \{[^}]*\}", stripped),
-        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct HwTimerDebugTables \{[^}]*\}", stripped),
-    ]
-    expected_triple = (
-        "#[repr(C, align(2))] struct VendorDebugEncodedBanner { encoded_banner: OpaqueBytes<0x14a> }",
-        "#[repr(C, align(4))] struct ExceptionReasonNames { names: [SharedU32; 5] }",
-        "#[repr(C, align(4))] struct HwTimerDebugTables { divisor_table: OpaqueBytes<0x1c>, channel_config_words: [SharedU32; 2] }",
-    )
-    if (any(d is None for d in declarations)
-            or any(canon(d.group()) != canon(e) for d, e in zip(declarations, expected_triple))):
-        failures.append("src/dtcm.rs: vendor debug table structs must be the exact private non-derived inventory")
-    if (source.count("struct VendorDebugEncodedBanner") != 1
-            or source.count("struct ExceptionReasonNames") != 1 or source.count("struct HwTimerDebugTables") != 1
-            or "pre_phy_gain_register_write_lists" in source):
-        failures.append("src/dtcm.rs: removed opaque split or duplicate vendor debug tables remain")
+    declaration = re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct DebugConsoleStrings \{[^}]*\}", stripped)
+    expected_declaration = "#[repr(C, align(4))] struct DebugConsoleStrings { console_help_text: OpaqueBytes<0x50>, hex_digits: OpaqueBytes<0x10> }"
+    if (declaration is None or canon(declaration.group()) != canon(expected_declaration)):
+        failures.append("src/dtcm.rs: DebugConsoleStrings must be the exact private non-derived inventory")
+    if (source.count("struct DebugConsoleStrings") != 1
+            or "pre_aes_descriptors" in source):
+        failures.append("src/dtcm.rs: removed opaque split or duplicate debug console strings remain")
     for relative, exact in ADJACENT_DECLARATIONS.items():
         if exact not in (ROOT / relative).read_text():
             failures.append(f"{relative}: adjacent checker range changed from {exact}")
@@ -402,7 +370,7 @@ def check_source() -> None:
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:
-            failures.append(f"{relative}: unsanctioned production function over vendor debug table storage: {function}")
+            failures.append(f"{relative}: unsanctioned production function over debug console string storage: {function}")
         sanctioned_lines = SANCTIONED_CONSUMER_LINES.get(relative, set())
         for line_number, line in enumerate(code.splitlines(), 1):
             if normalized(line) in sanctioned_lines:
@@ -428,9 +396,9 @@ def check_source() -> None:
                 line_number = code.count("\n", 0, match.start()) + 1
                 if normalized(code.splitlines()[line_number - 1]) in sanctioned_lines:
                     continue
-                failures.append(f"{relative}:{line_number}: vendor debug tables interval physical literal {match.group()} is outside reviewed owners")
+                failures.append(f"{relative}:{line_number}: debug console strings interval physical literal {match.group()} is outside reviewed owners")
     if failures: raise SystemExit("\n".join(failures))
-    print(f"VENDOR DEBUG TABLES SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"DEBUG CONSOLE STRINGS SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -463,9 +431,9 @@ def check_elf(path: Path, dump: bool) -> None:
         print(f"ALLOWED_DECODED_XREFS={dict(sorted(xrefs.items()))!r}")
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
-        raise SystemExit(f"VENDOR DEBUG TABLES LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+        raise SystemExit(f"DEBUG CONSOLE STRINGS LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
     residual_literals, residual_xrefs = literals - ALLOWED_LINKED_LITERALS, xrefs - ALLOWED_DECODED_XREFS
-    print(f"VENDOR DEBUG TABLES LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
+    print(f"DEBUG CONSOLE STRINGS LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
 
 
 def main() -> None:

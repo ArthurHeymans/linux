@@ -32,6 +32,8 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-aes-transfer-class-layout.py",
+    # Adjacent-interval owner pinning the shared 0x04000804 boundary.
+    "tools/check-debug-console-strings-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (
