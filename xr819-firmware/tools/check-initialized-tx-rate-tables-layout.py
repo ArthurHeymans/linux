@@ -33,6 +33,9 @@ OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-initialized-prefix-tables-layout.py",
     "tools/check-initialized-tx-rate-tables-layout.py",
+    # Adjacent-interval owner: pins the shared rate_encoding boundary
+    # 0x04000194 and record-table boundary 0x0400017c.
+    "tools/check-pas-rate-static-tables-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

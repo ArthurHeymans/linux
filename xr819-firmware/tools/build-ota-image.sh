@@ -60,6 +60,7 @@ python3 tools/check-initialized-mac-pipe-tails-layout.py
 python3 tools/check-initialized-rf-mode-halfword-table-layout.py
 python3 tools/check-initialized-tlv-handler-table-layout.py
 python3 tools/check-initialized-prefix-tables-layout.py
+python3 tools/check-pas-rate-static-tables-layout.py
 python3 tools/check-initialized-prefix-tables-layout.py
 python3 tools/check-initialized-register-write-lists-layout.py
 python3 tools/check-initialized-rf-scale-tables-layout.py
@@ -150,6 +151,7 @@ python3 tools/check-initialized-mac-pipe-tails-layout.py "$ELF"
 python3 tools/check-initialized-rf-mode-halfword-table-layout.py "$ELF"
 python3 tools/check-initialized-tlv-handler-table-layout.py "$ELF"
 python3 tools/check-initialized-prefix-tables-layout.py "$ELF"
+python3 tools/check-pas-rate-static-tables-layout.py "$ELF"
 python3 tools/check-initialized-prefix-tables-layout.py "$ELF"
 python3 tools/check-initialized-register-write-lists-layout.py "$ELF"
 python3 tools/check-initialized-rf-scale-tables-layout.py "$ELF"
@@ -258,6 +260,15 @@ if [[ -n "${XR819_REGISTER_WRITE_LISTS_PARENT_ELF:-}" ]]; then
     "$XR819_REGISTER_WRITE_LISTS_PARENT_ELF" "$ELF"
 else
   echo "== initialized-register-write-lists codegen gate skipped: set XR819_REGISTER_WRITE_LISTS_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
+fi
+
+if [[ -n "${XR819_PAS_RATE_STATIC_TABLES_PARENT_ELF:-}" ]]; then
+  echo "== supplemental pas-rate-static-tables exact-parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/pas-rate-static-tables-codegen-manifest.json \
+    "$XR819_PAS_RATE_STATIC_TABLES_PARENT_ELF" "$ELF"
+else
+  echo "== pas-rate-static-tables codegen gate skipped: set XR819_PAS_RATE_STATIC_TABLES_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
 fi
 
 if [[ -n "${XR819_PREFIX_TABLES_PARENT_ELF:-}" ]]; then

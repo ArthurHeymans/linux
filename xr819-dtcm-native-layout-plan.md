@@ -6612,3 +6612,75 @@ checks    /tmp/xr819-prefix-tables-final-check.log
 manifest  tools/initialized-prefix-tables-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.116 PAS rate static tables
+
+The opaque `pre_rate_tables: OpaqueBytes<0x48>` at `[0x0400014c,
+0x04000194)` decodes into `PasRateStaticTables`, four read-only inputs to
+the vendor PAS rate machinery:
+
+- `mcs_fallback_rates: [SharedU8; 8]` `[0x0400014c, 0x04000154)`:
+  per-MCS fallback rate index for MCS 14..=21. Vendor
+  `pas_build_rate_tables` reads it as
+  `*(u8 *)(DAT_00008724 - 0x5e + idx - 0x20 + 0x12)` with
+  DAT_00008724 = 0x040001aa (ldrb at PC 0x85e6), i.e. exactly this range;
+  the recovered bytes are `06 08 09 0a 0b 0c 0d 0d`.
+- `pas_fallback_suffix: OpaqueBytes<0x8>` `[0x04000154, 0x04000115c)`:
+  no accessor found (initialized bytes are the identity sequence
+  0x0e..0x15); left opaque.
+- `ofdm_airtime_durations: [SharedU16; 16]` `[0x0400015c, 0x0400017c)`:
+  frame-duration halfwords indexed by `(rate - 6) & 0xf`. Read by vendor
+  `airtime_compute` (DAT_00008724 - 0x4e) and by `ofdm_calc_duration`
+  (DAT_00000fdc = 0x0400015c, formula
+  `(len*8 + table[rate] + 0x15)/4*3 + 9 & 0xfff`). The index mask proves
+  the 16-entry extent.
+- `rate_group_records: [SharedU32; 6]` `[0x0400017c, 0x04000194)`:
+  byte-addressed programming records with a 4-byte stride. Vendor
+  `pas_program_rate_tables` reads bytes +0/+1/+2 of record `pair[0]`
+  (iVar4 = rec*4 + DAT_00008724 - 0x2e), and `mac_program_ifs_timing`
+  reads bytes +4/+8 (DAT_0000fffc + iVar1*4 for iVar1 in {1,2}).
+
+The CCK counterpart of the duration table is the tail of the already-typed
+`tx_duration_timing` array (`airtime_compute` reads DAT_00008724 - 0x66 +
+(rate&3)*2 = 0x04000144 + (rate&3)*2); no layout change was made there.
+Extent of the whole interval is proven physically: it is bounded by typed
+`tx_duration_timing` below and typed `rate_encoding` at 0x194 above.
+
+Evidence was re-derived from the annotated vendor binary under the flat
+address mapping (address == file offset), verified instruction-exactly via
+capstone disassembly against the decompilation; the pool words resolve to
+DAT_00008724 = 0x040001aa, DAT_00008728 = 0x04001680,
+DAT_0000872c = 0x003fffcf, DAT_0000fffc = 0x0400017c. No production
+operation was added or changed; initial COPY values are loader-owned and no
+writer closure is claimed.
+
+`tools/check-pas-rate-static-tables-layout.py` owns exactly
+[0x0400014c, 0x04000194). Interval-specific adaptation, documented in the
+checker: offsets 0x0..0x47 are indistinguishable from arbitrary small
+integers, so the template's relative-offset evidence arm is disabled;
+coverage comes from exact declarations, compile-time/focused-test
+contiguity, family-alias tracking, and the linked gate. Its linked-literal
+and decoded-xref multisets are derived from decoded PC-relative loads only
+and pinned empty -- no retained Rust code references any address inside the
+interval. The adjacent tx-rate-tables checker pins the shared boundaries
+(mutual OWNER_FILES pinning); its focused-test inventory was refreshed for
+the extended shared focused test.
+
+Focused default (244 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (245). Complete software-only `tools/check.sh` (267 gate-pass
+lines), the Thumb release build, the exact-parent complete text-symbol/
+codegen comparison, and fresh `build-ota-image.sh` packing pass. The
+exact-parent manifest is byte-identical to the manifests of the previous
+slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only
+identity. TALA relocation and `0x04002984..0x04003050` were not touched.
+No target or hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-pas-rate-final-check.log
+manifest  tools/pas-rate-static-tables-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
