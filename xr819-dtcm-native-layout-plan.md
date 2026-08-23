@@ -6883,3 +6883,46 @@ pass. Complete-file ELF identity was used for acceptance
 (`cec5f4be...`, packed `711c7b98...`); TALA relocation and
 `0x04002984..0x04003050` were not touched. No target or hardware test was
 run.
+
+### A.121 DTCM pointer audit and help-text misnomer correction
+
+A comprehensive audit answered "does any raw offset remain pointing into
+unaccounted DTCM?": every 4-aligned literal-pool word in the annotated
+vendor binary with a value in [0x04000000, 0x04010000) was extracted and
+classified. Result: 116 words point into typed initialized-image regions
+(all covered by their intervals' linked gates), 45 into the runtime
+DTCM/SRAM workspace area covered by earlier layout work, 44 into the
+g_fw_ctx high-SRAM context, and exactly two into opaque islands:
+
+- `0x04000830`: loaded by `dbg_print_help_text` (PC 0x15fe0) -- proving
+  that the region long named `aes_mode1_microcode` has no AES
+  relationship at all. It is a second encoded UART blob, sent byte-by-byte
+  (indices 1..=0x1ad over the base, loop bound 0x1ae) to TX register
+  0x9c50008 by the console's "#" help command, using the identical
+  mechanism as `dbg_print_banner`. Renamed to
+  `vendor_encoded_help_text: VendorEncodedHelpText`
+  (align 2, still OpaqueBytes<0x1ae>, content vendor-encoded) with a full
+  behavioral doc comment stating its not-yet-ported status.
+- `0x04001440`: all-zero scratch with one boot-time initializer,
+  documented in A.120's investigation and left opaque.
+
+After this rename every remaining opaque island has ZERO literal-pool
+pointers and zero reference-map entries: tkip prefix [0x2e4,0x310),
+rf-scale prefix [0xec0,0xf88), prefix_suffix [0x78,0x138),
+pas_fallback_suffix [0x154,0x15c), rate_pointer_targets [0x1088,0x10a8)
+(pointer targets by design), phy-channel-threshold scratch
+[0x1440,0x1454), pre_mac_beacon_state [0x18d8,0x1a80), and
+pre_mac_phy_command_state [0x1b08,0x1b10). Residual uncertainty is stated
+honestly: base-register arithmetic can reach addresses without any pooled
+pointer, so "no evidence of access" is not proof of absence -- but both
+independent scans (Ghidra reference map incl. register-computed refs, and
+exhaustive pool-word classification) now agree on every island.
+
+No production operation was added or changed; initial COPY values are
+loader-owned and no writer closure is claimed.
+
+Focused default (245 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (246). Complete software-only `tools/check.sh`, the Thumb
+release build, and fresh `build-ota-image.sh` packing pass.
+Complete-file ELF identity was used for acceptance (`cec5f4be...`,
+packed `711c7b98...`). No target or hardware test was run.
