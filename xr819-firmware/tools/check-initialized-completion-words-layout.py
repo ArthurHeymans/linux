@@ -32,6 +32,9 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-initialized-completion-words-layout.py",
+    # Adjacent-interval owner pinning the shared boundaries 0x04000260 and
+    # 0x04000288 in its range constant.
+    "tools/check-completion-ring-cursor-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

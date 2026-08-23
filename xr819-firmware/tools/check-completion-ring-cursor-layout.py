@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
-"""Source/linked drift evidence for exactly [0x04000000, 0x04000138).
+"""
+Adversarial drift gate for the completion-prefix and ring-cursor-map
+regions at [0x04000228, 0x040002d8) (interval A.117).
 
-The initialized image prefix, three records:
+Owned interval:
+  [0x04000228, 0x04000260)  CompletionCallbackPrefix
+      completion_prefix_suffix OpaqueBytes<0x30> [0x228,0x258) (no accessor)
+      p2p_action_offsets       [SharedU8; 8]     [0x258,0x260)
+  [0x04000288, 0x040002d8)  RingCursorMapTables
+      beacon_mask_words        [SharedU32; 8]    [0x288,0x2a8)
+      mib_defaults_template    OpaqueBytes<0x30> [0x2a8,0x2d8)
 
-- MacSlotTimingPatchList [0x04000000, 0x04000058): eleven {pointer, value}
-  MMIO patch pairs applied by vendor mac_program_slot_timings' tail loop
-  (DAT_0000f7ac, static count 0xb): *pointer = value; every recovered
-  pointer targets 0x09c00xxx MMIO. mac_program_timing_regs additionally
-  stores the pointer VALUE 0x04000004 into a config structure field --
-  value-only, never dereferenced in-binary.
-- PacDurationQuanta [0x04000058, 0x0400078): eight u32 duration quanta read
-  by vendor pac_phy_calc_duration as *(u32*)(0x04000020 + mode * 4) under a
-  fw_assert bound 14 <= mode < 22, proving both extent and index domain.
-- prefix_suffix [0x0400078, 0x04000138): no observed accessor (whole-binary
-  scan found no other loaded pool word in the interval); stays opaque.
-
-Ghidra DATA/PARAM references at pas_reprogram_all_vif_rate_tables (PC
-0x7f82: movs/lsls producing 0x04000000 as a bitfield value) and
-mac_pipe_irq_service (PC 0x9c12) are value coincidences, not accesses.
-
-Retained Rust pins one sanctioned source literal: mac::program_before_
-scan_channel stores the pointer VALUE 0x0400_0000 into MMIO register
-0x0270 (mirroring vendor hardware table pointing). Initial COPY values are
-loader-owned; no writer closure is claimed: computed, indirect, generic
-HIF/debug, vendor, IRQ, and FIQ mutation remain possible. The linked-literal
-and decoded PC-relative-xref multisets are derived from decoded loads only;
-sanctioned entries are pinned below.
+Interval-specific adaptation: offsets 0x0..0xaf are indistinguishable from
+arbitrary small integers, so the template's relative-offset evidence arm is
+disabled (see owned_literals). Coverage comes from exact declarations,
+compile-time/focused-test contiguity, family-alias tracking, and the linked
+gate instead.
 """
 
 from __future__ import annotations
@@ -39,8 +29,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04000000, 0x04000138)
-OFFSETS = range(0x0, 0x138)
+RANGE = (0x04000228, 0x040002d8)
+OFFSETS = range(0x0, 0x48)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
     ".rs", ".py", ".sh", ".c", ".h", ".hh", ".hpp", ".hxx", ".cc",
@@ -50,91 +40,70 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
-    "tools/check-initialized-prefix-tables-layout.py",
-    "tools/check-initialized-phy-gain-source-layout.py",
-    "tools/check-initialized-rf-mode-halfword-table-layout.py",
-    "src/mac.rs",
-    "src/platform.rs",
-    "src/tx.rs",
-    "src/vendor_host_tx.rs",
-    "src/download.rs",
-    "link-main-low.x",
-    "tools/check-dtcm-layout.py",
-    "tools/pack-sectioned-elf.py",
-    "tools/test-pack-sectioned-elf.py",
+    "tools/check-completion-ring-cursor-layout.py",
+    # Adjacent-interval owners pinning the shared boundaries 0x04000228,
+    # 0x04000260 and 0x04000288 in their range constants.
+    "tools/check-initialized-completion-words-layout.py",
+    "tools/check-initialized-rate-policies-layout.py",
+    # Adjacent-interval owner pinning the shared 0x040002d8 boundary.
+    "tools/check-queue-pipe-mappings-layout.py",
 }
 ADJACENT_DECLARATIONS = {
-    "tools/check-duration-quantum-pointers-layout.py": "(0x040010D4, 0x040010E4)",
+    "tools/check-pas-rate-static-tables-layout.py": "(0x0400014C, 0x04000194)",
 }
-SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
-    "src/mac.rs": {"0x0400_0000"},
-}
-SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
-    "src/mac.rs": {"program_before_scan_channel"},
-    "src/platform.rs": {"prepare_mac_receive_hardware"},
-}
-# No linked literals fall inside this interval: the guard word is reached
-# relative to the scheduler timer list head root (owned by the adjacent
-# checker), so both multisets are pinned empty.
-# One sanctioned linked literal: mac::initialize_tx_pipe_state writes
-# DURATION_QUANTUM_POINTERS + pipe * 4 for pipes 0..4; LLVM emits the loop
-# with base 0x040010e4 and negative register offsets (-16..-4), so the pool
-# word VALUE lands inside this interval while every store targets the
-# duration-quantum-pointers interval below. No byte of this record is
-# written through it.
-# No linked literals fall inside this interval: the handler-table root is
-# consumed only by tlv_dispatch_default (vendor side), and no retained Rust
-# code touches these bytes.
+SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
+SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
+# Vendor-only tables: no retained Rust code references any address inside
+# [0x0400014c, 0x04000194), so both multisets start pinned empty and any
+# appearance of an in-interval literal or decoded xref fails the gate.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
-STRUCT = '#[repr(C, align(4))] struct MacSlotTimingPatchEntry { pointer: SharedU32, patch_word: SharedU32 } #[repr(C, align(4))] struct MacSlotTimingPatchList { entries: [MacSlotTimingPatchEntry; 11] } #[repr(C, align(4))] struct PacDurationQuanta { quanta: [SharedU32; 8] }'
+STRUCT = '#[repr(C, align(4))] struct CompletionCallbackPrefix { completion_prefix_suffix: OpaqueBytes<0x30>, p2p_action_offsets: [SharedU8; 8] } #[repr(C, align(4))] struct RingCursorMapTables { beacon_mask_words: [SharedU32; 8], mib_defaults_template: OpaqueBytes<0x30> }'
 REQUIRED = (
-    STRUCT,
-    "mac_slot_timing_patch_list: MacSlotTimingPatchList",
-    "pac_duration_quanta: PacDurationQuanta",
-    "prefix_suffix: OpaqueBytes<0xc0>",
-    "tx_duration_timing: [SharedU16; 10]",
+    "completion_callback_prefix: CompletionCallbackPrefix",
+    "ring_cursor_map_tables: RingCursorMapTables",
+    "visible_completion_words: [SharedU32; 10]",
+    "queue_pipe_mappings: QueuePipeMappings",
     "assert_type_layout!(SharedU32, 0x04, 4)",
-    "assert_type_layout!(MacSlotTimingPatchEntry, 0x08, 4)",
-    "offset_of!(MacSlotTimingPatchEntry, pointer) == 0",
-    "offset_of!(MacSlotTimingPatchEntry, patch_word) == 0x04",
-    "assert_type_layout!(MacSlotTimingPatchList, 0x58, 4)",
-    "size_of::<[MacSlotTimingPatchEntry; 11]>() == 0x58",
-    "assert_type_layout!(PacDurationQuanta, 0x20, 4)",
-    "offset_of!(PacDurationQuanta, quanta) == 0",
-    "size_of::<[SharedU32; 8]>() == 0x20",
-    "offset_of!(InitializedVendorImage, mac_slot_timing_patch_list) == 0x0000",
-    "offset_of!(InitializedVendorImage, pac_duration_quanta) == 0x0058",
-    "offset_of!(InitializedVendorImage, prefix_suffix) == 0x0078",
-    "size_of::<OpaqueBytes<0xc0>>() == 0xc0",
-    "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
-    "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
-    "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
-    "fn initialized_prefix_tables_are_exact()",
-    "list, DTCM_STATE_BASE",
-    "size_of::<[MacSlotTimingPatchEntry; 11]>(), 0x58",
-    "quanta, 0x0400_0058",
-    "size_of::<PacDurationQuanta>(), 0x0400_0078",
-    "suffix, 0x0400_0078",
-    "TX_DURATION_TIMING_TABLE.get(), 0x0400_0138",
-)
-PHYSICAL = (0x04000000, 0x04000058, 0x04000078, 0x04000138)
-COMPILE_TIME_PHYSICAL_INVENTORY = (
-    "assert!(core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list) == 0x0000);",
-    "assert_type_layout!(MacSlotTimingPatchEntry, 0x08, 4);",
-    "assert!(core::mem::offset_of!(MacSlotTimingPatchEntry, pointer) == 0);",
-    "assert!(core::mem::offset_of!(MacSlotTimingPatchEntry, patch_word) == 0x04);",
-    "assert_type_layout!(MacSlotTimingPatchList, 0x58, 4);",
-    "assert!(core::mem::offset_of!(MacSlotTimingPatchList, entries) == 0);",
-    "assert!(core::mem::size_of::<[MacSlotTimingPatchEntry; 11]>() == 0x58);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list) + core::mem::size_of::<MacSlotTimingPatchList>() == 0x0400_0058);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, pac_duration_quanta) == 0x0058);",
-    "assert_type_layout!(PacDurationQuanta, 0x20, 4);",
-    "assert!(core::mem::offset_of!(PacDurationQuanta, quanta) == 0);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) == 0x0228);",
+    "assert_type_layout!(CompletionCallbackPrefix, 0x38, 4);",
+    "assert!(core::mem::offset_of!(CompletionCallbackPrefix, completion_prefix_suffix) == 0x00);",
+    "assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);",
+    "assert!(core::mem::offset_of!(CompletionCallbackPrefix, p2p_action_offsets) == 0x30);",
+    "assert!(core::mem::size_of::<[SharedU8; 8]>() == 0x08);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) + core::mem::size_of::<CompletionCallbackPrefix>() == 0x0400_0260);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) == 0x0288);",
+    "assert_type_layout!(RingCursorMapTables, 0x50, 4);",
+    "assert!(core::mem::offset_of!(RingCursorMapTables, beacon_mask_words) == 0x00);",
     "assert!(core::mem::size_of::<[SharedU32; 8]>() == 0x20);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, pac_duration_quanta) + core::mem::size_of::<PacDurationQuanta>() == 0x0400_0078);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, prefix_suffix) == 0x0078);",
-    "assert!(core::mem::size_of::<OpaqueBytes<0xc0>>() == 0xc0);",
+    "assert!(core::mem::offset_of!(RingCursorMapTables, mib_defaults_template) == 0x20);",
+    "assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) + core::mem::size_of::<RingCursorMapTables>() == 0x0400_02d8);",
+    "offset_of!(InitializedVendorImage, visible_completion_words) == 0x0260",
+    "offset_of!(InitializedVendorImage, queue_pipe_mappings) == 0x02d8",
+    "initialized_prefix_tables_are_exact",
+)
+PHYSICAL = (0x04000228, 0x04000258, 0x04000260, 0x04000288, 0x040002a8, 0x040002d8)
+COMPILE_TIME_PHYSICAL_INVENTORY = (
+    'assert!(core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) == 0x0228);',
+    'assert_type_layout!(CompletionCallbackPrefix, 0x38, 4);',
+    'assert!(core::mem::offset_of!(CompletionCallbackPrefix, completion_prefix_suffix) == 0x00);',
+    'assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);',
+    'assert!(core::mem::offset_of!(CompletionCallbackPrefix, p2p_action_offsets) == 0x30);',
+    'assert!(core::mem::size_of::<[SharedU8; 8]>() == 0x08);',
+    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) + core::mem::size_of::<CompletionCallbackPrefix>() == 0x0400_0260);',
+)
+
+# The ring-cursor-map asserts are interleaved with the visible_completion_words
+# asserts owned by the adjacent interval, so they form a second contiguous block.
+RING_CURSOR_COMPILE_TIME_PHYSICAL_INVENTORY = (
+    'assert!(core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) == 0x0288);',
+    'assert_type_layout!(RingCursorMapTables, 0x50, 4);',
+    'assert!(core::mem::offset_of!(RingCursorMapTables, beacon_mask_words) == 0x00);',
+    'assert!(core::mem::size_of::<[SharedU32; 8]>() == 0x20);',
+    'assert!(core::mem::offset_of!(RingCursorMapTables, mib_defaults_template) == 0x20);',
+    'assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);',
+    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) + core::mem::size_of::<RingCursorMapTables>() == 0x0400_02d8);',
 )
 FOCUSED_TEST_INVENTORY = (
     'let image = DTCM_STATE_BASE;',
@@ -262,6 +231,7 @@ def check_exact_inventory_regression(source: str) -> None:
         raise SystemExit("checker self-test failed: focused test extraction failed")
     for label, scope, inventory in (
         ("compile-time", compile_scope, COMPILE_TIME_PHYSICAL_INVENTORY),
+        ("ring-cursor compile-time", compile_scope, RING_CURSOR_COMPILE_TIME_PHYSICAL_INVENTORY),
         ("focused-test", test_scope, FOCUSED_TEST_INVENTORY),
     ):
         if not exact_inventory_present(scope, inventory):
@@ -272,20 +242,20 @@ def check_exact_inventory_regression(source: str) -> None:
             if exact_inventory_present(mutated, inventory):
                 raise SystemExit(f"checker self-test failed: deleted {label} mapping was accepted: {item}")
 
-    compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[1])
+    compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[0])
     compile_swap = normalized(compile_scope).replace(
-        compile_item, compile_item.replace("== 0x0058", "== 0x0056"), 1
+        compile_item, compile_item.replace("== 0x0228", "== 0x0226"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[2])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[25])
     test_address_swap = normalized(test_scope).replace(
         test_address_item,
-        swapped_once(test_address_item, "0x0400_0058", "0x0400_0056"),
+        swapped_once(test_address_item, "0x0400_0228", "0x0400_0226"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[15])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[36])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
-        swapped_once(test_extent_item, "0x0400_0078", "0x0400_0076"),
+        swapped_once(test_extent_item, "0x0400_02d8", "0x0400_02d6"),
         1,
     )
 
@@ -300,14 +270,12 @@ def in_range(value: int) -> bool:
     return RANGE[0] <= value < RANGE[1]
 
 
-# Interval-specific: this interval starts AT the DTCM base 0x04000000, so
-# (a) relative-offset evidence is meaningless -- every small integer would
-# look like an offset -- and the relative arm is disabled entirely; (b) the
-# base constant itself appears throughout linker scripts, download paths,
-# and MMIO value tables and is ignored here.
+# Interval-specific: offsets 0x0..0x47 are indistinguishable from arbitrary
+# small integers, so the template's relative-offset evidence arm is disabled
+# entirely (see module docstring).
 def owned_literals(code: str) -> list[int]:
     values = [int(match.group().replace("_", ""), 16) for match in LITERAL.finditer(code)]
-    return [value for value in values if in_range(value) and value != RANGE[0]]
+    return [value for value in values if in_range(value)]
 
 
 
@@ -332,7 +300,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"MacPipeTail", "MacSlotTimingPatchList", "MacSlotTimingPatchEntry", "PacDurationQuanta",
+    views = {"CompletionCallbackPrefix", "RingCursorMapTables",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -361,13 +329,17 @@ def check_alias_tracking_regression() -> None:
     # offsets 0x0..0x137 are indistinguishable from arbitrary small integers,
     # so the relative arm is disabled (see owned_literals). Only family-name
     # aliases and in-range physical literals other than the base are tracked.
+    # NOTE: relative-offset traps are NOT detectable for this interval:
+    # offsets 0x0..0xaf are indistinguishable from arbitrary small integers,
+    # so the relative arm is disabled (see owned_literals). Only family-name
+    # aliases and in-range physical literals are tracked.
     fixtures = (
-        ("type R = MacSlotTimingPatchList; const ROOT: usize = core::mem::size_of::<R>(); const NEXT: usize = ROOT; fn leak(_: R) -> usize { NEXT }", {"R", "ROOT", "NEXT"}, ["leak"]),
-        ("type A = MacSlotTimingPatchList; type B = A; fn leak(_: B) {}", {"A", "B"}, ["leak"]),
-        ("use crate::dtcm::MacSlotTimingPatchList as Hidden; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
-        ("use crate::dtcm::{MacSlotTimingPatchList as H1}; type H2 = H1; const N: usize = core::mem::size_of::<H2>(); fn leak(_: H2) -> usize { N }", {"H1", "H2", "N"}, ["leak"]),
-        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_0058 as *mut u32, 0) } }", set(), ["reset"]),
-        ("const ENTRY: usize = 0x0400_0058; const NEXT: usize = ENTRY; fn leak() -> usize { NEXT }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("type R = CompletionCallbackPrefix; const ROOT: usize = core::mem::size_of::<R>(); const NEXT: usize = ROOT; fn leak(_: R) -> usize { NEXT }", {"R", "ROOT", "NEXT"}, ["leak"]),
+        ("type A = RingCursorMapTables; type B = A; fn leak(_: B) {}", {"A", "B"}, ["leak"]),
+        ("use crate::dtcm::RingCursorMapTables as Hidden; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
+        ("use crate::dtcm::{CompletionCallbackPrefix as H1}; type H2 = H1; const N: usize = core::mem::size_of::<H2>(); fn leak(_: H2) -> usize { N }", {"H1", "H2", "N"}, ["leak"]),
+        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_02a8 as *mut u32, 0) } }", set(), ["reset"]),
+        ("const ENTRY: usize = 0x0400_02a8; const NEXT: usize = ENTRY; fn leak() -> usize { NEXT }", {"ENTRY", "NEXT"}, ["leak"]),
     )
     for fixture, expected_aliases, expected_functions in fixtures:
         views, _ = family_aliases(fixture)
@@ -381,12 +353,13 @@ def check_source() -> None:
     failures = [f"src/dtcm.rs: missing exact inventory: {item}" for item in REQUIRED if normalized(item) not in compact]
     compile_scope = mask_test_module(source)
     focused_test = named_function(source, "initialized_prefix_tables_are_exact")
-    failures.extend(
-        f"src/dtcm.rs: missing exact compile-time physical mapping: {item}"
-        for item in missing_inventory(compile_scope, COMPILE_TIME_PHYSICAL_INVENTORY)
-    )
-    if not exact_inventory_present(compile_scope, COMPILE_TIME_PHYSICAL_INVENTORY):
-        failures.append("src/dtcm.rs: exact contiguous compile-time scheduler tail assertion inventory changed")
+    for inventory in (COMPILE_TIME_PHYSICAL_INVENTORY, RING_CURSOR_COMPILE_TIME_PHYSICAL_INVENTORY):
+        failures.extend(
+            f"src/dtcm.rs: missing exact compile-time physical mapping: {item}"
+            for item in missing_inventory(compile_scope, inventory)
+        )
+        if not exact_inventory_present(compile_scope, inventory):
+            failures.append("src/dtcm.rs: exact contiguous compile-time assertion inventory changed")
     if focused_test is None:
         failures.append("src/dtcm.rs: focused scheduler tails layout test is missing")
     else:
@@ -401,23 +374,24 @@ def check_source() -> None:
         spelling = f"0x{physical >> 16:04x}_{physical & 0xffff:04x}"
         if spelling not in source:
             failures.append(f"src/dtcm.rs: missing physical address/boundary {spelling}")
-    entry_declaration = re.search(r"#\[repr\(C, align\(4\)\)\] struct MacSlotTimingPatchEntry \{[^}]*\}", source)
-    table_declaration = re.search(r"#\[repr\(C, align\(4\)\)\] struct MacSlotTimingPatchList \{[^}]*\}", source)
-    expected_declarations = (
-        "#[repr(C, align(4))] struct MacSlotTimingPatchEntry { pointer: SharedU32, patch_word: SharedU32 }",
-        "#[repr(C, align(4))] struct MacSlotTimingPatchList { entries: [MacSlotTimingPatchEntry; 11] }",
-        "#[repr(C, align(4))] struct PacDurationQuanta { quanta: [SharedU32; 8] }",
+    def canon(text: str) -> str:
+        return normalized(re.sub(r",?\s*\}", "}", text))
+    stripped = re.sub(r"\s*///[^\n]*", "", source)
+    declarations = [
+        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct CompletionCallbackPrefix \{[^}]*\}", stripped),
+        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct RingCursorMapTables \{[^}]*\}", stripped),
+    ]
+    expected_pair = (
+        "#[repr(C, align(4))] struct CompletionCallbackPrefix { completion_prefix_suffix: OpaqueBytes<0x30>, p2p_action_offsets: [SharedU8; 8] }",
+        "#[repr(C, align(4))] struct RingCursorMapTables { beacon_mask_words: [SharedU32; 8], mib_defaults_template: OpaqueBytes<0x30> }",
     )
-    quanta_declaration = re.search(r"#\[repr\(C, align\(4\)\)\] struct PacDurationQuanta \{[^}]*\}", source)
-    if (entry_declaration is None or table_declaration is None or quanta_declaration is None
-            or normalized(entry_declaration.group()) != normalized(expected_declarations[0])
-            or normalized(table_declaration.group()) != normalized(expected_declarations[1])
-            or normalized(quanta_declaration.group()) != normalized(expected_declarations[2])):
-        failures.append("src/dtcm.rs: MacSlotTimingPatchList must be the exact private non-derived inventory")
-    if (source.count("struct MacSlotTimingPatchEntry") != 1
-            or source.count("struct MacSlotTimingPatchList") != 1 or source.count("struct PacDurationQuanta") != 1
-            or "pre_duration_tables" in source):
-        failures.append("src/dtcm.rs: removed opaque split or duplicate prefix tables remain")
+    if (any(d is None for d in declarations)
+            or any(canon(d.group()) != canon(e) for d, e in zip(declarations, expected_pair))):
+        failures.append("src/dtcm.rs: completion/ring-cursor structs must be the exact private non-derived inventory")
+    if (source.count("struct CompletionCallbackPrefix") != 1
+            or source.count("struct RingCursorMapTables") != 1
+            or "pre_completion_callback_words" in source or "pre_ring_cursor_map" in source):
+        failures.append("src/dtcm.rs: removed opaque split or duplicate completion/ring-cursor tables remain")
     for relative, exact in ADJACENT_DECLARATIONS.items():
         if exact not in (ROOT / relative).read_text():
             failures.append(f"{relative}: adjacent checker range changed from {exact}")
@@ -443,12 +417,12 @@ def check_source() -> None:
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b(?!\s*:)", re.I)
     for relative, code in rust.items():
         # start_scheduler_timer (tx.rs) is the retained Rust translation of
-        # vendor timer_start; it reads exactly the guard word 0x0400_0058 that
+        # vendor timer_start; it reads exactly the guard word 0x0400_017c that
         # timer_start itself reads, via the single pinned consumer line below.
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:
-            failures.append(f"{relative}: unsanctioned production function over prefix table storage: {function}")
+            failures.append(f"{relative}: unsanctioned production function over completion-prefix or ring-cursor-map storage: {function}")
         sanctioned_lines = SANCTIONED_CONSUMER_LINES.get(relative, set())
         for line_number, line in enumerate(code.splitlines(), 1):
             if normalized(line) in sanctioned_lines:
@@ -474,9 +448,9 @@ def check_source() -> None:
                 line_number = code.count("\n", 0, match.start()) + 1
                 if normalized(code.splitlines()[line_number - 1]) in sanctioned_lines:
                     continue
-                failures.append(f"{relative}:{line_number}: scheduler tail physical literal {match.group()} is outside reviewed owners")
+                failures.append(f"{relative}:{line_number}: completion/ring-cursor interval physical literal {match.group()} is outside reviewed owners")
     if failures: raise SystemExit("\n".join(failures))
-    print(f"INITIALIZED PREFIX TABLES SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"COMPLETION PREFIX AND RING CURSOR MAP SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -509,9 +483,9 @@ def check_elf(path: Path, dump: bool) -> None:
         print(f"ALLOWED_DECODED_XREFS={dict(sorted(xrefs.items()))!r}")
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
-        raise SystemExit(f"INITIALIZED PREFIX TABLES LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+        raise SystemExit(f"COMPLETION PREFIX AND RING CURSOR MAP LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
     residual_literals, residual_xrefs = literals - ALLOWED_LINKED_LITERALS, xrefs - ALLOWED_DECODED_XREFS
-    print(f"INITIALIZED PREFIX TABLES LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
+    print(f"COMPLETION PREFIX AND RING CURSOR MAP LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
 
 
 def main() -> None:

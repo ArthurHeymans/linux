@@ -32,6 +32,8 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-queue-pipe-mappings-layout.py",
+    # Adjacent-interval owner pinning the shared 0x040002d8 boundary.
+    "tools/check-completion-ring-cursor-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

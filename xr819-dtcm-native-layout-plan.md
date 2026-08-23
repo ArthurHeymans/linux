@@ -6684,3 +6684,64 @@ checks    /tmp/xr819-pas-rate-final-check.log
 manifest  tools/pas-rate-static-tables-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.117 Completion-prefix and ring-cursor-map regions
+
+Two opaque regions between the typed rate tables and `queue_pipe_mappings`
+decode as follows; `[0x04000260, 0x04000288)` (`visible_completion_words`)
+and `[0x040002d8)` onward stay untouched, and `pre_tkip_sbox_tables`
+`[0x040002e4, 0x04000310)` remains opaque (no accessor found).
+
+- `completion_callback_prefix: CompletionCallbackPrefix`
+  `[0x04000228, 0x04000260)`: `p2p_build_action_frame` reads
+  `*(u8 *)(0x04000258 + (action >> 1))` as a frame-write offset
+  (ldrb at PC 0x3656 with DAT_000039f4 = 0x04000258); only indices 0..=3
+  hold meaningful values (04 08 08 12), the rest are initialized zeros.
+  The preceding 48 bytes `[0x04000228, 0x04000258)` have no accessor and
+  stay opaque inside the same record.
+- `ring_cursor_map_tables: RingCursorMapTables`
+  `[0x04000288, 0x040002d8)`: `rx_beacon_update_erp_ht_flags` copies the
+  last seven words to the stack (`fw_memcpy` from offset +4, length 0x1c,
+  PC 0x4472) and tests each word individually (loop bound 7 at PC 0x4498);
+  the first word is never read. `mib_defaults_copy` then copies the
+  following 48 bytes wholesale to SRAM 0x04003a78 during boot
+  (PC 0x84a); they are owned as an opaque template because their semantics
+  live in the destination MIB structure.
+
+Evidence was re-derived from the annotated vendor binary under the flat
+address mapping (address == file offset) with instruction-exact capstone
+disassembly; resolved pool words: DAT_000039f4 = 0x04000258,
+memcpy source = 0x0400028c, mib source = 0x040002a8,
+mib destination = 0x04003a78. No production operation was added or changed;
+initial COPY values are loader-owned and no writer closure is claimed.
+
+`tools/check-completion-ring-cursor-layout.py` owns exactly the two
+disjoint sub-intervals `[0x04000228, 0x04000260)` and
+`[0x04000288, 0x040002d8)`; the gap between them is the already-typed
+`visible_completion_words`. Interval-specific adaptation documented in the
+checker: relative-offset evidence is disabled (offsets 0x0..0xaf are
+indistinguishable from arbitrary small integers). Its linked-literal and
+decoded-xref multisets are pinned empty -- no retained Rust code references
+any address inside either sub-interval. Adjacent checkers pinning shared
+boundaries (0x04000228, 0x04000260, 0x04000288, 0x040002d8) were mutually
+cross-pinned via OWNER_FILES; focused-test inventories of the checkers
+pinning the shared focused test were refreshed for its growth.
+
+Focused default (244 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (245). Complete software-only `tools/check.sh` (270 gate-pass
+lines), the Thumb release build, the exact-parent complete text-symbol/
+codegen comparison, and fresh `build-ota-image.sh` packing pass. The
+exact-parent manifest is byte-identical to the manifests of the previous
+slices
+(`5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6`);
+complete-file ELF identity was used for acceptance, not symbol-only
+identity. TALA relocation and `0x04002984..0x04003050` were not touched.
+No target or hardware test was run.
+
+```text
+ELF       cec5f4beeb89d23467bb84e2cec9ba77922c0fb80fe01ab802054b3e46d1640b
+packed    711c7b9873bdd711d0f3f368e7129f27694622cf0ba5b627a800f7d17147a492
+checks    /tmp/xr819-ccr-final-check.log
+manifest  tools/completion-ring-cursor-codegen-manifest.json
+          5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
+```
