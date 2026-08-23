@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RXR819 Firmware: Rust Ownership and File-Layout Design</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0 auto; max-width: 60rem; padding: 1rem 1.25rem 4rem; line-height: 1.55; }
+  h1 { font-size: 1.5rem; border-bottom: 2px solid currentColor; padding-bottom: .3rem; }
+  h2 { font-size: 1.2rem; margin-top: 2.2rem; border-bottom: 1px solid #8888; padding-bottom: .2rem; }
+  h3 { font-size: 1.02rem; margin-top: 1.4rem; }
+  code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .86em; }
+  pre { background: #00000010; padding: .7em .9em; overflow-x: auto; border-radius: 6px; line-height: 1.45; }
+  @media (prefers-color-scheme: dark) { pre { background: #ffffff14; } }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .92em; }
+  th, td { border: 1px solid #8888; padding: .35em .55em; text-align: left; vertical-align: top; }
+  th { background: #88888818; }
+  .tag { display: inline-block; font-size: .72em; font-weight: 600; padding: .05em .5em; border-radius: 999px; vertical-align: middle; }
+  .done { background: #2e7d3233; } .now { background: #b3690026; } .later { background: #44444422; } .risk { background: #b3001c26; }
+  ul { padding-left: 1.3rem; }
+  li { margin: .15rem 0; }
+  .note { border-left: 3px solid #b36900; padding-left: .8em; margin: 1rem 0; }
+  footer { margin-top: 3rem; font-size: .82em; opacity: .7; border-top: 1px solid #8888; padding-top: .6em; }
+</style>
+</head>
+<body>
+
+<h1>XR819 firmware: a Rust ownership design over the decoded DTCM map</h1>
+<p>Status draft after slices A.105&ndash;A.121 (bookmark <code>xr819-open-firmware</code>, ELF
+<code>cec5f4be&hellip;</code>). Scope: turn the completed reverse-engineered DTCM layout into a
+deliberate Rust firmware design that keeps global state in DTCM only where reentrancy forces it,
+and moves everything else onto owned, stack-based data.</p>
+
+<h2 id="inventory">1. Do we have everything we need?</h2>
+<table>
+<tr><th>Asset</th><th>Status</th><th>Evidence</th></tr>
+<tr><td>Initialized-image layout <code>[0x04000000,0x04002078)</code></td><td><span class="tag done">complete</span></td>
+    <td>Every byte is either typed (<code>InitializedVendorImage</code> fields) or documented opaque with accessor status. Pointer audit A.121 found zero unaccounted pool words.</td></tr>
+<tr><td>Typed record shapes</td><td><span class="tag done">complete</span></td>
+    <td>43+ private non-derived structs with compile-time offsets/sizes and focused address tests.</td></tr>
+<tr><td>Drift gates</td><td><span class="tag done">276 green</span></td>
+    <td>Per-interval checkers: source inventories, linked-literal and decoded-xref manifests pinned empty or reviewed.</td></tr>
+<tr><td>Accessor semantics for live regions</td><td><span class="tag done">majority</span></td>
+    <td>Register-write lists, rate/policy tables, TLV dispatch, pipe tails, aggregate slots: readers identified instruction-exactly.</td></tr>
+<tr><td>Writer closure</td><td><span class="tag risk">not proven</span></td>
+    <td>IRQ/FIQ, HIF, and computed indirect writes remain possible everywhere. Every appendix states this; designs must not rely on immutability.</td></tr>
+<tr><td>Runtime workspace <code>[0x04002078,0x04008000)</code></td><td><span class="tag now">partial</span></td>
+    <td>Host contexts, internal TX contexts (pool at linker symbol), VIF records (stride 0x3b0 &times;3) are addressed by existing code; full semantic decode is not finished and is only needed where the port replaces vendor behavior.</td></tr>
+<tr><td>Vendor debug/exception machinery</td><td><span class="tag later">optional</span></td>
+    <td>Banner/help-text UART blobs, exception-reason names, console strings: fully documented in struct docs (A.119/A.120) as porting references. Not ported.</td></tr>
+</table>
+
+<p><strong>Verdict:</strong> yes for building the ownership and module design; no for claiming
+writer closure. The design below therefore treats DTCM cells as shared mutable hardware-facing
+state with explicit access disciplines, never as immutable constants.</p>
+
+<h2 id="principles">2. Design principles</h2>
+<ol>
+<li><strong>Stack first.</strong> Function-local values own computation results. DTCM holds only
+(a) loader-COPY images, (b) state reachable from IRQ/FIQ/HIF reentrant entry points,
+(c) DMA/hardware-visible buffers.</li>
+<li><strong>One root, one gatekeeper.</strong> All DTCM addressing lives in <code>dtcm.rs</code>.
+No other module spells an address constant or builds a raw pointer. This is already the de-facto
+rule; make it enforced by a lint-style checker (extend the existing drift-gate tooling).</li>
+<li><strong>Checked handles, not pointers.</strong> <code>DtcmAddress</code> stays the only
+address type. Field-level access goes through typed cell handles (section 4) rather than
+<code>*mut</code> escapes; every existing <code>*mut</code> accessor becomes private to
+<code>dtcm.rs</code>.</li>
+<li><strong>Quarantine until proven.</strong> <code>SharedScalar&lt;T&gt;</code>/<code>OpaqueBytes&lt;N&gt;</code>
+(MaybeUninit, no safe reads) remain the representation for anything without a decoded reader.
+Promotion to a real typed field requires instruction-exact evidence, as practiced since A.105.</li>
+<li><strong>Reentrancy is stated, not implied.</strong> Each piece of shared state carries an
+access discipline tag: <code>irq-local</code>, <code>hif-task</code>, <code>msg-passing</code>,
+or <code>hw-table</code>. Mixed access requires a critical section or ownership handoff.</li>
+</ol>
+
+<h2 id="ownership">3. Ownership model</h2>
+
+<h3>3.1 Execution contexts</h3>
+<table>
+<tr><th>Context</th><th>Entry points</th><th>Owns exclusively</th></tr>
+<tr><td><strong>HIF task</strong> (main loop)</td><td>host message pump</td><td>message parse scratch, configuration staging, scan requests</td></tr>
+<tr><td><strong>TX path</strong></td><td>called from HIF task; completion from IRQ</td><td>per-packet descriptor build (stack), queue cursors (shared, see 3.3)</td></tr>
+<tr><td><strong>IRQ / FIQ</strong></td><td>vectors</td><td>isr-local scratch only; communicates via event words</td></tr>
+<tr><td><strong>Debug console</strong></td><td>UART polling during boot/diag</td><td>its own buffers; never touches TX/PHY state</td></tr>
+</table>
+
+<h3>3.2 Three ownership classes for DTCM cells</h3>
+<pre>// Class HW-TABLE: loader-initialized, runtime read-only in practice.
+// Typed, const-accessible, no interior mutability exposed.
+static COPY_IMAGE: InitializedVendorImage;          // inside DTCM_STATE
+
+// Class SINGLE-OWNER: one execution context owns it; others post events.
+struct TxQueueState { /* cursors, retry counters */ }
+
+// Class MSG-PASSING: producer fills a slot, hands over an index token;
+// consumer invalidates it. No lock needed if indices are per-direction.
+struct PacketSlot { len: u16, flags: u16 }           // packet_ram arena</pre>
+<p>Rules:</p>
+<ul>
+<li>A context may hold <code>&amp;</code> of any cell but <code>&amp;mut</code> only under its
+discipline tag (single owner, or inside a critical section).</li>
+<li>Cross-context handoff uses index tokens (<code>SlotId(u16)</code>) into fixed arenas
+(<code>packet_ram</code>, internal context pool). Tokens are <code>Copy</code>; the arena owns
+the storage. This mirrors what the vendor already does (free-list head + 3-record pool) and
+maps cleanly onto Rust ownership without unsafe sharing beyond the arena internals.</li>
+<li>IRQs never spin. They set event bits (existing pattern: bit-set in status words) and return;
+the HIF task drains them.</li>
+</ul>
+
+<h3>3.3 Type-level toolkit (all inside <code>dtcm.rs</code>)</h3>
+<pre>/// Checked address (exists today).
+pub struct DtcmAddress(u32);
+
+/// NEW: volatile cell handle replacing raw *mut escapes.
+#[repr(transparent)]
+pub struct Cell<'a, T> { addr: DtcmAddress, _lt: &'a Disjointness, _t: PhantomData<*mut T> }
+impl<T> Cell<'_, T> {
+    pub fn read_volatile(&self) -> T;
+    pub fn write_volatile(&self, v: T);
+}
+
+/// NEW: proof token that interrupts are masked (PRIMASK set) on single core.
+pub struct CriticalSection<'a> { _not_send: PhantomData<&'a ()> }
+
+/// NEW: arena slot token for packet_ram / context pool.
+#[derive(Copy, Clone)] pub struct SlotId(u16);</pre>
+<p>The lifetime on <code>Cell</code> is not about DTCM persistence (it is <code>'static</code>)
+but about <em>lease discipline</em>: a <code>&amp;mut</code>-style lease is borrowed from a
+context token and NLL ends it at scope exit, making stale writes a borrow error instead of a
+review finding.</p>
+
+<h2 id="layout">4. File layout (target state)</h2>
+<p>Current tree is sound but <code>tx.rs</code> (9.4k lines) and <code>dtcm.rs</code> (4.6k)
+have outgrown single files. Proposed split; arrows show allowed dependency direction
+(higher depends on lower).</p>
+<pre>src/
+├── bin/hif-startup.rs        entry, reset, linker sections      (unchanged)
+├── lib.rs                    module wiring only
+│
+├── arch/                     NEW: CPU mechanics, zero XR819 knowledge
+│   ├── mod.rs                   critical_section(), PRIMASK helpers
+│   └── volatile.rs              Cell<T>, VolatileRef leases
+│
+├── dtcm/                     SPLIT of dtcm.rs (addressing authority)
+│   ├── mod.rs                   re-exports; the only place raw *mut lives
+│   ├── layout.rs                DtcmLayout, InitializedVendorImage, sizes
+│   ├── quarantine.rs            SharedScalar, OpaqueBytes, opaque_family!
+│   ├── copy_tables.rs           HW-TABLE accessors (rate, policy, lists, tlv)
+│   ├── contexts.rs              internal context pool, free-list, VIF records
+│   └── debug_tables.rs          banner/help/reason/console strings (unported)
+│
+├── platform.rs               MMIO, clocks, pin mux (unchanged scope)
+├── download.rs               loader COPY application             (unchanged)
+├── packet_ram.rs             arena + SlotId tokens               (grows tokens)
+├── exception.rs              Rust-side exception quarantine      (unchanged)
+│
+├── hif.rs                    HIF task loop, message dispatch
+├── wsm.rs / configuration.rs config staging (HIF-owned, stack-built)
+├── join.rs / scan.rs         connection lifecycle
+├── vif.rs                    per-interface logic (VIF records via dtcm::contexts)
+│
+├── mac.rs                    MAC plumbing
+├── tx/
+│   ├── mod.rs                orchestration (shrinks tx.rs)
+│   ├── build.rs              descriptor construction (pure, stack-owned)
+│   ├── schedule.rs           queue/cursor state machine (SINGLE-OWNER cells)
+│   └── complete.rs           IRQ-driven completion
+├── phy.rs                    PHY sequences (register-list appliers)
+├── radio.rs                  radio control
+├── crypto.rs                 AES/TKIP (tkip_sbox via copy_tables views)
+└── rx_model.rs / rate_policy.rs / host_tx_*   unchanged scopes</pre>
+<p>Dependency rule, mechanically checked: only <code>dtcm/*</code> may contain
+<code>link_section</code>, linker-symbol externs, <code>addr_of_mut!</code> into DTCM, or
+<code>DtcmAddress::cast_mut</code>. The existing checker family is the enforcement vehicle:
+one more script walks <code>src/</code> and fails on forbidden forms outside
+<code>dtcm/</code>.</p>
+
+<h2 id="migration">5. Migration plan</h2>
+<table>
+<tr><th>Phase</th><th>Content</th><th>Exit criterion</th></tr>
+<tr><td><span class="tag done">P0 done</span></td>
+<td>Exact layout, typed records, per-interval drift gates, pointer audit.</td>
+<td>A.121; ELF identity held throughout.</td></tr>
+<tr><td><span class="tag now">P1</span></td>
+<td>Pointer confinement: move all <code>*mut</code> accessors behind
+<code>dtcm::contexts</code>/<code>copy_tables</code>; add the forbidden-forms walker to
+<code>check.sh</code>.</td><td>No <code>cast_mut</code>/<code>addr_of_mut!</code> outside
+<code>dtcm/</code>; all suites green.</td></tr>
+<tr><td><span class="tag now">P2</span></td>
+<td>Introduce <code>arch::volatile::Cell</code> and <code>CriticalSection</code>; convert
+callers mechanically (read/write pairs become cell calls). No behavior change.</td>
+<td>ELF still identical; host tests deterministic.</td></tr>
+<tr><td><span class="tag later">P3</span></td>
+<td>Stack-first refactor of <code>tx/</code>: descriptor builders become pure functions
+returning values; only final publication touches cells. Split <code>tx.rs</code>.</td>
+<td>Descriptor build covered by host unit tests on plain structs.</td></tr>
+<tr><td><span class="tag later">P4</span></td>
+<td>Optionally port vendor debug console and WSM exception indication using the documented
+tables (A.119/A.120 docs are the reference).</td><td>New modules, no DTCM growth.</td></tr>
+</table>
+
+<h2 id="risks">6. Open risks</h2>
+<ul>
+<li><strong>Writer closure.</strong> Any P2/P3 conversion assumes the ported reader list is
+complete. An unknown IRQ writer to a converted field would see volatile accesses either way,
+so risk is bounded, but ordering assumptions could differ. Mitigation: keep drift gates running
+against the parent binary each slice.</li>
+<li><strong>Init order.</strong> <code>MaybeUninit</code> means first-touch correctness rests on
+loader COPY plus explicit zeroing. P1 must preserve the existing zeroing range exactly.</li>
+<li><strong>Host-test fidelity.</strong> Process-local backing (<code>zeroed()</code> off-target)
+must keep mirroring target behavior; the existing dual-path pattern stays.</li>
+<li><strong>Single-core assumption.</strong> <code>CriticalSection</code> via PRIMASK is valid
+only while FIQ masking semantics match the vendor's (FIQ is not masked by PRIMASK on ARM9);
+verify against vendor entry stubs before relying on it for FIQ-shared cells.</li>
+</ul>
+
+<footer>Prepared from the A.105&ndash;A.121 decode record in
+<code>xr819-dtcm-native-layout-plan.md</code>. Companion artifacts:
+<code>tools/check-*.py</code> drift gates, appendices A.105&ndash;A.121, hand-off note
+<code>.local/xr819-next-session-prompt.md</code>.</footer>
+</body>
+</html>
