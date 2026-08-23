@@ -70,6 +70,7 @@ python3 tools/check-initialized-tlv-handler-table-layout.py
 python3 tools/check-initialized-prefix-tables-layout.py
 python3 tools/check-pas-rate-static-tables-layout.py
 python3 tools/check-completion-ring-cursor-layout.py
+python3 tools/check-vendor-debug-tables-layout.py
 python3 tools/check-initialized-prefix-tables-layout.py
 python3 tools/check-initialized-register-write-lists-layout.py
 python3 tools/check-initialized-rf-scale-tables-layout.py
@@ -170,6 +171,7 @@ python3 tools/check-initialized-tlv-handler-table-layout.py "$ELF"
 python3 tools/check-initialized-prefix-tables-layout.py "$ELF"
 python3 tools/check-pas-rate-static-tables-layout.py "$ELF"
 python3 tools/check-completion-ring-cursor-layout.py "$ELF"
+python3 tools/check-vendor-debug-tables-layout.py "$ELF"
 python3 tools/check-initialized-prefix-tables-layout.py "$ELF"
 python3 tools/check-initialized-register-write-lists-layout.py "$ELF"
 python3 tools/check-initialized-rf-scale-tables-layout.py "$ELF"
@@ -707,6 +709,15 @@ if [[ -n "${XR819_REGISTER_WRITE_LISTS_PARENT_ELF:-}" ]]; then
     "$XR819_REGISTER_WRITE_LISTS_PARENT_ELF" "$ELF"
 else
   echo "== initialized-register-write-lists codegen gate skipped: set XR819_REGISTER_WRITE_LISTS_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
+fi
+
+if [[ -n "${XR819_VENDOR_DEBUG_TABLES_PARENT_ELF:-}" ]]; then
+  echo "== supplemental vendor-debug-tables exact-parent text-symbol gate =="
+  python3 tools/check-hot-codegen.py \
+    --manifest tools/vendor-debug-tables-codegen-manifest.json \
+    "$XR819_VENDOR_DEBUG_TABLES_PARENT_ELF" "$ELF"
+else
+  echo "== vendor-debug-tables codegen gate skipped: set XR819_VENDOR_DEBUG_TABLES_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
 fi
 
 if [[ -n "${XR819_COMPLETION_RING_CURSOR_PARENT_ELF:-}" ]]; then

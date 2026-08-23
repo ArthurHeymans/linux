@@ -6792,3 +6792,52 @@ pass. Complete-file ELF identity was used for acceptance
 (`cec5f4be...`, packed `711c7b98...`); TALA relocation and
 `0x04002984..0x04003050` were not touched. No target or hardware test was
 run.
+
+### A.119 Vendor debug/exception tables
+
+The opaque `pre_phy_gain_register_write_lists: OpaqueBytes<0x182>` at
+`[0x040009de, 0x04000b60)` decodes into three vendor boot/diagnostic
+tables, none of which is ported yet -- the Rust image has its own console
+path (`exception.rs` quarantine) and never reads these bytes, so every
+struct doc comment documents the vendor behavior as a porting reference
+and states the not-yet-ported status explicitly:
+
+- `vendor_debug_encoded_banner: VendorDebugEncodedBanner`
+  `[0x040009de, 0x04000b28)` (align 2): vendor `dbg_print_banner`
+  (PC 0x16012) enables the console state byte at 0x0400973c+0x14, polls
+  the UART status word at MMIO 0x9c500000 for bit 19 (TX ready), then
+  sends this table byte-by-byte to TX register 0x9c50008 -- indices
+  1..=0x149 over the base (loop bound 0x14a at PC 0x1602a); index 0 is
+  skipped. Content is vendor-encoded, not ASCII.
+- `exception_reason_names: ExceptionReasonNames { names: [SharedU32; 5] }`
+  `[0x04000b28, 0x04000b3c)`: read by vendor `exc_print_dump`
+  (PC 0x161e8) as `*(u32 *)(base + reason * 4)` for reason < 5, printing
+  "Exception Reason: %s"; reason 4 additionally reads assert file/line
+  payload fields. The pointers target vendor-.text strings UNDEF_INSTR,
+  PREFETCH_ABORT, DATA_ABORT, UNKNOWN_ERROR, ASSERT.
+- `hw_timer_debug_tables: HwTimerDebugTables`
+  `{divisor_table: OpaqueBytes<0x1c>, channel_config_words:
+  [SharedU32; 2]}` `[0x04000b3c, 0x04000b60)`: a boot timer routine
+  (PC 0x5794) reads halfwords at 0xb3e + idx * 4 as __udivsi3 divisors,
+  and `phy_set_channel_full` (PC 0x167ec) performs `ldm r0, {r0, r1}`
+  over `channel_config_words`, conditionally substituting an alternate
+  second word from a nearby constant based on a band latch.
+
+No production operation was added or changed; initial COPY values are
+loader-owned and no writer closure is claimed.
+
+`tools/check-vendor-debug-tables-layout.py` owns exactly
+[0x040009de, 0x04000b60) with the standard interval adaptations
+(relative-offset evidence disabled; banner struct align(2) because the
+base is only halfword-aligned). Its linked-literal and decoded-xref
+multisets are pinned empty -- no retained Rust code references any address
+inside the interval. The phy-gain-register-write-lists checker pins the
+shared 0x04000b60 boundary via mutual OWNER_FILES entries.
+
+Focused default (245 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (246). Complete software-only `tools/check.sh` (273 gate-pass
+lines), the Thumb release build, and fresh `build-ota-image.sh` packing
+pass. Complete-file ELF identity was used for acceptance
+(`cec5f4be...`, packed `711c7b98...`); TALA relocation and
+`0x04002984..0x04003050` were not touched. No target or hardware test was
+run.

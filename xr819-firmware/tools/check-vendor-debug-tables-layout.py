@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-Adversarial drift gate for the completion-prefix and ring-cursor-map
-regions at [0x04000228, 0x040002d8) (interval A.117).
+Adversarial drift gate for the vendor debug/exception tables at
+[0x040009de, 0x04000b60) (interval A.119).
 
 Owned interval:
-  [0x04000228, 0x04000260)  CompletionCallbackPrefix
-      completion_prefix_suffix OpaqueBytes<0x30> [0x228,0x258) (no accessor)
-      p2p_action_offsets       [SharedU8; 8]     [0x258,0x260)
-  [0x04000288, 0x040002d8)  RingCursorMapTables
-      beacon_mask_words        [SharedU32; 8]    [0x288,0x2a8)
-      mib_defaults_template    OpaqueBytes<0x30> [0x2a8,0x2d8)
+  [0x040009de, 0x04000b28)  VendorDebugEncodedBanner
+      encoded_banner         OpaqueBytes<0x14a> (UART banner, dbg_print_banner)
+  [0x04000b28, 0x04000b3c)  ExceptionReasonNames
+      names                  [SharedU32; 5]    (exc_print_dump reason < 5)
+  [0x04000b3c, 0x04000b60)  HwTimerDebugTables
+      divisor_table          OpaqueBytes<0x1c> (halfword at +2 per 4B group)
+      channel_config_words   [SharedU32; 2]    (phy_set_channel_full ldm)
 
-Interval-specific adaptation: offsets 0x0..0xaf are indistinguishable from
-arbitrary small integers, so the template's relative-offset evidence arm is
-disabled (see owned_literals). Coverage comes from exact declarations,
-compile-time/focused-test contiguity, family-alias tracking, and the linked
-gate instead.
+Interval-specific adaptations: offsets are indistinguishable from arbitrary
+small integers so the template's relative-offset evidence arm is disabled;
+the banner base 0x9de is only 2-aligned so the banner struct uses align(2).
+None of this machinery is ported yet -- no Rust consumer exists, so the
+linked-literal and decoded-xref multisets start pinned empty.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RANGE = (0x04000228, 0x040002d8)
+# Three owned sub-intervals: banner, exception-reason names, timer/channel.
+RANGE = (0x040009de, 0x04000b28, 0x04000b28, 0x04000b3c, 0x04000b3c, 0x04000b60)
 OFFSETS = range(0x0, 0x48)
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -40,16 +42,9 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
-    "tools/check-completion-ring-cursor-layout.py",
-    # Adjacent-interval owners pinning the shared boundaries 0x04000228,
-    # 0x04000260 and 0x04000288 in their range constants.
-    "tools/check-initialized-completion-words-layout.py",
-    "tools/check-initialized-rate-policies-layout.py",
-    # Adjacent-interval owner pinning the shared 0x040002d8 boundary.
-    "tools/check-queue-pipe-mappings-layout.py",
-    # Adjacent-region owner whose PHYSICAL constants spell 0x04000b28,
-    # 0x04000b3c and 0x04000b58.
     "tools/check-vendor-debug-tables-layout.py",
+    # Adjacent-interval owner pinning the shared 0x04000b60 boundary.
+    "tools/check-phy-gain-register-write-lists-layout.py",
 }
 ADJACENT_DECLARATIONS = {
     "tools/check-pas-rate-static-tables-layout.py": "(0x0400014C, 0x04000194)",
@@ -61,97 +56,66 @@ SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
 # appearance of an in-interval literal or decoded xref fails the gate.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
-STRUCT = '#[repr(C, align(4))] struct CompletionCallbackPrefix { completion_prefix_suffix: OpaqueBytes<0x30>, p2p_action_offsets: [SharedU8; 8] } #[repr(C, align(4))] struct RingCursorMapTables { beacon_mask_words: [SharedU32; 8], mib_defaults_template: OpaqueBytes<0x30> }'
+STRUCT = '#[repr(C, align(2))] struct VendorDebugEncodedBanner { encoded_banner: OpaqueBytes<0x14a> } #[repr(C, align(4))] struct ExceptionReasonNames { names: [SharedU32; 5] } #[repr(C, align(4))] struct HwTimerDebugTables { divisor_table: OpaqueBytes<0x1c>, channel_config_words: [SharedU32; 2] }'
 REQUIRED = (
-    "completion_callback_prefix: CompletionCallbackPrefix",
-    "ring_cursor_map_tables: RingCursorMapTables",
-    "visible_completion_words: [SharedU32; 10]",
-    "queue_pipe_mappings: QueuePipeMappings",
+    "vendor_debug_encoded_banner: VendorDebugEncodedBanner",
+    "exception_reason_names: ExceptionReasonNames",
+    "hw_timer_debug_tables: HwTimerDebugTables",
     "assert_type_layout!(SharedU32, 0x04, 4)",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) == 0x0228);",
-    "assert_type_layout!(CompletionCallbackPrefix, 0x38, 4);",
-    "assert!(core::mem::offset_of!(CompletionCallbackPrefix, completion_prefix_suffix) == 0x00);",
-    "assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);",
-    "assert!(core::mem::offset_of!(CompletionCallbackPrefix, p2p_action_offsets) == 0x30);",
-    "assert!(core::mem::size_of::<[SharedU8; 8]>() == 0x08);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) + core::mem::size_of::<CompletionCallbackPrefix>() == 0x0400_0260);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) == 0x0288);",
-    "assert_type_layout!(RingCursorMapTables, 0x50, 4);",
-    "assert!(core::mem::offset_of!(RingCursorMapTables, beacon_mask_words) == 0x00);",
-    "assert!(core::mem::size_of::<[SharedU32; 8]>() == 0x20);",
-    "assert!(core::mem::offset_of!(RingCursorMapTables, mib_defaults_template) == 0x20);",
-    "assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) + core::mem::size_of::<RingCursorMapTables>() == 0x0400_02d8);",
-    "offset_of!(InitializedVendorImage, visible_completion_words) == 0x0260",
-    "offset_of!(InitializedVendorImage, queue_pipe_mappings) == 0x02d8",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, vendor_debug_encoded_banner) == 0x09de);",
+    "assert_type_layout!(VendorDebugEncodedBanner, 0x14a, 2);",
+    "assert!(core::mem::offset_of!(VendorDebugEncodedBanner, encoded_banner) == 0);",
+    "assert!(core::mem::size_of::<OpaqueBytes<0x14a>>() == 0x14a);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0b28);",
+    "assert_type_layout!(ExceptionReasonNames, 0x14, 4);",
+    "assert!(core::mem::offset_of!(ExceptionReasonNames, names) == 0);",
+    "assert!(core::mem::size_of::<[SharedU32; 5]>() == 0x14);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0400_0b28);",
+    "assert!(core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) == 0x0b3c);",
+    "assert_type_layout!(HwTimerDebugTables, 0x24, 4);",
+    "assert!(core::mem::offset_of!(HwTimerDebugTables, divisor_table) == 0x00);",
+    "assert!(core::mem::size_of::<OpaqueBytes<0x1c>>() == 0x1c);",
+    "assert!(core::mem::offset_of!(HwTimerDebugTables, channel_config_words) == 0x1c);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) + core::mem::size_of::<HwTimerDebugTables>() == 0x0400_0b60);",
+    "offset_of!(InitializedVendorImage, phy_gain_register_write_lists) == 0x0b60",
     "initialized_prefix_tables_are_exact",
 )
-PHYSICAL = (0x04000228, 0x04000258, 0x04000260, 0x04000288, 0x040002a8, 0x040002d8)
+PHYSICAL = (0x040009de, 0x04000b28, 0x04000b3c, 0x04000b58, 0x04000b60)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    'assert!(core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) == 0x0228);',
-    'assert_type_layout!(CompletionCallbackPrefix, 0x38, 4);',
-    'assert!(core::mem::offset_of!(CompletionCallbackPrefix, completion_prefix_suffix) == 0x00);',
-    'assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);',
-    'assert!(core::mem::offset_of!(CompletionCallbackPrefix, p2p_action_offsets) == 0x30);',
-    'assert!(core::mem::size_of::<[SharedU8; 8]>() == 0x08);',
-    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix) + core::mem::size_of::<CompletionCallbackPrefix>() == 0x0400_0260);',
+    'assert!(core::mem::offset_of!(InitializedVendorImage, vendor_debug_encoded_banner) == 0x09de);',
+    'assert_type_layout!(VendorDebugEncodedBanner, 0x14a, 2);',
+    'assert!(core::mem::offset_of!(VendorDebugEncodedBanner, encoded_banner) == 0);',
+    'assert!(core::mem::size_of::<OpaqueBytes<0x14a>>() == 0x14a);',
+    'assert!(core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0b28);',
+    'assert_type_layout!(ExceptionReasonNames, 0x14, 4);',
+    'assert!(core::mem::offset_of!(ExceptionReasonNames, names) == 0);',
+    'assert!(core::mem::size_of::<[SharedU32; 5]>() == 0x14);',
+    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, exception_reason_names) == 0x0400_0b28);',
+    'assert!(core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) == 0x0b3c);',
+    'assert_type_layout!(HwTimerDebugTables, 0x24, 4);',
+    'assert!(core::mem::offset_of!(HwTimerDebugTables, divisor_table) == 0x00);',
+    'assert!(core::mem::size_of::<OpaqueBytes<0x1c>>() == 0x1c);',
+    'assert!(core::mem::offset_of!(HwTimerDebugTables, channel_config_words) == 0x1c);',
+    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, hw_timer_debug_tables) + core::mem::size_of::<HwTimerDebugTables>() == 0x0400_0b60);',
 )
 
 # The ring-cursor-map asserts are interleaved with the visible_completion_words
 # asserts owned by the adjacent interval, so they form a second contiguous block.
-RING_CURSOR_COMPILE_TIME_PHYSICAL_INVENTORY = (
-    'assert!(core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) == 0x0288);',
-    'assert_type_layout!(RingCursorMapTables, 0x50, 4);',
-    'assert!(core::mem::offset_of!(RingCursorMapTables, beacon_mask_words) == 0x00);',
-    'assert!(core::mem::size_of::<[SharedU32; 8]>() == 0x20);',
-    'assert!(core::mem::offset_of!(RingCursorMapTables, mib_defaults_template) == 0x20);',
-    'assert!(core::mem::size_of::<OpaqueBytes<0x30>>() == 0x30);',
-    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables) + core::mem::size_of::<RingCursorMapTables>() == 0x0400_02d8);',
-)
 FOCUSED_TEST_INVENTORY = (
     'let image = DTCM_STATE_BASE;',
-    'let list = image + core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list);',
-    'let quanta = image + core::mem::offset_of!(InitializedVendorImage, pac_duration_quanta);',
-    'let suffix = image + core::mem::offset_of!(InitializedVendorImage, prefix_suffix);',
-    'assert_eq!(list, DTCM_STATE_BASE);',
-    'assert_eq!(core::mem::size_of::<MacSlotTimingPatchEntry>(), 0x08);',
-    'assert_eq!([core::mem::offset_of!(MacSlotTimingPatchEntry, pointer), core::mem::offset_of!(MacSlotTimingPatchEntry, patch_word)], [0x00, 0x04]);',
-    'assert_eq!(core::mem::size_of::<MacSlotTimingPatchList>(), 0x58);',
-    'assert_eq!(core::mem::size_of::<[MacSlotTimingPatchEntry; 11]>(), 0x58);',
-    'assert_eq!(list + core::mem::size_of::<MacSlotTimingPatchList>(), 0x0400_0058);',
-    'assert_eq!(quanta, 0x0400_0058);',
-    'assert_eq!(core::mem::size_of::<PacDurationQuanta>(), 0x20);',
-    'assert_eq!(quanta + core::mem::size_of::<PacDurationQuanta>(), 0x0400_0078);',
-    'assert_eq!(suffix, 0x0400_0078);',
-    'assert_eq!(core::mem::size_of::<OpaqueBytes<0xc0>>(), 0xc0);',
-    'assert_eq!(suffix + core::mem::size_of::<OpaqueBytes<0xc0>>(), 0x0400_0138);',
-    'assert_eq!(TX_DURATION_TIMING_TABLE.get(), 0x0400_0138);',
-    'let pas_tables = image + core::mem::offset_of!(InitializedVendorImage, pas_rate_static_tables);',
-    'assert_eq!(pas_tables, 0x0400_014c);',
-    'assert_eq!(core::mem::size_of::<PasRateStaticTables>(), 0x48);',
-    'assert_eq!([core::mem::offset_of!(PasRateStaticTables, mcs_fallback_rates), core::mem::offset_of!(PasRateStaticTables, pas_fallback_suffix), core::mem::offset_of!(PasRateStaticTables, ofdm_airtime_durations), core::mem::offset_of!(PasRateStaticTables, rate_group_records)], [0x00, 0x08, 0x10, 0x30]);',
-    'assert_eq!(pas_tables + core::mem::size_of::<[SharedU8; 8]>(), 0x0400_0154);',
-    'assert_eq!(pas_tables + core::mem::offset_of!(PasRateStaticTables, ofdm_airtime_durations), 0x0400_015c);',
-    'assert_eq!(pas_tables + core::mem::offset_of!(PasRateStaticTables, rate_group_records), 0x0400_017c);',
-    'assert_eq!(pas_tables + core::mem::size_of::<PasRateStaticTables>(), 0x0400_0194);',
-    'let ccb = image + core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix);',
-    'assert_eq!(ccb, 0x0400_0228);',
-    'assert_eq!(core::mem::size_of::<CompletionCallbackPrefix>(), 0x38);',
-    'assert_eq!([core::mem::offset_of!(CompletionCallbackPrefix, completion_prefix_suffix), core::mem::offset_of!(CompletionCallbackPrefix, p2p_action_offsets)], [0x00, 0x30]);',
-    'assert_eq!(ccb + core::mem::size_of::<OpaqueBytes<0x30>>(), 0x0400_0258);',
-    'assert_eq!(ccb + core::mem::size_of::<CompletionCallbackPrefix>(), 0x0400_0260);',
-    'let rcm = image + core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables);',
-    'assert_eq!(rcm, 0x0400_0288);',
-    'assert_eq!(core::mem::size_of::<RingCursorMapTables>(), 0x50);',
-    'assert_eq!([core::mem::offset_of!(RingCursorMapTables, beacon_mask_words), core::mem::offset_of!(RingCursorMapTables, mib_defaults_template)], [0x00, 0x20]);',
-    'assert_eq!(rcm + core::mem::size_of::<[SharedU32; 8]>(), 0x0400_02a8);',
-    'assert_eq!(rcm + core::mem::size_of::<RingCursorMapTables>(), 0x0400_02d8);',
+    'let banner = image + core::mem::offset_of!(InitializedVendorImage, vendor_debug_encoded_banner);',
+    'assert_eq!(banner, 0x0400_09de);',
+    'assert_eq!(core::mem::size_of::<VendorDebugEncodedBanner>(), 0x14a);',
+    'let names = banner + core::mem::size_of::<VendorDebugEncodedBanner>();',
+    'assert_eq!(names, 0x0400_0b28);',
+    'assert_eq!(core::mem::size_of::<ExceptionReasonNames>(), 0x14);',
+    'assert_eq!(names + core::mem::size_of::<ExceptionReasonNames>(), 0x0400_0b3c);',
+    'let tables = names + core::mem::size_of::<ExceptionReasonNames>();',
+    'assert_eq!(tables, 0x0400_0b3c);',
+    'assert_eq!(tables + core::mem::offset_of!(HwTimerDebugTables, channel_config_words), 0x0400_0b58);',
+    'assert_eq!([core::mem::offset_of!(HwTimerDebugTables, divisor_table), core::mem::offset_of!(HwTimerDebugTables, channel_config_words)], [0x00, 0x1c]);',
+    'assert_eq!(tables + core::mem::size_of::<HwTimerDebugTables>(), 0x0400_0b60);',
     'assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078);',
-    'assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4);',
-    'assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE);',
-    'assert_eq!(core::mem::align_of::<DtcmLayout>(), 4);',
-    'assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE);',
-    'assert_eq!(core::mem::align_of::<SharedDtcmState>(), 4);',
 )
 
 
@@ -229,12 +193,11 @@ def swapped_once(source: str, left: str, right: str) -> str:
 
 def check_exact_inventory_regression(source: str) -> None:
     compile_scope = mask_test_module(source)
-    test_scope = named_function(source, "initialized_prefix_tables_are_exact")
+    test_scope = named_function(source, "vendor_debug_tables_are_exact")
     if test_scope is None:
         raise SystemExit("checker self-test failed: focused test extraction failed")
     for label, scope, inventory in (
         ("compile-time", compile_scope, COMPILE_TIME_PHYSICAL_INVENTORY),
-        ("ring-cursor compile-time", compile_scope, RING_CURSOR_COMPILE_TIME_PHYSICAL_INVENTORY),
         ("focused-test", test_scope, FOCUSED_TEST_INVENTORY),
     ):
         if not exact_inventory_present(scope, inventory):
@@ -247,18 +210,18 @@ def check_exact_inventory_regression(source: str) -> None:
 
     compile_item = normalized(COMPILE_TIME_PHYSICAL_INVENTORY[0])
     compile_swap = normalized(compile_scope).replace(
-        compile_item, compile_item.replace("== 0x0228", "== 0x0226"), 1
+        compile_item, compile_item.replace("== 0x09de", "== 0x09dc"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[25])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[1])
     test_address_swap = normalized(test_scope).replace(
         test_address_item,
-        swapped_once(test_address_item, "0x0400_0228", "0x0400_0226"),
+        swapped_once(test_address_item, "0x0400_09de", "0x0400_09dc"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[36])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[11])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
-        swapped_once(test_extent_item, "0x0400_02d8", "0x0400_02d6"),
+        swapped_once(test_extent_item, "0x0400_0b60", "0x0400_0b5e"),
         1,
     )
 
@@ -270,7 +233,7 @@ def source_paths() -> list[Path]:
 
 
 def in_range(value: int) -> bool:
-    return RANGE[0] <= value < RANGE[1]
+    return any(RANGE[i] <= value < RANGE[i + 1] for i in range(0, len(RANGE), 2))
 
 
 # Interval-specific: offsets 0x0..0x47 are indistinguishable from arbitrary
@@ -303,7 +266,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"CompletionCallbackPrefix", "RingCursorMapTables",
+    views = {"VendorDebugEncodedBanner", "ExceptionReasonNames", "HwTimerDebugTables",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -336,13 +299,16 @@ def check_alias_tracking_regression() -> None:
     # offsets 0x0..0xaf are indistinguishable from arbitrary small integers,
     # so the relative arm is disabled (see owned_literals). Only family-name
     # aliases and in-range physical literals are tracked.
+    # NOTE: relative-offset traps are NOT detectable for this interval:
+    # offsets are indistinguishable from arbitrary small integers, so the
+    # relative arm is disabled (see owned_literals). Only family-name
+    # aliases and in-range physical literals are tracked.
     fixtures = (
-        ("type R = CompletionCallbackPrefix; const ROOT: usize = core::mem::size_of::<R>(); const NEXT: usize = ROOT; fn leak(_: R) -> usize { NEXT }", {"R", "ROOT", "NEXT"}, ["leak"]),
-        ("type A = RingCursorMapTables; type B = A; fn leak(_: B) {}", {"A", "B"}, ["leak"]),
-        ("use crate::dtcm::RingCursorMapTables as Hidden; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
-        ("use crate::dtcm::{CompletionCallbackPrefix as H1}; type H2 = H1; const N: usize = core::mem::size_of::<H2>(); fn leak(_: H2) -> usize { N }", {"H1", "H2", "N"}, ["leak"]),
-        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_02a8 as *mut u32, 0) } }", set(), ["reset"]),
-        ("const ENTRY: usize = 0x0400_02a8; const NEXT: usize = ENTRY; fn leak() -> usize { NEXT }", {"ENTRY", "NEXT"}, ["leak"]),
+        ("type R = VendorDebugEncodedBanner; const ROOT: usize = core::mem::size_of::<R>(); const NEXT: usize = ROOT; fn leak(_: R) -> usize { NEXT }", {"R", "ROOT", "NEXT"}, ["leak"]),
+        ("type A = ExceptionReasonNames; type B = A; fn leak(_: B) {}", {"A", "B"}, ["leak"]),
+        ("use crate::dtcm::HwTimerDebugTables as Hidden; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
+        ("fn reset() { unsafe { core::ptr::write_volatile(0x0400_0b40 as *mut u32, 0) } }", set(), ["reset"]),
+        ("const ENTRY: usize = 0x0400_0b40; const NEXT: usize = ENTRY; fn leak() -> usize { NEXT }", {"ENTRY", "NEXT"}, ["leak"]),
     )
     for fixture, expected_aliases, expected_functions in fixtures:
         views, _ = family_aliases(fixture)
@@ -355,8 +321,8 @@ def check_source() -> None:
     compact = normalized(source)
     failures = [f"src/dtcm.rs: missing exact inventory: {item}" for item in REQUIRED if normalized(item) not in compact]
     compile_scope = mask_test_module(source)
-    focused_test = named_function(source, "initialized_prefix_tables_are_exact")
-    for inventory in (COMPILE_TIME_PHYSICAL_INVENTORY, RING_CURSOR_COMPILE_TIME_PHYSICAL_INVENTORY):
+    focused_test = named_function(source, "vendor_debug_tables_are_exact")
+    for inventory in (COMPILE_TIME_PHYSICAL_INVENTORY,):
         failures.extend(
             f"src/dtcm.rs: missing exact compile-time physical mapping: {item}"
             for item in missing_inventory(compile_scope, inventory)
@@ -381,20 +347,22 @@ def check_source() -> None:
         return normalized(re.sub(r",?\s*\}", "}", text))
     stripped = re.sub(r"\s*///[^\n]*", "", source)
     declarations = [
-        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct CompletionCallbackPrefix \{[^}]*\}", stripped),
-        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct RingCursorMapTables \{[^}]*\}", stripped),
+        re.search(r"#\[repr\(C, align\(2\)\)\]\s*struct VendorDebugEncodedBanner \{[^}]*\}", stripped),
+        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct ExceptionReasonNames \{[^}]*\}", stripped),
+        re.search(r"#\[repr\(C, align\(4\)\)\]\s*struct HwTimerDebugTables \{[^}]*\}", stripped),
     ]
-    expected_pair = (
-        "#[repr(C, align(4))] struct CompletionCallbackPrefix { completion_prefix_suffix: OpaqueBytes<0x30>, p2p_action_offsets: [SharedU8; 8] }",
-        "#[repr(C, align(4))] struct RingCursorMapTables { beacon_mask_words: [SharedU32; 8], mib_defaults_template: OpaqueBytes<0x30> }",
+    expected_triple = (
+        "#[repr(C, align(2))] struct VendorDebugEncodedBanner { encoded_banner: OpaqueBytes<0x14a> }",
+        "#[repr(C, align(4))] struct ExceptionReasonNames { names: [SharedU32; 5] }",
+        "#[repr(C, align(4))] struct HwTimerDebugTables { divisor_table: OpaqueBytes<0x1c>, channel_config_words: [SharedU32; 2] }",
     )
     if (any(d is None for d in declarations)
-            or any(canon(d.group()) != canon(e) for d, e in zip(declarations, expected_pair))):
-        failures.append("src/dtcm.rs: completion/ring-cursor structs must be the exact private non-derived inventory")
-    if (source.count("struct CompletionCallbackPrefix") != 1
-            or source.count("struct RingCursorMapTables") != 1
-            or "pre_completion_callback_words" in source or "pre_ring_cursor_map" in source):
-        failures.append("src/dtcm.rs: removed opaque split or duplicate completion/ring-cursor tables remain")
+            or any(canon(d.group()) != canon(e) for d, e in zip(declarations, expected_triple))):
+        failures.append("src/dtcm.rs: vendor debug table structs must be the exact private non-derived inventory")
+    if (source.count("struct VendorDebugEncodedBanner") != 1
+            or source.count("struct ExceptionReasonNames") != 1 or source.count("struct HwTimerDebugTables") != 1
+            or "pre_phy_gain_register_write_lists" in source):
+        failures.append("src/dtcm.rs: removed opaque split or duplicate vendor debug tables remain")
     for relative, exact in ADJACENT_DECLARATIONS.items():
         if exact not in (ROOT / relative).read_text():
             failures.append(f"{relative}: adjacent checker range changed from {exact}")
@@ -425,7 +393,7 @@ def check_source() -> None:
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:
-            failures.append(f"{relative}: unsanctioned production function over completion-prefix or ring-cursor-map storage: {function}")
+            failures.append(f"{relative}: unsanctioned production function over vendor debug table storage: {function}")
         sanctioned_lines = SANCTIONED_CONSUMER_LINES.get(relative, set())
         for line_number, line in enumerate(code.splitlines(), 1):
             if normalized(line) in sanctioned_lines:
@@ -451,9 +419,9 @@ def check_source() -> None:
                 line_number = code.count("\n", 0, match.start()) + 1
                 if normalized(code.splitlines()[line_number - 1]) in sanctioned_lines:
                     continue
-                failures.append(f"{relative}:{line_number}: completion/ring-cursor interval physical literal {match.group()} is outside reviewed owners")
+                failures.append(f"{relative}:{line_number}: vendor debug tables interval physical literal {match.group()} is outside reviewed owners")
     if failures: raise SystemExit("\n".join(failures))
-    print(f"COMPLETION PREFIX AND RING CURSOR MAP SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
+    print(f"VENDOR DEBUG TABLES SOURCE DRIFT-EVIDENCE GATE PASSED files={len(paths)}")
 
 
 def linked_literals(path: Path) -> collections.Counter[int]:
@@ -486,9 +454,9 @@ def check_elf(path: Path, dump: bool) -> None:
         print(f"ALLOWED_DECODED_XREFS={dict(sorted(xrefs.items()))!r}")
         return
     if literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
-        raise SystemExit(f"COMPLETION PREFIX AND RING CURSOR MAP LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
+        raise SystemExit(f"VENDOR DEBUG TABLES LINKED DRIFT GATE FAILED\nliterals={dict(literals)!r}\nxrefs={dict(xrefs)!r}")
     residual_literals, residual_xrefs = literals - ALLOWED_LINKED_LITERALS, xrefs - ALLOWED_DECODED_XREFS
-    print(f"COMPLETION PREFIX AND RING CURSOR MAP LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
+    print(f"VENDOR DEBUG TABLES LINKED DRIFT-EVIDENCE GATE PASSED allowed_literals={sum(ALLOWED_LINKED_LITERALS.values())} residual_literals={sum(residual_literals.values())} residual_xrefs={sum(residual_xrefs.values())}")
 
 
 def main() -> None:

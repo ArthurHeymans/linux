@@ -32,6 +32,8 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-phy-gain-register-write-lists-layout.py",
+    # Adjacent-interval owner pinning the shared 0x04000b60 boundary.
+    "tools/check-vendor-debug-tables-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {
     "tools/check-phy-init-register-write-lists-layout.py": {0x04000C10, 0x0C10},
