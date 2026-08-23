@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INITIALIZED_PHY_GAIN_SOURCE_RANGE = (0x04000CA6, 0x04000DA8)
+INITIALIZED_PHY_GAIN_SOURCE_RANGE = (0x04000CA0, 0x04000DA8)
 SYNTHESIZED = {0x0CA6, 0x0D24, 0x0DA8}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -33,6 +33,8 @@ OWNER_FILES = {
     "tools/check-initialized-tlv-handler-table-layout.py",
     "src/dtcm.rs",
     "tools/check-initialized-phy-gain-source-layout.py",
+    # Adjacent-interval owner pinning the shared 0x04000CA0 boundary.
+    "tools/check-phy-init-register-write-lists-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {}
 FORBIDDEN_FORMS = (

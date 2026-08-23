@@ -6745,3 +6745,50 @@ checks    /tmp/xr819-ccr-final-check.log
 manifest  tools/completion-ring-cursor-codegen-manifest.json
           5fd2fb1a12cd6444b610c7b253549b39776ddb59299682e5058cc17601cc4bf6
 ```
+
+### A.118 Fourth PHY-init register-write list and gain-source table correction
+
+The opaque `post_phy_init_register_write_lists_prefix: OpaqueBytes<0x46>`
+at `[0x04000c60, 0x04000ca6)` decodes into two evidenced parts:
+
+- `phy_init_register_write_list_3: PhyInitRegisterWriteList3`
+  `[0x04000c60, 0x04000ca0)`: `{writes: [RegisterWrite; 7],
+  terminator_address, terminator_opaque}` -- the fourth of the four
+  {address, value} register-write lists applied by vendor
+  `phy_apply_reg_init_lists` through `reg_write_list_apply` (0xFFFFFFFF
+  address terminator). Vendor plate documentation lists this list's pairs
+  (`0ABA0004 = 00000033 ... 0ABA8540 = 0000017F`) and the COPY snapshot
+  places the terminator exactly at 0xc98.
+- `[0x04000ca0, 0x04000ca6)`: absorbed into the corrected gain-source
+  table below.
+
+**Correction to A.88**: pool-word evidence shows `phy_build_gain_tables`
+copies its 22 six-byte records from band-A base DAT_000173a8 = 0x04000ca0
+or band-B base DAT_000173a4 = 0x04000d24 depending on the band flag --
+two CONSECUTIVE non-overlapping tables whose union is exactly
+`[0x04000ca0, 0x04000da8)` (44 records), not two overlapping views
+starting at 0xca6 as A.88 modeled. No vendor reader loads 0x04000ca6.
+Accordingly `initialized_phy_gain_source_records` is rebased to
+`[InitializedPhyGainSourceRecord; 44]` at offset 0xca0 (total size 0x108,
+preserving every downstream offset including tlv_dispatch_handler_table at
+0xda8), and the view accessor stride becomes 22 (view 0 = physical 0..21,
+view 1 = physical 22..43). The record shape is unchanged.
+
+No production operation was added or changed; initial COPY values are
+loader-owned and no writer closure is claimed.
+
+Checker updates: the phy-init-register-write-lists gate's range extends to
+`[0x04000c10, 0x04000ca0)`; the initialized-phy-gain-source gate's range
+becomes `[0x04000ca0, 0x04000da8)`; both pin the shared 0x04000ca0
+boundary via mutual OWNER_FILES entries. Focused tests now cover list 3
+(entries 0 and 6, rejection at 7, extent to 0xca0) and the corrected
+record geometry (records 0/21/22/43, both view endpoints, rejection at 44
+and at index 22).
+
+Focused default (244 tests) and `vendor-host-tx-diagnostics` process-local
+tests pass (245). Complete software-only `tools/check.sh` (270 gate-pass
+lines), the Thumb release build, and fresh `build-ota-image.sh` packing
+pass. Complete-file ELF identity was used for acceptance
+(`cec5f4be...`, packed `711c7b98...`); TALA relocation and
+`0x04002984..0x04003050` were not touched. No target or hardware test was
+run.

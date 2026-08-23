@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PHY_INIT_REGISTER_WRITE_LIST_RANGE = (0x04000C10, 0x04000C60)
+PHY_INIT_REGISTER_WRITE_LIST_RANGE = (0x04000C10, 0x04000CA0)
 SYNTHESIZED = {0x0C10, 0x0C20, 0x0C48, 0x0C60}
 LITERAL = re.compile(r"0x[0-9a-fA-F_]+")
 SOURCE_EXTENSIONS = {
@@ -32,6 +32,8 @@ SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
     "tools/check-phy-init-register-write-lists-layout.py",
+    # Adjacent-interval owner pinning the shared 0x04000CA0 boundary.
+    "tools/check-initialized-phy-gain-source-layout.py",
 }
 ALLOWED_SOURCE_LITERALS: dict[str, set[int]] = {
     "tools/check-phy-gain-register-write-lists-layout.py": {0x04000C10, 0x0C10},
