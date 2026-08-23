@@ -3,222 +3,417 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RXR819 Firmware: Rust Ownership and File-Layout Design</title>
+<title>XR819 Open Firmware Architecture and Work Plan</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0 auto; max-width: 60rem; padding: 1rem 1.25rem 4rem; line-height: 1.55; }
-  h1 { font-size: 1.5rem; border-bottom: 2px solid currentColor; padding-bottom: .3rem; }
-  h2 { font-size: 1.2rem; margin-top: 2.2rem; border-bottom: 1px solid #8888; padding-bottom: .2rem; }
-  h3 { font-size: 1.02rem; margin-top: 1.4rem; }
-  code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .86em; }
-  pre { background: #00000010; padding: .7em .9em; overflow-x: auto; border-radius: 6px; line-height: 1.45; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0 auto; max-width: 68rem; padding: 1rem 1.25rem 4rem; line-height: 1.52; }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid currentColor; padding-bottom: .3rem; }
+  h2 { font-size: 1.22rem; margin-top: 2.2rem; border-bottom: 1px solid #8888; padding-bottom: .2rem; }
+  h3 { font-size: 1.04rem; margin-top: 1.45rem; }
+  code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .87em; }
+  pre { background: #00000010; padding: .75em .9em; overflow-x: auto; border-radius: 6px; line-height: 1.42; }
   @media (prefers-color-scheme: dark) { pre { background: #ffffff14; } }
   table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .92em; }
-  th, td { border: 1px solid #8888; padding: .35em .55em; text-align: left; vertical-align: top; }
+  th, td { border: 1px solid #8888; padding: .4em .58em; text-align: left; vertical-align: top; }
   th { background: #88888818; }
-  .tag { display: inline-block; font-size: .72em; font-weight: 600; padding: .05em .5em; border-radius: 999px; vertical-align: middle; }
+  .tag { display: inline-block; font-size: .72em; font-weight: 650; padding: .05em .5em; border-radius: 999px; white-space: nowrap; }
   .done { background: #2e7d3233; } .now { background: #b3690026; } .later { background: #44444422; } .risk { background: #b3001c26; }
-  ul { padding-left: 1.3rem; }
-  li { margin: .15rem 0; }
-  .note { border-left: 3px solid #b36900; padding-left: .8em; margin: 1rem 0; }
-  footer { margin-top: 3rem; font-size: .82em; opacity: .7; border-top: 1px solid #8888; padding-top: .6em; }
+  ul, ol { padding-left: 1.35rem; }
+  li { margin: .18rem 0; }
+  .note { border-left: 3px solid #b36900; padding: .1em 0 .1em .85em; margin: 1rem 0; }
+  .good { border-left-color: #2e7d32; }
+  footer { margin-top: 3rem; font-size: .82em; opacity: .72; border-top: 1px solid #8888; padding-top: .7em; }
 </style>
 </head>
 <body>
 
-<h1>XR819 firmware: a Rust ownership design over the decoded DTCM map</h1>
-<p>Status draft after slices A.105&ndash;A.121 (bookmark <code>xr819-open-firmware</code>, ELF
-<code>cec5f4be&hellip;</code>). Scope: turn the completed reverse-engineered DTCM layout into a
-deliberate Rust firmware design that keeps global state in DTCM only where reentrancy forces it,
-and moves everything else onto owned, stack-based data.</p>
+<h1>XR819 open firmware: architecture review and work plan</h1>
+<p><strong>Revision 7.</strong> Rebuilt from the current source tree, current README, the
+2026-08-15 handoff, the TX ownership documents, and DTCM appendices A.105&ndash;A.121.
+The goal is clean, idiomatic, performant Rust firmware that replaces the vendor binary. Vendor
+code and layouts are evidence about hardware contracts, not a requirement to reproduce vendor
+internals.</p>
 
-<h2 id="inventory">1. Do we have everything we need?</h2>
-<table>
-<tr><th>Asset</th><th>Status</th><th>Evidence</th></tr>
-<tr><td>Initialized-image layout <code>[0x04000000,0x04002078)</code></td><td><span class="tag done">complete</span></td>
-    <td>Every byte is either typed (<code>InitializedVendorImage</code> fields) or documented opaque with accessor status. Pointer audit A.121 found zero unaccounted pool words.</td></tr>
-<tr><td>Typed record shapes</td><td><span class="tag done">complete</span></td>
-    <td>43+ private non-derived structs with compile-time offsets/sizes and focused address tests.</td></tr>
-<tr><td>Drift gates</td><td><span class="tag done">276 green</span></td>
-    <td>Per-interval checkers: source inventories, linked-literal and decoded-xref manifests pinned empty or reviewed.</td></tr>
-<tr><td>Accessor semantics for live regions</td><td><span class="tag done">majority</span></td>
-    <td>Register-write lists, rate/policy tables, TLV dispatch, pipe tails, aggregate slots: readers identified instruction-exactly.</td></tr>
-<tr><td>Writer closure</td><td><span class="tag risk">not proven</span></td>
-    <td>IRQ/FIQ, HIF, and computed indirect writes remain possible everywhere. Every appendix states this; designs must not rely on immutability.</td></tr>
-<tr><td>Runtime workspace <code>[0x04002078,0x04008000)</code></td><td><span class="tag now">partial</span></td>
-    <td>Host contexts, internal TX contexts (pool at linker symbol), VIF records (stride 0x3b0 &times;3) are addressed by existing code; full semantic decode is not finished and is only needed where the port replaces vendor behavior.</td></tr>
-<tr><td>Vendor debug/exception machinery</td><td><span class="tag later">optional</span></td>
-    <td>Banner/help-text UART blobs, exception-reason names, console strings: fully documented in struct docs (A.119/A.120) as porting references. Not ported.</td></tr>
-</table>
+<h2 id="summary">1. Executive summary</h2>
+<p>The project is already a functioning firmware, not an early bring-up scaffold. The
+<code>hif-startup</code> image completes Linux probe, scans actively, joins WPA2, completes the
+four-way handshake, encrypts protected traffic with the XR819 AES engine, and carries sustained
+TCP/UDP. The qualified image <code>88298e82&hellip;</code> passed three fresh boots at
+4.87&ndash;5.09 Mbit/s TCP and 7.92&ndash;7.93 Mbit/s UDP with 20/20 final ping and zero
+exceptions.</p>
+<p>The correct near-term strategy is therefore <strong>consolidation and measured extension</strong>:
+preserve the working cooperative execution model and ownership rules, make their implementation
+smaller and more explicit, close security and lifecycle gaps, then add safe hardware concurrency
+and aggregation. DTCM address retirement is a separate long-term closure project. It must not be
+mixed into ordinary refactors or throughput work.</p>
+<div class="note good"><strong>Recommended order:</strong> behavior-preserving decomposition,
+correctness/security gaps, power-save and recovery completeness, measured TX concurrency,
+A-MPDU, then final DTCM ABI retirement after all fixed-address writers are gone.</div>
 
-<p><strong>Verdict:</strong> yes for building the ownership and module design; no for claiming
-writer closure. The design below therefore treats DTCM cells as shared mutable hardware-facing
-state with explicit access disciplines, never as immutable constants.</p>
-
-<h2 id="principles">2. Design principles</h2>
+<h2 id="evidence">2. Evidence hierarchy and current status</h2>
+<h3>2.1 Source precedence</h3>
+<p>Several documents are cumulative investigation ledgers and contain historical statements that
+newer source has superseded. Use this precedence when claims conflict:</p>
 <ol>
-<li><strong>Stack first.</strong> Function-local values own computation results. DTCM holds only
-(a) loader-COPY images, (b) state reachable from IRQ/FIQ/HIF reentrant entry points,
-(c) DMA/hardware-visible buffers.</li>
-<li><strong>One root, one gatekeeper.</strong> All DTCM addressing lives in <code>dtcm.rs</code>.
-No other module spells an address constant or builds a raw pointer. This is already the de-facto
-rule; make it enforced by a lint-style checker (extend the existing drift-gate tooling).</li>
-<li><strong>Checked handles, not pointers.</strong> <code>DtcmAddress</code> stays the only
-address type. Field-level access goes through typed cell handles (section 4) rather than
-<code>*mut</code> escapes; every existing <code>*mut</code> accessor becomes private to
-<code>dtcm.rs</code>.</li>
-<li><strong>Quarantine until proven.</strong> <code>SharedScalar&lt;T&gt;</code>/<code>OpaqueBytes&lt;N&gt;</code>
-(MaybeUninit, no safe reads) remain the representation for anything without a decoded reader.
-Promotion to a real typed field requires instruction-exact evidence, as practiced since A.105.</li>
-<li><strong>Reentrancy is stated, not implied.</strong> Each piece of shared state carries an
-access discipline tag: <code>irq-local</code>, <code>hif-task</code>, <code>msg-passing</code>,
-or <code>hw-table</code>. Mixed access requires a critical section or ownership handoff.</li>
+<li>Current Rust source and <code>xr819-firmware/README.md</code> current-state and
+"not yet implemented" sections.</li>
+<li><code>xr819-session-handoff-2026-08-15.md</code> resolved-state section and the final
+corrections in <code>xr819-class0-tx-status-findings.md</code>.</li>
+<li>Focused subsystem specifications: host-TX concurrency, vendor host-TX lifecycle, AES engine,
+and startup flow.</li>
+<li>Historical experiment ledgers, only with their superseded/rejected labels preserved.</li>
+<li>For DTCM geometry, the newest appendix wins. A.118 corrects A.88; A.121 is the final pointer
+audit.</li>
 </ol>
 
-<h2 id="ownership">3. Ownership model</h2>
-
-<h3>3.1 Execution contexts</h3>
+<h3>2.2 What works now</h3>
 <table>
-<tr><th>Context</th><th>Entry points</th><th>Owns exclusively</th></tr>
-<tr><td><strong>HIF task</strong> (main loop)</td><td>host message pump</td><td>message parse scratch, configuration staging, scan requests</td></tr>
-<tr><td><strong>TX path</strong></td><td>called from HIF task; completion from IRQ</td><td>per-packet descriptor build (stack), queue cursors (shared, see 3.3)</td></tr>
-<tr><td><strong>IRQ / FIQ</strong></td><td>vectors</td><td>isr-local scratch only; communicates via event words</td></tr>
-<tr><td><strong>Debug console</strong></td><td>UART polling during boot/diag</td><td>its own buffers; never touches TX/PHY state</td></tr>
+<tr><th>Area</th><th>Status</th><th>Current implementation evidence</th></tr>
+<tr><td>Probe, scan, join, WPA2, data</td><td><span class="tag done">working</span></td>
+<td>Active probe templates, beacon/probe-response RX, synchronous JOIN, EAPOL, PTK/GTK, DHCP,
+ping, HTTP, sustained TCP/UDP.</td></tr>
+<tr><td>Protected traffic</td><td><span class="tag done">hardware AES</span></td>
+<td>ARM target calls <code>encrypt_tx_frame_hardware</code> and
+<code>decrypt_rx_frame_hardware</code>; IRQ 18/20 callbacks are registered. RustCrypto AES-CCM is
+the host-test backend and independent oracle.</td></tr>
+<tr><td>Host request ownership</td><td><span class="tag done">30 retained contexts</span></td>
+<td><code>HostTxDriver</code> owns up to 30 detached request buffers; each
+<code>RetainedHostTx</code> carries a non-copyable release token.</td></tr>
+<tr><td>Class-0 hardware execution</td><td><span class="tag done">single owner</span></td>
+<td>Pending/PAS/reservation/scheduled/completion path works end to end. One class-0 frame may own
+the shared MAC runtime at a time.</td></tr>
+<tr><td>HIF output buffering</td><td><span class="tag done">64 + 4</span></td>
+<td>A 64-entry software output queue feeds four hardware descriptors. RX backing tokens and
+shared output slots are retained until descriptor reclaim.</td></tr>
+<tr><td>RX ownership</td><td><span class="tag done">qualified fix</span></td>
+<td>Corrupt release-head normalization continues through ordinary reclamation; resync defers the
+hardware-consumer jump while zero-copy HIF ownership is outstanding.</td></tr>
+<tr><td>Shared MAC exclusion</td><td><span class="tag done">capability exists</span></td>
+<td><code>MacDomainGuard</code> already saves CPSR, masks IRQ and FIQ, and restores the prior I/F
+bits on drop.</td></tr>
+<tr><td>DTCM structural map</td><td><span class="tag done">A.121 complete</span></td>
+<td>One fixed <code>DtcmLayout</code> describes <code>0x04000000..0x0400a000</code> as shared
+quarantine. Every pooled DTCM pointer is classified; opaque islands have no remaining pooled or
+reference-map hits.</td></tr>
+<tr><td>Regression gates</td><td><span class="tag done">mature</span></td>
+<td>245 default tests, 246 diagnostic-feature tests, 276 gate passes, plus the qualified
+structure-only ELF and packed-image identities.</td></tr>
 </table>
 
-<h3>3.2 Three ownership classes for DTCM cells</h3>
-<pre>// Class HW-TABLE: loader-initialized, runtime read-only in practice.
-// Typed, const-accessible, no interior mutability exposed.
-static COPY_IMAGE: InitializedVendorImage;          // inside DTCM_STATE
-
-// Class SINGLE-OWNER: one execution context owns it; others post events.
-struct TxQueueState { /* cursors, retry counters */ }
-
-// Class MSG-PASSING: producer fills a slot, hands over an index token;
-// consumer invalidates it. No lock needed if indices are per-direction.
-struct PacketSlot { len: u16, flags: u16 }           // packet_ram arena</pre>
-<p>Rules:</p>
+<h3>2.3 Actual open production items</h3>
 <ul>
-<li>A context may hold <code>&amp;</code> of any cell but <code>&amp;mut</code> only under its
-discipline tag (single owner, or inside a critical section).</li>
-<li>Cross-context handoff uses index tokens (<code>SlotId(u16)</code>) into fixed arenas
-(<code>packet_ram</code>, internal context pool). Tokens are <code>Copy</code>; the arena owns
-the storage. This mirrors what the vendor already does (free-list head + 3-record pool) and
-maps cleanly onto Rust ownership without unsafe sharing beyond the arena internals.</li>
-<li>IRQs never spin. They set event bits (existing pattern: bit-set in status words) and return;
-the HIF task drains them.</li>
+<li>Active-VIF channel restoration and complete power-save resumption.</li>
+<li>CCMP replay protection.</li>
+<li>Controlled degraded-RF fallback and long-duration soak qualification.</li>
+<li>Production recovery policy for architected CPU exceptions and unrecoverable packet-controller
+faults.</li>
+<li>A-MPDU aggregation and, before it, ownership-safe multiple hardware-owned frames or per-pipe
+credits.</li>
+<li>Complete HIF publication semantics as a design choice: exact vendor request-buffer lifetime
+is not required, but the chosen copy/credit/queue contract must be explicit and pressure-safe.</li>
+<li>Final DTCM ABI retirement after whole state-machine closures become native.</li>
 </ul>
 
-<h3>3.3 Type-level toolkit (all inside <code>dtcm.rs</code>)</h3>
-<pre>/// Checked address (exists today).
-pub struct DtcmAddress(u32);
+<h2 id="architecture">3. Architecture that should be preserved</h2>
+<h3>3.1 Cooperative reactor, not a new RTOS</h3>
+<p>The main loop already has independent service lanes and bounded work. This is appropriate for
+the ARM9-class single-core target and is proven on hardware. A new RTIC-like scheduler would add
+priority-ceiling machinery and interrupt-latency risk without solving a current defect.</p>
+<pre>packet-DMA/HIF IRQ service
+  -> pipe watchdog
+  -> retained host-TX service
+  -> management TX completion
+  -> command/confirm/debug publication
+  -> scan and probe service
+  -> RX indication or idle recycling
+  -> exactly one host request dispatch
+  -> repeat</pre>
+<p>The invariant to preserve is that a pending or stuck data frame never gates synchronous command
+progress. Management and class-0 share the MAC runtime, but the host command lane remains
+independent.</p>
 
-/// NEW: volatile cell handle replacing raw *mut escapes.
-#[repr(transparent)]
-pub struct Cell<'a, T> { addr: DtcmAddress, _lt: &'a Disjointness, _t: PhantomData<*mut T> }
-impl<T> Cell<'_, T> {
-    pub fn read_volatile(&self) -> T;
-    pub fn write_volatile(&self, v: T);
-}
+<h3>3.2 Host-TX ownership</h3>
+<p>The pure model and runtime use the following concepts:</p>
+<pre>HardwareOwnership = Reversible | HardwareOwned
+Stage = Free | Retained | Pending | PasQueued | Reserved | Scheduled | ConfirmationReady
 
-/// NEW: proof token that interrupts are masked (PRIMASK set) on single core.
-pub struct CriticalSection<'a> { _not_send: PhantomData<&'a ()> }
+irreversible boundary = scheduler publication / hardware GO
+completion identity   = (context, frame_node, pipe, slot)</pre>
+<ul>
+<li>A detached HIF request has exactly one owner and its release token is consumed exactly once.</li>
+<li>A hardware-owned context cannot be cancelled, freed, or reused.</li>
+<li>Completion is identity-based, not FIFO-based and not selected by packet-id order.</li>
+<li>At most one class-0 owner currently reserves or owns the shared MAC runtime.</li>
+<li>Rejected designs remain rejected: no FIFO above <code>HostTxDriver</code>, no withholding HIF
+requests while TX is active, and no artificial busy failure for ordinary bursts.</li>
+</ul>
+<p><code>host_tx_arena.rs</code> is currently a pure model while
+<code>HostTxDriver</code> contains the target runtime states. Keep the model as an executable
+specification, but avoid growing two independent state machines. Shared transition decisions
+should move into host-testable functions used by both.</p>
 
-/// NEW: arena slot token for packet_ram / context pool.
-#[derive(Copy, Clone)] pub struct SlotId(u16);</pre>
-<p>The lifetime on <code>Cell</code> is not about DTCM persistence (it is <code>'static</code>)
-but about <em>lease discipline</em>: a <code>&amp;mut</code>-style lease is borrowed from a
-context token and NLL ends it at scope exit, making stale writes a borrow error instead of a
-review finding.</p>
+<h3>3.3 MAC exclusion and volatile access</h3>
+<p>Do not add a second generic interrupt guard. <code>MacDomain</code> and
+<code>MacDomainGuard</code> already provide the correct capability for multiword scheduler,
+pending-list, PAS, pipe, and completion transitions. Extend their use where audits find an
+unguarded shared invariant.</p>
+<ul>
+<li><strong>Volatile is representation access, not synchronization.</strong> DTCM state shared
+with IRQ/FIQ uses volatile loads/stores and a domain guard for compound transitions.</li>
+<li><strong>Rust atomics are not a device-memory coherence mechanism.</strong> Use compiler fences,
+CPSR exclusion, and the existing write-buffer drain or hardware barrier at publication points.</li>
+<li><strong>Do not form safe references to quarantine records.</strong> The fixed layout remains
+<code>UnsafeCell&lt;MaybeUninit&lt;...&gt;&gt;</code> with field-derived raw volatile access.</li>
+<li>Packet RAM, HIF SRAM, MMIO, DTCM, ITCM state, and stacks remain distinct address and ownership
+domains.</li>
+</ul>
 
-<h2 id="layout">4. File layout (target state)</h2>
-<p>Current tree is sound but <code>tx.rs</code> (9.4k lines) and <code>dtcm.rs</code> (4.6k)
-have outgrown single files. Proposed split; arrows show allowed dependency direction
-(higher depends on lower).</p>
+<h3>3.4 DTCM is a quarantine ABI, not the desired state store</h3>
+<p>The implemented <code>DtcmLayout</code> is one fixed <code>0xa000</code>-byte object. Its value is
+structural: it prevents accidental hole allocation, preserves overlays, and lets checkers verify
+boundaries. It does not prove exclusive Rust ownership and it is not movable.</p>
+<ul>
+<li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
+Do not move it back into DTCM for visual symmetry.</li>
+<li>Source files may be split, but the physical DTCM object stays monolithic until final retirement.
+Do not create independently linked DTCM family statics that can overlap or split authority.</li>
+<li>Address movement is allowed only after every reader, writer, callback, IRQ/FIQ path, computed
+root, and high-TCM consumer for the family is retired.</li>
+<li>The final relocation/removal is atomic. The failed TALA move proves that exact struct shape and
+source arithmetic do not establish address independence.</li>
+</ul>
+
+<h2 id="corrections">4. Corrections to the previous hosted plan</h2>
+<table>
+<tr><th>Previous claim</th><th>Correction</th></tr>
+<tr><td>Hardware AES was a future optimization; RustCrypto was the target backend.</td>
+<td>False. ARM target builds use the XR819 AES engine today. RustCrypto is used on the host and as
+an independent correctness oracle.</td></tr>
+<tr><td>IRQ 18/20/21 completion translation was future work.</td>
+<td>IRQ 18/20 hardware crypto callbacks are implemented and registered. The vendor MIC-21 path is
+not a required backlog item for the current hardware-CCMP design.</td></tr>
+<tr><td>A new <code>IrqGuard</code> and generic <code>Cell&lt;T&gt;</code> layer should be introduced.</td>
+<td><code>MacDomainGuard</code> already implements the relevant CPSR I/F capability. Add narrow
+family APIs where useful; do not create a parallel synchronization abstraction.</td></tr>
+<tr><td>All <code>link_section</code>, <code>addr_of_mut!</code>, and raw pointers should be banned
+outside <code>dtcm/</code>.</td>
+<td>Too broad. Entry points, packet-RAM reservations, exception state, PHY buffers, and diagnostics
+legitimately use those forms. Gates must target direct DTCM address construction and
+<code>.dtcm.*</code> ownership, not syntax unrelated to DTCM.</td></tr>
+<tr><td>The DTCM file should become independently anchored family objects.</td>
+<td>Contradicts the native-layout plan. Split source organization only; preserve one physical
+quarantine allocation until whole closures retire.</td></tr>
+<tr><td>The HIF output queue was missing.</td>
+<td>The 64-entry software queue and four descriptor staging slots exist. The remaining question is
+whether copied confirmations and early request-credit return are the clean contract we want.</td></tr>
+<tr><td>Active probe TX and ordinary protected traffic were open.</td>
+<td>Both work and are hardware validated.</td></tr>
+<tr><td>The firmware should be redesigned around a new static-priority task scheduler.</td>
+<td>No current evidence justifies that rewrite. Preserve the bounded cooperative reactor and make
+its lanes explicit in code.</td></tr>
+</table>
+
+<h2 id="target">5. Target code structure</h2>
+<p>This is a source decomposition, not a physical memory-layout change. Perform it incrementally,
+with one behavior-preserving extraction per change.</p>
 <pre>src/
-├── bin/hif-startup.rs        entry, reset, linker sections      (unchanged)
-├── lib.rs                    module wiring only
+├── bin/hif_startup.rs          reset/startup only; constructs Firmware and runs it
+├── firmware.rs                 cooperative reactor and lane ordering
+├── command.rs                  WSM command dispatch and per-command responses
 │
-├── arch/                     NEW: CPU mechanics, zero XR819 knowledge
-│   ├── mod.rs                   critical_section(), PRIMASK helpers
-│   └── volatile.rs              Cell<T>, VolatileRef leases
+├── hif/
+│   ├── transport.rs            descriptor service and request ownership
+│   ├── output.rs               64-entry queue, shared slots, publication contract
+│   └── request.rs              RequestBuffer and RequestReleaseToken
 │
-├── dtcm/                     SPLIT of dtcm.rs (addressing authority)
-│   ├── mod.rs                   re-exports; the only place raw *mut lives
-│   ├── layout.rs                DtcmLayout, InitializedVendorImage, sizes
-│   ├── quarantine.rs            SharedScalar, OpaqueBytes, opaque_family!
-│   ├── copy_tables.rs           HW-TABLE accessors (rate, policy, lists, tlv)
-│   ├── contexts.rs              internal context pool, free-list, VIF records
-│   └── debug_tables.rs          banner/help/reason/console strings (unported)
+├── host_tx/
+│   ├── arena.rs                pure executable ownership model
+│   ├── driver.rs               30-context runtime orchestration
+│   ├── context.rs              former vendor_host_tx context initialization/lifetime
+│   ├── pending.rs              pending-list and PAS admission decisions
+│   ├── schedule.rs             reservation and publication boundary
+│   └── diagnostics.rs          optional flight recorder
 │
-├── platform.rs               MMIO, clocks, pin mux (unchanged scope)
-├── download.rs               loader COPY application             (unchanged)
-├── packet_ram.rs             arena + SlotId tokens               (grows tokens)
-├── exception.rs              Rust-side exception quarantine      (unchanged)
-│
-├── hif.rs                    HIF task loop, message dispatch
-├── wsm.rs / configuration.rs config staging (HIF-owned, stack-built)
-├── join.rs / scan.rs         connection lifecycle
-├── vif.rs                    per-interface logic (VIF records via dtcm::contexts)
-│
-├── mac.rs                    MAC plumbing
 ├── tx/
-│   ├── mod.rs                orchestration (shrinks tx.rs)
-│   ├── build.rs              descriptor construction (pure, stack-owned)
-│   ├── schedule.rs           queue/cursor state machine (SINGLE-OWNER cells)
-│   └── complete.rs           IRQ-driven completion
-├── phy.rs                    PHY sequences (register-list appliers)
-├── radio.rs                  radio control
-├── crypto.rs                 AES/TKIP (tkip_sbox via copy_tables views)
-└── rx_model.rs / rate_policy.rs / host_tx_*   unchanged scopes</pre>
-<p>Dependency rule, mechanically checked: only <code>dtcm/*</code> may contain
-<code>link_section</code>, linker-symbol externs, <code>addr_of_mut!</code> into DTCM, or
-<code>DtcmAddress::cast_mut</code>. The existing checker family is the enforcement vehicle:
-one more script walks <code>src/</code> and fails on forbidden forms outside
-<code>dtcm/</code>.</p>
+│   ├── descriptor.rs           pure rate, duration, and descriptor builders
+│   ├── event.rs                MacEvent decoding and the unique MacEventQueue
+│   ├── pipe.rs                 pipe service, cursor, watchdog, status dispatch
+│   ├── retry.rs                retry/rearm/give-up policy and executor
+│   ├── completion.rs           completion drain and callback handoff
+│   ├── management.rs           class-6/probe publisher
+│   └── mmio.rs                 target backends and publication barriers
+│
+├── dtcm/
+│   ├── layout.rs               the single physical DtcmLayout and exact assertions
+│   ├── initialized.rs          initialized COPY-image table shapes
+│   ├── addresses.rs            checked address newtypes and field-derived addresses
+│   ├── runtime/                family views only, never independent linked owners
+│   └── tests.rs                exact addresses, extents, overlaps, pointer inventory
+│
+├── mac_domain.rs               existing exclusive MAC mutation capability
+├── crypto.rs                   host RustCrypto oracle + target hardware AES backend
+├── radio.rs / rx_model.rs      zero-copy RX ownership and recovery
+├── phy/                        later split into pure arithmetic, tables, and MMIO sequences
+└── platform.rs / packet_ram.rs / wsm.rs / vif.rs / scan.rs / join.rs</pre>
 
-<h2 id="migration">5. Migration plan</h2>
-<table>
-<tr><th>Phase</th><th>Content</th><th>Exit criterion</th></tr>
-<tr><td><span class="tag done">P0 done</span></td>
-<td>Exact layout, typed records, per-interval drift gates, pointer audit.</td>
-<td>A.121; ELF identity held throughout.</td></tr>
-<tr><td><span class="tag now">P1</span></td>
-<td>Pointer confinement: move all <code>*mut</code> accessors behind
-<code>dtcm::contexts</code>/<code>copy_tables</code>; add the forbidden-forms walker to
-<code>check.sh</code>.</td><td>No <code>cast_mut</code>/<code>addr_of_mut!</code> outside
-<code>dtcm/</code>; all suites green.</td></tr>
-<tr><td><span class="tag now">P2</span></td>
-<td>Introduce <code>arch::volatile::Cell</code> and <code>CriticalSection</code>; convert
-callers mechanically (read/write pairs become cell calls). No behavior change.</td>
-<td>ELF still identical; host tests deterministic.</td></tr>
-<tr><td><span class="tag later">P3</span></td>
-<td>Stack-first refactor of <code>tx/</code>: descriptor builders become pure functions
-returning values; only final publication touches cells. Split <code>tx.rs</code>.</td>
-<td>Descriptor build covered by host unit tests on plain structs.</td></tr>
-<tr><td><span class="tag later">P4</span></td>
-<td>Optionally port vendor debug console and WSM exception indication using the documented
-tables (A.119/A.120 docs are the reference).</td><td>New modules, no DTCM growth.</td></tr>
-</table>
-
-<h2 id="risks">6. Open risks</h2>
+<h3>5.1 Dependency rules worth enforcing</h3>
 <ul>
-<li><strong>Writer closure.</strong> Any P2/P3 conversion assumes the ported reader list is
-complete. An unknown IRQ writer to a converted field would see volatile accesses either way,
-so risk is bounded, but ordering assumptions could differ. Mitigation: keep drift gates running
-against the parent binary each slice.</li>
-<li><strong>Init order.</strong> <code>MaybeUninit</code> means first-touch correctness rests on
-loader COPY plus explicit zeroing. P1 must preserve the existing zeroing range exactly.</li>
-<li><strong>Host-test fidelity.</strong> Process-local backing (<code>zeroed()</code> off-target)
-must keep mirroring target behavior; the existing dual-path pattern stays.</li>
-<li><strong>Single-core assumption.</strong> <code>CriticalSection</code> via PRIMASK is valid
-only while FIQ masking semantics match the vendor's (FIQ is not masked by PRIMASK on ARM9);
-verify against vendor entry stubs before relying on it for FIQ-shared cells.</li>
+<li>Only <code>dtcm/</code> may construct a <code>DtcmAddress</code> from a numeric address or
+expose a fixed-DTCM linker member. Other modules receive typed field addresses.</li>
+<li>Only <code>packet_ram.rs</code> may allocate packet-RAM regions; users operate through owning
+tokens or checked addresses.</li>
+<li>Only the holder of <code>MacDomainGuard</code> may execute documented compound MAC-state
+transitions.</li>
+<li>Only one <code>MacEventQueue</code> capability exists and all consumers borrow it.</li>
+<li>Pure decision/build functions do not read MMIO, DTCM, clocks, or global diagnostics.</li>
+<li>Diagnostics never participate in correctness and normal feature-free builds retain no verbose
+trace cost.</li>
 </ul>
 
-<footer>Prepared from the A.105&ndash;A.121 decode record in
-<code>xr819-dtcm-native-layout-plan.md</code>. Companion artifacts:
-<code>tools/check-*.py</code> drift gates, appendices A.105&ndash;A.121, hand-off note
-<code>.local/xr819-next-session-prompt.md</code>.</footer>
+<h2 id="plan">6. Phased implementation plan</h2>
+<table>
+<tr><th>Phase</th><th>Work</th><th>Exit criteria</th></tr>
+<tr><td><span class="tag now">P0 source truth</span></td>
+<td>Keep README current-state and open-item lists authoritative. Add explicit "historical" notes
+to stale implementation-delta sections when touched. Record source precedence from section 2.</td>
+<td>No current backlog item is derived solely from a superseded experiment section.</td></tr>
+<tr><td><span class="tag now">P1 reactor extraction</span></td>
+<td>Extract WSM command dispatch from the 1,020-line binary. Introduce a <code>Firmware</code>
+state owner whose methods correspond to the existing service lanes. Preserve exact lane order and
+bounded work.</td>
+<td>Host tests and <code>check.sh</code> pass; target image qualifies under the existing three-boot
+TCP/UDP/ping protocol. No new state machine.</td></tr>
+<tr><td><span class="tag now">P2 TX decomposition</span></td>
+<td>Split <code>tx.rs</code> and <code>vendor_host_tx.rs</code> at the boundaries in section 5.
+Move pure builders and decisions first, then target executors. Make the arena model share
+transition predicates with runtime decisions instead of duplicating them.</td>
+<td>No increase in unsafe call sites; existing focused tests move with each unit; production
+qualification remains healthy. The ELF identity oracle is used only for slices that promise exact
+code generation, not as a universal refactor requirement.</td></tr>
+<tr><td><span class="tag now">P3 DTCM source split</span></td>
+<td>Split the 4,602-line source into layout, initialized image, addresses, and runtime family views
+without changing the one physical <code>DtcmLayout</code>. Add a narrow checker for direct DTCM
+numeric construction and <code>.dtcm.*</code> owners.</td>
+<td>DTCM sizes, offsets, linked addresses, initialized bytes, and all 276 gates remain exact.
+If real module paths change mangled symbols, retire complete-file identity deliberately for that
+refactor only after instruction-level comparison and target qualification.</td></tr>
+<tr><td><span class="tag now">P4 correctness and security</span></td>
+<td>Add CCMP replay protection with per-key/per-TID receive packet numbers. Make RESET semantics
+explicit: either support targeted per-VIF epochs as the ownership design specifies, or document and
+test global reset as the chosen product behavior. Complete active-VIF channel restoration and
+power-save resume.</td>
+<td>Replay is rejected without corrupting RX ownership; reset drains every affected owner exactly
+once; repeated sleep/wake/join/traffic cycles pass.</td></tr>
+<tr><td><span class="tag later">P5 recovery policy</span></td>
+<td>Classify failures as recoverable, interface-reset, firmware-reset, or terminal. Preserve the
+qualified corrupt-head normalization and zero-copy resync rules. Define behavior for CPU
+exceptions and unrecoverable packet-controller faults.</td>
+<td>Fault-injection tests prove no request token, RX token, pipe slot, or hardware-owned context is
+released twice or silently abandoned.</td></tr>
+<tr><td><span class="tag later">P6 safe TX concurrency</span></td>
+<td>After the single-owner baseline remains stable, allow more than one hardware-owned frame with
+explicit per-pipe credits and identities. Start with two ordinary frames only if pipe/slot ownership
+and completion routing are proven. Do not add a software FIFO above <code>HostTxDriver</code>.</td>
+<td>Higher delivered TCP throughput without increased loss, exceptions, leaked credits, unmatched
+statuses, or watchdog recoveries. Interleave exact-parent control runs.</td></tr>
+<tr><td><span class="tag later">P7 aggregation</span></td>
+<td>Implement A-MPDU construction and BA accounting on top of proven multi-owner pipe credits.
+Keep host-selected retry policy and current rate-feedback format.</td>
+<td>Aggregation improves delivered throughput under controlled peers; retry/give-up, teardown,
+RESET, and power-save paths remain ownership-clean.</td></tr>
+<tr><td><span class="tag later">P8 HIF contract</span></td>
+<td>Decide the clean publication contract. Exact vendor same-buffer lifetime is optional. Required
+properties are atomic ownership transfer, bounded memory, command priority, pressure safety, and
+release only after the chosen backing storage is no longer visible to hardware.</td>
+<td>Queue saturation tests cannot lose a response or confirmation; request-credit order and output
+order are documented and tested.</td></tr>
+<tr><td><span class="tag later">P9 DTCM retirement</span></td>
+<td>Translate complete scheduler/timer, TX, VIF/PAS/link/BA/power-save, scan/channel, HIF/MIC, and
+PHY closures while preserving fixed addresses. Then remove remaining roots and loader assumptions
+in one atomic migration.</td>
+<td>No fixed DTCM readers/writers/callbacks remain; generated source, linked-image, computed-root,
+pointer-value, callback, section, stack, and warm-reload gates pass.</td></tr>
+</table>
+
+<h2 id="performance">7. Performance plan</h2>
+<p>The qualified firmware is already useful, but the same-board vendor baseline reached
+7.3&ndash;15.9 Mbit/s TCP. Performance work must be hypothesis-driven and must preserve ownership
+proofs.</p>
+<ol>
+<li><strong>Re-establish a current controlled baseline</strong> after the architecture refactors:
+three fresh boots, TCP, UDP delivered/loss, final ping, TX failures, watchdog recoveries,
+exceptions, used HIF buffers, pending contexts, and completion drain.</li>
+<li><strong>Measure the serialized cycle.</strong> Existing comments report roughly 8.4 ms from
+publication to confirmation and show that raising the software service budget was neutral. Do not
+mistake queue latency for executor throughput.</li>
+<li><strong>Add per-pipe concurrency before A-MPDU.</strong> This tests whether the single hardware
+owner is the main limit while keeping each frame independently confirmable.</li>
+<li><strong>Add A-MPDU only on the proven ownership layer.</strong> Aggregation must not obscure
+context, frame-node, pipe, and slot identity or weaken RESET and retry semantics.</li>
+<li><strong>Compare vendor initialization only when a measured fault points there.</strong> The
+historical packet-DMA/ring-order investigation remains useful evidence, but it is not the first
+step for every throughput gap.</li>
+</ol>
+
+<h2 id="validation">8. Validation gates</h2>
+<h3>8.1 Software gates</h3>
+<ul>
+<li>Default and diagnostic-feature host tests.</li>
+<li>All interval/layout/reference-map checkers.</li>
+<li>Thumb release build, stack-depth/call-chain checks, sectioned image checks, and packed-image
+construction.</li>
+<li>Property tests for ownership transitions, completion reordering, queue wrap, RESET, and
+saturation. Kani or exhaustive reduced-state tests remain optional if they provide useful
+coverage.</li>
+<li>Hardware-AES known-answer matrix, corrupted-MIC rejection, and host RustCrypto equivalence.</li>
+</ul>
+<h3>8.2 Hardware qualification</h3>
+<ul>
+<li>Interleave parent/control and candidate images when behavior changes.</li>
+<li>Use repeated cold boots, not one clean run.</li>
+<li>Verify scan, JOIN, WPA2, DHCP, ping, TCP, UDP, RESET, channel restore, and sleep/wake as the
+implemented surface grows.</li>
+<li>End every run with zero leaked request credits, zero pending reversible contexts, no stale
+hardware owner, and no outstanding RX token except intentional host ownership.</li>
+<li>Retain external evidence such as driver counters and monitor capture where firmware diagnostics
+would perturb timing.</li>
+</ul>
+<p class="note"><strong>ELF identity scope:</strong> <code>cec5f4be&hellip;</code> and
+<code>711c7b98&hellip;</code> are exact self-regression baselines for structural DTCM slices and
+refactors that explicitly promise identical code generation. They are not vendor-equivalence
+oracles and must not block intentional behavior changes.</p>
+
+<h2 id="non-goals">9. Non-goals and rejected directions</h2>
+<ul>
+<li>No faithful reimplementation of every vendor subsystem merely because it was decoded.</li>
+<li>No new RTOS or priority scheduler without a measured defect that the cooperative reactor
+cannot solve.</li>
+<li>No movable all-Rust DTCM layout before complete writer closure.</li>
+<li>No independently anchored DTCM family statics during the quarantine phase.</li>
+<li>No generation-counter-dependent release correctness. Debug generations are acceptable only as
+host-test diagnostics.</li>
+<li>No FIFO above the retained host-TX owner and no command-lane dependency on data completion.</li>
+<li>No broad syntax bans that prohibit legitimate MMIO, packet-RAM, entrypoint, exception, or
+diagnostic code.</li>
+<li>No hardware recovery that reclaims an owner whose device completion status is unknown.</li>
+</ul>
+
+<h2 id="documents">10. Document map</h2>
+<table>
+<tr><th>Topic</th><th>Primary source</th><th>Caution</th></tr>
+<tr><td>Current product behavior and open items</td><td><code>xr819-firmware/README.md</code></td><td>Update first when hardware status changes.</td></tr>
+<tr><td>Resolved production fault and qualification</td><td><code>xr819-session-handoff-2026-08-15.md</code>, <code>xr819-class0-tx-status-findings.md</code></td><td>Respect sections marked void, retracted, or superseded.</td></tr>
+<tr><td>Host-TX ownership architecture</td><td><code>xr819-host-tx-concurrency-architecture.md</code></td><td>Its staged list is partly implemented; verify against source.</td></tr>
+<tr><td>Vendor host-TX lifecycle evidence</td><td><code>xr819-vendor-host-tx-lifecycle.md</code></td><td>Specification input, not a mandate to copy mechanisms.</td></tr>
+<tr><td>Startup, IRQ, PHY, and historical experiment ledger</td><td><code>xr819-hif-startup-flow.md</code>, <code>xr819-firmware-reverse-engineering.md</code></td><td>Older "current delta" and next-task sections can be stale.</td></tr>
+<tr><td>Hardware AES</td><td><code>src/crypto.rs</code>, then <code>xr819-aes-engine.md</code></td><td>Source now exceeds the older note: ARM hardware backend and IRQ 18/20 are active.</td></tr>
+<tr><td>DTCM geometry and retirement constraints</td><td><code>xr819-dtcm-native-layout-plan.md</code>, latest appendix A.121</td><td>Newest corrections override earlier appendices and the coarse map.</td></tr>
+<tr><td>Current implementation</td><td><code>src/bin/hif_startup.rs</code>, <code>host_tx_driver.rs</code>, <code>vendor_host_tx.rs</code>, <code>hif.rs</code>, <code>radio.rs</code>, <code>tx.rs</code>, <code>dtcm.rs</code></td><td>Code is authoritative when documents lag.</td></tr>
+</table>
+
+<footer>Prepared in <code>/tmp/xr819-link-state</code> from the current source tree and local
+reverse-engineering documents. No XR819 web research was used. This revision corrects the hosted
+plan against the active hardware AES backend, existing MAC-domain capability, implemented HIF
+queue, qualified traffic path, and the fixed-monolithic DTCM quarantine decision.</footer>
 </body>
 </html>
