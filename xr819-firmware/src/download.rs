@@ -46,8 +46,8 @@ const SECTION_COPY: u32 = 0;
 const SECTION_FILL: u32 = 1;
 const SECTION_ENTRY: u32 = 4;
 const ITCM_LIMIT: usize = 0x0001_c000;
-const DTCM_BASE: usize = 0x0400_0000;
-const DTCM_LIMIT: usize = 0x0400_a000;
+const DTCM_BASE: usize = crate::dtcm::DTCM_STATE_BASE;
+const DTCM_LIMIT: usize = crate::dtcm::DTCM_STATE_END;
 const HIGH_BASE: usize = 0xfff0_0000;
 const HIGH_LIMIT: usize = 0xfff1_4000;
 

@@ -1,8 +1,5 @@
 {
   "inventory": {
-    "src/download.rs": {
-      "0x04000000": 1
-    },
     "src/mac.rs": {
       "0x04000000": 1
     },
