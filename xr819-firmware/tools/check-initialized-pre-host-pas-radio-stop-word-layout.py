@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Source/linked drift evidence for [0x04001572, 0x04001574).
 
-After separately pinning the pre-existing exact-width Rust writer, the added
-structural view's aligned linked-literal and decoded PC-relative-xref residual
-multisets are pinned empty. Empty residuals are drift evidence only, never
-writer closure: the retained unchecked byte-indexed view and vendor/IRQ/FIQ/
-indirect mutation remain open.
+The exact-width Rust writer is routed through the field-derived address owned by
+``src/dtcm.rs``. Its aligned linked-literal and decoded PC-relative-xref evidence
+remains pinned separately from the empty residual multisets. Empty residuals are
+drift evidence only, never complete writer closure: vendor/IRQ/FIQ/indirect
+mutation remains open.
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ TEST_ITEMS = (
     "size_of::<SharedDtcmState>(), DTCM_STATE_SIZE",
     "align_of::<SharedDtcmState>(), 4",
 )
-RETAINED_WRITER_LINKED_LITERALS = collections.Counter({0x04001572: 1})
-RETAINED_WRITER_DECODED_XREFS = collections.Counter({
+TYPED_WRITER_LINKED_LITERALS = collections.Counter({0x04001572: 1})
+TYPED_WRITER_DECODED_XREFS = collections.Counter({
     ("_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service", 0x04001572): 1,
 })
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
@@ -190,19 +190,19 @@ def check_source() -> None:
     aliases, consumers = aliases_and_consumers(production)
     if len(aliases) != 3: failures.append(f"direct/transitive radio-stop aliases are forbidden: {sorted(aliases)}")
     if consumers: failures.append(f"production radio-stop operational consumers are forbidden: {consumers}")
-    retained_write = "write_u16(0x0400_1572, 0);"
+    typed_write = "write_u16(crate::dtcm::RADIO_STOP_WORD_02.get(), 0);"
     mac_source = (ROOT / "src/mac.rs").read_text()
-    if mac_source.count(retained_write) != 1:
-        failures.append("src/mac.rs: exact retained 16-bit radio-stop write inventory changed")
+    if mac_source.count(typed_write) != 1:
+        failures.append("src/mac.rs: exact typed 16-bit radio-stop write inventory changed")
     for path in source_paths():
         relative = path.relative_to(ROOT).as_posix()
         if relative in OWNER_FILES: continue
         code = mask_tests(code_only(path.read_text(errors="replace"), rust=True)) if path.suffix == ".rs" else code_only(path.read_text(errors="replace"), path.suffix in {".py", ".sh", ".toml"})
+        if relative == "src/mac.rs":
+            code = code.replace(typed_write, " " * len(typed_write))
         for match in LITERAL.finditer(code):
             value = int(match.group().replace("_", ""), 16)
             if RANGE[0] <= value < RANGE[1] or value in OFFSETS or value in OVERLAPPING_BYTE_ROOTS:
-                if relative == "src/mac.rs" and match.group().replace("_", "").lower() == "0x04001572":
-                    continue
                 failures.append(f"{relative}:{code.count(chr(10), 0, match.start()) + 1}: owned radio-stop literal/offset outside checker owners")
         if relative.endswith(".rs") and re.search(r"\b(?:RADIO_STOP_WORD_02|PreHostPasRingObserved|radio_stop_word_02)\b", code):
             failures.append(f"{relative}: direct/transitive radio-stop alias or API is forbidden")
@@ -240,9 +240,9 @@ def main() -> None:
     check_source()
     if args.elf:
         actual_literals, actual_xrefs = linked_literals(args.elf), decoded_xrefs(args.elf)
-        literals = actual_literals - RETAINED_WRITER_LINKED_LITERALS
-        xrefs = actual_xrefs - RETAINED_WRITER_DECODED_XREFS
-        retained_exact = actual_literals == RETAINED_WRITER_LINKED_LITERALS and actual_xrefs == RETAINED_WRITER_DECODED_XREFS
+        literals = actual_literals - TYPED_WRITER_LINKED_LITERALS
+        xrefs = actual_xrefs - TYPED_WRITER_DECODED_XREFS
+        retained_exact = actual_literals == TYPED_WRITER_LINKED_LITERALS and actual_xrefs == TYPED_WRITER_DECODED_XREFS
         if args.dump: print(f"ALLOWED_LINKED_LITERALS={dict(literals)!r}\nALLOWED_DECODED_XREFS={dict(xrefs)!r}"); return
         if not retained_exact or literals != ALLOWED_LINKED_LITERALS or xrefs != ALLOWED_DECODED_XREFS:
             raise SystemExit(f"INITIALIZED PRE-HOST-PAS RADIO-STOP WORD LINKED DRIFT GATE FAILED\nactual_literals={dict(actual_literals)!r}\nactual_xrefs={dict(actual_xrefs)!r}\nresidual_literals={dict(literals)!r}\nresidual_xrefs={dict(xrefs)!r}")

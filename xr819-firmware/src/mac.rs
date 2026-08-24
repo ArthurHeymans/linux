@@ -737,7 +737,7 @@ pub unsafe fn begin_unjoined_scan_radio_stop() {
         write_u32(SHARED + 0x18, 0);
         let previous = crate::tx::disable_irq_fiq_save();
         write_u16(SHARED + 8, 0);
-        write_u16(0x0400_1572, 0);
+        write_u16(crate::dtcm::RADIO_STOP_WORD_02.get(), 0);
         write_u32(crate::dtcm::MAC_BEACON_CONTROL.get(), 0);
         write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 4);
         write_u32(crate::platform::mac_register(0x0a28), 0);
