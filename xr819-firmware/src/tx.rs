@@ -2939,7 +2939,7 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
             return 7;
         }
 
-        if became_head && read_u32(0x0400_2028) == 0 {
+        if became_head && read_u32(crate::dtcm::SCHEDULER_HARDWARE_TIMER_GUARD.get()) == 0 {
             write_u32(0x0ac0_001c, 0);
             write_u32(0x0ac0_0014, duration);
             write_u32(0x0ac0_001c, 0xc1);

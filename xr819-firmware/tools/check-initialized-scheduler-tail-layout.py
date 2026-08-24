@@ -15,10 +15,10 @@ an error event payload in event_send_error_0x34's inlined tail
 The opaque islands 0x2018..0x2028 and 0x204c..0x2050 have no observed
 accessor. Both multisets are pinned empty: no linked literal inside this
 interval exists. The guard word has no pool entry of its own -- vendor
-timer_start and its retained Rust translation both reach it as
-*(scheduler_timer_list_head_root + 0x14), and that root 0x04002014 is owned
-by the adjacent scheduler-event checker. The tx.rs consumer line is pinned
-on the source side only. Empty sets are drift evidence, never writer
+timer_start reaches it as *(scheduler_timer_list_head_root + 0x14), while
+the retained Rust translation uses its exact field-derived address. The timer
+list root 0x04002014 remains owned by the adjacent scheduler-event checker.
+Empty sets are drift evidence, never writer
 closure: computed, indirect, generic HIF/debug, vendor, IRQ, and FIQ
 mutation remain possible.
 """
@@ -51,7 +51,7 @@ ADJACENT_DECLARATIONS = {
     "tools/check-scheduler-event-layout.py": "SCHEDULER_EVENT_RANGE = (0x04001FCC, 0x04002018)",
 }
 SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
-    "src/tx.rs": {"if became_head && read_u32(0x0400_2028) == 0 {"},
+    "src/tx.rs": {"if became_head && read_u32(crate::dtcm::SCHEDULER_HARDWARE_TIMER_GUARD.get()) == 0 {"},
 }
 SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
     "src/tx.rs": {"start_scheduler_timer"},
@@ -66,6 +66,7 @@ REQUIRED = (
     STRUCT,
     "initialized_tail: SchedulerTail,",
     "scheduler_event_island: SchedulerEventIsland",
+    "pub(crate) const SCHEDULER_HARDWARE_TIMER_GUARD: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_tail) + core::mem::offset_of!(SchedulerTail, hardware_timer_guard));",
     "assert_type_layout!(SharedU32, 0x04, 4)",
     "assert_type_layout!(SharedU8, 0x01, 1)",
     "assert_type_layout!(SchedulerTail, 0x60, 4)",
@@ -115,6 +116,7 @@ FOCUSED_TEST_INVENTORY = (
     "assert_eq!(core::mem::align_of::<SchedulerTail>(), 4);",
     "assert_eq!(core::mem::offset_of!(SchedulerTail, hardware_timer_guard), 0x10);",
     "assert_eq!(tail + core::mem::offset_of!(SchedulerTail, hardware_timer_guard), 0x0400_2028);",
+    "assert_eq!(SCHEDULER_HARDWARE_TIMER_GUARD.get(), 0x0400_2028);",
     "assert_eq!(core::mem::offset_of!(SchedulerTail, rf_calibration_bytes), 0x14);",
     "assert_eq!(core::mem::size_of::<[SharedU8; 32]>(), 0x20);",
     "assert_eq!(tail + core::mem::offset_of!(SchedulerTail, rf_calibration_bytes), 0x0400_202c);",
@@ -226,13 +228,13 @@ def check_exact_inventory_regression(source: str) -> None:
     compile_swap = normalized(compile_scope).replace(
         compile_item, compile_item.replace("== 0x38", "== 0x3c"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[11])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[12])
     test_address_swap = normalized(test_scope).replace(
         test_address_item,
         swapped_once(test_address_item, "0x0400_2050", "0x0400_204c"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[13])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[14])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
         swapped_once(test_extent_item, "0x0400_2078", "0x0400_2074"),
@@ -275,7 +277,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
     declarations = [
         (kind, name, initializer)
         for kind, pattern in (
-            ("const", r"\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\s*:[^=;]+\s*=\s*([^;]*);"),
+            ("const", r"\bconst\s+(?!fn\b)([A-Za-z_][A-Za-z0-9_]*)\s*:[^=;]+\s*=\s*([^;]*);"),
             ("static", r"\bstatic\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:[^=;]+\s*=\s*([^;]*);"),
             ("type", r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]*);"),
         )
@@ -309,6 +311,7 @@ def check_alias_tracking_regression() -> None:
     fixtures = (
         ("const ROOT: usize = scheduler_tail; const NEXT: usize = ROOT; fn leak() -> *mut u32 { NEXT as *mut u32 }", {"ROOT", "NEXT"}, ["leak"]),
         ("static ROOT: usize = 0x0400_2028; static NEXT: usize = ROOT; fn leak() -> usize { NEXT }", {"ROOT", "NEXT"}, ["leak"]),
+        ("const fn unrelated() -> usize { 0 } const ROOT: usize = 0x0400_2028; fn leak() -> usize { ROOT }", {"ROOT"}, ["leak"]),
         ("type Hidden = SchedulerTail; type Again = Hidden; fn leak(_: Again) {}", {"Hidden", "Again"}, ["leak"]),
         ("use crate::dtcm::SchedulerTail as Hidden; const ROOT: usize = scheduler_tail; fn leak(_: Hidden) -> usize { ROOT }", {"Hidden", "ROOT"}, ["leak"]),
         ("use crate::dtcm::{SchedulerTail as Hidden, scheduler_tail as Root}; const NEXT: usize = Root; fn leak(_: Hidden) -> usize { NEXT }", {"Hidden", "Root", "NEXT"}, ["leak"]),
@@ -368,23 +371,24 @@ def check_source() -> None:
     rust["src/dtcm.rs"] = rust["src/dtcm.rs"].replace(STRUCT, " " * len(STRUCT))
     production = "\n".join(rust.values())
     views, declarations = family_aliases(production)
-    sanctioned_roots = set()
+    sanctioned_roots = {"SCHEDULER_HARDWARE_TIMER_GUARD"}
     for kind, name, _ in declarations:
         if name in views and name not in sanctioned_roots:
             failures.append(f"additional scheduler tail {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
     if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
         failures.append("production impl for SchedulerTail is forbidden")
-    for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
-        if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
+    for match in re.finditer(r"\b(?:const\s+(?!fn\b)|static\s+)(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
+        if (view_pattern.search(match.group())
+                and match.group(1) not in sanctioned_roots
+                and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group())):
             failures.append(f"direct scheduler tail const/static alias is forbidden: {match.group(1)}")
     for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*scheduler_tail_entry_marker[A-Za-z0-9_]*)", production, re.I):
         failures.append(f"named scheduler tail production API is forbidden: {match.group(1)}")
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b(?!\s*:)", re.I)
     for relative, code in rust.items():
-        # start_scheduler_timer (tx.rs) is the retained Rust translation of
-        # vendor timer_start; it reads exactly the guard word 0x0400_2028 that
-        # timer_start itself reads, via the single pinned consumer line below.
+        # start_scheduler_timer reads exactly the field-derived guard word
+        # used by the retained vendor timer-start translation.
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:
