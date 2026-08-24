@@ -150,7 +150,7 @@ impl SharedCompletionRing {
 }
 
 #[cfg(not(all(target_arch = "arm", target_feature = "thumb-mode")))]
-const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get() as usize;
+const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get();
 #[cfg(not(target_arch = "arm"))]
 const PIPE_RETRY_RANDOM_STATE: u32 = crate::dtcm::initialized_random_lfsr().get() as u32;
 const PIPE_RECORDS: u32 = crate::dtcm::LOW_MAC_GLOBAL.get() as u32;
@@ -5201,11 +5201,10 @@ where
                 });
             }
             set_active_pas_contexts(active_pas_contexts().wrapping_sub(1));
-            if interface < 3 {
-                if crate::vif::adjust_tx_busy(interface as u8, -1).is_err() {
+            if interface < 3
+                && crate::vif::adjust_tx_busy(interface as u8, -1).is_err() {
                     crate::halt_always!();
                 }
-            }
             if interface < 2 {
                 service_power_save_completion(context, backend);
             }
@@ -5591,7 +5590,7 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
             0x19 => {
                 let state = read_u32(crate::dtcm::MAC_BEACON_CONTROL_STATE.get());
                 if state == 4 {
-                    let pending = crate::dtcm::scheduler_pending_events().get() as usize;
+                    let pending = crate::dtcm::scheduler_pending_events().get();
                     write_u32(pending, read_u32(pending) | (1 << 24));
                 } else if state != 5 {
                     service_mac_beacon_event();
@@ -5600,7 +5599,7 @@ pub unsafe fn service_mac_nonpipe_completion_event(event_type: u8) {
             }
             0x35 if read_u8(crate::dtcm::radio_timer_state().get()) == 2 => {
                 write_u8(crate::dtcm::radio_timer_state().get(), 4);
-                let pending = crate::dtcm::scheduler_pending_events().get() as usize;
+                let pending = crate::dtcm::scheduler_pending_events().get();
                 write_u32(pending, read_u32(pending) | (1 << 31));
             }
             _ => {}

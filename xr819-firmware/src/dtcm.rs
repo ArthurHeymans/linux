@@ -1954,6 +1954,11 @@ pub(crate) const fn sdd_conversion_value_unchecked(profile: usize, index: usize)
 pub(crate) const fn sdd_rssi_coefficient_unchecked(profile: usize, index: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, rssi_coefficients).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
 pub(crate) const fn sdd_rssi_rate_scale_unchecked(profile: usize, rate: usize) -> DtcmAddress { sdd_profile_field(profile, core::mem::offset_of!(SddProfileBank, rssi_rate_scales).wrapping_add(rate.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
 pub(crate) const fn sdd_gain_coefficient_unchecked(index: usize) -> DtcmAddress { sdd_profile_field(1, core::mem::offset_of!(SddProfileBank, opaque_6a).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU16>()))) }
+pub const fn sdd_agc_correction(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(sdd_agc_correction_unchecked(profile)) } else { None } }
+pub const fn sdd_calibration_coefficient(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(sdd_calibration_coefficient_unchecked(profile)) } else { None } }
+pub const fn sdd_conversion_value(profile: usize, index: usize) -> Option<DtcmAddress> { if profile < 2 && index < 2 { Some(sdd_conversion_value_unchecked(profile, index)) } else { None } }
+pub const fn sdd_rssi_coefficient(profile: usize, index: usize) -> Option<DtcmAddress> { if profile < 2 && index < 2 { Some(sdd_rssi_coefficient_unchecked(profile, index)) } else { None } }
+pub const fn sdd_gain_coefficient(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(sdd_gain_coefficient_unchecked(index)) } else { None } }
 pub(crate) const WAKE_CONTEXT_STATE: DtcmAddress = DtcmAddress::from_offset(0x35e0);
 pub(crate) const fn wake_clock_word(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(DtcmAddress::from_offset(WAKE_CONTEXT_STATE.offset() + core::mem::offset_of!(WakeContextState, clock_words) + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const fn wake_response_pointer_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(WAKE_CONTEXT_STATE.offset().wrapping_add(core::mem::offset_of!(WakeContextState, response_pointers)).wrapping_add(index.wrapping_mul(core::mem::size_of::<SharedU32>()))) }
@@ -2172,7 +2177,7 @@ pub(crate) const fn phy_scale_i_byte_unchecked(index: usize) -> DtcmAddress { ph
 pub(crate) const fn phy_scale_q() -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_q)) }
 pub(crate) const PHY_PROFILE_STATE: DtcmAddress = DtcmAddress::from_offset(0x994c);
 const fn phy_profile_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_PROFILE_STATE.offset() + offset) }
-pub(crate) const fn phy_profile() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile)) }
+pub const fn phy_profile() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile)) }
 pub(crate) const fn phy_phase() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, phase)) }
 pub(crate) const fn phy_channel() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, channel)) }
 pub const fn phy_profile0_ready() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile0_ready)) }
@@ -2194,8 +2199,8 @@ pub(crate) const fn phy_override_value() -> DtcmAddress { phy_measurement_field(
 pub const fn phy_silicon_variant() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, silicon_variant)) }
 pub(crate) const fn phy_denominator() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, denominator)) }
 pub(crate) const fn phy_correction_offset() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, correction_offset)) }
-pub(crate) const fn phy_measured_a() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, measured_a)) }
-pub(crate) const fn phy_measured_b() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, measured_b)) }
+pub const fn phy_measured_a() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, measured_a)) }
+pub const fn phy_measured_b() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, measured_b)) }
 pub(crate) const fn phy_retained_state() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, retained_state)) }
 pub(crate) const fn phy_zero_select() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, zero_select)) }
 pub(crate) const PHY_CHANNEL_CACHE_STATE: DtcmAddress = DtcmAddress::from_offset(0x99ac);
@@ -2206,13 +2211,13 @@ pub const fn phy_startup_observation() -> DtcmAddress { phy_channel_cache_field(
 pub(crate) const fn phy_retained_channel() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, retained_channel)) }
 pub(crate) const fn phy_calibration_state() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, calibration_state)) }
 pub(crate) const fn phy_calibration_aux() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, calibration_aux)) }
-pub(crate) const fn phy_control_word() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, control_word)) }
+pub const fn phy_control_word() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, control_word)) }
 pub(crate) const fn phy_table_pointer() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, table_pointer)) }
 pub(crate) const PHY_TABLE_CONTROL_STATE: DtcmAddress = DtcmAddress::from_offset(0x99dc);
 const fn phy_table_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_TABLE_CONTROL_STATE.offset() + offset) }
 pub(crate) const fn phy_calibration_table_a() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, table_a)) }
 pub(crate) const fn phy_calibration_table_b() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, table_b)) }
-pub(crate) const fn phy_state_scale() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, state_scale)) }
+pub const fn phy_state_scale() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, state_scale)) }
 pub(crate) const fn phy_threshold() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, threshold)) }
 pub(crate) const fn phy_extended_settle() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, extended_settle)) }
 pub(crate) const fn phy_table_control() -> DtcmAddress { phy_table_control_field(core::mem::offset_of!(PhyTableControlState, control_2d)) }
@@ -2657,10 +2662,10 @@ pub(crate) const fn scheduler_secondary_exclusion() -> DtcmAddress { scheduler_e
 pub(crate) const fn scheduler_pending_events() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, pending_events)) }
 pub(crate) const fn scheduler_runtime_flags() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, runtime_flags)) }
 pub(crate) const fn scheduler_startup_mode() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, startup_mode)) }
-pub(crate) const fn scheduler_analog_enabled() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, analog_enabled)) }
+pub const fn scheduler_analog_enabled() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, analog_enabled)) }
 pub(crate) const fn scheduler_remap_primary() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, remap_primary)) }
 pub(crate) const fn scheduler_remap_secondary() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, remap_secondary)) }
-pub(crate) const fn scheduler_analog_word(index: usize) -> Option<DtcmAddress> {
+pub const fn scheduler_analog_word(index: usize) -> Option<DtcmAddress> {
     if index < 3 {
         Some(scheduler_event_field(
             core::mem::offset_of!(SchedulerEventIsland, analog_words)

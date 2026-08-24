@@ -2,6 +2,7 @@
 #![no_main]
 
 use core::panic::PanicInfo;
+use xr819_firmware::dtcm;
 
 type StablePublish = unsafe extern "C" fn(*mut u8, u16);
 type StableDivide = unsafe extern "C" fn(u32, u32) -> u32;
@@ -51,17 +52,20 @@ unsafe fn low_sdd_element(id: u8) -> Option<&'static [u8]> {
     }
 }
 
-unsafe fn write_sdd_u16(id: u8, destination: usize) {
+unsafe fn write_sdd_u16(id: u8, destination: dtcm::DtcmAddress) {
     if let Some([a, b, ..]) = unsafe { low_sdd_element(id) } {
-        unsafe { (destination as *mut u16).write_volatile(u16::from_le_bytes([*a, *b])) };
+        unsafe {
+            (destination.get() as *mut u16).write_volatile(u16::from_le_bytes([*a, *b]))
+        };
     }
 }
 
-unsafe fn write_sdd_pair(id: u8, destination: usize) {
+unsafe fn write_sdd_pair(id: u8, destination: dtcm::DtcmAddress) {
     if let Some([a, b, c, d, ..]) = unsafe { low_sdd_element(id) } {
         unsafe {
-            (destination as *mut u16).write_volatile(u16::from_le_bytes([*a, *b]));
-            ((destination + 2) as *mut u16).write_volatile(u16::from_le_bytes([*c, *d]));
+            (destination.get() as *mut u16).write_volatile(u16::from_le_bytes([*a, *b]));
+            ((destination.get() + 2) as *mut u16)
+                .write_volatile(u16::from_le_bytes([*c, *d]));
         }
     }
 }
@@ -74,11 +78,11 @@ unsafe fn populate_extension_gain_sdd_state() {
         // XR819 has only the profile-zero 2.4 GHz band. Keep this extension
         // bounded to the five profile-zero records consumed by the active
         // gain/RSSI path; profile-one state remains detached.
-        write_sdd_u16(0x20, 0x0400_35ac);
-        write_sdd_u16(0x22, 0x0400_35ae);
-        write_sdd_pair(0x40, 0x0400_3500);
-        write_sdd_u16(0x42, 0x0400_34fa);
-        write_sdd_pair(0x46, 0x0400_34fc);
+        write_sdd_u16(0x20, dtcm::sdd_gain_coefficient(0).unwrap());
+        write_sdd_u16(0x22, dtcm::sdd_gain_coefficient(1).unwrap());
+        write_sdd_pair(0x40, dtcm::sdd_rssi_coefficient(0, 0).unwrap());
+        write_sdd_u16(0x42, dtcm::sdd_calibration_coefficient(0).unwrap());
+        write_sdd_pair(0x46, dtcm::sdd_conversion_value(0, 0).unwrap());
     }
 }
 
@@ -86,42 +90,42 @@ unsafe fn snapshot_gain_state() {
     unsafe {
         let output = diagnostic_output();
         output.add(0).write_volatile(0x4753_4e50);
-        output
-            .add(1)
-            .write_volatile(u32::from((0x0400_994e as *const u8).read_volatile()));
+        output.add(1).write_volatile(u32::from(
+            (dtcm::phy_profile().get() as *const u8).read_volatile(),
+        ));
         output
             .add(2)
-            .write_volatile((0x0400_9994 as *const u32).read_volatile());
+            .write_volatile((dtcm::phy_measured_a().get() as *const u32).read_volatile());
         output
             .add(3)
-            .write_volatile((0x0400_9998 as *const u32).read_volatile());
-        output
-            .add(4)
-            .write_volatile((0x0400_1ff0 as *const u32).read_volatile());
-        output
-            .add(5)
-            .write_volatile((0x0400_2000 as *const u32).read_volatile());
-        output
-            .add(6)
-            .write_volatile((0x0400_2004 as *const u32).read_volatile());
+            .write_volatile((dtcm::phy_measured_b().get() as *const u32).read_volatile());
+        output.add(4).write_volatile(
+            (dtcm::scheduler_analog_enabled().get() as *const u32).read_volatile(),
+        );
+        output.add(5).write_volatile(
+            (dtcm::scheduler_analog_word(0).unwrap().get() as *const u32).read_volatile(),
+        );
+        output.add(6).write_volatile(
+            (dtcm::scheduler_analog_word(1).unwrap().get() as *const u32).read_volatile(),
+        );
         output
             .add(7)
-            .write_volatile((0x0400_99f4 as *const u32).read_volatile());
+            .write_volatile((dtcm::phy_state_scale().get() as *const u32).read_volatile());
         output
             .add(8)
-            .write_volatile((0x0400_99d4 as *const u32).read_volatile());
-        output
-            .add(9)
-            .write_volatile((0x0400_34f8 as *const u32).read_volatile());
-        output
-            .add(10)
-            .write_volatile((0x0400_34fc as *const u32).read_volatile());
-        output
-            .add(11)
-            .write_volatile((0x0400_3500 as *const u32).read_volatile());
-        output
-            .add(12)
-            .write_volatile((0x0400_35ac as *const u32).read_volatile());
+            .write_volatile((dtcm::phy_control_word().get() as *const u32).read_volatile());
+        output.add(9).write_volatile(
+            (dtcm::sdd_agc_correction(0).unwrap().get() as *const u32).read_volatile(),
+        );
+        output.add(10).write_volatile(
+            (dtcm::sdd_conversion_value(0, 0).unwrap().get() as *const u32).read_volatile(),
+        );
+        output.add(11).write_volatile(
+            (dtcm::sdd_rssi_coefficient(0, 0).unwrap().get() as *const u32).read_volatile(),
+        );
+        output.add(12).write_volatile(
+            (dtcm::sdd_gain_coefficient(0).unwrap().get() as *const u32).read_volatile(),
+        );
         output
             .add(13)
             .write_volatile((0x0abb_801c as *const u32).read_volatile());
