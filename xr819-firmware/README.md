@@ -83,10 +83,11 @@ slot-21 pointer, and host TX accepts payload-bearing unicast data while rejectin
 null/QoS-null frames that previously killed the TX path.
 
 WSM `ADD_KEY` and `REMOVE_KEY` are implemented for AES pairwise and group keys.
-The current experimental backend uses allocation-free RustCrypto AES-CCM to fill
-host-reserved CCMP IV/MIC space on TX and authenticate/decrypt packet-DMA frames
-on RX. Its host round-trip test and an independent Python `cryptography`
-AESCCM known-answer vector both pass, including exact ciphertext/MIC and
+ARM firmware uses the XR819 AES engine to fill host-reserved CCMP IV/MIC space
+on TX and authenticate/decrypt packet-DMA frames on RX. Allocation-free
+RustCrypto AES-CCM remains the host-test backend and independent oracle. The
+host round-trip test and Python `cryptography` AESCCM known-answer vector pass,
+including exact ciphertext/MIC and
 corrupted-ciphertext/MIC rejection. Linux no longer reports failed `0x000c`
 key installation. The bounded vendor host-TX path now completes protected
 station traffic end to end: DHCP obtains a lease, gateway and Internet pings
@@ -116,7 +117,7 @@ compaction/insertion, and pending-task outcomes. HIF requests now carry an
 explicit packet-RAM release token. The normal feature-free firmware admits
 ordinary non-EAPOL data into a real host-pool context and retains the original
 request token. It now applies vendor-shaped header
-classification, per-link/TID sequence assignment, software CCMP, VIF-slot
+classification, per-link/TID sequence assignment, target hardware CCMP, VIF-slot
 selection, PAS timing, descriptor construction, ownership bit `0x20`, and
 mode-0 pending-list insertion. RESET now unlinks a queued context before freeing
 it and returning the retained HIF request. Live pending-task service now applies
@@ -143,13 +144,12 @@ compile to no-ops and the normal counters layout is preserved. Fatal MAC
 exceptions remain available independently because they are part of terminal
 recovery diagnostics rather than the verbose host-TX trace stream.
 
-The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary CCMP uses
-transfer classes 6/7, commands `0x1100`, `0x1240`, `0x1402/0x1403`, and
-`0x3008_1008/0x3008_1009`, with completion through IRQ 18 or 20. Hardware AES
-is currently treated as an optional backend optimization and diagnostic oracle;
-the immediate priority is reliable unprotected/protected MAC publication and
-TX completion. Exact engine findings and the planned known-answer/IRQ tests are
-in [`../xr819-aes-engine.md`](../xr819-aes-engine.md).
+The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary target CCMP
+uses transfer classes 6/7, commands `0x1100`, `0x1240`, `0x1402/0x1403`, and
+`0x3008_1008/0x3008_1009`, with completion through registered IRQ 18 or 20
+callbacks. RustCrypto is retained only for host execution and cross-checking.
+Exact engine findings and known-answer/IRQ evidence are in
+[`../xr819-aes-engine.md`](../xr819-aes-engine.md).
 
 Implemented:
 
@@ -283,14 +283,18 @@ Implemented:
 Not yet implemented or production-complete:
 
 - active-VIF channel restoration and complete power-save resumption;
-- complete HIF output-queue parity with vendor firmware;
+- an explicit, pressure-safe HIF publication and credit-ordering contract for
+  the existing 64-entry software queue and four hardware descriptors;
+- deterministic initialization and access contracts for every live DTCM field;
 - controlled degraded-RF fallback and long-duration soak qualification;
-- aggregation;
+- multiple hardware-owned TX frames, then aggregation;
 - CCMP replay protection;
 - production recovery policy for architected CPU exceptions and unrecoverable
   packet-controller faults.
 
-## Intended bring-up order
+## Historical bring-up order (completed)
+
+This sequence records the original bring-up plan; it is not the current backlog.
 
 1. Replace the mailbox main image with a minimal HIF/WSM transport loop.
 2. Send a CW1200-compatible startup indication.
