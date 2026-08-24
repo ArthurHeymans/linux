@@ -4445,8 +4445,14 @@ pub unsafe fn initialize_mac_software_state() {
 
         // Vendor 0x198f2 mode-zero state pointers.
         write_u32(crate::dtcm::phy_table_pointer().get(), crate::dtcm::SDD_CONFIGURATION_TABLES.get() as u32);
-        write_u32(crate::dtcm::phy_calibration_table_a().get(), 0x0400_1088);
-        write_u32(crate::dtcm::phy_calibration_table_b().get(), 0x0400_1098);
+        write_u32(
+            crate::dtcm::phy_calibration_table_a().get(),
+            crate::dtcm::PHY_RATE_POINTER_TARGET_A.get() as u32,
+        );
+        write_u32(
+            crate::dtcm::phy_calibration_table_b().get(),
+            crate::dtcm::PHY_RATE_POINTER_TARGET_B.get() as u32,
+        );
         write_u32(crate::dtcm::phy_state_scale().get(), u32::MAX);
         write_u8(crate::dtcm::phy_table_control().get(), 0);
 

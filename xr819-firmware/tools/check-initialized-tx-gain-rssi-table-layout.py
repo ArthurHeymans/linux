@@ -57,6 +57,8 @@ REQUIRED = (
     STRUCT,
     "tx_gain_rssi_halfword_table: TxGainRssiHalfwordTable",
     "rate_pointer_targets: OpaqueBytes<0x20>",
+    "pub(crate) const PHY_RATE_POINTER_TARGET_A: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets));",
+    "pub(crate) const PHY_RATE_POINTER_TARGET_B: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets) + core::mem::size_of::<OpaqueBytes<0x20>>() / 2);",
     "assert_type_layout!(SharedU16, 0x02, 2)",
     "assert_type_layout!(TxGainRssiHalfwordTable, 0x2c, 2)",
     "offset_of!(TxGainRssiHalfwordTable, entries) == 0",
@@ -90,6 +92,8 @@ COMPILE_TIME_PHYSICAL_INVENTORY = (
 )
 FOCUSED_TEST_INVENTORY = (
     "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets), 0x0400_1088);",
+    "assert_eq!(PHY_RATE_POINTER_TARGET_A.get(), 0x0400_1088);",
+    "assert_eq!(PHY_RATE_POINTER_TARGET_B.get(), 0x0400_1098);",
     "assert_eq!(core::mem::size_of::<OpaqueBytes<0x20>>(), 0x20);",
     "assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, tx_gain_rssi_halfword_table), 0x0400_10a8);",
     "assert_eq!(core::mem::size_of::<TxGainRssiHalfwordTable>(), 0x2c);",
@@ -192,13 +196,13 @@ def check_exact_inventory_regression(source: str) -> None:
     compile_swap = normalized(compile_scope).replace(
         compile_item, compile_item.replace("== 0x0400_10d4", "== 0x0400_10d2"), 1
     )
-    test_address_item = normalized(FOCUSED_TEST_INVENTORY[2])
+    test_address_item = normalized(FOCUSED_TEST_INVENTORY[4])
     test_address_swap = normalized(test_scope).replace(
         test_address_item,
         swapped_once(test_address_item, "0x0400_10a8", "0x0400_10a6"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[5])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[7])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
         swapped_once(test_extent_item, "0x0400_10d4", "0x0400_10d2"),

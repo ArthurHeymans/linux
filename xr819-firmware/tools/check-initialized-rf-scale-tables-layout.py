@@ -52,7 +52,7 @@ ADJACENT_DECLARATIONS = {
 }
 SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
 SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
-    "src/phy.rs": {"rf_init_stage_a_mode0"},
+    "src/phy.rs": {"initialize_mac_software_state", "rf_init_stage_a_mode0"},
 }
 # No linked literals fall inside this interval: the guard word is reached
 # relative to the scheduler timer list head root (owned by the adjacent
@@ -69,6 +69,8 @@ REQUIRED = (
     "pre_rf_scale_tables: OpaqueBytes<0xc8>",
     "rate_pointer_targets: OpaqueBytes<0x20>",
     "pub(crate) const RF_SCALE_TABLE_A_MODE0_TARGET: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + 60 * core::mem::size_of::<SharedU16>());",
+    "pub(crate) const PHY_RATE_POINTER_TARGET_A: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets));",
+    "pub(crate) const PHY_RATE_POINTER_TARGET_B: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets) + core::mem::size_of::<OpaqueBytes<0x20>>() / 2);",
     "tx_gain_rssi_halfword_table: TxGainRssiHalfwordTable",
     "assert_type_layout!(SharedU16, 0x02, 2)",
     "assert_type_layout!(RfScaleHalfwordTable, 0x80, 2)",
@@ -137,6 +139,10 @@ FOCUSED_TEST_INVENTORY = (
     'assert_eq!(RF_SCALE_TABLE_A_MODE0_TARGET.get(), 0x0400_1000);',
     'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b), 0x0400_1008);',
     'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) + core::mem::size_of::<RfScaleHalfwordTable>(), 0x0400_1088);',
+    'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets), 0x0400_1088);',
+    'assert_eq!(PHY_RATE_POINTER_TARGET_A.get(), 0x0400_1088);',
+    'assert_eq!(PHY_RATE_POINTER_TARGET_B.get(), 0x0400_1098);',
+    'assert_eq!(core::mem::size_of::<OpaqueBytes<0x20>>(), 0x20);',
 )
 
 
@@ -239,7 +245,7 @@ def check_exact_inventory_regression(source: str) -> None:
         swapped_once(test_address_item, "0x0400_0f88", "0x0400_0f86"),
         1,
     )
-    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[24])
+    test_extent_item = normalized(FOCUSED_TEST_INVENTORY[25])
     test_extent_swap = normalized(test_scope).replace(
         test_extent_item,
         swapped_once(test_extent_item, "0x0400_1088", "0x0400_1086"),
@@ -376,7 +382,11 @@ def check_source() -> None:
     rust["src/dtcm.rs"] = rust["src/dtcm.rs"].replace(STRUCT, " " * len(STRUCT))
     production = "\n".join(rust.values())
     views, declarations = family_aliases(production)
-    sanctioned_roots = {"RF_SCALE_TABLE_A_MODE0_TARGET"}
+    sanctioned_roots = {
+        "PHY_RATE_POINTER_TARGET_A",
+        "PHY_RATE_POINTER_TARGET_B",
+        "RF_SCALE_TABLE_A_MODE0_TARGET",
+    }
     for kind, name, _ in declarations:
         if name in views and name not in sanctioned_roots:
             failures.append(f"additional scheduler tail {kind} alias is forbidden: {name}")
@@ -392,8 +402,8 @@ def check_source() -> None:
         failures.append(f"named scheduler tail production API is forbidden: {match.group(1)}")
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b(?!\s*:)", re.I)
     for relative, code in rust.items():
-        # rf_init_stage_a_mode0 publishes exactly the field-derived table-A
-        # entry-60 pointer used by the retained vendor translation.
+        # The retained PHY initialization paths publish only the exact
+        # field-derived RF scale and rate-target pointers pinned above.
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:
