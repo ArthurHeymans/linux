@@ -159,7 +159,6 @@ const CURRENT_PIPE_RECORD: u32 = CURRENT_PIPE + 0x0c;
 const CURRENT_SLOT: u32 = CURRENT_PIPE + 0x10;
 const PIPE_IRQ_PENDING: u32 = crate::platform::mac_register(0x0e84) as u32;
 const PIPE_IRQ_TRIGGER: u32 = crate::platform::mac_register(0x0e98) as u32;
-const PIPE_QUANTUM_POINTERS: u32 = crate::dtcm::DURATION_QUANTUM_POINTERS.get() as u32;
 const PIPE_QUANTUM: u32 = 0x0000_0fff;
 const PIPE_BUSY: u32 = PIPE_RECORDS + 7;
 const PIPE_STATUS_COUNTER: u32 = 0xfff0_1aa4;
@@ -1155,7 +1154,10 @@ pub fn plan_mac_pipe_service(
         let selected_pipe = middle.trailing_zeros() as u8;
         return MacPipeServicePlan::MiddleNibble {
             selected_pipe,
-            quantum_pointer_address: PIPE_QUANTUM_POINTERS + u32::from(selected_pipe) * 4,
+            quantum_pointer_address: crate::dtcm::duration_quantum_pointer_unchecked(
+                usize::from(selected_pipe),
+            )
+            .get() as u32,
             trigger: 1_u32 << (u32::from(selected_pipe) + 25),
             acknowledgement: (0x10_u32 << selected_pipe).wrapping_add(1).wrapping_neg(),
         };
@@ -6002,7 +6004,9 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         mmio.write_u16(frame + 0x50, frame_policy);
         quantum = airtime;
     }
-    let quantum_destination = mmio.read_u32(PIPE_QUANTUM_POINTERS + u32::from(pipe) * 4);
+    let quantum_destination = mmio.read_u32(
+        crate::dtcm::duration_quantum_pointer_unchecked(usize::from(pipe)).get() as u32,
+    );
     mmio.write_u32(quantum_destination, quantum.wrapping_add(0x1f) >> 5);
     if publication_bisect_reached(7) {
         return 7;
@@ -7947,7 +7951,7 @@ mod tests {
         let selected = 3;
         let selected_state = pipe_state_address(selected);
         mmio.set(selected_state + 2, 2);
-        mmio.set(PIPE_QUANTUM_POINTERS + 12, 0x1234);
+        mmio.set(crate::dtcm::duration_quantum_pointer_unchecked(3).get() as u32, 0x1234);
         let mut policy = MockTxPolicy::new();
 
         execute_mac_pipe_service(&mut mmio, SchedulerWord::new(0x0080), &mut policy);
@@ -8530,7 +8534,7 @@ mod tests {
             64,
         );
         mmio.set(
-            PIPE_QUANTUM_POINTERS,
+            crate::dtcm::duration_quantum_pointer_unchecked(0).get() as u32,
             crate::platform::mac_register(0x0e70) as u32,
         );
         mmio.set(pipe_state + 4, 8);
