@@ -95,8 +95,39 @@ python3 tools/compare-dtcm-initialized-snapshots.py \
   before.bin after.bin --transition warm-entry-to-startup
 ```
 
-The normal software gate runs the comparator's synthetic contract regressions.
-Real target snapshots remain required for P1 closure.
+The `dtcm-contract-diagnostics` feature now captures all three checkpoints into
+ordinary ITCM immediately at their defined startup boundaries. It exposes the
+captures through private read-MIB IDs `0xff00..0xff47`: entry uses
+`0xff00..0xff17`, platform uses `0xff18..0xff2f`, and startup uses
+`0xff30..0xff47`. Each stage has 24 pages with at most 352 snapshot bytes per response so
+the complete WSM confirmation fits the 384-byte HIF output slot. Feature-free
+firmware contains neither the buffers nor the MIB path.
+
+Build the diagnostic image with:
+
+```sh
+cargo +nightly build --release --bin hif-startup \
+  --features dtcm-contract-diagnostics \
+  --target thumbv5te-none-eabi -Z build-std=core
+```
+
+Save the 72 raw read-MIB confirmations (or their diagnostic data portions), then
+assemble and compare them with:
+
+```sh
+python3 tools/assemble-dtcm-initialized-snapshots.py responses/*.bin \
+  --output-dir snapshots
+python3 tools/compare-dtcm-initialized-snapshots.py \
+  snapshots/entry.bin snapshots/platform.bin --transition copy-to-platform
+python3 tools/compare-dtcm-initialized-snapshots.py \
+  snapshots/platform.bin snapshots/startup.bin --transition platform-to-startup
+```
+
+On a warm firmware reload, use that run's `entry.bin` and `startup.bin` with the
+`warm-entry-to-startup` transition. The normal software gate builds the ARM
+diagnostic image, verifies its stack and linker envelope, and runs synthetic
+capture/assembly/comparison regressions. Real target snapshots remain required
+for P1 closure.
 
 - COPY-stable table ranges must match the qualified reference bytes;
 - rebuilt fields must eventually gain canonical startup values rather than only

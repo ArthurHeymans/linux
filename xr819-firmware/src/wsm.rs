@@ -626,8 +626,10 @@ pub fn encode_read_mib_data_response(
     data: &[u8],
     output: &mut [u8],
 ) -> Result<usize, Error> {
-    let len = HEADER_LEN + 8 + data.len();
-    if data.len() > u16::MAX as usize || output.len() < len {
+    let Some(len) = (HEADER_LEN + 8).checked_add(data.len()) else {
+        return Err(Error::OutputTooSmall);
+    };
+    if len > u16::MAX as usize || output.len() < len {
         return Err(Error::OutputTooSmall);
     }
     Header {
@@ -639,6 +641,34 @@ pub fn encode_read_mib_data_response(
     write_u16(output, HEADER_LEN + 4, mib_id);
     write_u16(output, HEADER_LEN + 6, data.len() as u16);
     output[HEADER_LEN + 8..len].copy_from_slice(data);
+    Ok(len)
+}
+
+/// Finish a response whose data bytes already occupy `output[12..12 + data_len]`.
+///
+/// This avoids a second large buffer for paginated target diagnostics while
+/// retaining the ordinary read-MIB wire layout.
+#[cfg(any(feature = "dtcm-contract-diagnostics", test))]
+pub fn encode_read_mib_data_response_in_place(
+    status: u32,
+    mib_id: u16,
+    data_len: usize,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    let Some(len) = (HEADER_LEN + 8).checked_add(data_len) else {
+        return Err(Error::OutputTooSmall);
+    };
+    if len > u16::MAX as usize || output.len() < len {
+        return Err(Error::OutputTooSmall);
+    }
+    Header {
+        len: len as u16,
+        id: READ_MIB_RESP_ID,
+    }
+    .encode(output)?;
+    write_u32(output, HEADER_LEN, status);
+    write_u16(output, HEADER_LEN + 4, mib_id);
+    write_u16(output, HEADER_LEN + 6, data_len as u16);
     Ok(len)
 }
 
@@ -1012,6 +1042,35 @@ mod tests {
         assert_eq!(read_u32(&output, 32).unwrap(), (-160_i32) as u32);
         assert_eq!(read_u32(&output, 36).unwrap(), 212);
         assert_eq!(read_u32(&output, 40).unwrap(), 0);
+    }
+
+    #[test]
+    fn in_place_read_mib_response_preserves_existing_data() {
+        let mut output = [0xaa; 20];
+        output[12..20].copy_from_slice(b"snapshot");
+        assert_eq!(
+            encode_read_mib_data_response_in_place(0, 0xff00, 8, &mut output).unwrap(),
+            20
+        );
+        assert_eq!(Header::parse(&output).unwrap().base_id(), READ_MIB_RESP_ID);
+        assert_eq!(read_u32(&output, 4).unwrap(), 0);
+        assert_eq!(read_u16(&output, 8).unwrap(), 0xff00);
+        assert_eq!(read_u16(&output, 10).unwrap(), 8);
+        assert_eq!(&output[12..20], b"snapshot");
+    }
+
+    #[test]
+    fn read_mib_response_rejects_lengths_that_do_not_fit_the_wire_header() {
+        let data = std::vec![0_u8; u16::MAX as usize - 11];
+        let mut output = std::vec![0_u8; data.len() + 12];
+        assert_eq!(
+            encode_read_mib_data_response(0, 0xff00, &data, &mut output),
+            Err(Error::OutputTooSmall)
+        );
+        assert_eq!(
+            encode_read_mib_data_response_in_place(0, 0xff00, data.len(), &mut output),
+            Err(Error::OutputTooSmall)
+        );
     }
 
     #[test]

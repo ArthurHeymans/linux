@@ -184,7 +184,9 @@ eliminated outside <code>src/dtcm.rs</code>, and direct arithmetic on a
 arithmetic still require audit, while startup reconstructs only selected words rather than the complete
 <code>0x04000000..0x04002078</code> image. The boot/retention source and cold/warm snapshot behavior
 of every live initialized word must be closed before ordinary source decomposition can be called
-safe. The active writer matrix is maintained in <code>dtcm-runtime-contract.md</code>.</div>
+safe. A diagnostic-only image now captures the entry, post-platform, and post-startup images for
+paginated host retrieval; real cold/warm target evidence is still required. The active writer matrix
+and capture procedure are maintained in <code>dtcm-runtime-contract.md</code>.</div>
 <ul>
 <li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
 Do not move it back into DTCM for visual symmetry.</li>

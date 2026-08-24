@@ -20,11 +20,18 @@ cargo +nightly test
 
 echo "== diagnostic process-local host tests/recorders (do not execute ARM driver/HIF behavior) =="
 cargo +nightly test --features vendor-host-tx-diagnostics
+cargo +nightly test --features dtcm-contract-diagnostics
+
+echo "== DTCM contract diagnostic ARM image fits the qualified linker envelope =="
+cargo +nightly build --release --bin hif-startup --features dtcm-contract-diagnostics \
+    --target "$TARGET" "${BUILD_STD[@]}"
+python3 tools/check-rust-main-stack.py "$ELF"
 
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-dtcm-access.py
 python3 tools/compare-dtcm-initialized-snapshots.py --self-test
+python3 tools/assemble-dtcm-initialized-snapshots.py --self-test
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-debug-console-layout.py

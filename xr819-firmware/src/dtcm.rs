@@ -74,6 +74,134 @@ impl DtcmAddress {
     }
 }
 
+#[cfg(feature = "dtcm-contract-diagnostics")]
+pub const INITIALIZED_IMAGE_SIZE: usize = 0x2078;
+#[cfg(feature = "dtcm-contract-diagnostics")]
+pub const SNAPSHOT_MIB_BASE: u16 = 0xff00;
+#[cfg(feature = "dtcm-contract-diagnostics")]
+pub const SNAPSHOT_CHUNK_PAYLOAD_SIZE: usize = 352;
+#[cfg(feature = "dtcm-contract-diagnostics")]
+pub const SNAPSHOT_CHUNK_COUNT: usize =
+    INITIALIZED_IMAGE_SIZE.div_ceil(SNAPSHOT_CHUNK_PAYLOAD_SIZE);
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+const SNAPSHOT_HEADER_SIZE: usize = 16;
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotStage {
+    Entry = 0,
+    Platform = 1,
+    Startup = 2,
+}
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SnapshotChunk {
+    stage: SnapshotStage,
+    index: usize,
+    offset: usize,
+    length: usize,
+}
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+const fn snapshot_chunk(mib_id: u16) -> Option<SnapshotChunk> {
+    let relative = mib_id.wrapping_sub(SNAPSHOT_MIB_BASE) as usize;
+    if relative >= 3 * SNAPSHOT_CHUNK_COUNT {
+        return None;
+    }
+    let stage = match relative / SNAPSHOT_CHUNK_COUNT {
+        0 => SnapshotStage::Entry,
+        1 => SnapshotStage::Platform,
+        2 => SnapshotStage::Startup,
+        _ => return None,
+    };
+    let index = relative % SNAPSHOT_CHUNK_COUNT;
+    let offset = index * SNAPSHOT_CHUNK_PAYLOAD_SIZE;
+    let remaining = INITIALIZED_IMAGE_SIZE - offset;
+    Some(SnapshotChunk {
+        stage,
+        index,
+        offset,
+        length: if remaining < SNAPSHOT_CHUNK_PAYLOAD_SIZE {
+            remaining
+        } else {
+            SNAPSHOT_CHUNK_PAYLOAD_SIZE
+        },
+    })
+}
+
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+struct InitializedImageSnapshots(UnsafeCell<[[u8; INITIALIZED_IMAGE_SIZE]; 3]>);
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+// Startup captures finish before interrupts and MIB servicing begin. The only
+// later access is immutable foreground pagination; no capture/read overlap is
+// permitted by the unsafe APIs below.
+unsafe impl Sync for InitializedImageSnapshots {}
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+static INITIALIZED_IMAGE_SNAPSHOTS: InitializedImageSnapshots =
+    InitializedImageSnapshots(UnsafeCell::new([[0; INITIALIZED_IMAGE_SIZE]; 3]));
+
+/// Capture one exact initialized-image checkpoint after Rust BSS is available.
+///
+/// # Safety
+///
+/// Each stage must be captured exactly once during single-threaded startup,
+/// before interrupts or diagnostic MIB reads can access the snapshot buffers.
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+pub unsafe fn capture_initialized_image_snapshot(stage: SnapshotStage) {
+    unsafe {
+        let source = DTCM_STATE.0.get().cast::<u8>();
+        let destination = INITIALIZED_IMAGE_SNAPSHOTS
+            .0
+            .get()
+            .cast::<u8>()
+            .add(stage as usize * INITIALIZED_IMAGE_SIZE);
+        for offset in 0..INITIALIZED_IMAGE_SIZE {
+            destination.add(offset).write(source.add(offset).read_volatile());
+        }
+    }
+}
+
+/// Encode one private read-MIB page without forming a reference to DTCM.
+///
+/// # Safety
+///
+/// All three startup captures must be complete and immutable. The caller must
+/// serialize reads in the foreground HIF loop and must not recapture a stage.
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+pub unsafe fn write_initialized_image_snapshot_mib(
+    mib_id: u16,
+    output: &mut [u8],
+) -> Option<usize> {
+    let chunk = snapshot_chunk(mib_id)?;
+    let total = SNAPSHOT_HEADER_SIZE + chunk.length;
+    if output.len() < total {
+        return None;
+    }
+    output[..4].copy_from_slice(b"DTCM");
+    output[4] = 1;
+    output[5] = chunk.stage as u8;
+    output[6] = chunk.index as u8;
+    output[7] = SNAPSHOT_CHUNK_COUNT as u8;
+    output[8..10].copy_from_slice(&(chunk.offset as u16).to_le_bytes());
+    output[10..12].copy_from_slice(&(chunk.length as u16).to_le_bytes());
+    output[12..14].copy_from_slice(&(INITIALIZED_IMAGE_SIZE as u16).to_le_bytes());
+    output[14..16].fill(0);
+
+    unsafe {
+        let source = INITIALIZED_IMAGE_SNAPSHOTS
+            .0
+            .get()
+            .cast::<u8>()
+            .add(chunk.stage as usize * INITIALIZED_IMAGE_SIZE + chunk.offset);
+        for index in 0..chunk.length {
+            output[SNAPSHOT_HEADER_SIZE + index] = source.add(index).read();
+        }
+    }
+    Some(total)
+}
+
 /// Opaque storage with no safe byte-slice API.
 #[repr(transparent)]
 struct OpaqueBytes<const N: usize> {
@@ -3643,6 +3771,26 @@ mod tests {
         );
         assert!(DtcmAddress::new(DTCM_STATE_BASE - 1).is_none());
         assert!(DtcmAddress::new(DTCM_STATE_END).is_none());
+    }
+
+    #[cfg(feature = "dtcm-contract-diagnostics")]
+    #[test]
+    fn initialized_snapshot_mib_pages_cover_each_stage_exactly() {
+        assert_eq!(SNAPSHOT_CHUNK_COUNT, 24);
+        for stage in 0..3_usize {
+            let mut next = 0;
+            for index in 0..SNAPSHOT_CHUNK_COUNT {
+                let mib_id = SNAPSHOT_MIB_BASE + (stage * SNAPSHOT_CHUNK_COUNT + index) as u16;
+                let chunk = snapshot_chunk(mib_id).unwrap();
+                assert_eq!(chunk.stage as usize, stage);
+                assert_eq!(chunk.index, index);
+                assert_eq!(chunk.offset, next);
+                next += chunk.length;
+            }
+            assert_eq!(next, INITIALIZED_IMAGE_SIZE);
+        }
+        assert!(snapshot_chunk(SNAPSHOT_MIB_BASE - 1).is_none());
+        assert!(snapshot_chunk(SNAPSHOT_MIB_BASE + (3 * SNAPSHOT_CHUNK_COUNT) as u16).is_none());
     }
 
     #[test]

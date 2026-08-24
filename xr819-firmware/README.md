@@ -454,8 +454,12 @@ while unrelated control bit 26 is expressed as a bit rather than an
 address-looking value. The same gate rejects direct arithmetic on a
 `dtcm::...get()` expression; new indexed and interior accesses must be derived
 by `src/dtcm.rs`, while older family-local aliases remain audit debt. The current
-startup writer matrix, access rules, and remaining cold/warm snapshot work are
-recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md).
+startup writer matrix, access rules, and cold/warm snapshot procedure are
+recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md). The optional
+`dtcm-contract-diagnostics` image captures entry, post-platform, and
+post-startup copies of the initialized `0x2078` bytes and publishes them through
+paginated private read-MIB responses; feature-free firmware has no snapshot
+storage or diagnostic MIB path.
 
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state

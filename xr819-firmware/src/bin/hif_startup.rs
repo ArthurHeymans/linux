@@ -38,6 +38,8 @@ use xr819_firmware::wsm::{
     encode_xr819_tx_confirm_retry_details,
 };
 use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+use xr819_firmware::wsm::encode_read_mib_data_response_in_place;
 
 /// Const-initialized storage taken once by the single reset-time owner.
 ///
@@ -281,6 +283,74 @@ unsafe fn service_management_request(
     }
 }
 
+#[inline(always)]
+fn encode_standard_read_mib(
+    mib_id: u16,
+    transport: &Transport,
+    output: &mut [u8],
+) -> Result<usize, xr819_firmware::wsm::Error> {
+    if mib_id != 0x100c {
+        return encode_read_mib_response(STATUS_FAILURE, mib_id, output);
+    }
+
+    let diagnostics = radio::diagnostics();
+    let (_scan_channels, scan_max_time) = scan::diagnostic_plan();
+    let (dwell_arm, dwell_deadline, dwell_now, _dwell_waits) = scan::diagnostic_dwell();
+    let (_scan_status, scan_error) = scan::diagnostic_error();
+    let _iq = xr819_firmware::phy::iq_hardware_diagnostics();
+    #[allow(unused_mut)]
+    let mut values = [
+        diagnostics.producer_changes,
+        diagnostics.bad_magic,
+        diagnostics.valid_slots,
+        diagnostics.indications,
+        diagnostics.malformed_slots,
+        diagnostics.filtered_frames,
+        diagnostics.oversized_frames,
+        diagnostics.released_slots,
+        u32::from(diagnostics.last_slot_length)
+            | (u32::from(diagnostics.last_frame_control) << 16),
+        u32::from(diagnostics.last_channel)
+            | (u32::from(diagnostics.last_active_channel) << 16),
+        diagnostics.last_trailer_word,
+        scan_max_time,
+        dwell_arm,
+        dwell_deadline,
+        dwell_now,
+        unsafe { (xr819_firmware::dtcm::MAC_WAKE_MODE.get() as *const u32).read_volatile() },
+        unsafe {
+            u32::from(
+                (xr819_firmware::dtcm::phy_profile0_ready().get() as *const u8).read_volatile(),
+            ) | (u32::from(
+                (xr819_firmware::dtcm::phy_auxiliary_state().get() as *const u8).read_volatile(),
+            ) << 8)
+                | (u32::from(
+                    (xr819_firmware::dtcm::phy_startup_observation().get() as *const u8)
+                        .read_volatile(),
+                ) << 16)
+                | (u32::from(
+                    (xr819_firmware::dtcm::phy_silicon_variant().get() as *const u8)
+                        .read_volatile(),
+                ) << 24)
+        },
+        scan_error,
+        unsafe { (platform::mac_register(0x0600) as *const u32).read_volatile() },
+        unsafe { (platform::mac_register(0x0604) as *const u32).read_volatile() },
+        unsafe { (platform::mac_register(0x0608) as *const u32).read_volatile() },
+        if ENABLE_SINGLE_PROBE_EXPERIMENT {
+            tx::probe_experiment_diagnostic_value()
+        } else {
+            unsafe { (packet_ram::rx_fifo_base() as *const u32).read_volatile() }
+        },
+    ];
+    host_tx_diagnostics::populate_counters(&mut values, transport);
+    let mut data = [0_u8; 88];
+    for (index, value) in values.into_iter().enumerate() {
+        data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    encode_read_mib_data_response(0, mib_id, &data, output)
+}
+
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
@@ -299,7 +369,19 @@ pub extern "C" fn _start() -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn rust_main() -> ! {
     unsafe { clear_rust_bss() };
+    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+    unsafe {
+        xr819_firmware::dtcm::capture_initialized_image_snapshot(
+            xr819_firmware::dtcm::SnapshotStage::Entry,
+        )
+    };
     initialize_runtime_state();
+    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+    unsafe {
+        xr819_firmware::dtcm::capture_initialized_image_snapshot(
+            xr819_firmware::dtcm::SnapshotStage::Platform,
+        )
+    };
     if !wait_for_host_download_completion(10_000_000) {
         loop {
             core::hint::spin_loop();
@@ -359,6 +441,12 @@ extern "C" fn rust_main() -> ! {
         // Vendor `0x5a8` initializes this pool only after `0x14c` returns.
         xr819_firmware::tx::initialize_internal_pool();
     }
+    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+    unsafe {
+        xr819_firmware::dtcm::capture_initialized_image_snapshot(
+            xr819_firmware::dtcm::SnapshotStage::Startup,
+        )
+    };
     // Vendor `0xc80` is the final hardware-visible step before `0x158fc`.
     enable_packet_controller();
     debug_stop(9, 0x5354_4709);
@@ -785,57 +873,22 @@ extern "C" fn rust_main() -> ! {
                     .get(..2)
                     .map(|value| u16::from_le_bytes([value[0], value[1]]))
                     .unwrap_or(0);
-                if mib_id == 0x100c {
-                    let diagnostics = radio::diagnostics();
-                    let (_scan_channels, scan_max_time) = scan::diagnostic_plan();
-                    let (dwell_arm, dwell_deadline, dwell_now, _dwell_waits) =
-                        scan::diagnostic_dwell();
-                    let (_scan_status, scan_error) = scan::diagnostic_error();
-                    let _iq = xr819_firmware::phy::iq_hardware_diagnostics();
-                    #[allow(unused_mut)]
-                    let mut values = [
-                        diagnostics.producer_changes,
-                        diagnostics.bad_magic,
-                        diagnostics.valid_slots,
-                        diagnostics.indications,
-                        diagnostics.malformed_slots,
-                        diagnostics.filtered_frames,
-                        diagnostics.oversized_frames,
-                        diagnostics.released_slots,
-                        u32::from(diagnostics.last_slot_length)
-                            | (u32::from(diagnostics.last_frame_control) << 16),
-                        u32::from(diagnostics.last_channel)
-                            | (u32::from(diagnostics.last_active_channel) << 16),
-                        diagnostics.last_trailer_word,
-                        scan_max_time,
-                        dwell_arm,
-                        dwell_deadline,
-                        dwell_now,
-                        unsafe { (xr819_firmware::dtcm::MAC_WAKE_MODE.get() as *const u32).read_volatile() },
-                        unsafe {
-                            u32::from((xr819_firmware::dtcm::phy_profile0_ready().get() as *const u8).read_volatile())
-                                | (u32::from((xr819_firmware::dtcm::phy_auxiliary_state().get() as *const u8).read_volatile()) << 8)
-                                | (u32::from((xr819_firmware::dtcm::phy_startup_observation().get() as *const u8).read_volatile()) << 16)
-                                | (u32::from((xr819_firmware::dtcm::phy_silicon_variant().get() as *const u8).read_volatile()) << 24)
-                        },
-                        scan_error,
-                        unsafe { (platform::mac_register(0x0600) as *const u32).read_volatile() },
-                        unsafe { (platform::mac_register(0x0604) as *const u32).read_volatile() },
-                        unsafe { (platform::mac_register(0x0608) as *const u32).read_volatile() },
-                        if ENABLE_SINGLE_PROBE_EXPERIMENT {
-                            tx::probe_experiment_diagnostic_value()
-                        } else {
-                            unsafe { (packet_ram::rx_fifo_base() as *const u32).read_volatile() }
-                        },
-                    ];
-                    host_tx_diagnostics::populate_counters(&mut values, &*transport);
-                    let mut data = [0_u8; 88];
-                    for (index, value) in values.into_iter().enumerate() {
-                        data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+                {
+                    if let Some(length) = unsafe {
+                        xr819_firmware::dtcm::write_initialized_image_snapshot_mib(
+                            mib_id,
+                            &mut output[12..],
+                        )
+                    } {
+                        encode_read_mib_data_response_in_place(0, mib_id, length, output)
+                    } else {
+                        encode_standard_read_mib(mib_id, &*transport, output)
                     }
-                    encode_read_mib_data_response(0, mib_id, &data, output)
-                } else {
-                    encode_read_mib_response(STATUS_FAILURE, mib_id, output)
+                }
+                #[cfg(not(all(feature = "dtcm-contract-diagnostics", target_arch = "arm")))]
+                {
+                    encode_standard_read_mib(mib_id, &*transport, output)
                 }
             } else if request_id == ADD_KEY_REQ_ID {
                 let status = AddKeyRequest::parse(request_payload)

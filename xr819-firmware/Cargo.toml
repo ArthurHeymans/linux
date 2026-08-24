@@ -12,6 +12,9 @@ crate-type = ["rlib"]
 default = []
 # Optional bring-up recorder and snapshots. Normal firmware has no features.
 vendor-host-tx-diagnostics = []
+# Captures the initialized DTCM image at three startup checkpoints and exposes
+# it through private paginated read-MIB diagnostics.
+dtcm-contract-diagnostics = []
 
 [[bin]]
 name = "mailbox"
