@@ -441,6 +441,11 @@ typed member view of the shared quarantine object, not a standalone allocation
 or exclusive ownership claim; retained teardown and diagnostic code still
 addresses that fixed identity.
 
+`tools/check-dtcm-access.py` freezes every remaining direct production DTCM
+literal outside `src/dtcm.rs` in an exact reviewed manifest. New literals and
+unreviewed inventory shrinkage both fail the normal gate, keeping address
+construction confined while each remaining caller family is migrated.
+
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state
 should use Rust globals in ITCM while the lower DTCM quarantine is reduced one

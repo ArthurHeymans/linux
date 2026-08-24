@@ -1,0 +1,49 @@
+{
+  "inventory": {
+    "src/bin/hif_extension_probe.rs": {
+      "0x04001ff0": 1,
+      "0x04002000": 1,
+      "0x04002004": 1,
+      "0x040034f8": 1,
+      "0x040034fa": 1,
+      "0x040034fc": 2,
+      "0x04003500": 2,
+      "0x040035ac": 2,
+      "0x040035ae": 1,
+      "0x0400994e": 1,
+      "0x04009994": 1,
+      "0x04009998": 1,
+      "0x040099d4": 1,
+      "0x040099f4": 1
+    },
+    "src/download.rs": {
+      "0x04000000": 1
+    },
+    "src/mac.rs": {
+      "0x04000000": 1,
+      "0x04001572": 1
+    },
+    "src/phy.rs": {
+      "0x04001000": 1,
+      "0x04001088": 1,
+      "0x04001098": 1
+    },
+    "src/platform.rs": {
+      "0x04000000": 1,
+      "0x04000004": 1
+    },
+    "src/tx.rs": {
+      "0x04000000": 1,
+      "0x04002028": 1,
+      "0x04008f4c": 1,
+      "0x04008f54": 1,
+      "0x04008f5c": 1,
+      "0x04008f64": 1
+    },
+    "src/vendor_host_tx.rs": {
+      "0x04000000": 3
+    }
+  },
+  "purpose": "Known direct DTCM literals outside src/dtcm.rs; entries must only shrink as typed accessors replace them.",
+  "schema": 1
+}
