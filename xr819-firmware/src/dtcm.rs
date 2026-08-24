@@ -2024,6 +2024,7 @@ pub(crate) const MAC_WAKE_RESTORE_PENDING: DtcmAddress = DtcmAddress::from_offse
 pub const MAC_WAKE_MODE: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, mode));
 pub(crate) const MAC_WAKE_CONTROL: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, control));
 pub(crate) const MAC_RETRY_RATE_MAP: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, retry_rate_map));
+pub(crate) const fn mac_retry_rate_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_RETRY_RATE_MAP.offset() + rate) }
 pub(crate) const MAC_EDCA_SLOT_TIMING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, edca_slot_timing));
 pub(crate) const MAC_BEACON_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_beacon_state));
 pub(crate) const MAC_BEACON_RESPONSE_COMMANDS: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, response_commands));
@@ -2039,7 +2040,9 @@ pub(crate) const LOW_MAC_GLOBAL: DtcmAddress = DtcmAddress::from_offset(core::me
 pub(crate) const LOW_MAC_FIFO_STATUS: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, fifo_status));
 pub(crate) const LOW_MAC_LEGACY_MODE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode));
 pub(crate) const LOW_MAC_SHORT_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, short_airtimes));
+pub(crate) const fn low_mac_short_airtime_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(LOW_MAC_SHORT_AIRTIME_TABLE.offset() + rate * core::mem::size_of::<SharedU16>()) }
 pub(crate) const LOW_MAC_LONG_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, long_airtimes));
+pub(crate) const fn low_mac_long_airtime_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(LOW_MAC_LONG_AIRTIME_TABLE.offset() + rate * core::mem::size_of::<SharedU16>()) }
 pub(crate) const MAC_PIPE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records));
 pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(mac_pipe_record_unchecked(pipe)) } else { None } }
 pub(crate) const fn mac_pipe_record_unchecked(pipe: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>()) }
@@ -4373,6 +4376,8 @@ mod tests {
         assert_eq!(MAC_WAKE_MODE.get(), 0x0400_1ae4);
         assert_eq!(MAC_WAKE_CONTROL.get(), 0x0400_1ae8);
         assert_eq!(MAC_RETRY_RATE_MAP.get(), 0x0400_1aec);
+        assert_eq!(mac_retry_rate_unchecked(0).get(), 0x0400_1aec);
+        assert_eq!(mac_retry_rate_unchecked(21).get(), 0x0400_1b01);
         assert_eq!(MAC_RETRY_RATE_MAP.get() + 22, 0x0400_1b02);
         assert_eq!(MAC_EDCA_SLOT_TIMING.get(), 0x0400_1b04);
         assert_eq!(MAC_EDCA_SLOT_TIMING.get() + 4, 0x0400_1b08);
@@ -4399,7 +4404,9 @@ mod tests {
         assert_eq!(LOW_MAC_FIFO_STATUS.get(), 0x0400_1681);
         assert_eq!(LOW_MAC_LEGACY_MODE.get(), 0x0400_1685);
         assert_eq!(LOW_MAC_SHORT_AIRTIME_TABLE.get(), 0x0400_16c8);
+        assert_eq!(low_mac_short_airtime_unchecked(21).get(), 0x0400_16f2);
         assert_eq!(LOW_MAC_LONG_AIRTIME_TABLE.get(), 0x0400_16f4);
+        assert_eq!(low_mac_long_airtime_unchecked(21).get(), 0x0400_171e);
         assert_eq!(LOW_MAC_GLOBAL.get() + 0xa0, MAC_PIPE_RECORDS.get());
     }
 

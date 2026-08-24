@@ -170,9 +170,6 @@ const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
 const PIPE_RETRY_HARDWARE_STATE: u32 = crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
-const PIPE_RETRY_RATE_MAP: u32 = crate::dtcm::MAC_RETRY_RATE_MAP.get() as u32;
-const PIPE_RETRY_TIMING_TABLE: u32 = crate::dtcm::TX_DURATION_TIMING_TABLE.get() as u32;
-const PAS_ACK_TIMING_TABLE: usize = crate::dtcm::LOW_MAC_SHORT_AIRTIME_TABLE.get();
 const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
 #[cfg(target_arch = "arm")]
 const INTERRUPT_PENDING: usize = 0x0a88_0020;
@@ -2273,8 +2270,12 @@ fn build_single_frame_duration<M: MacPipeMmio>(
 
     let duration_word = if expects_ack {
         let rate = u32::from(mmio.read_u8(frame + 0x0f));
-        let timing_index = u32::from(mmio.read_u8(PIPE_RETRY_RATE_MAP + rate));
-        let timing = u32::from(mmio.read_u16(PIPE_RETRY_TIMING_TABLE + timing_index * 2));
+        let timing_index = u32::from(mmio.read_u8(
+            crate::dtcm::mac_retry_rate_unchecked(rate as usize).get() as u32,
+        ));
+        let timing = u32::from(mmio.read_u16(
+            crate::dtcm::tx_duration_timing_unchecked(timing_index as usize).get() as u32,
+        ));
         let duration = mmio
             .read_u32(PIPE_RECORDS + 0x20)
             .wrapping_add(mmio.read_u32(PIPE_RECORDS + 0x1c).wrapping_mul(2))
@@ -6299,12 +6300,11 @@ unsafe fn prepare_single_frame_pas_timing(
         // rate attribute directly to `pas_build_phy_rate_words()`. The rate
         // map index below selects ACK timing only; writing it into frame+0x0d
         // changed healthy vendor `0x5104....` words into `0x5107....`.
-        let ack_table = if flags & 0x4000 != 0 {
-            PAS_ACK_TIMING_TABLE + (0x74 - 0x48)
+        let ack_duration = read_u16(if flags & 0x4000 != 0 {
+            crate::dtcm::low_mac_long_airtime_unchecked(timing_index).get()
         } else {
-            PAS_ACK_TIMING_TABLE
-        };
-        let ack_duration = read_u16(ack_table + timing_index * 2);
+            crate::dtcm::low_mac_short_airtime_unchecked(timing_index).get()
+        });
         let mode = read_u8(pas.mode_byte().get());
         let header = read_u32(frame) as usize;
         let special_peer = (mode == 5 || mode == 6)
@@ -8298,8 +8298,8 @@ mod tests {
                 .get() as u32,
             0x001f,
         );
-        mmio.set(PIPE_RETRY_RATE_MAP + 2, 3);
-        mmio.set(PIPE_RETRY_TIMING_TABLE + 6, 0x20);
+        mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 3);
+        mmio.set(crate::dtcm::tx_duration_timing_unchecked(3).get() as u32, 0x20);
         mmio.set(PIPE_RECORDS + 0x1c, 2);
         mmio.set(PIPE_RECORDS + 0x20, 3);
         mmio.set(PIPE_RETRY_HARDWARE_STATE, 0);
@@ -8373,8 +8373,8 @@ mod tests {
                 .get() as u32,
             0x001f,
         );
-        mmio.set(PIPE_RETRY_RATE_MAP + 2, 3);
-        mmio.set(PIPE_RETRY_TIMING_TABLE + 6, 0x20);
+        mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 3);
+        mmio.set(crate::dtcm::tx_duration_timing_unchecked(3).get() as u32, 0x20);
         mmio.set(PIPE_RECORDS + 0x1c, 2);
         mmio.set(PIPE_RECORDS + 0x20, 3);
         mmio.set(PIPE_RETRY_HARDWARE_STATE, 0);
@@ -8426,8 +8426,8 @@ mod tests {
                 .get() as u32,
             0,
         );
-        mmio.set(PIPE_RETRY_RATE_MAP + 2, 0);
-        mmio.set(PIPE_RETRY_TIMING_TABLE, 0);
+        mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 0);
+        mmio.set(crate::dtcm::tx_duration_timing_unchecked(0).get() as u32, 0);
         mmio.set(PIPE_RETRY_HARDWARE_STATE, 0);
         let mut backend = MockRearmBackend::new();
 
@@ -8471,8 +8471,8 @@ mod tests {
                 .get() as u32,
             0,
         );
-        mmio.set(PIPE_RETRY_RATE_MAP + 1, 0);
-        mmio.set(PIPE_RETRY_TIMING_TABLE, 0);
+        mmio.set(crate::dtcm::mac_retry_rate_unchecked(1).get() as u32, 0);
+        mmio.set(crate::dtcm::tx_duration_timing_unchecked(0).get() as u32, 0);
         mmio.set(PIPE_RETRY_HARDWARE_STATE, 2);
         let mut backend = MockRearmBackend::new();
 
