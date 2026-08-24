@@ -13,9 +13,9 @@ The sole caller masks every index with & 0x3f after each increment, proving
 the 64-entry extent of both tables; the interval below (pre_rf_scale_tables)
 and above (post_rf_scale_tables, next direct root rf_init_stage_a DATA at
 0x040010a8 region / phy_select_rate_tables pointer targets at 0x04001088)
-bounds them exactly. Note: vendor rf_init_stage_a stores the pointer VALUE
-0x04001000 into RF SRAM state in the non-primary mode branch -- an opaque
-consumer path that changes no byte typing here.
+bounds them exactly. Vendor rf_init_stage_a stores the field-derived address of
+table-A entry 60 into RF SRAM state in the non-primary mode branch. That opaque
+pointer consumer changes no byte typing here.
 
 The initial COPY values are loader-owned; no writer closure is claimed:
 computed, indirect, generic HIF/debug, vendor, IRQ, and FIQ mutation remain
@@ -50,9 +50,7 @@ OWNER_FILES = {
 ADJACENT_DECLARATIONS = {
     "tools/check-initialized-register-write-lists-layout.py": "(0x04000E48, 0x04000EC0)",
 }
-SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
-    "src/phy.rs": {"write_u32(BASE - 0x28, 0x0400_1000);"},
-}
+SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
 SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
     "src/phy.rs": {"rf_init_stage_a_mode0"},
 }
@@ -70,6 +68,7 @@ REQUIRED = (
     "rf_scale_table_b: RfScaleHalfwordTable",
     "pre_rf_scale_tables: OpaqueBytes<0xc8>",
     "rate_pointer_targets: OpaqueBytes<0x20>",
+    "pub(crate) const RF_SCALE_TABLE_A_MODE0_TARGET: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + 60 * core::mem::size_of::<SharedU16>());",
     "tx_gain_rssi_halfword_table: TxGainRssiHalfwordTable",
     "assert_type_layout!(SharedU16, 0x02, 2)",
     "assert_type_layout!(RfScaleHalfwordTable, 0x80, 2)",
@@ -135,6 +134,7 @@ FOCUSED_TEST_INVENTORY = (
     'assert_eq!(core::mem::align_of::<RfScaleHalfwordTable>(), 2);',
     'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a), 0x0400_0f88);',
     'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + core::mem::size_of::<RfScaleHalfwordTable>(), 0x0400_1008);',
+    'assert_eq!(RF_SCALE_TABLE_A_MODE0_TARGET.get(), 0x0400_1000);',
     'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b), 0x0400_1008);',
     'assert_eq!(image + core::mem::offset_of!(InitializedVendorImage, rf_scale_table_b) + core::mem::size_of::<RfScaleHalfwordTable>(), 0x0400_1088);',
 )
@@ -376,7 +376,7 @@ def check_source() -> None:
     rust["src/dtcm.rs"] = rust["src/dtcm.rs"].replace(STRUCT, " " * len(STRUCT))
     production = "\n".join(rust.values())
     views, declarations = family_aliases(production)
-    sanctioned_roots = set()
+    sanctioned_roots = {"RF_SCALE_TABLE_A_MODE0_TARGET"}
     for kind, name, _ in declarations:
         if name in views and name not in sanctioned_roots:
             failures.append(f"additional scheduler tail {kind} alias is forbidden: {name}")
@@ -384,15 +384,16 @@ def check_source() -> None:
     if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
         failures.append("production impl for RfScaleHalfwordTable is forbidden")
     for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
-        if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
+        if (view_pattern.search(match.group())
+                and match.group(1) not in sanctioned_roots
+                and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group())):
             failures.append(f"direct scheduler tail const/static alias is forbidden: {match.group(1)}")
     for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*register_write_lists_entry_marker[A-Za-z0-9_]*)", production, re.I):
         failures.append(f"named scheduler tail production API is forbidden: {match.group(1)}")
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b(?!\s*:)", re.I)
     for relative, code in rust.items():
-        # start_scheduler_timer (tx.rs) is the retained Rust translation of
-        # vendor timer_start; it reads exactly the guard word 0x0400_1008 that
-        # timer_start itself reads, via the single pinned consumer line below.
+        # rf_init_stage_a_mode0 publishes exactly the field-derived table-A
+        # entry-60 pointer used by the retained vendor translation.
         sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         excess = [f for f in functions_consuming_family(code, views) if f not in sanctioned_functions]
         for function in excess:

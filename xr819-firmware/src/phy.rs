@@ -1674,7 +1674,10 @@ unsafe fn rf_init_stage_a_mode0() {
         write_u32(BASE - 0x44, 0x0002_4f36);
         write_u32(BASE + 0x38, 0x0002_4f36);
         write_u32(BASE - 0x3c, 0x1000);
-        write_u32(BASE - 0x28, 0x0400_1000);
+        write_u32(
+            BASE - 0x28,
+            crate::dtcm::RF_SCALE_TABLE_A_MODE0_TARGET.get() as u32,
+        );
         write_u32(BASE - 0x38, 0x0e2c_aa32);
         write_u32(BASE - 0x34, 0x0e7c_aef2);
         write_u32(BASE - 0x30, 0x0f7c_aef2);
