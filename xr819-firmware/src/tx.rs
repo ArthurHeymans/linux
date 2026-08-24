@@ -238,8 +238,6 @@ fn publication_bisect_reached(reached: u8) -> bool {
     let configured = unsafe { *ACTIVE_PUBLICATION_BISECT_STAGE.0.get() };
     publication_bisect_matches(configured, reached)
 }
-const MAC_BEACON_STATE: u32 = crate::dtcm::MAC_BEACON_STATE.get() as u32;
-const MAC_BEACON_CONFIG: u32 = crate::dtcm::LOW_MAC_RUNTIME_ROOT.get() as u32;
 const MAC_BEACON_TIMER: u32 = crate::platform::mac_register(0x0e00) as u32;
 
 unsafe fn read_u8(address: usize) -> u8 {
@@ -5539,12 +5537,16 @@ where
     M: MacPipeMmio,
     F: FnOnce(u32),
 {
-    mmio.write_u32(MAC_BEACON_STATE + 0x28, 5);
-    if mmio.read_u16(MAC_BEACON_CONFIG + 0x12) != 0 {
+    mmio.write_u32(crate::dtcm::MAC_BEACON_CONTROL_STATE.get() as u32, 5);
+    if mmio.read_u16(crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get() as u32) != 0 {
         mmio.write_u16(PIPE_RECORDS + 8, 0x2000);
         let timer = mmio
-            .read_u32(MAC_BEACON_STATE + 0x2c)
-            .wrapping_add(u32::from(mmio.read_u16(MAC_BEACON_CONFIG + 0x12)) * 0x400)
+            .read_u32(crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get() as u32)
+            .wrapping_add(
+                u32::from(
+                    mmio.read_u16(crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get() as u32),
+                ) * 0x400,
+            )
             | 0x8000_0000;
         mmio.write_u32(MAC_BEACON_TIMER + 0x14, timer);
     }
@@ -8798,13 +8800,13 @@ mod tests {
     #[test]
     fn beacon_event_programs_timer_before_scheduler_publication() {
         let mut mmio = MockPipeMmio::new();
-        mmio.set(MAC_BEACON_CONFIG + 0x12, 0x20);
-        mmio.set(MAC_BEACON_STATE + 0x2c, 0x1234);
+        mmio.set(crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get() as u32, 0x20);
+        mmio.set(crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get() as u32, 0x1234);
         let mut raised = 0;
 
         execute_mac_beacon_event(&mut mmio, |bits| raised = bits);
 
-        assert_eq!(mmio.get(MAC_BEACON_STATE + 0x28), 5);
+        assert_eq!(mmio.get(crate::dtcm::MAC_BEACON_CONTROL_STATE.get() as u32), 5);
         assert_eq!(mmio.get(PIPE_RECORDS + 8), 0x2000);
         assert_eq!(mmio.get(MAC_BEACON_TIMER + 0x14), 0x8000_9234);
         assert_eq!(raised, 1 << 24);
