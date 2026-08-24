@@ -28,11 +28,12 @@
 <body>
 
 <h1>XR819 open firmware: architecture review and work plan</h1>
-<p><strong>Revision 7.</strong> Rebuilt from the current source tree, current README, the
+<p><strong>Revision 8.</strong> Rebuilt from the current source tree, current README, the
 2026-08-15 handoff, the TX ownership documents, and DTCM appendices A.105&ndash;A.121.
-The goal is clean, idiomatic, performant Rust firmware that replaces the vendor binary. Vendor
-code and layouts are evidence about hardware contracts, not a requirement to reproduce vendor
-internals.</p>
+Revision 8 moves DTCM runtime-contract closure ahead of source decomposition and moves HIF
+publication-contract proof ahead of additional hardware TX concurrency. The goal is clean,
+idiomatic, performant Rust firmware that replaces the vendor binary. Vendor code and layouts are
+evidence about hardware contracts, not a requirement to reproduce vendor internals.</p>
 
 <h2 id="summary">1. Executive summary</h2>
 <p>The project is already a functioning firmware, not an early bring-up scaffold. The
@@ -46,9 +47,11 @@ preserve the working cooperative execution model and ownership rules, make their
 smaller and more explicit, close security and lifecycle gaps, then add safe hardware concurrency
 and aggregation. DTCM address retirement is a separate long-term closure project. It must not be
 mixed into ordinary refactors or throughput work.</p>
-<div class="note good"><strong>Recommended order:</strong> behavior-preserving decomposition,
-correctness/security gaps, power-save and recovery completeness, measured TX concurrency,
-A-MPDU, then final DTCM ABI retirement after all fixed-address writers are gone.</div>
+<div class="note good"><strong>Recommended order:</strong> establish the live DTCM
+initialization/access contract, perform behavior-preserving reactor and TX decomposition, close
+correctness and security gaps, prove the HIF publication contract, qualify recovery, add measured
+per-pipe TX concurrency, add A-MPDU, then retire the DTCM ABI atomically after all fixed-address
+writers are gone.</div>
 
 <h2 id="evidence">2. Evidence hierarchy and current status</h2>
 <h3>2.1 Source precedence</h3>
@@ -171,7 +174,15 @@ domains.</li>
 <h3>3.4 DTCM is a quarantine ABI, not the desired state store</h3>
 <p>The implemented <code>DtcmLayout</code> is one fixed <code>0xa000</code>-byte object. Its value is
 structural: it prevents accidental hole allocation, preserves overlays, and lets checkers verify
-boundaries. It does not prove exclusive Rust ownership and it is not movable.</p>
+boundaries. It does not prove exclusive Rust ownership and it is not movable. The accurate claim
+is that DTCM is <strong>structurally decoded and quarantined</strong>, not that its usage is fully
+translated.</p>
+<div class="note"><strong>Current contract gap:</strong> <code>.dtcm.state</code> is NOLOAD and
+the packed-image checker rejects DTCM COPY/FILL records. Startup clears the historical BSS range
+and reconstructs selected words, but it does not initialize the complete
+<code>0x04000000..0x04002078</code> image. Production code still contains direct DTCM literals,
+manual field arithmetic, and broad raw volatile helpers. The boot/retention source of every live
+initialized word must be classified before ordinary source decomposition can be called safe.</div>
 <ul>
 <li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
 Do not move it back into DTCM for visual symmetry.</li>
@@ -203,6 +214,10 @@ legitimately use those forms. Gates must target direct DTCM address construction
 <tr><td>The DTCM file should become independently anchored family objects.</td>
 <td>Contradicts the native-layout plan. Split source organization only; preserve one physical
 quarantine allocation until whole closures retire.</td></tr>
+<tr><td>DTCM usage was properly translated because its physical map and pointer audit were complete.</td>
+<td>False. The geometry is exceptionally well mapped, but initialization, access confinement,
+writer closure, and native ownership remain incomplete. The main image has no DTCM load segment;
+several production paths still use literals or raw integer arithmetic.</td></tr>
 <tr><td>The HIF output queue was missing.</td>
 <td>The 64-entry software queue and four descriptor staging slots exist. The remaining question is
 whether copied confirmations and early request-credit return are the clean contract we want.</td></tr>
@@ -275,28 +290,33 @@ trace cost.</li>
 <tr><th>Phase</th><th>Work</th><th>Exit criteria</th></tr>
 <tr><td><span class="tag now">P0 source truth</span></td>
 <td>Keep README current-state and open-item lists authoritative. Add explicit "historical" notes
-to stale implementation-delta sections when touched. Record source precedence from section 2.</td>
-<td>No current backlog item is derived solely from a superseded experiment section.</td></tr>
-<tr><td><span class="tag now">P1 reactor extraction</span></td>
+to stale implementation-delta sections when touched. Record source precedence from section 2 and
+preserve the qualified traffic baseline.</td>
+<td>No current backlog item is derived solely from a superseded experiment section; the exact
+qualified image and hardware protocol remain reproducible.</td></tr>
+<tr><td><span class="tag now">P1 DTCM runtime contract</span></td>
+<td>Build a live-field matrix for every production DTCM consumer: physical field, semantic owner,
+initializer, cold-boot source, warm-reload behavior, readers, writers, required exclusion, and
+whether it is hardware-visible. Replace direct production literals and manual offsets with existing
+field-derived accessors. Add a DTCM-specific literal/access gate. Only after that audit, split
+<code>dtcm.rs</code> into source modules while preserving the one physical
+<code>DtcmLayout</code>.</td>
+<td>Every live field has a deterministic initialization/retention contract; cold and warm snapshots
+match that contract; no unexplained production DTCM literal remains; DTCM sizes, offsets, linked
+addresses, initialized bytes, and interval gates remain exact. This phase moves no address.</td></tr>
+<tr><td><span class="tag now">P2 reactor extraction</span></td>
 <td>Extract WSM command dispatch from the 1,020-line binary. Introduce a <code>Firmware</code>
 state owner whose methods correspond to the existing service lanes. Preserve exact lane order and
 bounded work.</td>
 <td>Host tests and <code>check.sh</code> pass; target image qualifies under the existing three-boot
 TCP/UDP/ping protocol. No new state machine.</td></tr>
-<tr><td><span class="tag now">P2 TX decomposition</span></td>
+<tr><td><span class="tag now">P3 TX decomposition</span></td>
 <td>Split <code>tx.rs</code> and <code>vendor_host_tx.rs</code> at the boundaries in section 5.
 Move pure builders and decisions first, then target executors. Make the arena model share
 transition predicates with runtime decisions instead of duplicating them.</td>
 <td>No increase in unsafe call sites; existing focused tests move with each unit; production
 qualification remains healthy. The ELF identity oracle is used only for slices that promise exact
 code generation, not as a universal refactor requirement.</td></tr>
-<tr><td><span class="tag now">P3 DTCM source split</span></td>
-<td>Split the 4,602-line source into layout, initialized image, addresses, and runtime family views
-without changing the one physical <code>DtcmLayout</code>. Add a narrow checker for direct DTCM
-numeric construction and <code>.dtcm.*</code> owners.</td>
-<td>DTCM sizes, offsets, linked addresses, initialized bytes, and all 276 gates remain exact.
-If real module paths change mangled symbols, retire complete-file identity deliberately for that
-refactor only after instruction-level comparison and target qualification.</td></tr>
 <tr><td><span class="tag now">P4 correctness and security</span></td>
 <td>Add CCMP replay protection with per-key/per-TID receive packet numbers. Make RESET semantics
 explicit: either support targeted per-VIF epochs as the ownership design specifies, or document and
@@ -304,29 +324,33 @@ test global reset as the chosen product behavior. Complete active-VIF channel re
 power-save resume.</td>
 <td>Replay is rejected without corrupting RX ownership; reset drains every affected owner exactly
 once; repeated sleep/wake/join/traffic cycles pass.</td></tr>
-<tr><td><span class="tag later">P5 recovery policy</span></td>
+<tr><td><span class="tag now">P5 HIF publication contract</span></td>
+<td>Decide and formalize the clean publication contract before adding hardware TX concurrency.
+Exact vendor same-buffer lifetime is optional. Required properties are atomic ownership transfer,
+bounded memory, command priority, pressure safety, explicit credit ordering, and release only after
+the chosen backing storage is no longer hardware-visible.</td>
+<td>Queue saturation and reordered-completion tests cannot lose a command response, confirmation,
+request credit, RX token, or shared output slot. The contract is expressed by owning types rather
+than comments alone.</td></tr>
+<tr><td><span class="tag later">P6 recovery and soak</span></td>
 <td>Classify failures as recoverable, interface-reset, firmware-reset, or terminal. Preserve the
 qualified corrupt-head normalization and zero-copy resync rules. Define behavior for CPU
-exceptions and unrecoverable packet-controller faults.</td>
-<td>Fault-injection tests prove no request token, RX token, pipe slot, or hardware-owned context is
-released twice or silently abandoned.</td></tr>
-<tr><td><span class="tag later">P6 safe TX concurrency</span></td>
-<td>After the single-owner baseline remains stable, allow more than one hardware-owned frame with
-explicit per-pipe credits and identities. Start with two ordinary frames only if pipe/slot ownership
-and completion routing are proven. Do not add a software FIFO above <code>HostTxDriver</code>.</td>
+exceptions and unrecoverable packet-controller faults. Add controlled degraded-RF fallback and
+long-duration cold/warm qualification.</td>
+<td>Fault injection and soak runs prove no request token, RX token, pipe slot, or hardware-owned
+context is released twice or silently abandoned.</td></tr>
+<tr><td><span class="tag later">P7 safe TX concurrency</span></td>
+<td>After the single-owner and HIF contracts remain stable, allow more than one hardware-owned
+frame with explicit per-pipe credits and identities. Start with two ordinary frames only if
+pipe/slot ownership and completion routing are proven. Do not add a software FIFO above
+<code>HostTxDriver</code>.</td>
 <td>Higher delivered TCP throughput without increased loss, exceptions, leaked credits, unmatched
 statuses, or watchdog recoveries. Interleave exact-parent control runs.</td></tr>
-<tr><td><span class="tag later">P7 aggregation</span></td>
+<tr><td><span class="tag later">P8 aggregation</span></td>
 <td>Implement A-MPDU construction and BA accounting on top of proven multi-owner pipe credits.
 Keep host-selected retry policy and current rate-feedback format.</td>
 <td>Aggregation improves delivered throughput under controlled peers; retry/give-up, teardown,
 RESET, and power-save paths remain ownership-clean.</td></tr>
-<tr><td><span class="tag later">P8 HIF contract</span></td>
-<td>Decide the clean publication contract. Exact vendor same-buffer lifetime is optional. Required
-properties are atomic ownership transfer, bounded memory, command priority, pressure safety, and
-release only after the chosen backing storage is no longer visible to hardware.</td>
-<td>Queue saturation tests cannot lose a response or confirmation; request-credit order and output
-order are documented and tested.</td></tr>
 <tr><td><span class="tag later">P9 DTCM retirement</span></td>
 <td>Translate complete scheduler/timer, TX, VIF/PAS/link/BA/power-save, scan/channel, HIF/MIC, and
 PHY closures while preserving fixed addresses. Then remove remaining roots and loader assumptions
