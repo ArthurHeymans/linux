@@ -43,7 +43,6 @@ FORBIDDEN_FORMS = (
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001AC8: 1,
     0x04001ADC: 5,
     0x04001ADD: 2,
     0x04001ADE: 1,
@@ -60,7 +59,6 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reprogram_after_channel', 0x04001ADD): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reprogram_after_channel', 0x04001AE4): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x04001ADC): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001AC8): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001ADC): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy24begin_channel_transition', 0x04001ADC): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25finish_channel_transition', 0x04001ADC): 1,

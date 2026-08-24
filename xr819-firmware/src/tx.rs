@@ -4703,7 +4703,7 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
                 !pipe_cursor_invariant_holds(packed),
             );
         }
-        write_u8(crate::dtcm::MAC_PIPE_EVENT_FLAGS.get() + usize::from(pipe), 0);
+        write_u8(crate::dtcm::mac_pipe_event_flag_unchecked(usize::from(pipe)).get(), 0);
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 4 {
             dispatch_phy_command_3();
             write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), 2);
@@ -4744,7 +4744,12 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         let frame_node = FrameNodeAddress::new(read_u32(slot + 0x0c));
         let context = frame_node.context();
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 3 {
-            let secondary = read_u8(crate::dtcm::RATE_ENCODING_TABLE.get() + usize::from(read_u8(context.tx_rate_address())));
+            let secondary = read_u8(
+                crate::dtcm::rate_encoding_unchecked(usize::from(read_u8(
+                    context.tx_rate_address(),
+                )))
+                .get(),
+            );
             dispatch_phy_command_2(secondary);
             if read_u8(crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get()) == 4 {
                 write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), 4);
@@ -5046,14 +5051,14 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
         let sample_count = read_u32(crate::dtcm::MAC_SAMPLE_COUNT.get());
         let sample_divisor = read_u32(crate::dtcm::MAC_STATUS_ACCOUNTING.get());
         if sample_count.wrapping_add(sample_divisor) == 0 {
-            if read_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1) != 0
+            if read_u8(crate::dtcm::mac_current_pipe_state_byte().get()) != 0
                 && read_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get()) < 50
                 && read_u32(tries_total)
                     .wrapping_add(read_u32(success))
                     .wrapping_mul(80)
                     < read_u32(tries_total).wrapping_mul(100)
             {
-                write_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1, 0);
+                write_u8(crate::dtcm::mac_current_pipe_state_byte().get(), 0);
             }
         } else {
             let sample = sample_count.wrapping_mul(600) / sample_count.wrapping_add(sample_divisor);
@@ -5061,7 +5066,7 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
                 sample.wrapping_add(u32::from(read_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get())).wrapping_mul(4)) / 10;
             write_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get(), average as u16);
             if average > 75 {
-                write_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1, 1);
+                write_u8(crate::dtcm::mac_current_pipe_state_byte().get(), 1);
             }
             write_u32(crate::dtcm::MAC_SAMPLE_COUNT.get(), 0);
             write_u32(crate::dtcm::MAC_STATUS_ACCOUNTING.get(), 0);
@@ -5078,7 +5083,7 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
             let streak = read_u8(streak_address).wrapping_add(1);
             write_u8(streak_address, streak);
             if ((parameter0 >> 24) & 0x0f) <= u32::from(streak) {
-                write_u8(crate::dtcm::MAC_CURRENT_PIPE.get() + 1, 1);
+                write_u8(crate::dtcm::mac_current_pipe_state_byte().get(), 1);
                 let average = read_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get());
                 write_u16(crate::dtcm::MAC_ACCOUNTING_AVERAGE.get(), average.wrapping_sub(average >> 5));
                 next = next.wrapping_add(1) & 0xff;
@@ -5328,8 +5333,10 @@ where
         }
 
         let completion_class = (context.completion_class_address() as *const u8).read_volatile();
-        let callback_address =
-            (crate::dtcm::VISIBLE_COMPLETION_WORDS.get() + usize::from(completion_class) * 4) as *const u32;
+        let callback_address = crate::dtcm::visible_completion_word_unchecked(usize::from(
+            completion_class,
+        ))
+        .cast_mut::<u32>() as *const u32;
         if callback_address.read_volatile() == 0 {
             return CompletedContextDispatch::NoCallback;
         }
@@ -5653,7 +5660,7 @@ pub unsafe fn mac_hardware_idle() -> bool {
 /// servicing.
 pub unsafe fn mac_pipe_records_idle() -> bool {
     for pipe in 0..4_usize {
-        let record = crate::dtcm::MAC_PIPE_RECORDS.get() + pipe * 0x6c;
+        let record = crate::dtcm::mac_pipe_record_unchecked(pipe).get();
         if unsafe { ((record + 3) as *const u8).read_volatile() } != 0 {
             return false;
         }
@@ -6521,10 +6528,12 @@ pub unsafe fn build_prepared_probe_descriptor(
         let request_flag_rate_bits =
             (address.request_flag_rate_bits_address() as *const u8).read_volatile();
         let legacy_mode = (crate::dtcm::LOW_MAC_LEGACY_MODE.get() as *const u8).read_volatile();
-        let rate_attribute =
-            (crate::dtcm::RATE_ENCODING_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
-        let hardware_rate =
-            (crate::dtcm::RATE_ATTRIBUTE_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
+        let rate_attribute = crate::dtcm::rate_encoding_unchecked(usize::from(rate))
+            .cast_mut::<u8>()
+            .read_volatile();
+        let hardware_rate = crate::dtcm::rate_attribute_unchecked(usize::from(rate))
+            .cast_mut::<u8>()
+            .read_volatile();
         let phy = build_phy_rate_words(
             rate,
             legacy_mode,
@@ -6567,10 +6576,12 @@ unsafe fn emit_prepared_probe_descriptor(
         let request_flag_rate_bits =
             (address.request_flag_rate_bits_address() as *const u8).read_volatile();
         let legacy_mode = (crate::dtcm::LOW_MAC_LEGACY_MODE.get() as *const u8).read_volatile();
-        let rate_attribute =
-            (crate::dtcm::RATE_ENCODING_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
-        let hardware_rate =
-            (crate::dtcm::RATE_ATTRIBUTE_TABLE.get().wrapping_add(usize::from(rate)) as *const u8).read_volatile();
+        let rate_attribute = crate::dtcm::rate_encoding_unchecked(usize::from(rate))
+            .cast_mut::<u8>()
+            .read_volatile();
+        let hardware_rate = crate::dtcm::rate_attribute_unchecked(usize::from(rate))
+            .cast_mut::<u8>()
+            .read_volatile();
         let phy = build_phy_rate_words(
             rate,
             legacy_mode,
@@ -6807,7 +6818,7 @@ unsafe fn prepare_context_publication(
             release_unpublished_probe_context(context);
             return Err(ProbeBuildError::PipeStateUnavailable);
         }
-        let pipe_record = crate::dtcm::MAC_PIPE_RECORDS.get() + usize::from(pipe) * 0x6c;
+        let pipe_record = crate::dtcm::mac_pipe_record_unchecked(usize::from(pipe)).get();
         let hardware = ((pipe_record + 8) as *const u32).read_volatile();
         let slot = (pipe_record as *const u8).read_volatile() & 3;
         let slot_record = pipe_record + 0x0c + usize::from(slot) * 0x18;

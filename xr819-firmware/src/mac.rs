@@ -697,12 +697,17 @@ pub unsafe fn initialize_tx_pipe_state() {
     // authentication frames into protected/ToDS/more-data 0x61b0 frames.
     unsafe { write_u32(packet_ram::interface_metadata(), 0) };
     for (index, value) in TX_DURATION_TIMING.into_iter().enumerate() {
-        unsafe { write_u16(crate::dtcm::TX_DURATION_TIMING_TABLE.get() + index * 2, value) };
+        unsafe {
+            write_u16(
+                crate::dtcm::tx_duration_timing_unchecked(index).get(),
+                value,
+            )
+        };
     }
     for pipe in 0..4 {
         unsafe {
             write_u32(
-                crate::dtcm::DURATION_QUANTUM_POINTERS.get() + pipe * 4,
+                crate::dtcm::duration_quantum_pointer_unchecked(pipe).get(),
                 crate::platform::mac_register(0x0e70) as u32 + pipe as u32 * 4,
             )
         };
@@ -845,13 +850,13 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         for word in 0..5 {
             write_u32(
                 crate::dtcm::rate_policy_word_unchecked(0, word).get(),
-                read_u32(crate::dtcm::INITIALIZED_RATE_POLICIES.get() + word * 4),
+                read_u32(crate::dtcm::initialized_rate_policy_word_unchecked(0, word).get()),
             );
         }
         for word in 0..5 {
             write_u32(
                 crate::dtcm::rate_policy_word_unchecked(1, word).get(),
-                read_u32(crate::dtcm::INITIALIZED_RATE_POLICIES.get() + 0x14 + word * 4),
+                read_u32(crate::dtcm::initialized_rate_policy_word_unchecked(1, word).get()),
             );
         }
 
@@ -922,10 +927,13 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // first timer insertion follow stale firmware pointers and corrupt the
         // cooperative scheduler before a TX confirmation can reach the host.
         write_u32(crate::dtcm::scheduler_timer_list_head().get(), 0);
-        for object in [crate::dtcm::MAC_PHY_OPERATION_TIMER.get(), crate::dtcm::MAC_WAKE_TIMER.get()] {
-            write_u32(object + 0x0c, callback);
-            write_u32(object + 0x10, 0);
-            write_u32(object + 4, 0);
+        for [callback_field, context_field, previous_link_field] in [
+            crate::dtcm::mac_phy_operation_timer_initialization_fields(),
+            crate::dtcm::mac_wake_timer_initialization_fields(),
+        ] {
+            write_u32(callback_field.get(), callback);
+            write_u32(context_field.get(), 0);
+            write_u32(previous_link_field.get(), 0);
         }
         write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
         write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
@@ -1089,8 +1097,14 @@ unsafe fn install_response_descriptors() {
         set_pipe_enabled(0x0c);
         let first = packet_offset(packet_ram::response_command(11));
         let second = packet_offset(packet_ram::response_command(12));
-        write_u32(crate::dtcm::MAC_BEACON_RESPONSE_COMMANDS.get(), first);
-        write_u32(crate::dtcm::MAC_BEACON_RESPONSE_COMMANDS.get() + 4, second);
+        write_u32(
+            crate::dtcm::mac_beacon_response_command_unchecked(0).get(),
+            first,
+        );
+        write_u32(
+            crate::dtcm::mac_beacon_response_command_unchecked(1).get(),
+            second,
+        );
         write_u32(crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get(), first);
         write_u32(crate::dtcm::MAC_BEACON_CONTROL.get(), second);
     }

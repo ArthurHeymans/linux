@@ -24,6 +24,7 @@ cargo +nightly test --features vendor-host-tx-diagnostics
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-dtcm-access.py
+python3 tools/compare-dtcm-initialized-snapshots.py --self-test
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-debug-console-layout.py

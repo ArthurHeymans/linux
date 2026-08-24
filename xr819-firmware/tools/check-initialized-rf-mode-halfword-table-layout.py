@@ -47,13 +47,12 @@ ADJACENT_DECLARATIONS = {
 }
 SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
     "src/phy.rs": {
-        "let table_value = unsafe { ((crate::dtcm::RF_MODE_HALFWORD_TABLE.get() + 12 * 2) as *const u16).read_volatile() as u32 };",
+        "crate::dtcm::rf_mode_halfword_unchecked(12)",
     },
 }
-# Sanctioned typed-constant fold: phy.rs reads RF_MODE_HALFWORD_TABLE +
-# 12 * 2 (the mode-zero entry), which LLVM emits as the same aligned literal
-# the previous raw 0x0400_0de8 spelling produced. Pinning it is inventory of
-# the current build; no other production operation was added or changed.
+# The field-derived mode-zero entry still folds to the same aligned literal
+# emitted by the previous root-plus-index expression. Pinning it is inventory
+# of the current build; no additional production operation was added.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04000DE8: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ("_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration", 0x04000DE8): 1,
@@ -71,6 +70,7 @@ REQUIRED = (
     "offset_of!(InitializedVendorImage, initialized_iq_calibration_gain_indices) == 0x0e18",
     "RF_MODE_HALFWORD_TABLE.get() + 12 * core::mem::size_of::<SharedU16>() == 0x0400_0de8",
     "pub(crate) const RF_MODE_HALFWORD_TABLE: DtcmAddress",
+    "pub(crate) const fn rf_mode_halfword_unchecked(index: usize) -> DtcmAddress",
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
@@ -370,15 +370,22 @@ def check_source() -> None:
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
     if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
         failures.append("production impl for RfModeHalfwordTable is forbidden")
-    for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
+    for match in re.finditer(r"\b(?:const|static)\s+(?!fn\b)(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
         if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
             failures.append(f"direct RF mode halfword table const/static alias is forbidden: {match.group(1)}")
     for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*rf_mode_halfword_table_entry_marker[A-Za-z0-9_]*)", production, re.I):
         failures.append(f"named RF mode halfword table production API is forbidden: {match.group(1)}")
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b(?!\s*:)", re.I)
     for relative, code in rust.items():
-        excess = [f for f in functions_consuming_family(code, views)
-                  if f not in {"run_vendor_dynamic_mode_calibration"} or relative != "src/phy.rs"]
+        sanctioned_functions = {
+            ("src/dtcm.rs", "rf_mode_halfword_unchecked"),
+            ("src/phy.rs", "run_vendor_dynamic_mode_calibration"),
+        }
+        excess = [
+            function
+            for function in functions_consuming_family(code, views)
+            if (relative, function) not in sanctioned_functions
+        ]
         for function in excess:
             failures.append(f"{relative}: unsanctioned production function over RF mode halfword storage: {function}")
         sanctioned_lines = SANCTIONED_CONSUMER_LINES.get(relative, set())

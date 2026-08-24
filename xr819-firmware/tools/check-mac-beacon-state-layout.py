@@ -51,7 +51,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reinitialize_after_wake', 0x04001AB4): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac27program_joined_station_mode', 0x04001AB4): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac28install_response_descriptors', 0x04001A88): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001AA8): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001AA8): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25finish_channel_transition', 0x04001AB4): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4join5reset', 0x04001AB4): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service', 0x04001AB0): 1,

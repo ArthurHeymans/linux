@@ -25,6 +25,11 @@ OWNER_ONLY_PATTERNS = (
     re.compile(r"DtcmAddress\s*::\s*(?:new|from_offset(?:_unchecked)?)\s*\("),
     re.compile(r"link_section\s*=\s*\"\.dtcm(?:\.|\")"),
 )
+DIRECT_FIELD_ARITHMETIC = re.compile(
+    r"(?:crate\s*::\s*)?dtcm\s*::\s*[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\s*\([^()\n]*\))?\s*\.\s*get\s*\(\s*\)\s*"
+    r"(?:[+-]|\.\s*wrapping_(?:add|sub)\s*\()"
+)
 
 
 def code_only(source: str) -> str:
@@ -155,6 +160,11 @@ def inventory() -> tuple[dict[str, dict[str, int]], list[str]]:
                 failures.append(
                     f"{relative}:{line}: DTCM address/section construction is owned by {OWNER}"
                 )
+        for match in DIRECT_FIELD_ARITHMETIC.finditer(code):
+            line = code.count("\n", 0, match.start()) + 1
+            failures.append(
+                f"{relative}:{line}: manual arithmetic on a DTCM field root is owned by {OWNER}"
+            )
     return result, failures
 
 
@@ -198,7 +208,24 @@ def compare(
     return failures
 
 
+def check_regressions() -> None:
+    rejected = (
+        "crate::dtcm::TABLE.get() + index * 4",
+        "dtcm::field(index).get() - 1",
+        "crate::dtcm::TABLE.get().wrapping_add(index)",
+    )
+    accepted = (
+        "crate::dtcm::table_entry_unchecked(index).get()",
+        "address.get() + index * 4",
+    )
+    if not all(DIRECT_FIELD_ARITHMETIC.search(source) for source in rejected):
+        raise SystemExit("DTCM direct-field-arithmetic regression fixture was not rejected")
+    if any(DIRECT_FIELD_ARITHMETIC.search(source) for source in accepted):
+        raise SystemExit("DTCM direct-field-arithmetic regression fixture was falsely rejected")
+
+
 def main() -> None:
+    check_regressions()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--update",

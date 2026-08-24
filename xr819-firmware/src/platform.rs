@@ -743,15 +743,17 @@ pub fn prepare_packet_dma() {
 
     // Vendor `0xf6 -> 0x4c6`: four software-owned packet-RAM records.
     // The final record terminates the free list rather than wrapping.
-    register32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()).set(crate::dtcm::MAC_SOFTWARE_RECORDS.get() as u32 + 4);
+    register32(crate::dtcm::MAC_SOFTWARE_RECORDS.get())
+        .set(crate::dtcm::mac_software_record_next_unchecked(0).get() as u32);
     for index in 0..4 {
-        let record = crate::dtcm::MAC_SOFTWARE_RECORDS.get() + index * 8;
-        register32(record + 4).set(if index == 3 {
+        let next = crate::dtcm::mac_software_record_next_unchecked(index).get();
+        register32(next).set(if index == 3 {
             0
         } else {
-            (record + 0x0c) as u32
+            crate::dtcm::mac_software_record_next_unchecked(index + 1).get() as u32
         });
-        register32(record + 8).set(packet_ram::software_record(index) as u32);
+        register32(crate::dtcm::mac_software_record_packet_unchecked(index).get())
+            .set(packet_ram::software_record(index) as u32);
     }
     post_code(0x5044_4d06);
 }

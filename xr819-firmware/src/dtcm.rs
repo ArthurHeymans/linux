@@ -1799,6 +1799,11 @@ pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress
 }
 pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000); pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables)); pub(crate) const AES_TRANSFER_CLASSES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, aes_transfer_classes)); pub(crate) const PHY_GAIN_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_register_write_lists)); pub(crate) const PHY_INIT_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_0)); pub(crate) const INITIALIZED_PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_phy_gain_source_records)); pub(crate) const INITIALIZED_IQ_CALIBRATION_GAIN_INDICES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_iq_calibration_gain_indices)); pub(crate) const RF_MODE_HALFWORD_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rf_mode_halfword_table) + core::mem::offset_of!(RfModeHalfwordTable, entries));
 pub(crate) const RF_SCALE_TABLE_A_MODE0_TARGET: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + 60 * core::mem::size_of::<SharedU16>());
+pub(crate) const fn rf_mode_halfword_unchecked(index: usize) -> DtcmAddress {
+    DtcmAddress::from_offset_unchecked(
+        RF_MODE_HALFWORD_TABLE.offset() + index * core::mem::size_of::<SharedU16>(),
+    )
+}
 pub(crate) const PHY_RATE_POINTER_TARGET_A: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets));
 pub(crate) const PHY_RATE_POINTER_TARGET_B: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_pointer_targets) + core::mem::size_of::<OpaqueBytes<0x20>>() / 2);
 pub const fn tkip_sbox_low_entry(index: usize) -> Option<DtcmAddress> { if index < 256 { Some(DtcmAddress::from_offset(TKIP_SBOX_TABLES.offset() + core::mem::offset_of!(TkipSboxTables, low_byte) + index * core::mem::size_of::<SharedU16>())) } else { None } }
@@ -1825,11 +1830,14 @@ pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_fi
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
 pub(crate) const PHY_CHANNEL_THRESHOLD_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_channel_threshold_descriptors));
-pub(crate) const fn phy_channel_threshold_descriptor(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(DtcmAddress::from_offset(PHY_CHANNEL_THRESHOLD_DESCRIPTORS.offset() + profile * core::mem::size_of::<PhyChannelThresholdDescriptor>())) } else { None } }
+pub(crate) const fn phy_channel_threshold_descriptor(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(phy_channel_threshold_descriptor_unchecked(profile)) } else { None } }
+pub(crate) const fn phy_channel_threshold_descriptor_unchecked(profile: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(PHY_CHANNEL_THRESHOLD_DESCRIPTORS.offset() + profile * core::mem::size_of::<PhyChannelThresholdDescriptor>()) }
 pub(crate) const PHY_GAIN_PROGRAMMING_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_programming_records));
-pub(crate) const fn phy_gain_programming_record(slot: usize) -> Option<DtcmAddress> { if slot < 16 { Some(DtcmAddress::from_offset(PHY_GAIN_PROGRAMMING_RECORDS.offset() + slot * core::mem::size_of::<PhyGainProgrammingRecord>())) } else { None } }
+pub(crate) const fn phy_gain_programming_record(slot: usize) -> Option<DtcmAddress> { if slot < 16 { Some(phy_gain_programming_record_unchecked(slot)) } else { None } }
+pub(crate) const fn phy_gain_programming_record_unchecked(slot: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(PHY_GAIN_PROGRAMMING_RECORDS.offset() + slot * core::mem::size_of::<PhyGainProgrammingRecord>()) }
 pub(crate) const INITIALIZED_RATE_POLICIES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_rate_policies));
-pub(crate) const fn initialized_rate_policy_word(policy: usize, word: usize) -> Option<DtcmAddress> { if policy < 2 && word < 5 { Some(DtcmAddress::from_offset(INITIALIZED_RATE_POLICIES.offset() + (policy * 5 + word) * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn initialized_rate_policy_word(policy: usize, word: usize) -> Option<DtcmAddress> { if policy < 2 && word < 5 { Some(initialized_rate_policy_word_unchecked(policy, word)) } else { None } }
+pub(crate) const fn initialized_rate_policy_word_unchecked(policy: usize, word: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(INITIALIZED_RATE_POLICIES.offset() + (policy * 5 + word) * core::mem::size_of::<SharedU32>()) }
 pub(crate) const MAC_TX_QUEUE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_tx_queue_state));
 pub(crate) const MAC_TX_QUEUE_HEAD: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, head));
 pub(crate) const MAC_TX_QUEUE_TAIL: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, tail));
@@ -1841,7 +1849,11 @@ pub(crate) const MAC_SAMPLE_COUNT: DtcmAddress = DtcmAddress::from_offset(MAC_RU
 pub(crate) const MAC_CURRENT_PIPE_RECORD: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_pipe_record));
 pub(crate) const MAC_CURRENT_SLOT: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_slot));
 pub(crate) const MAC_PIPE_EVENT_FLAGS: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, pipe_event_flags));
+pub(crate) const fn mac_pipe_event_flag_unchecked(pipe: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PIPE_EVENT_FLAGS.offset() + pipe) }
+pub(crate) const fn mac_current_pipe_state_byte() -> DtcmAddress { DtcmAddress::from_offset(MAC_CURRENT_PIPE.offset() + 1) }
 pub(crate) const MAC_SOFTWARE_RECORDS: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, software_records));
+pub(crate) const fn mac_software_record_next_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_SOFTWARE_RECORDS.offset() + core::mem::offset_of!(SoftwareRecordFreeList, nodes) + index * core::mem::size_of::<SoftwareRecordNode>() + core::mem::offset_of!(SoftwareRecordNode, next)) }
+pub(crate) const fn mac_software_record_packet_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_SOFTWARE_RECORDS.offset() + core::mem::offset_of!(SoftwareRecordFreeList, nodes) + index * core::mem::size_of::<SoftwareRecordNode>() + core::mem::offset_of!(SoftwareRecordNode, packet_record)) }
 pub(crate) const MAC_ACCOUNTING_AVERAGE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, average));
 pub(crate) const MAC_SILICON_CONTROL: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, silicon_control));
 pub(crate) const MAC_ACCOUNTING_PARAMETER0: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, parameter0));
@@ -1850,17 +1862,31 @@ pub(crate) const MAC_PHY_COMMAND_STATE: DtcmAddress = DtcmAddress::from_offset(c
 pub(crate) const MAC_RADIO_STOP_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, radio_stop_state));
 pub(crate) const MAC_SIDEBAND_CAPTURE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, sideband_capture));
 pub(crate) const MAC_PHY_OPERATION_TIMER: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, timer));
+const fn timer_initialization_fields(timer: DtcmAddress) -> [DtcmAddress; 3] {
+    [
+        DtcmAddress::from_offset(timer.offset() + core::mem::offset_of!(TimerEntry, callback)),
+        DtcmAddress::from_offset(timer.offset() + core::mem::offset_of!(TimerEntry, context)),
+        DtcmAddress::from_offset(timer.offset() + core::mem::offset_of!(TimerEntry, previous_link)),
+    ]
+}
+pub(crate) const fn mac_phy_operation_timer_initialization_fields() -> [DtcmAddress; 3] {
+    timer_initialization_fields(MAC_PHY_OPERATION_TIMER)
+}
 pub(crate) const MAC_PHY_OPERATION_ROOT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + 0x10);
 pub(crate) const MAC_PHY_OPERATION_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_state));
 pub(crate) const MAC_PHY_OPERATION_COMMAND: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_command));
 pub(crate) const MAC_PHY_OPERATION_OUTPUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_output_state));
 pub(crate) const MAC_PHY_OPERATION_TIMEOUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, operation_timeout));
 pub(crate) const MAC_PHY_DISPATCH_COMMAND: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_command));
+pub(crate) const fn mac_phy_dispatch_command_byte_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PHY_DISPATCH_COMMAND.offset() + index) }
 pub(crate) const MAC_PHY_DISPATCH_OUTPUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_output_state));
 pub(crate) const MAC_PHY_COMPLETION_STATUS: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, completion_status));
 pub(crate) const MAC_PHY_INTERFACE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, interface));
 pub(crate) const MAC_WAKE_RUNTIME_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_wake_runtime_state));
 pub(crate) const MAC_WAKE_TIMER: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, timer));
+pub(crate) const fn mac_wake_timer_initialization_fields() -> [DtcmAddress; 3] {
+    timer_initialization_fields(MAC_WAKE_TIMER)
+}
 pub(crate) const MAC_WAKE_PHY_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, phy_state));
 pub(crate) const MAC_WAKE_TRANSITION_PENDING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, transition_pending));
 pub(crate) const MAC_WAKE_RESTORE_PENDING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, restore_pending));
@@ -1870,7 +1896,8 @@ pub(crate) const MAC_RETRY_RATE_MAP: DtcmAddress = DtcmAddress::from_offset(MAC_
 pub(crate) const MAC_EDCA_SLOT_TIMING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, edca_slot_timing));
 pub(crate) const MAC_BEACON_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_beacon_state));
 pub(crate) const MAC_BEACON_RESPONSE_COMMANDS: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, response_commands));
-pub(crate) const fn mac_beacon_response_command(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(DtcmAddress::from_offset(MAC_BEACON_RESPONSE_COMMANDS.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn mac_beacon_response_command(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(mac_beacon_response_command_unchecked(index)) } else { None } }
+pub(crate) const fn mac_beacon_response_command_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_BEACON_RESPONSE_COMMANDS.offset() + index * core::mem::size_of::<SharedU32>()) }
 pub(crate) const MAC_BEACON_CONTROL_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, state));
 pub(crate) const MAC_BEACON_SECONDARY_COMMAND: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, secondary_command));
 pub(crate) const MAC_BEACON_CONTROL: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, control));
@@ -1883,7 +1910,8 @@ pub(crate) const LOW_MAC_LEGACY_MODE: DtcmAddress = DtcmAddress::from_offset(LOW
 pub(crate) const LOW_MAC_SHORT_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, short_airtimes));
 pub(crate) const LOW_MAC_LONG_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, long_airtimes));
 pub(crate) const MAC_PIPE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records));
-pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(DtcmAddress::from_offset(MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>())) } else { None } }
+pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(mac_pipe_record_unchecked(pipe)) } else { None } }
+pub(crate) const fn mac_pipe_record_unchecked(pipe: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>()) }
 pub(crate) const RADIO_STOP_WORD_02: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02)); pub(crate) const HOST_PAS_RING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, host_pas_ring));
 pub(crate) const HOST_PAS_RING_HEAD: DtcmAddress = HOST_PAS_RING;
 pub(crate) const HOST_PAS_RING_TAIL: DtcmAddress = DtcmAddress::from_offset(HOST_PAS_RING.offset() + core::mem::offset_of!(HostPasRing, tail));
@@ -1892,15 +1920,20 @@ pub(crate) const fn host_pas_ring_slot(index: usize) -> Option<DtcmAddress> { if
 pub(crate) const IRQ_CALLBACK_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, irq_callbacks)); pub(crate) const PHY_WATCHDOG_COUNTER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_watchdog_counter) + core::mem::offset_of!(PhyWatchdogCounter, count)); pub(crate) const MULTI_VIF_BEACON_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, timer)); pub(crate) const MEASUREMENT_DWELL_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_dwell_timer));
 pub(crate) const fn irq_callback(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(DtcmAddress::from_offset(IRQ_CALLBACK_TABLE.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const VISIBLE_COMPLETION_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, visible_completion_words));
-pub(crate) const fn visible_completion_word(index: usize) -> Option<DtcmAddress> { if index < 10 { Some(DtcmAddress::from_offset(VISIBLE_COMPLETION_WORDS.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn visible_completion_word(index: usize) -> Option<DtcmAddress> { if index < 10 { Some(visible_completion_word_unchecked(index)) } else { None } }
+pub(crate) const fn visible_completion_word_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(VISIBLE_COMPLETION_WORDS.offset() + index * core::mem::size_of::<SharedU32>()) }
 pub(crate) const TX_DURATION_TIMING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tx_duration_timing));
 pub(crate) const RATE_ENCODING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_encoding));
 pub(crate) const RATE_ATTRIBUTE_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rate_attributes));
-pub(crate) const fn tx_duration_timing(rate: usize) -> Option<DtcmAddress> { if rate < 10 { Some(DtcmAddress::from_offset(TX_DURATION_TIMING_TABLE.offset() + rate * core::mem::size_of::<SharedU16>())) } else { None } }
-pub(crate) const fn rate_encoding(rate: usize) -> Option<DtcmAddress> { if rate < 22 { Some(DtcmAddress::from_offset(RATE_ENCODING_TABLE.offset() + rate)) } else { None } }
-pub(crate) const fn rate_attribute(rate: usize) -> Option<DtcmAddress> { if rate < 22 { Some(DtcmAddress::from_offset(RATE_ATTRIBUTE_TABLE.offset() + rate)) } else { None } }
+pub(crate) const fn tx_duration_timing(rate: usize) -> Option<DtcmAddress> { if rate < 10 { Some(tx_duration_timing_unchecked(rate)) } else { None } }
+pub(crate) const fn tx_duration_timing_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(TX_DURATION_TIMING_TABLE.offset() + rate * core::mem::size_of::<SharedU16>()) }
+pub(crate) const fn rate_encoding(rate: usize) -> Option<DtcmAddress> { if rate < 22 { Some(rate_encoding_unchecked(rate)) } else { None } }
+pub(crate) const fn rate_encoding_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(RATE_ENCODING_TABLE.offset() + rate) }
+pub(crate) const fn rate_attribute(rate: usize) -> Option<DtcmAddress> { if rate < 22 { Some(rate_attribute_unchecked(rate)) } else { None } }
+pub(crate) const fn rate_attribute_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(RATE_ATTRIBUTE_TABLE.offset() + rate) }
 pub(crate) const DURATION_QUANTUM_POINTERS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, duration_quantum_pointers));
-pub(crate) const fn duration_quantum_pointer(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(DtcmAddress::from_offset(DURATION_QUANTUM_POINTERS.offset() + pipe * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn duration_quantum_pointer(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(duration_quantum_pointer_unchecked(pipe)) } else { None } }
+pub(crate) const fn duration_quantum_pointer_unchecked(pipe: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(DURATION_QUANTUM_POINTERS.offset() + pipe * core::mem::size_of::<SharedU32>()) }
 pub(crate) const QUEUE_PIPE_MAPPINGS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, queue_pipe_mappings));
 pub(crate) const QUEUE_TO_ACCESS_CATEGORY: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, queue_to_access_category));
 pub(crate) const ACCESS_CATEGORY_TO_QUEUE: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, access_category_to_queue));

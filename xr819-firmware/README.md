@@ -285,7 +285,9 @@ Not yet implemented or production-complete:
 - active-VIF channel restoration and complete power-save resumption;
 - an explicit, pressure-safe HIF publication and credit-ordering contract for
   the existing 64-entry software queue and four hardware descriptors;
-- deterministic initialization and access contracts for every live DTCM field;
+- deterministic initialization and retention contracts for every live DTCM field
+  (direct literals and direct field-root expressions are already closed; older
+  family-local alias arithmetic remains under audit);
 - controlled degraded-RF fallback and long-duration soak qualification;
 - multiple hardware-owned TX frames, then aggregation;
 - CCMP replay protection;
@@ -449,7 +451,11 @@ addresses that fixed identity.
 `src/dtcm.rs` in an exact reviewed manifest. The manifest is now empty: live
 CPU accesses and hardware-published DTCM addresses use field-derived owners,
 while unrelated control bit 26 is expressed as a bit rather than an
-address-looking value. Any new literal fails the normal gate.
+address-looking value. The same gate rejects direct arithmetic on a
+`dtcm::...get()` expression; new indexed and interior accesses must be derived
+by `src/dtcm.rs`, while older family-local aliases remain audit debt. The current
+startup writer matrix, access rules, and remaining cold/warm snapshot work are
+recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md).
 
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state

@@ -1215,7 +1215,7 @@ pub unsafe fn lookup_channel_threshold(channel: u16) -> Result<i16, ChannelPower
         if profile > 1 {
             return Err(ChannelPowerError::InvalidThresholdTable);
         }
-        let descriptor = crate::dtcm::PHY_CHANNEL_THRESHOLD_DESCRIPTORS.get() + profile * 8;
+        let descriptor = crate::dtcm::phy_channel_threshold_descriptor_unchecked(profile).get();
         let count = usize::from(((descriptor + 1) as *const u8).read_volatile());
         if count > 64 {
             return Err(ChannelPowerError::InvalidThresholdTable);
@@ -1544,7 +1544,7 @@ pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), Gai
                 second_limit,
             )?)?;
 
-            let record = crate::dtcm::PHY_GAIN_PROGRAMMING_RECORDS.get() + slot * 0x10;
+            let record = crate::dtcm::phy_gain_programming_record_unchecked(slot).get();
             write_u8(record, rate);
             write_u16(record + 2, requested_offset as u16);
             write_u16(record + 4, result.selected_power as u16);
@@ -1872,7 +1872,7 @@ unsafe fn publish_completed_receive_state() {
         write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), u32::from(state));
         write_u8(crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get(), state);
         write_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get(), 0x0098_9680);
-        write_u8(crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get() + 1, 0);
+        write_u8(crate::dtcm::mac_phy_dispatch_command_byte_unchecked(1).get(), 0);
 
         let runtime_flags = crate::dtcm::scheduler_runtime_flags().get();
         let keep_awake = (runtime_flags as *const u32).read_volatile();
@@ -2002,7 +2002,11 @@ unsafe fn run_vendor_dynamic_mode_calibration() {
     // into the halfword table at 0x04000dd0. The DFT phase seeds and all search
     // steps likewise come directly from the stack image built there.
     let control_configuration = 0x07ff_0110_u32;
-    let table_value = unsafe { ((crate::dtcm::RF_MODE_HALFWORD_TABLE.get() + 12 * 2) as *const u16).read_volatile() as u32 };
+    let table_value = unsafe {
+        crate::dtcm::rf_mode_halfword_unchecked(12)
+            .cast_mut::<u16>()
+            .read_volatile() as u32
+    };
     let sample_width_shift = unsafe { (crate::dtcm::phy_sample_width().get() as *const u16).read_volatile() as u8 };
     let configuration = DynamicIqHardwareCalibrationConfiguration {
         alternate_profile: false,

@@ -178,11 +178,13 @@ boundaries. It does not prove exclusive Rust ownership and it is not movable. Th
 is that DTCM is <strong>structurally decoded and quarantined</strong>, not that its usage is fully
 translated.</p>
 <div class="note"><strong>Current contract gap:</strong> <code>.dtcm.state</code> is NOLOAD and
-the packed-image checker rejects DTCM COPY/FILL records. Startup clears the historical BSS range
-and reconstructs selected words, but it does not initialize the complete
-<code>0x04000000..0x04002078</code> image. Production code still contains direct DTCM literals,
-manual field arithmetic, and broad raw volatile helpers. The boot/retention source of every live
-initialized word must be classified before ordinary source decomposition can be called safe.</div>
+the packed-image checker rejects DTCM COPY/FILL records. Direct production DTCM literals are now
+eliminated outside <code>src/dtcm.rs</code>, and direct arithmetic on a
+<code>dtcm::...get()</code> expression is blocked. Older family-local aliases and record-internal
+arithmetic still require audit, while startup reconstructs only selected words rather than the complete
+<code>0x04000000..0x04002078</code> image. The boot/retention source and cold/warm snapshot behavior
+of every live initialized word must be closed before ordinary source decomposition can be called
+safe. The active writer matrix is maintained in <code>dtcm-runtime-contract.md</code>.</div>
 <ul>
 <li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
 Do not move it back into DTCM for visual symmetry.</li>
