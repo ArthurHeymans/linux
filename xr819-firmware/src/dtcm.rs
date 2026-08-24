@@ -2077,7 +2077,13 @@ pub(crate) const fn internal_link_bitmap() -> DtcmAddress {
     ))
 }
 
-pub const TALA_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(0x8f48);
+pub const TALA_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(DtcmLayout, tala));
+const fn tala_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(TALA_ACCOUNTING.offset() + offset) }
+pub(crate) const fn tala_growth_streak_unchecked(interface: usize) -> DtcmAddress { tala_field(core::mem::offset_of!(TalaAccounting, growth_streaks) + interface * core::mem::size_of::<SharedU8>()) }
+pub(crate) const fn tala_success_unchecked(interface: usize) -> DtcmAddress { tala_field(core::mem::offset_of!(TalaAccounting, successes) + interface * core::mem::size_of::<SharedU32>()) }
+pub(crate) const fn tala_failure_unchecked(interface: usize) -> DtcmAddress { tala_field(core::mem::offset_of!(TalaAccounting, failures) + interface * core::mem::size_of::<SharedU32>()) }
+pub(crate) const fn tala_cumulative_tries_unchecked(interface: usize) -> DtcmAddress { tala_field(core::mem::offset_of!(TalaAccounting, cumulative_tries) + interface * core::mem::size_of::<SharedU32>()) }
+pub(crate) const fn tala_weighted_penalty_unchecked(interface: usize) -> DtcmAddress { tala_field(core::mem::offset_of!(TalaAccounting, weighted_penalties) + interface * core::mem::size_of::<SharedU32>()) }
 pub const CONTEXT_COMPLETION_PREFIX: DtcmAddress = DtcmAddress::from_offset(0x8f6c);
 const fn context_completion_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(CONTEXT_COMPLETION_PREFIX.offset() + offset) }
 pub(crate) const fn class0_internal_context_count() -> DtcmAddress { context_completion_field(core::mem::offset_of!(ContextCompletionPrefix, class0_count)) }
@@ -4607,5 +4613,19 @@ fn initialized_phy_gain_source_record_addresses_are_exact() { assert_eq!(INITIAL
             Some(2 * INTERNAL_TX_CONTEXT_SIZE)
         );
         assert!(internal_context_ptr(INTERNAL_TX_CONTEXT_COUNT).is_none());
+    }
+
+    #[test]
+    fn tala_accounting_addresses_are_exact() {
+        assert_eq!(tala_growth_streak_unchecked(0).get(), 0x0400_8f48);
+        assert_eq!(tala_growth_streak_unchecked(1).get(), 0x0400_8f49);
+        assert_eq!(tala_success_unchecked(0).get(), 0x0400_8f4c);
+        assert_eq!(tala_success_unchecked(1).get(), 0x0400_8f50);
+        assert_eq!(tala_failure_unchecked(0).get(), 0x0400_8f54);
+        assert_eq!(tala_failure_unchecked(1).get(), 0x0400_8f58);
+        assert_eq!(tala_cumulative_tries_unchecked(0).get(), 0x0400_8f5c);
+        assert_eq!(tala_cumulative_tries_unchecked(1).get(), 0x0400_8f60);
+        assert_eq!(tala_weighted_penalty_unchecked(0).get(), 0x0400_8f64);
+        assert_eq!(tala_weighted_penalty_unchecked(1).get(), 0x0400_8f68);
     }
 }

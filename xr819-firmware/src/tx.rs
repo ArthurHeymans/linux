@@ -5001,10 +5001,10 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
         }
 
         let status = read_u16(context.terminal_status_address());
-        let success = 0x0400_8f4c + interface * 4;
-        let failure = 0x0400_8f54 + interface * 4;
-        let tries_total = 0x0400_8f5c + interface * 4;
-        let penalty = 0x0400_8f64 + interface * 4;
+        let success = crate::dtcm::tala_success_unchecked(interface).get();
+        let failure = crate::dtcm::tala_failure_unchecked(interface).get();
+        let tries_total = crate::dtcm::tala_cumulative_tries_unchecked(interface).get();
+        let penalty = crate::dtcm::tala_weighted_penalty_unchecked(interface).get();
         if status == 0 {
             write_u32(success, read_u32(success).wrapping_add(1));
         } else if status == 0x0b {
@@ -5069,12 +5069,12 @@ unsafe fn update_tala_for_completion(frame_node: FrameNodeAddress) {
 
         let control = read_u8(crate::dtcm::MAC_SILICON_CONTROL.get());
         if weighted_total.wrapping_mul(parameter1 & 0xff) >> 1 < weighted_penalty {
-            write_u8(crate::dtcm::TALA_ACCOUNTING.get() + interface, 0);
+            write_u8(crate::dtcm::tala_growth_streak_unchecked(interface).get(), 0);
             if control & 2 == 0 {
                 write_u8(crate::dtcm::MAC_SILICON_CONTROL.get(), control | 1);
             }
         } else {
-            let streak_address = crate::dtcm::TALA_ACCOUNTING.get() + interface;
+            let streak_address = crate::dtcm::tala_growth_streak_unchecked(interface).get();
             let streak = read_u8(streak_address).wrapping_add(1);
             write_u8(streak_address, streak);
             if ((parameter0 >> 24) & 0x0f) <= u32::from(streak) {
