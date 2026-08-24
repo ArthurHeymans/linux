@@ -1,19 +1,5 @@
 {
-  "inventory": {
-    "src/mac.rs": {
-      "0x04000000": 1
-    },
-    "src/platform.rs": {
-      "0x04000000": 1,
-      "0x04000004": 1
-    },
-    "src/tx.rs": {
-      "0x04000000": 1
-    },
-    "src/vendor_host_tx.rs": {
-      "0x04000000": 3
-    }
-  },
-  "purpose": "Known direct DTCM literals outside src/dtcm.rs; entries must only shrink as typed accessors replace them.",
+  "inventory": {},
+  "purpose": "Direct DTCM literals outside src/dtcm.rs; the reviewed production baseline is empty.",
   "schema": 1
 }

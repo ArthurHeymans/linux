@@ -445,10 +445,11 @@ typed member view of the shared quarantine object, not a standalone allocation
 or exclusive ownership claim; retained teardown and diagnostic code still
 addresses that fixed identity.
 
-`tools/check-dtcm-access.py` freezes every remaining direct production DTCM
-literal outside `src/dtcm.rs` in an exact reviewed manifest. New literals and
-unreviewed inventory shrinkage both fail the normal gate, keeping address
-construction confined while each remaining caller family is migrated.
+`tools/check-dtcm-access.py` freezes direct production DTCM literals outside
+`src/dtcm.rs` in an exact reviewed manifest. The manifest is now empty: live
+CPU accesses and hardware-published DTCM addresses use field-derived owners,
+while unrelated control bit 26 is expressed as a bit rather than an
+address-looking value. Any new literal fails the normal gate.
 
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state

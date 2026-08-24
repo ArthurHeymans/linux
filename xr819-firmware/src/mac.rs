@@ -495,7 +495,7 @@ pub unsafe fn program_before_scan_channel(channel: u16) {
                     if read_u8(vif.path_selector_byte().get()) == 0 {
                         0x0100_0000
                     } else {
-                        0x0400_0000
+                        1 << 26
                     },
                 );
             } else {

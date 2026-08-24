@@ -801,7 +801,7 @@ pub unsafe fn service_pending(
         let vif_control_bits = crate::vif::vif_read_u32(vif.flags());
         if !effective_link && frame_kind != 0xd0 && effective_mask == 0 {
             if vif_control_bits & (1 << 30) != 0 {
-                crate::vif::vif_write_u32(vif.flags(), vif_control_bits | 0x0400_0000);
+                crate::vif::vif_write_u32(vif.flags(), vif_control_bits | (1 << 26));
             } else {
                 let radio_state = crate::vif::vif_read_u8(vif.activity_state());
                 if radio_state == 2 || radio_state == 3 {
@@ -820,7 +820,7 @@ pub unsafe fn service_pending(
         let link_gate_requests_removal =
             (effective_link || frame_kind == 0xd0) && vif_control_bits & (1 << 29) == 0;
         if (effective_link || frame_kind == 0xd0) && vif_control_bits & (1 << 29) != 0 {
-            crate::vif::vif_write_u32(vif.flags(), vif_control_bits | 0x0400_0000);
+            crate::vif::vif_write_u32(vif.flags(), vif_control_bits | (1 << 26));
         }
         let state = crate::vif::vif_read_u8(vif.mode());
         pending_task_decision(PendingTaskInput {
@@ -1097,7 +1097,7 @@ impl HostSchedulerReservation {
 const fn scheduler_batch_control_bits(original: u32, staged: u8) -> u32 {
     original
         | if staged == 0 {
-            0x0400_0000
+            1 << 26
         } else {
             0x0800_0000
         }

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Freeze direct access to the XR819 DTCM quarantine outside its owner.
 
-The existing firmware still has translated production paths that construct raw
-DTCM addresses. This gate turns that known debt into a shrinking inventory:
-new literals fail the build, while migrations to field-derived `dtcm` accessors
-remove entries from the manifest. The manifest is deliberately line-number
+Production DTCM address construction is confined to ``src/dtcm.rs``. This gate
+keeps the reviewed literal inventory empty and rejects new raw addresses or
+owner-only constructors elsewhere. The manifest is deliberately line-number
 independent so ordinary source movement does not create churn.
 """
 
@@ -172,7 +171,7 @@ def load_manifest() -> dict[str, dict[str, int]]:
 def write_manifest(current: dict[str, dict[str, int]]) -> None:
     data = {
         "schema": 1,
-        "purpose": "Known direct DTCM literals outside src/dtcm.rs; entries must only shrink as typed accessors replace them.",
+        "purpose": "Direct DTCM literals outside src/dtcm.rs; the reviewed production baseline is empty.",
         "inventory": current,
     }
     MANIFEST.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")

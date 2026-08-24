@@ -6788,7 +6788,7 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
         // `txp_build_pipe_descriptor(..., 0)`.
         write_u32(
             host.control_bits().get(),
-            read_u32(host.control_bits().get()) | 0x0400_0000,
+            read_u32(host.control_bits().get()) | (1 << 26),
         );
         restore_irq_fiq(previous);
     }
