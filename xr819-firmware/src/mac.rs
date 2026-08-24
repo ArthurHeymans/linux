@@ -3,7 +3,6 @@
 use crate::{packet_ram, platform, radio};
 
 const SHARED: usize = crate::dtcm::LOW_MAC_GLOBAL.get();
-const WAKE: usize = crate::dtcm::MAC_WAKE_RUNTIME_STATE.get();
 
 #[inline(always)]
 fn packet_offset(address: usize) -> u32 {
@@ -589,7 +588,7 @@ pub unsafe fn program_joined_bssid(bssid: [u8; 6]) {
 
 pub unsafe fn reprogram_after_channel() {
     unsafe {
-        write_u8(WAKE + 0x1d, 0);
+        write_u8(crate::dtcm::MAC_WAKE_TRANSITION_PENDING.get(), 0);
         write_u32(
             crate::platform::mac_register(0x0800),
             packet_offset(packet_ram::rate_ram().start),
@@ -602,7 +601,10 @@ pub unsafe fn reprogram_after_channel() {
         }
         program_ifs_timing();
         program_immediate_response_descriptors();
-        write_u32(crate::platform::mac_register(0x0200), read_u32(WAKE + 0x24));
+        write_u32(
+            crate::platform::mac_register(0x0200),
+            read_u32(crate::dtcm::MAC_WAKE_MODE.get()),
+        );
         save_register_context();
     }
 }
@@ -1145,7 +1147,7 @@ unsafe fn export_pipe_counters() {
 }
 
 unsafe fn program_mode_registers() {
-    let mode = unsafe { read_u32(WAKE + 0x24) };
+    let mode = unsafe { read_u32(crate::dtcm::MAC_WAKE_MODE.get()) };
     let wide = mode & (1 << 18) != 0;
     let selector = if wide { 0x001c_0783 } else { 0x0018_0783 };
     unsafe {
@@ -1166,10 +1168,10 @@ unsafe fn program_mode_registers() {
 /// and configured-mode publication.
 pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError> {
     unsafe {
-        if read_u8(WAKE + 0x1e) == 0 {
+        if read_u8(crate::dtcm::MAC_WAKE_RESTORE_PENDING.get()) == 0 {
             return Ok(());
         }
-        write_u8(WAKE + 0x1e, 0);
+        write_u8(crate::dtcm::MAC_WAKE_RESTORE_PENDING.get(), 0);
     }
     // Vendor `mac_reinit_after_wake` restores the RX subsystem and pipe state,
     // but does not repeat the global packet-DMA/controller reset performed at
@@ -1236,7 +1238,7 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
             if polls >= max_polls {
                 // Retry the complete wake restoration on the next cooperative
                 // service call rather than continuing from a partial reset.
-                write_u8(WAKE + 0x1e, 1);
+                write_u8(crate::dtcm::MAC_WAKE_RESTORE_PENDING.get(), 1);
                 return Err(MacWakeError::PipeControllerTimeout);
             }
             polls += 1;
@@ -1249,19 +1251,22 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
         reset_lmc_pool();
 
         if read_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get()) != 0 {
-            write_u8(WAKE + 0x1d, 1);
+            write_u8(crate::dtcm::MAC_WAKE_TRANSITION_PENDING.get(), 1);
             program_slot_timings(read_u16(SHARED + 2), read_u32(SHARED + 0x1c));
             install_response_descriptors();
             export_pipe_counters();
-            if read_u32(WAKE + 0x28) != 0 {
+            if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
                 program_mac_address(
-                    read_u32(WAKE + 0x28) as usize,
+                    read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) as usize,
                     crate::platform::mac_register(0x003c),
                     0x301,
                 );
             }
             program_mode_registers();
-            write_u32(WAKE + 0x24, read_u32(crate::platform::mac_register(0x0200)));
+            write_u32(
+                crate::dtcm::MAC_WAKE_MODE.get(),
+                read_u32(crate::platform::mac_register(0x0200)),
+            );
             write_u32(crate::platform::mac_register(0x0200), 0x00c0_8018);
         }
     }
