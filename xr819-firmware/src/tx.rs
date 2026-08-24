@@ -153,11 +153,9 @@ impl SharedCompletionRing {
 const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get();
 #[cfg(not(target_arch = "arm"))]
 const PIPE_RETRY_RANDOM_STATE: u32 = crate::dtcm::initialized_random_lfsr().get() as u32;
-const PIPE_RECORDS: u32 = crate::dtcm::LOW_MAC_GLOBAL.get() as u32;
 const PIPE_IRQ_PENDING: u32 = crate::platform::mac_register(0x0e84) as u32;
 const PIPE_IRQ_TRIGGER: u32 = crate::platform::mac_register(0x0e98) as u32;
 const PIPE_QUANTUM: u32 = 0x0000_0fff;
-const PIPE_BUSY: u32 = PIPE_RECORDS + 7;
 const PIPE_STATUS_COUNTER: u32 = 0xfff0_1aa4;
 const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
 // `txp_pipe_advance_slot` acknowledges with `-((0x1110 << pipe) + 0x10)`, which
@@ -873,7 +871,7 @@ pub fn capture_mac_fatal_postmortem<M: MacPipeMmio>(
     output.current_pipe = u32::from(mmio.read_u8(crate::dtcm::MAC_CURRENT_PIPE.get() as u32));
     output.current_pipe_record = mmio.read_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get() as u32);
     output.current_slot = mmio.read_u32(crate::dtcm::MAC_CURRENT_SLOT.get() as u32);
-    output.pipe_busy = u32::from(mmio.read_u8(PIPE_BUSY));
+    output.pipe_busy = u32::from(mmio.read_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32));
     output.event_readiness = mmio.read_u32(MAC_EVENT_READINESS);
     output.pipe_irq_pending = mmio.read_u32(PIPE_IRQ_PENDING);
     output.pipe_irq_trigger = mmio.read_u32(PIPE_IRQ_TRIGGER);
@@ -1189,7 +1187,7 @@ pub fn capture_pipe_scheduler_word<M: MacPipeMmio>(mmio: &mut M) -> SchedulerWor
 }
 
 fn pipe_state_address(pipe: u8) -> u32 {
-    PIPE_RECORDS + u32::from(pipe & 3) * 0x6c + 0xa0
+    crate::dtcm::mac_pipe_record_unchecked(usize::from(pipe & 3)).get() as u32
 }
 
 /// Exact translation of vendor `txp_pipe_advance_slot` (`0xa9f2`).
@@ -1342,7 +1340,7 @@ unsafe fn capture_status2_ownership(
         diagnostic_pointer_word(command, 0x14),
         diagnostic_pointer_word(command, 0x18),
         diagnostic_pointer_word(command, 0x1c),
-        u32::from(unsafe { read_u8(PIPE_BUSY as usize) }),
+        u32::from(unsafe { read_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get()) }),
         u32::from(unsafe { read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()) }),
         u32::from(unsafe { active_pas_contexts() }),
         completion_consumer,
@@ -1623,7 +1621,7 @@ pub unsafe fn enter_mac_fatal_quiescence(
             // are well-formed and constant across captures; the cursor/producer
             // comparison is what we actually lack. The displaced command words
             // move to the tail, still committed in BSS.
-            // `current_pipe_record` is already `PIPE_RECORDS + pipe*0x6c + 0xa0`
+            // `current_pipe_record` is already the field-derived MAC pipe record root.
             // (a capture showed 0x04001720 = 0x04001680 + 0xa0 for pipe 0), and
             // `hardware_ring` is read from `+8`, matching vendor's `iVar4+0xa8`.
             // So the slot bytes are at +0..+3, not +0xa0..+0xa3.
@@ -1965,7 +1963,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
             expected_status: read_u8(slot + 1),
             slot_kind: read_u8(slot),
             slot_state: read_u8(slot + 3),
-            global_busy: read_u8(PIPE_BUSY as usize) != 0,
+            global_busy: read_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get()) != 0,
             pipe_current: read_u8(pipe_state + 2),
             pipe_last: read_u8(pipe_state + 1),
             pipe_status: read_u8(pipe_state + 5),
@@ -2096,7 +2094,10 @@ pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, 
             write_u32(0xfff0_1aa0, read_u32(0xfff0_1aa0).wrapping_add(1));
         }
         if plan.service_status_0e_side_effects {
-            write_u32(crate::dtcm::MAC_PHY_COMPLETION_STATUS.get(), read_u32(PIPE_RECORDS as usize + 0x14));
+            write_u32(
+                crate::dtcm::MAC_PHY_COMPLETION_STATUS.get(),
+                read_u32(crate::dtcm::LOW_MAC_PRODUCER_MIRROR.get()),
+            );
             let _ = backend.find_rx_frame_by_subtype(0x80);
             if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
                 let control = read_u32(crate::dtcm::MAC_BEACON_CONTROL.get()) & !1;
@@ -2270,8 +2271,11 @@ fn build_single_frame_duration<M: MacPipeMmio>(
             crate::dtcm::tx_duration_timing_unchecked(timing_index as usize).get() as u32,
         ));
         let duration = mmio
-            .read_u32(PIPE_RECORDS + 0x20)
-            .wrapping_add(mmio.read_u32(PIPE_RECORDS + 0x1c).wrapping_mul(2))
+            .read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_INITIAL.get() as u32)
+            .wrapping_add(
+                mmio.read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get() as u32)
+                    .wrapping_mul(2),
+            )
             .wrapping_add(timing)
             & 0xffff;
         0xd800_0000 | (((duration & 0x03ff) * 8).wrapping_add(0x2000))
@@ -2429,7 +2433,7 @@ where
     let frame_node = FrameNodeAddress::new(mmio.read_u32(slot + 0x0c));
     // Vendor ownership transition: started -> retry-owned, then globally busy.
     mmio.write_u8(slot + 3, 4);
-    mmio.write_u8(PIPE_BUSY, 1);
+    mmio.write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32, 1);
 
     if mmio.read_u8(pipe_state + 3) != 1 {
         for selected_pipe in 0..4_u8 {
@@ -2684,7 +2688,7 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
                     unsafe {
                         trace_tx_stage(TX_TRACE_PHASE2);
                         trace_tx_value(0x1c, event.raw);
-                        write_u8(PIPE_RECORDS as usize + 6, 0);
+                        write_u8(crate::dtcm::LOW_MAC_EVENT_PENDING.get(), 0);
                         service_pipe_tx_start(pipe, self.backend);
                     }
                 } else {
@@ -2692,13 +2696,13 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
                 }
             }
             3 | 1 if phase == 3 || event_type == 0x19 => unsafe {
-                if read_u8(PIPE_RECORDS as usize + 0x0a) != 0 {
-                    write_u8(PIPE_RECORDS as usize + 0x0a, 0);
+                if read_u8(crate::dtcm::LOW_MAC_CONTROL_0A.get()) != 0 {
+                    write_u8(crate::dtcm::LOW_MAC_CONTROL_0A.get(), 0);
                     let pending = crate::dtcm::scheduler_pending_events().get() as usize;
                     write_u32(pending, read_u32(pending) | 0x10);
                 }
-                if read_u8(PIPE_RECORDS as usize + 6) != 0 {
-                    let index = usize::from(read_u8(PIPE_RECORDS as usize + 0x0c));
+                if read_u8(crate::dtcm::LOW_MAC_EVENT_PENDING.get()) != 0 {
+                    let index = usize::from(read_u8(crate::dtcm::LOW_MAC_SELECTED_RATE.get()));
                     let duration = packet_ram::duration_word(index);
                     write_u16(duration, read_u16(duration).wrapping_add(0x10) & !0x0f);
                 }
@@ -5539,7 +5543,7 @@ where
 {
     mmio.write_u32(crate::dtcm::MAC_BEACON_CONTROL_STATE.get() as u32, 5);
     if mmio.read_u16(crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get() as u32) != 0 {
-        mmio.write_u16(PIPE_RECORDS + 8, 0x2000);
+        mmio.write_u16(crate::dtcm::LOW_MAC_CONTROLLER_CONFIG.get() as u32, 0x2000);
         let timer = mmio
             .read_u32(crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get() as u32)
             .wrapping_add(
@@ -5580,10 +5584,10 @@ pub unsafe fn service_mac_irq_count_status(event_type: u8) {
         if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
             write_u32(crate::dtcm::LOW_MAC_BAND_BITS.get(), 1);
         }
-        write_u8(PIPE_RECORDS as usize + 6, 1);
+        write_u8(crate::dtcm::LOW_MAC_EVENT_PENDING.get(), 1);
         let interface = usize::from(read_u8(crate::dtcm::MAC_PHY_INTERFACE.get()));
         write_u8(
-            PIPE_RECORDS as usize + 0x0c,
+            crate::dtcm::LOW_MAC_SELECTED_RATE.get(),
             read_u8(
                 crate::dtcm::pas_stride_view_unchecked(interface)
                     .path_selector_byte()
@@ -6312,7 +6316,7 @@ unsafe fn prepare_single_frame_pas_timing(
                     )
             });
         let timing = compute_single_frame_pas_timing(
-            read_u16(PIPE_RECORDS as usize + 2),
+            read_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get()),
             rate,
             read_u16(frame + 8),
             flags,
@@ -8136,7 +8140,7 @@ mod tests {
         assert_eq!(mmio.writes[0], (crate::dtcm::MAC_CURRENT_PIPE_RECORD.get() as u32, pipe_state_address(1)));
         assert_eq!(mmio.writes[1], (crate::dtcm::MAC_CURRENT_SLOT.get() as u32, slot));
         assert_eq!(mmio.get(slot + 3), 4);
-        assert_eq!(mmio.get(PIPE_BUSY), 1);
+        assert_eq!(mmio.get(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32), 1);
         assert_eq!(mmio.writes[2], (0x9018, PIPE_RETRY_INACTIVE_SENTINEL));
         assert_eq!(mmio.writes[3], (0xa018, PIPE_RETRY_INACTIVE_SENTINEL));
         assert_eq!(mmio.writes[4], (PIPE_IRQ_PENDING, 0xffff_fdff));
@@ -8202,7 +8206,7 @@ mod tests {
 
         assert_eq!(outcome, SingleTxRetryOutcome::Rearmed);
         assert_eq!(mmio.get(slot + 3), 4);
-        assert_eq!(mmio.get(PIPE_BUSY), 1);
+        assert_eq!(mmio.get(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32), 1);
         assert_eq!(
             backend.rearmed,
             Some((2, slot, FrameNodeAddress::new(0x0400_9248), 0x400))
@@ -8297,8 +8301,8 @@ mod tests {
         );
         mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 3);
         mmio.set(crate::dtcm::tx_duration_timing_unchecked(3).get() as u32, 0x20);
-        mmio.set(PIPE_RECORDS + 0x1c, 2);
-        mmio.set(PIPE_RECORDS + 0x20, 3);
+        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get() as u32, 2);
+        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_INITIAL.get() as u32, 3);
         mmio.set(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32, 0);
         let mut backend = MockRearmBackend::new();
 
@@ -8372,8 +8376,8 @@ mod tests {
         );
         mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 3);
         mmio.set(crate::dtcm::tx_duration_timing_unchecked(3).get() as u32, 0x20);
-        mmio.set(PIPE_RECORDS + 0x1c, 2);
-        mmio.set(PIPE_RECORDS + 0x20, 3);
+        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get() as u32, 2);
+        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_INITIAL.get() as u32, 3);
         mmio.set(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32, 0);
         let mut backend = MockRearmBackend::new();
 
@@ -8765,7 +8769,7 @@ mod tests {
         mmio.set(crate::dtcm::MAC_CURRENT_PIPE.get() as u32, 2);
         mmio.set(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get() as u32, 0x0400_17f8);
         mmio.set(crate::dtcm::MAC_CURRENT_SLOT.get() as u32, 0x0400_181c);
-        mmio.set(PIPE_BUSY, 1);
+        mmio.set(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32, 1);
         mmio.set(MAC_EVENT_READINESS, 0xffff_ffff);
         mmio.set(PIPE_IRQ_PENDING, 0x400);
         mmio.set(PIPE_IRQ_TRIGGER, 1 << 27);
@@ -8807,7 +8811,7 @@ mod tests {
         execute_mac_beacon_event(&mut mmio, |bits| raised = bits);
 
         assert_eq!(mmio.get(crate::dtcm::MAC_BEACON_CONTROL_STATE.get() as u32), 5);
-        assert_eq!(mmio.get(PIPE_RECORDS + 8), 0x2000);
+        assert_eq!(mmio.get(crate::dtcm::LOW_MAC_CONTROLLER_CONFIG.get() as u32), 0x2000);
         assert_eq!(mmio.get(MAC_BEACON_TIMER + 0x14), 0x8000_9234);
         assert_eq!(raised, 1 << 24);
     }

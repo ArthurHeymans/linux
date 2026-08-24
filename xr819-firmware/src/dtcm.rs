@@ -2037,6 +2037,15 @@ pub(crate) const MAC_BEACON_SELECTOR: DtcmAddress = DtcmAddress::from_offset(MAC
 pub(crate) const MAC_BEACON_MODE: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, mode));
 pub(crate) const MAC_BEACON_COMPLETION_WORD: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, completion_word));
 pub(crate) const LOW_MAC_GLOBAL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_low_mac_prefix));
+pub(crate) const LOW_MAC_RATE_CONFIG: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, rate_config));
+pub(crate) const LOW_MAC_EVENT_PENDING: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, event_pending));
+pub(crate) const LOW_MAC_PIPE_BUSY: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, pipe_busy));
+pub(crate) const LOW_MAC_CONTROLLER_CONFIG: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, controller_config));
+pub(crate) const LOW_MAC_CONTROL_0A: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, control_0a));
+pub(crate) const LOW_MAC_SELECTED_RATE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, selected_rate));
+pub(crate) const LOW_MAC_PRODUCER_MIRROR: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, producer_mirror));
+pub(crate) const LOW_MAC_SLOT_TIME_BASE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_base));
+pub(crate) const LOW_MAC_SLOT_TIME_INITIAL: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_initial));
 pub(crate) const LOW_MAC_FIFO_STATUS: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, fifo_status));
 pub(crate) const LOW_MAC_LEGACY_MODE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode));
 pub(crate) const LOW_MAC_SHORT_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, short_airtimes));
@@ -4402,7 +4411,16 @@ mod tests {
     fn initialized_low_mac_global_addresses_are_exact() {
         assert_eq!(LOW_MAC_GLOBAL.get(), 0x0400_1680);
         assert_eq!(LOW_MAC_FIFO_STATUS.get(), 0x0400_1681);
+        assert_eq!(LOW_MAC_RATE_CONFIG.get(), 0x0400_1682);
         assert_eq!(LOW_MAC_LEGACY_MODE.get(), 0x0400_1685);
+        assert_eq!(LOW_MAC_EVENT_PENDING.get(), 0x0400_1686);
+        assert_eq!(LOW_MAC_PIPE_BUSY.get(), 0x0400_1687);
+        assert_eq!(LOW_MAC_CONTROLLER_CONFIG.get(), 0x0400_1688);
+        assert_eq!(LOW_MAC_CONTROL_0A.get(), 0x0400_168a);
+        assert_eq!(LOW_MAC_SELECTED_RATE.get(), 0x0400_168c);
+        assert_eq!(LOW_MAC_PRODUCER_MIRROR.get(), 0x0400_1694);
+        assert_eq!(LOW_MAC_SLOT_TIME_BASE.get(), 0x0400_169c);
+        assert_eq!(LOW_MAC_SLOT_TIME_INITIAL.get(), 0x0400_16a0);
         assert_eq!(LOW_MAC_SHORT_AIRTIME_TABLE.get(), 0x0400_16c8);
         assert_eq!(low_mac_short_airtime_unchecked(21).get(), 0x0400_16f2);
         assert_eq!(LOW_MAC_LONG_AIRTIME_TABLE.get(), 0x0400_16f4);
