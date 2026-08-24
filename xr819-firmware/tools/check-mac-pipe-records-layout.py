@@ -42,15 +42,18 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
+# Field-derived reservation cancellation now materializes the slot-frame field
+# root in HostTxDriver::reset instead of reconstructing it from a raw slot base.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001720: 6,
     0x04001723: 1,
-    0x04001738: 1,
+    0x04001738: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
     ('_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
     ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001720): 2,
+    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001738): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001723): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001738): 1,

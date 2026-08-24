@@ -42,7 +42,10 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001578: 6})
+# Field-derived host-scheduler ring indexing materializes one additional copy of
+# the same ring root in the service-index literal pool; decoded consumers and
+# their volatile operation order remain unchanged.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001578: 7})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001578): 4,
     ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001578): 1,

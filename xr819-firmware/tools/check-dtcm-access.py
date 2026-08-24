@@ -27,7 +27,8 @@ OWNER_ONLY_PATTERNS = (
 )
 DIRECT_FIELD_ARITHMETIC = re.compile(
     r"(?:crate\s*::\s*)?dtcm\s*::\s*[A-Za-z_][A-Za-z0-9_]*"
-    r"(?:\s*\([^()\n]*\))?\s*\.\s*get\s*\(\s*\)\s*"
+    r"(?:\s*\([^()\n]*\))?\s*\.\s*get\s*\(\s*\)"
+    r"(?:\s+as\s+(?:u32|usize))?\s*"
     r"(?:[+-]|\.\s*wrapping_(?:add|sub)\s*\()"
 )
 
@@ -213,6 +214,8 @@ def check_regressions() -> None:
         "crate::dtcm::TABLE.get() + index * 4",
         "dtcm::field(index).get() - 1",
         "crate::dtcm::TABLE.get().wrapping_add(index)",
+        "crate::dtcm::TABLE.get() as u32 + index * 4",
+        "dtcm::field(index).get() as usize - 1",
     )
     accepted = (
         "crate::dtcm::table_entry_unchecked(index).get()",

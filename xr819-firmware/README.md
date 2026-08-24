@@ -452,7 +452,7 @@ addresses that fixed identity.
 CPU accesses and hardware-published DTCM addresses use field-derived owners,
 while unrelated control bit 26 is expressed as a bit rather than an
 address-looking value. The same gate rejects direct arithmetic on a
-`dtcm::...get()` expression; new indexed and interior accesses must be derived
+`dtcm::...get()` expression, including arithmetic after a numeric cast; new indexed and interior accesses must be derived
 by `src/dtcm.rs`, while older family-local aliases remain audit debt. The current
 startup writer matrix, access rules, and cold/warm snapshot procedure are
 recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md). The optional

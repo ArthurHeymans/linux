@@ -19,9 +19,10 @@ Ghidra DATA/PARAM references at pas_reprogram_all_vif_rate_tables (PC
 0x7f82: movs/lsls producing 0x04000000 as a bitfield value) and
 mac_pipe_irq_service (PC 0x9c12) are value coincidences, not accesses.
 
-Retained Rust pins one sanctioned source literal: mac::program_before_
-scan_channel stores the pointer VALUE 0x0400_0000 into MMIO register
-0x0270 (mirroring vendor hardware table pointing). Initial COPY values are
+Retained Rust publishes reviewed table addresses through field-derived
+`src/dtcm.rs` accessors: `mac::program_before_scan_channel` stores the table
+base into MMIO register 0x0270, while `platform::prepare_mac_receive_hardware`
+stores the first pointer and patch-word addresses. Initial COPY values are
 loader-owned; no writer closure is claimed: computed, indirect, generic
 HIF/debug, vendor, IRQ, and FIQ mutation remain possible. The linked-literal
 and decoded PC-relative-xref multisets are derived from decoded loads only;
@@ -70,6 +71,7 @@ SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
     "src/mac.rs": {"0x0400_0000"},
 }
 SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
+    "src/dtcm.rs": {"mac_slot_timing_patch_pointer", "mac_slot_timing_patch_word"},
     "src/mac.rs": {"program_before_scan_channel"},
     "src/platform.rs": {"prepare_mac_receive_hardware"},
 }
@@ -110,6 +112,9 @@ REQUIRED = (
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
+    "fn mac_slot_timing_patch_pointer(index: usize) -> Option<DtcmAddress>",
+    "fn mac_slot_timing_patch_word(index: usize) -> Option<DtcmAddress>",
+    "fn initialized_mac_slot_timing_patch_addresses_are_exact()",
     "fn initialized_prefix_tables_are_exact()",
     "list, DTCM_STATE_BASE",
     "size_of::<[MacSlotTimingPatchEntry; 11]>(), 0x58",
@@ -435,7 +440,7 @@ def check_source() -> None:
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
     if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
         failures.append("production impl for RfScaleHalfwordTable is forbidden")
-    for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
+    for match in re.finditer(r"\b(?:const(?!\s+fn\b)|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
         if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
             failures.append(f"direct scheduler tail const/static alias is forbidden: {match.group(1)}")
     for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*register_write_lists_entry_marker[A-Za-z0-9_]*)", production, re.I):

@@ -1925,7 +1925,10 @@ pub(crate) const fn ba_pipe_record_address_unchecked(pipe: usize) -> DtcmAddress
         LOW_MAC_PAS_OFFSET + PAS_VIEWS_OFFSET + 0x1d8 + pipe * 0x38,
     )
 }
-pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000); pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables)); pub(crate) const AES_TRANSFER_CLASSES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, aes_transfer_classes)); pub(crate) const PHY_GAIN_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_register_write_lists)); pub(crate) const PHY_INIT_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_0)); pub(crate) const INITIALIZED_PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_phy_gain_source_records)); pub(crate) const INITIALIZED_IQ_CALIBRATION_GAIN_INDICES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_iq_calibration_gain_indices)); pub(crate) const RF_MODE_HALFWORD_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rf_mode_halfword_table) + core::mem::offset_of!(RfModeHalfwordTable, entries));
+pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000);
+pub(crate) const fn mac_slot_timing_patch_pointer(index: usize) -> Option<DtcmAddress> { if index < 11 { Some(DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list) + core::mem::offset_of!(MacSlotTimingPatchList, entries) + index * core::mem::size_of::<MacSlotTimingPatchEntry>() + core::mem::offset_of!(MacSlotTimingPatchEntry, pointer))) } else { None } }
+pub(crate) const fn mac_slot_timing_patch_word(index: usize) -> Option<DtcmAddress> { if index < 11 { Some(DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list) + core::mem::offset_of!(MacSlotTimingPatchList, entries) + index * core::mem::size_of::<MacSlotTimingPatchEntry>() + core::mem::offset_of!(MacSlotTimingPatchEntry, patch_word))) } else { None } }
+pub const TKIP_SBOX_TABLES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, tkip_sbox_tables)); pub(crate) const AES_TRANSFER_CLASSES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, aes_transfer_classes)); pub(crate) const PHY_GAIN_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_register_write_lists)); pub(crate) const PHY_INIT_REGISTER_WRITE_LISTS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_init_register_write_list_0)); pub(crate) const INITIALIZED_PHY_GAIN_SOURCE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_phy_gain_source_records)); pub(crate) const INITIALIZED_IQ_CALIBRATION_GAIN_INDICES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_iq_calibration_gain_indices)); pub(crate) const RF_MODE_HALFWORD_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rf_mode_halfword_table) + core::mem::offset_of!(RfModeHalfwordTable, entries));
 pub(crate) const RF_SCALE_TABLE_A_MODE0_TARGET: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, rf_scale_table_a) + 60 * core::mem::size_of::<SharedU16>());
 pub(crate) const fn rf_mode_halfword_unchecked(index: usize) -> DtcmAddress {
     DtcmAddress::from_offset_unchecked(
@@ -2040,11 +2043,24 @@ pub(crate) const LOW_MAC_LONG_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_off
 pub(crate) const MAC_PIPE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records));
 pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(mac_pipe_record_unchecked(pipe)) } else { None } }
 pub(crate) const fn mac_pipe_record_unchecked(pipe: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>()) }
+const fn mac_pipe_record_field_unchecked(pipe: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(mac_pipe_record_unchecked(pipe).offset() + offset) }
+pub(crate) const fn mac_pipe_current_slot_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, current_slot)) }
+pub(crate) const fn mac_pipe_state_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, state)) }
+pub(crate) const fn mac_pipe_hardware_ring_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, hardware_ring)) }
+const fn mac_pipe_slot_field_unchecked(pipe: usize, slot: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(mac_pipe_record_unchecked(pipe).offset() + core::mem::offset_of!(MacPipeRecord, slots) + slot * core::mem::size_of::<MacPipeSlot>() + offset) }
+pub(crate) const fn mac_pipe_slot_state_word_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, state_word)) }
+pub(crate) const fn mac_pipe_slot_retry_rate_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, state_word) + 1) }
+pub(crate) const fn mac_pipe_slot_control_02_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, state_word) + 2) }
+pub(crate) const fn mac_pipe_slot_control_03_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, state_word) + 3) }
+pub(crate) const fn mac_pipe_slot_frame_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, frame)) }
+pub(crate) const fn mac_pipe_slot_auxiliary_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, auxiliary)) }
+pub(crate) const fn mac_pipe_slot_command_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, command)) }
 pub(crate) const RADIO_STOP_WORD_02: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02)); pub(crate) const HOST_PAS_RING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, host_pas_ring));
 pub(crate) const HOST_PAS_RING_HEAD: DtcmAddress = HOST_PAS_RING;
 pub(crate) const HOST_PAS_RING_TAIL: DtcmAddress = DtcmAddress::from_offset(HOST_PAS_RING.offset() + core::mem::offset_of!(HostPasRing, tail));
 pub(crate) const HOST_PAS_RING_SLOTS: DtcmAddress = DtcmAddress::from_offset(HOST_PAS_RING.offset() + core::mem::offset_of!(HostPasRing, slots));
-pub(crate) const fn host_pas_ring_slot(index: usize) -> Option<DtcmAddress> { if index < 64 { Some(DtcmAddress::from_offset(HOST_PAS_RING_SLOTS.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn host_pas_ring_slot(index: usize) -> Option<DtcmAddress> { if index < 64 { Some(host_pas_ring_slot_unchecked(index)) } else { None } }
+pub(crate) const fn host_pas_ring_slot_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(HOST_PAS_RING_SLOTS.offset() + index * core::mem::size_of::<SharedU32>()) }
 pub(crate) const IRQ_CALLBACK_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, irq_callbacks)); pub(crate) const PHY_WATCHDOG_COUNTER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_watchdog_counter) + core::mem::offset_of!(PhyWatchdogCounter, count)); pub(crate) const MULTI_VIF_BEACON_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, timer)); pub(crate) const MEASUREMENT_DWELL_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_dwell_timer));
 pub(crate) const fn irq_callback(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(DtcmAddress::from_offset(IRQ_CALLBACK_TABLE.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const VISIBLE_COMPLETION_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, visible_completion_words));
@@ -2066,8 +2082,10 @@ pub(crate) const QUEUE_PIPE_MAPPINGS: DtcmAddress = DtcmAddress::from_offset(cor
 pub(crate) const QUEUE_TO_ACCESS_CATEGORY: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, queue_to_access_category));
 pub(crate) const ACCESS_CATEGORY_TO_QUEUE: DtcmAddress = DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, access_category_to_queue));
 pub(crate) const fn pipe_order_byte(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, pipe_order) + index)) } else { None } }
-pub(crate) const fn queue_to_access_category(queue: usize) -> Option<DtcmAddress> { if queue < 4 { Some(DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, queue_to_access_category) + queue)) } else { None } }
-pub(crate) const fn access_category_to_queue(access_category: usize) -> Option<DtcmAddress> { if access_category < 4 { Some(DtcmAddress::from_offset(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, access_category_to_queue) + access_category)) } else { None } }
+pub(crate) const fn queue_to_access_category(queue: usize) -> Option<DtcmAddress> { if queue < 4 { Some(queue_to_access_category_unchecked(queue)) } else { None } }
+pub(crate) const fn queue_to_access_category_unchecked(queue: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, queue_to_access_category) + queue) }
+pub(crate) const fn access_category_to_queue(access_category: usize) -> Option<DtcmAddress> { if access_category < 4 { Some(access_category_to_queue_unchecked(access_category)) } else { None } }
+pub(crate) const fn access_category_to_queue_unchecked(access_category: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(QUEUE_PIPE_MAPPINGS.offset() + core::mem::offset_of!(QueuePipeMappings, access_category_to_queue) + access_category) }
 pub(crate) const INITIALIZED_CONTROL_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, control_words));
 const fn initialized_control_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(INITIALIZED_CONTROL_WORDS.offset() + offset) }
 pub(crate) const fn initialized_beacon_state() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, beacon_state)) }
@@ -4389,8 +4407,18 @@ mod tests {
     fn initialized_mac_pipe_record_addresses_are_exact() {
         assert_eq!(MAC_PIPE_RECORDS.get(), 0x0400_1720);
         assert_eq!(mac_pipe_record(0).unwrap().get(), 0x0400_1720);
+        assert_eq!(mac_pipe_current_slot_unchecked(0).get(), 0x0400_1720);
+        assert_eq!(mac_pipe_state_unchecked(0).get(), 0x0400_1723);
+        assert_eq!(mac_pipe_hardware_ring_unchecked(0).get(), 0x0400_1728);
+        assert_eq!(mac_pipe_slot_state_word_unchecked(0, 0).get(), 0x0400_172c);
+        assert_eq!(mac_pipe_slot_retry_rate_unchecked(0, 0).get(), 0x0400_172d);
+        assert_eq!(mac_pipe_slot_control_02_unchecked(0, 0).get(), 0x0400_172e);
+        assert_eq!(mac_pipe_slot_control_03_unchecked(0, 0).get(), 0x0400_172f);
+        assert_eq!(mac_pipe_slot_frame_unchecked(0, 0).get(), 0x0400_1738);
+        assert_eq!(mac_pipe_slot_auxiliary_unchecked(0, 0).get(), 0x0400_173c);
+        assert_eq!(mac_pipe_slot_command_unchecked(0, 0).get(), 0x0400_1740);
+        assert_eq!(mac_pipe_slot_command_unchecked(3, 3).get() + 4, 0x0400_18d0);
         assert_eq!(mac_pipe_record(3).unwrap().get(), 0x0400_1864);
-        assert_eq!(mac_pipe_record(3).unwrap().get() + 0x6c, 0x0400_18d0);
         assert!(mac_pipe_record(4).is_none());
     }
 
@@ -4405,7 +4433,8 @@ mod tests {
         assert_eq!(HOST_PAS_RING_SLOTS.get(), 0x0400_1580);
         assert_eq!(host_pas_ring_slot(0).unwrap().get(), 0x0400_1580);
         assert_eq!(host_pas_ring_slot(63).unwrap().get(), 0x0400_167c);
-        assert_eq!(host_pas_ring_slot(63).unwrap().get() + 4, 0x0400_1680);
+        assert_eq!(host_pas_ring_slot_unchecked(63).get(), 0x0400_167c);
+        assert_eq!(host_pas_ring_slot_unchecked(63).get() + 4, 0x0400_1680);
         assert!(host_pas_ring_slot(64).is_none());
     }
 
@@ -4526,6 +4555,16 @@ mod tests {
 
     #[test]
 fn initialized_phy_gain_source_record_addresses_are_exact() { assert_eq!(INITIALIZED_PHY_GAIN_SOURCE_RECORDS.get(), 0x0400_0ca0); assert_eq!(initialized_phy_gain_source_physical_record(0).unwrap().get(), 0x0400_0ca0); assert_eq!(initialized_phy_gain_source_physical_record(21).unwrap().get(), 0x0400_0d1e); assert_eq!(initialized_phy_gain_source_physical_record(22).unwrap().get(), 0x0400_0d24); assert_eq!(initialized_phy_gain_source_physical_record(43).unwrap().get(), 0x0400_0da2); assert_eq!(initialized_phy_gain_source_physical_record(43).unwrap().get() + core::mem::size_of::<InitializedPhyGainSourceRecord>(), 0x0400_0da8); assert!(initialized_phy_gain_source_physical_record(44).is_none()); assert_eq!(initialized_phy_gain_source_view_record(0, 0).unwrap().get(), 0x0400_0ca0); assert_eq!(initialized_phy_gain_source_view_record(0, 21).unwrap().get(), 0x0400_0d1e); assert_eq!(initialized_phy_gain_source_view_record(1, 0).unwrap().get(), 0x0400_0d24); assert_eq!(initialized_phy_gain_source_view_record(1, 21).unwrap().get(), 0x0400_0da2); assert!(initialized_phy_gain_source_view_record(2, 0).is_none()); assert!(initialized_phy_gain_source_view_record(0, 22).is_none()); assert_eq!(core::mem::size_of::<InitializedPhyGainSourceRecord>(), 0x06); assert_eq!(core::mem::align_of::<InitializedPhyGainSourceRecord>(), 2); assert_eq!(core::mem::size_of::<[InitializedPhyGainSourceRecord; 44]>(), 0x108); assert_eq!(core::mem::align_of::<[InitializedPhyGainSourceRecord; 44]>(), 2); assert_eq!([core::mem::offset_of!(InitializedPhyGainSourceRecord, selector), core::mem::offset_of!(InitializedPhyGainSourceRecord, opaque_01), core::mem::offset_of!(InitializedPhyGainSourceRecord, lower), core::mem::offset_of!(InitializedPhyGainSourceRecord, upper)], [0, 1, 2, 4]); assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078); assert_eq!(DURATION_QUANTUM_POINTERS.get(), 0x0400_10d4); }    #[test]
+    fn initialized_mac_slot_timing_patch_addresses_are_exact() {
+        assert_eq!(mac_slot_timing_patch_pointer(0).unwrap().get(), 0x0400_0000);
+        assert_eq!(mac_slot_timing_patch_word(0).unwrap().get(), 0x0400_0004);
+        assert_eq!(mac_slot_timing_patch_pointer(10).unwrap().get(), 0x0400_0050);
+        assert_eq!(mac_slot_timing_patch_word(10).unwrap().get(), 0x0400_0054);
+        assert!(mac_slot_timing_patch_pointer(11).is_none());
+        assert!(mac_slot_timing_patch_word(11).is_none());
+    }
+
+    #[test]
     fn initialized_prefix_tables_are_exact() { let image = DTCM_STATE_BASE; let list = image + core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list); let quanta = image + core::mem::offset_of!(InitializedVendorImage, pac_duration_quanta); let suffix = image + core::mem::offset_of!(InitializedVendorImage, prefix_suffix); assert_eq!(list, DTCM_STATE_BASE); assert_eq!(core::mem::size_of::<MacSlotTimingPatchEntry>(), 0x08); assert_eq!([core::mem::offset_of!(MacSlotTimingPatchEntry, pointer), core::mem::offset_of!(MacSlotTimingPatchEntry, patch_word)], [0x00, 0x04]); assert_eq!(core::mem::size_of::<MacSlotTimingPatchList>(), 0x58); assert_eq!(core::mem::size_of::<[MacSlotTimingPatchEntry; 11]>(), 0x58); assert_eq!(list + core::mem::size_of::<MacSlotTimingPatchList>(), 0x0400_0058); assert_eq!(quanta, 0x0400_0058); assert_eq!(core::mem::size_of::<PacDurationQuanta>(), 0x20); assert_eq!(quanta + core::mem::size_of::<PacDurationQuanta>(), 0x0400_0078); assert_eq!(suffix, 0x0400_0078); assert_eq!(core::mem::size_of::<OpaqueBytes<0xc0>>(), 0xc0); assert_eq!(suffix + core::mem::size_of::<OpaqueBytes<0xc0>>(), 0x0400_0138); assert_eq!(TX_DURATION_TIMING_TABLE.get(), 0x0400_0138); let pas_tables = image + core::mem::offset_of!(InitializedVendorImage, pas_rate_static_tables); assert_eq!(pas_tables, 0x0400_014c); assert_eq!(core::mem::size_of::<PasRateStaticTables>(), 0x48); assert_eq!([core::mem::offset_of!(PasRateStaticTables, mcs_fallback_rates), core::mem::offset_of!(PasRateStaticTables, pas_fallback_suffix), core::mem::offset_of!(PasRateStaticTables, ofdm_airtime_durations), core::mem::offset_of!(PasRateStaticTables, rate_group_records)], [0x00, 0x08, 0x10, 0x30]); assert_eq!(pas_tables + core::mem::size_of::<[SharedU8; 8]>(), 0x0400_0154); assert_eq!(pas_tables + core::mem::offset_of!(PasRateStaticTables, ofdm_airtime_durations), 0x0400_015c); assert_eq!(pas_tables + core::mem::offset_of!(PasRateStaticTables, rate_group_records), 0x0400_017c); assert_eq!(pas_tables + core::mem::size_of::<PasRateStaticTables>(), 0x0400_0194); let ccb = image + core::mem::offset_of!(InitializedVendorImage, completion_callback_prefix); assert_eq!(ccb, 0x0400_0228); assert_eq!(core::mem::size_of::<CompletionCallbackPrefix>(), 0x38); assert_eq!([core::mem::offset_of!(CompletionCallbackPrefix, completion_prefix_suffix), core::mem::offset_of!(CompletionCallbackPrefix, p2p_action_offsets)], [0x00, 0x30]); assert_eq!(ccb + core::mem::size_of::<OpaqueBytes<0x30>>(), 0x0400_0258); assert_eq!(ccb + core::mem::size_of::<CompletionCallbackPrefix>(), 0x0400_0260);
         let rcm = image + core::mem::offset_of!(InitializedVendorImage, ring_cursor_map_tables); assert_eq!(rcm, 0x0400_0288); assert_eq!(core::mem::size_of::<RingCursorMapTables>(), 0x50); assert_eq!([core::mem::offset_of!(RingCursorMapTables, beacon_mask_words), core::mem::offset_of!(RingCursorMapTables, mib_defaults_template)], [0x00, 0x20]); assert_eq!(rcm + core::mem::size_of::<[SharedU32; 8]>(), 0x0400_02a8); assert_eq!(rcm + core::mem::size_of::<RingCursorMapTables>(), 0x0400_02d8); assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078); assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4); assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<DtcmLayout>(), 4); assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<SharedDtcmState>(), 4); } #[test]
     fn tlv_dispatch_handler_table_is_exact() { let image = DTCM_STATE_BASE; let tlv = image + core::mem::offset_of!(InitializedVendorImage, tlv_dispatch_handler_table); assert_eq!(core::mem::size_of::<TlvDispatchHandlerTable>(), 0x28); assert_eq!(core::mem::align_of::<TlvDispatchHandlerTable>(), 4); assert_eq!(core::mem::offset_of!(TlvDispatchHandlerTable, entries), 0); assert_eq!(core::mem::size_of::<[TlvDispatchHandlerEntry; 4]>(), 0x20); assert_eq!([core::mem::offset_of!(TlvDispatchHandlerTable, terminator_key), core::mem::offset_of!(TlvDispatchHandlerTable, terminator_handler)], [0x20, 0x24]); assert_eq!(tlv, 0x0400_0da8); assert_eq!(tlv + core::mem::offset_of!(TlvDispatchHandlerTable, terminator_key), 0x0400_0dc8); assert_eq!(tlv + core::mem::size_of::<TlvDispatchHandlerTable>(), 0x0400_0dd0); assert_eq!(RF_MODE_HALFWORD_TABLE.get(), 0x0400_0dd0); assert_eq!(INITIALIZED_IQ_CALIBRATION_GAIN_INDICES.get(), 0x0400_0e18); assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078); assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4); assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<DtcmLayout>(), 4); assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<SharedDtcmState>(), 4); } #[test]
@@ -4552,8 +4591,10 @@ fn initialized_phy_gain_source_record_addresses_are_exact() { assert_eq!(INITIAL
         assert_eq!(pipe_order_byte(3).unwrap().get(), 0x0400_02db);
         assert_eq!(QUEUE_TO_ACCESS_CATEGORY.get(), 0x0400_02dc);
         assert_eq!(queue_to_access_category(3).unwrap().get(), 0x0400_02df);
+        assert_eq!(queue_to_access_category_unchecked(3).get(), 0x0400_02df);
         assert_eq!(ACCESS_CATEGORY_TO_QUEUE.get(), 0x0400_02e0);
         assert_eq!(access_category_to_queue(3).unwrap().get(), 0x0400_02e3);
+        assert_eq!(access_category_to_queue_unchecked(3).get(), 0x0400_02e3);
         assert!(pipe_order_byte(4).is_none());
         assert!(queue_to_access_category(4).is_none());
         assert!(access_category_to_queue(4).is_none());

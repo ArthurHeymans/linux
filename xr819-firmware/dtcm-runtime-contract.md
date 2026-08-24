@@ -8,8 +8,9 @@ exclusive Rust ownership or permit address movement.
 ## Current closure
 
 - Direct production DTCM literals outside `src/dtcm.rs`: **zero**.
-- Direct `dtcm::...get()` arithmetic spellings outside `src/dtcm.rs`: **zero**.
-  Older family-local aliases and record-internal arithmetic remain explicit P1
+- Direct `dtcm::...get()` arithmetic spellings outside `src/dtcm.rs`: **zero**,
+  including arithmetic hidden behind an immediate `u32`/`usize` cast. Older
+  family-local aliases and record-internal arithmetic remain explicit P1
   audit debt under their existing ownership gates.
 - `.dtcm.*` section construction outside `src/dtcm.rs`: **zero**.
 - The main Rust image has no DTCM `PT_LOAD`, COPY, or FILL payload.

@@ -935,17 +935,23 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
     let pas = context.pas().raw();
     let mut idle_pipe_mask = 0_u8;
     for candidate in 0..4_u8 {
-        let pipe_state = crate::dtcm::MAC_PIPE_RECORDS.get() as u32 + u32::from(candidate) * 0x6c;
-        if unsafe { read_live_u8(pipe_state + 3) } == 0 {
+        let state = crate::dtcm::mac_pipe_state_unchecked(usize::from(candidate));
+        if unsafe { read_live_u8(state.get() as u32) } == 0 {
             idle_pipe_mask |= 1 << candidate;
         }
     }
-    let ac = unsafe { read_live_u8(pas + 0x0c) };
-    let pipe = unsafe { read_live_u8(crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32 + u32::from(ac)) };
+    let ac = unsafe { read_host_u8(context.access_category()) };
+    let pipe = unsafe {
+        read_live_u8(crate::dtcm::access_category_to_queue_unchecked(usize::from(ac)).get() as u32)
+    };
     let ring_head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
     let ring_tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
     let mut slot = ring_head;
-    while slot != ring_tail && unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(slot) * 4) } != pas {
+    while slot != ring_tail
+        && unsafe {
+            read_live_u32(crate::dtcm::host_pas_ring_slot_unchecked(usize::from(slot)).get() as u32)
+        } != pas
+    {
         slot = slot.wrapping_add(1) & 0x3f;
     }
     SchedulerLiveDiagnostic {
@@ -1071,15 +1077,23 @@ impl HostSchedulerReservation {
             return false;
         }
         unsafe {
+            let pipe = usize::from(self.pipe);
+            let slot = usize::from(self.slot);
             write_host_u32(self.context.control_bits(), self.original_control_bits);
             write_live_u32(self.slot_record, self.original_slot_header);
-            write_live_u32(self.slot_record + 0x0c, self.original_slot_frame);
-            write_live_u32(self.slot_record + 0x10, self.original_slot_auxiliary);
+            write_live_u32(
+                crate::dtcm::mac_pipe_slot_frame_unchecked(pipe, slot).get() as u32,
+                self.original_slot_frame,
+            );
+            write_live_u32(
+                crate::dtcm::mac_pipe_slot_auxiliary_unchecked(pipe, slot).get() as u32,
+                self.original_slot_auxiliary,
+            );
             for (index, word) in self.original_command.into_iter().enumerate() {
                 write_live_u32(self.command + index as u32 * 4, word);
             }
             write_live_u32(
-                crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(self.ring_slot) * 4,
+                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(self.ring_slot)).get() as u32,
                 self.context.pas().raw(),
             );
             write_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32, u32::from(self.original_ring_head));
@@ -1122,19 +1136,25 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     let mut idle_pipe_mask = 0_u8;
     let mut candidate = 0_u8;
     while candidate < 4 {
-        let pipe_state = crate::dtcm::MAC_PIPE_RECORDS.get() as u32 + u32::from(candidate) * 0x6c;
-        if unsafe { read_live_u8(pipe_state + 3) } == 0 {
+        let state = crate::dtcm::mac_pipe_state_unchecked(usize::from(candidate));
+        if unsafe { read_live_u8(state.get() as u32) } == 0 {
             idle_pipe_mask |= 1 << candidate;
         }
         candidate += 1;
     }
-    let ac = unsafe { read_live_u8(pas + 0x0c) };
-    let pipe = unsafe { read_live_u8(crate::dtcm::ACCESS_CATEGORY_TO_QUEUE.get() as u32 + u32::from(ac)) };
+    let ac = unsafe { read_host_u8(context.access_category()) };
+    let pipe = unsafe {
+        read_live_u8(crate::dtcm::access_category_to_queue_unchecked(usize::from(ac)).get() as u32)
+    };
     let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
     let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
     let mut ring_slot = head;
     while ring_slot != tail
-        && unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(ring_slot) * 4) } != pas
+        && unsafe {
+            read_live_u32(
+                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(ring_slot)).get() as u32,
+            )
+        } != pas
     {
         ring_slot = ring_slot.wrapping_add(1) & 0x3f;
     }
@@ -1157,11 +1177,20 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         NonAggregateSchedulerDecision::ReservePipe(_) => {}
     }
 
-    let pipe_state = crate::dtcm::MAC_PIPE_RECORDS.get() as u32 + u32::from(pipe) * 0x6c;
-    let slot = unsafe { read_live_u8(pipe_state) } & 3;
-    let slot_record = pipe_state + 0x0c + u32::from(slot) * 0x18;
-    let command = unsafe { read_live_u32(slot_record + 0x14) };
-    let hardware_ring = unsafe { read_live_u32(pipe_state + 8) };
+    let pipe_index = usize::from(pipe);
+    let slot = unsafe {
+        read_live_u8(crate::dtcm::mac_pipe_current_slot_unchecked(pipe_index).get() as u32)
+    } & 3;
+    let slot_index = usize::from(slot);
+    let slot_record = crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, slot_index).get() as u32;
+    let slot_frame = crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index).get() as u32;
+    let slot_auxiliary = crate::dtcm::mac_pipe_slot_auxiliary_unchecked(pipe_index, slot_index).get() as u32;
+    let command = unsafe {
+        read_live_u32(crate::dtcm::mac_pipe_slot_command_unchecked(pipe_index, slot_index).get() as u32)
+    };
+    let hardware_ring = unsafe {
+        read_live_u32(crate::dtcm::mac_pipe_hardware_ring_unchecked(pipe_index).get() as u32)
+    };
     if command == 0 || hardware_ring == 0 {
         return Err(SchedulerReserveError::PipeStateUnavailable);
     }
@@ -1171,17 +1200,24 @@ pub unsafe fn reserve_non_aggregate_scheduler(
     }
     let original_control_bits = unsafe { read_host_u32(context.control_bits()) };
     let original_slot_header = unsafe { read_live_u32(slot_record) };
-    let original_slot_frame = unsafe { read_live_u32(slot_record + 0x0c) };
-    let original_slot_auxiliary = unsafe { read_live_u32(slot_record + 0x10) };
+    let original_slot_frame = unsafe { read_live_u32(slot_frame) };
+    let original_slot_auxiliary = unsafe { read_live_u32(slot_auxiliary) };
     let mut original_command = [0_u32; 16];
     for (index, word) in original_command.iter_mut().enumerate() {
         *word = unsafe { read_live_u32(command + index as u32 * 4) };
     }
 
     unsafe {
-        write_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(ring_slot) * 4, 0);
+        write_live_u32(
+            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(ring_slot)).get() as u32,
+            0,
+        );
         let mut new_head = head;
-        while new_head != tail && read_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(new_head) * 4) == 0 {
+        while new_head != tail
+            && read_live_u32(
+                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(new_head)).get() as u32,
+            ) == 0
+        {
             new_head = new_head.wrapping_add(1) & 0x3f;
         }
         write_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32, u32::from(new_head));
@@ -1199,25 +1235,37 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         write_host_u32(context.scheduler_timestamp(), vendor_timer());
         write_host_u32(context.descriptor_state(), 0);
         write_live_u8(slot_record, 0);
-        write_live_u8(slot_record + 1, read_host_u8(context.retry_rate()));
-        write_live_u8(slot_record + 2, 0);
-        write_live_u8(slot_record + 3, 0);
-        write_live_u32(slot_record + 0x0c, pas);
+        write_live_u8(
+            crate::dtcm::mac_pipe_slot_retry_rate_unchecked(pipe_index, slot_index).get() as u32,
+            read_host_u8(context.retry_rate()),
+        );
+        write_live_u8(
+            crate::dtcm::mac_pipe_slot_control_02_unchecked(pipe_index, slot_index).get() as u32,
+            0,
+        );
+        write_live_u8(
+            crate::dtcm::mac_pipe_slot_control_03_unchecked(pipe_index, slot_index).get() as u32,
+            0,
+        );
+        write_live_u32(slot_frame, pas);
         // `txp_build_pipe_descriptor` clears the per-slot auxiliary descriptor
         // pointer for every kind-0 frame before emitting its command stream.
         // This storage is retained DTCM and cannot be left at its prior value.
-        write_live_u32(slot_record + 0x10, 0);
+        write_live_u32(slot_auxiliary, 0);
         write_live_u32(command, 0);
         write_live_u32(command + 4, 0);
         write_live_u32(command + 8, 0xdc00_0000);
         if let Err(error) = crate::tx::emit_host_frame_descriptor_at(context.raw(), command + 0x0c)
         {
-            write_live_u32(crate::dtcm::HOST_PAS_RING_SLOTS.get() as u32 + u32::from(ring_slot) * 4, pas);
+            write_live_u32(
+                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(ring_slot)).get() as u32,
+                pas,
+            );
             write_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32, u32::from(head));
             write_host_u32(context.control_bits(), original_control_bits);
             write_live_u32(slot_record, original_slot_header);
-            write_live_u32(slot_record + 0x0c, original_slot_frame);
-            write_live_u32(slot_record + 0x10, original_slot_auxiliary);
+            write_live_u32(slot_frame, original_slot_frame);
+            write_live_u32(slot_auxiliary, original_slot_auxiliary);
             for (index, word) in original_command.into_iter().enumerate() {
                 write_live_u32(command + index as u32 * 4, word);
             }
@@ -1645,7 +1693,9 @@ pub unsafe fn admit_host_tx(
         Err(_) => return Err((buffer, HostAdmissionError::MalformedRequest)),
     };
     let queue = request.queue_id & 3;
-    let ac = unsafe { read_live_u8(crate::dtcm::QUEUE_TO_ACCESS_CATEGORY.get() as u32 + u32::from(queue)) };
+    let ac = unsafe {
+        read_live_u8(crate::dtcm::queue_to_access_category_unchecked(usize::from(queue)).get() as u32)
+    };
     let submit_timer =
         unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(crate::dtcm::initialized_timer_counter().get() as u32)) };
     let packet_id = request.packet_id;
