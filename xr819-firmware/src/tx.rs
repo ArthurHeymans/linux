@@ -4566,7 +4566,6 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 backend.link_set_state(link, final_link_state);
             }
             if final_link_state != 0x0b {
-                let ba_table = crate::dtcm::ba_pipe_record_address_unchecked(0).get();
                 if let Some(frame) = backend.find_rx_frame_by_subtype(0x94) {
                     let frame = frame as usize;
                     let mut selected_pipe = 8_u8;
@@ -4595,11 +4594,20 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                     }
                     write_u32(0xfff0_2e48, read_u32(0xfff0_2e48).wrapping_add(1));
                     if selected_pipe < 8 && selected_pipe == link {
-                        let entry = ba_table + usize::from(selected_pipe) * 0x38;
-                        if read_u8(entry + 0x10) > 4 {
-                            write_u32(entry + 0x18, read_u32(frame + 0x14));
-                            write_u32(entry + 0x1c, read_u32(frame + 0x18));
-                            write_u16(entry + 0x16, read_u16(frame + 0x12) >> 4);
+                        let selected_index = usize::from(selected_pipe);
+                        if read_u8(crate::dtcm::ba_pipe_activity_unchecked(selected_index).get()) > 4 {
+                            write_u32(
+                                crate::dtcm::ba_pipe_bitmap_low_unchecked(selected_index).get(),
+                                read_u32(frame + 0x14),
+                            );
+                            write_u32(
+                                crate::dtcm::ba_pipe_bitmap_high_unchecked(selected_index).get(),
+                                read_u32(frame + 0x18),
+                            );
+                            write_u16(
+                                crate::dtcm::ba_pipe_sequence_unchecked(selected_index).get(),
+                                read_u16(frame + 0x12) >> 4,
+                            );
                             backend.process_ba_bitmap(selected_pipe);
                         }
                         write_u8(
@@ -4614,9 +4622,9 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 } else {
                     let fifo = read_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get()) as usize;
                     if read_u8(fifo + 2) == read_u8(fifo + 1) && link < 8 {
-                        let entry = ba_table + usize::from(link) * 0x38;
-                        write_u32(entry + 0x18, 0);
-                        write_u32(entry + 0x1c, 0);
+                        let link_index = usize::from(link);
+                        write_u32(crate::dtcm::ba_pipe_bitmap_low_unchecked(link_index).get(), 0);
+                        write_u32(crate::dtcm::ba_pipe_bitmap_high_unchecked(link_index).get(), 0);
                     } else {
                         write_u8(
                             crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
