@@ -451,6 +451,18 @@ extern "C" fn rust_main() -> ! {
     enable_packet_controller();
     debug_stop(9, 0x5354_4709);
 
+    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+    let mut startup_label_storage = [0u8; 128];
+    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+    let startup_label: &[u8] = {
+        let length = unsafe {
+            xr819_firmware::dtcm::write_warm_snapshot_report(&mut startup_label_storage)
+        };
+        &startup_label_storage[..length]
+    };
+    #[cfg(not(all(feature = "dtcm-contract-diagnostics", target_arch = "arm")))]
+    let startup_label: &[u8] = b"XR819 open Rust native";
+
     let buffer = unsafe { transport.output_buffer() };
     let length = StartupIndication {
         input_buffers: 30,
@@ -466,7 +478,7 @@ extern "C" fn rust_main() -> ! {
         firmware_api: 1,
         firmware_build: 1,
         firmware_version: 1,
-        label: b"XR819 open Rust native",
+        label: startup_label,
         config: [0; 4],
     }
     .encode(buffer)

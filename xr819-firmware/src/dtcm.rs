@@ -163,6 +163,123 @@ pub unsafe fn capture_initialized_image_snapshot(stage: SnapshotStage) {
     }
 }
 
+include!("dtcm_snapshot_contract.rs");
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+const SNAPSHOT_REPORT_OFFSET_COUNT: usize = 8;
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SnapshotContractReport {
+    unowned_count: u16,
+    unowned_offsets: [u16; SNAPSHOT_REPORT_OFFSET_COUNT],
+    canonical_count: u8,
+    canonical_offsets: [u16; SNAPSHOT_REPORT_OFFSET_COUNT],
+}
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+fn warm_snapshot_change_allowed(offset: usize) -> bool {
+    WARM_SNAPSHOT_ALLOWED_RANGES
+        .iter()
+        .any(|&(start, end)| start <= offset && offset < end)
+}
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+fn snapshot_contract_report(before: &[u8], after: &[u8]) -> SnapshotContractReport {
+    let mut report = SnapshotContractReport {
+        unowned_count: 0,
+        unowned_offsets: [u16::MAX; SNAPSHOT_REPORT_OFFSET_COUNT],
+        canonical_count: 0,
+        canonical_offsets: [u16::MAX; SNAPSHOT_REPORT_OFFSET_COUNT],
+    };
+    for (offset, (&before, &after)) in before.iter().zip(after).enumerate() {
+        if before != after && !warm_snapshot_change_allowed(offset) {
+            let index = usize::from(report.unowned_count).min(SNAPSHOT_REPORT_OFFSET_COUNT);
+            if index < SNAPSHOT_REPORT_OFFSET_COUNT {
+                report.unowned_offsets[index] = offset as u16;
+            }
+            report.unowned_count = report.unowned_count.saturating_add(1);
+        }
+    }
+    for &(offset, expected) in WARM_SNAPSHOT_EXPECTED {
+        if after.get(offset..offset + expected.len()) != Some(expected) {
+            let index = usize::from(report.canonical_count).min(SNAPSHOT_REPORT_OFFSET_COUNT);
+            if index < SNAPSHOT_REPORT_OFFSET_COUNT {
+                report.canonical_offsets[index] = offset as u16;
+            }
+            report.canonical_count = report.canonical_count.saturating_add(1);
+        }
+    }
+    report
+}
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+fn append_report_bytes(output: &mut [u8], cursor: &mut usize, value: &[u8]) {
+    for &byte in value {
+        if *cursor < output.len() {
+            output[*cursor] = byte;
+            *cursor += 1;
+        }
+    }
+}
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+fn append_report_hex_u16(output: &mut [u8], cursor: &mut usize, value: u16) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for shift in [12, 8, 4, 0] {
+        if *cursor < output.len() {
+            output[*cursor] = HEX[usize::from((value >> shift) & 0x0f)];
+            *cursor += 1;
+        }
+    }
+}
+
+#[cfg(feature = "dtcm-contract-diagnostics")]
+fn append_report_offsets(
+    output: &mut [u8],
+    cursor: &mut usize,
+    offsets: &[u16; SNAPSHOT_REPORT_OFFSET_COUNT],
+) {
+    let mut first = true;
+    for &offset in offsets {
+        if offset == u16::MAX {
+            break;
+        }
+        if !first {
+            append_report_bytes(output, cursor, b",");
+        }
+        append_report_hex_u16(output, cursor, offset);
+        first = false;
+    }
+    if first {
+        append_report_bytes(output, cursor, b"none");
+    }
+}
+
+/// Encode the warm entry-to-startup contract result into the startup label.
+///
+/// # Safety
+///
+/// Entry and startup snapshots must both be complete and immutable.
+#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
+pub unsafe fn write_warm_snapshot_report(output: &mut [u8]) -> usize {
+    let snapshots = unsafe { &*INITIALIZED_IMAGE_SNAPSHOTS.0.get() };
+    let report = snapshot_contract_report(
+        &snapshots[SnapshotStage::Entry as usize],
+        &snapshots[SnapshotStage::Startup as usize],
+    );
+    let mut cursor = 0;
+    append_report_bytes(output, &mut cursor, b"XR819 DTCM u=");
+    append_report_hex_u16(output, &mut cursor, report.unowned_count);
+    append_report_bytes(output, &mut cursor, b" f=");
+    append_report_offsets(output, &mut cursor, &report.unowned_offsets);
+    append_report_bytes(output, &mut cursor, b" c=");
+    append_report_hex_u16(output, &mut cursor, u16::from(report.canonical_count));
+    append_report_bytes(output, &mut cursor, b" e=");
+    append_report_offsets(output, &mut cursor, &report.canonical_offsets);
+    cursor
+}
+
 /// Encode one private read-MIB page without forming a reference to DTCM.
 ///
 /// # Safety
@@ -3898,6 +4015,47 @@ mod tests {
         }
         assert!(snapshot_chunk(SNAPSHOT_MIB_BASE - 1).is_none());
         assert!(snapshot_chunk(SNAPSHOT_MIB_BASE + (3 * SNAPSHOT_CHUNK_COUNT) as u16).is_none());
+    }
+
+    #[cfg(feature = "dtcm-contract-diagnostics")]
+    #[test]
+    fn warm_snapshot_contract_reports_only_unowned_changes() {
+        let before = [0u8; INITIALIZED_IMAGE_SIZE];
+        let mut after = before;
+        after[0x0100] = 1;
+        after[0x0138] = 1;
+        let report = snapshot_contract_report(&before, &after);
+        assert_eq!(report.unowned_count, 1);
+        assert_eq!(report.unowned_offsets[0], 0x0100);
+    }
+
+    #[cfg(feature = "dtcm-contract-diagnostics")]
+    #[test]
+    fn warm_snapshot_contract_checks_canonical_values() {
+        let mut startup = [0u8; INITIALIZED_IMAGE_SIZE];
+        for &(offset, expected) in WARM_SNAPSHOT_EXPECTED {
+            startup[offset..offset + expected.len()].copy_from_slice(expected);
+        }
+        let valid = snapshot_contract_report(&startup, &startup);
+        assert_eq!(valid.unowned_count, 0);
+        assert_eq!(valid.canonical_count, 0);
+
+        startup[0x1fe6] ^= 1;
+        let invalid = snapshot_contract_report(&startup, &startup);
+        assert_eq!(invalid.canonical_count, 1);
+        assert_eq!(invalid.canonical_offsets[0], 0x1fe6);
+    }
+
+    #[cfg(feature = "dtcm-contract-diagnostics")]
+    #[test]
+    fn warm_snapshot_contract_ranges_are_ordered_and_cover_expected_values() {
+        for pair in WARM_SNAPSHOT_ALLOWED_RANGES.windows(2) {
+            assert!(pair[0].1 <= pair[1].0);
+        }
+        for &(offset, expected) in WARM_SNAPSHOT_EXPECTED {
+            assert!(!expected.is_empty());
+            assert!((offset..offset + expected.len()).all(warm_snapshot_change_allowed));
+        }
     }
 
     #[test]

@@ -31,6 +31,7 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "src/dtcm_snapshot_contract.rs",
     "tools/check-host-context-layout.py",
     "tools/check-link-sequence-layout.py",
     "tools/check-ba-lmc-pending-layout.py",

@@ -30,6 +30,7 @@ python3 tools/check-rust-main-stack.py "$ELF"
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
 python3 tools/check-dtcm-access.py
+python3 tools/generate-dtcm-snapshot-contract.py --check
 python3 tools/compare-dtcm-initialized-snapshots.py --self-test
 python3 tools/assemble-dtcm-initialized-snapshots.py --self-test
 python3 tools/check-scheduler-event-layout.py
