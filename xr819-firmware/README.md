@@ -462,8 +462,13 @@ cold/warm snapshot procedure are
 recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md). The optional
 `dtcm-contract-diagnostics` image captures entry, post-platform, and
 post-startup copies of the initialized `0x2078` bytes and publishes them through
-paginated private read-MIB responses; feature-free firmware has no snapshot
-storage or diagnostic MIB path.
+paginated private read-MIB responses. It also reports the firmware-internal warm
+contract comparison through the ordinary startup indication, avoiding MMIO and
+post-startup WSM diagnostics. Target cold snapshots and one warm SDIO rebind
+both pass the reviewed writer-range and canonical-value contract; the known
+post-rebind WSM timeout therefore occurs outside initialized DTCM
+reconstruction. Feature-free firmware has no snapshot storage, diagnostic MIB
+path, or startup-label report.
 
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state

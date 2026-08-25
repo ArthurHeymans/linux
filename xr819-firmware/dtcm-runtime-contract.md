@@ -18,10 +18,14 @@ exclusive Rust ownership or permit address movement.
 - `InitializedVendorImage` remains exactly `0x2078` bytes at
   `0x04000000..0x04002078`.
 
-The remaining P1 work is initialization and retention closure. The custom Rust
-image begins with the bytes left by the preceding loader/vendor phase. Startup
-then reconstructs selected mutable records. Retained bytes, zeroed bytes, and
-explicitly rebuilt bytes are different contracts and must not be conflated.
+The initialized-image transition contract is qualified on target for both cold
+startup and warm SDIO rebind. The custom Rust image begins with the bytes left
+by the preceding loader/vendor phase. Startup then reconstructs selected mutable
+records. Retained bytes, zeroed bytes, and explicitly rebuilt bytes are different
+contracts and must not be conflated. Rows still marked open remain family-level
+closure requirements before those records can be relocated or claimed as
+exclusively Rust-owned; they do not invalidate the qualified fixed-layout startup
+contract.
 
 ## Initialized-image startup writer matrix
 
@@ -74,10 +78,11 @@ that warm reload is deterministic.
    computed root, IRQ/FIQ path, and warm-reload obligation for a whole family is
    closed.
 
-## Snapshot qualification still required
+## Snapshot qualification evidence
 
-P1 is not complete until target evidence covers both cold entry and warm Rust
-reload. Capture the raw `0x2078` initialized image at these checkpoints:
+Target qualification covers both cold entry and warm Rust reload. Capture the
+raw `0x2078` initialized image at these checkpoints when extending or reviewing
+the contract:
 
 1. after the qualified vendor/loader COPY and before Rust reconstruction;
 2. after `platform::initialize_runtime_state`;
@@ -126,10 +131,29 @@ python3 tools/compare-dtcm-initialized-snapshots.py \
 ```
 
 On a warm firmware reload, use that run's `entry.bin` and `startup.bin` with the
-`warm-entry-to-startup` transition. The normal software gate builds the ARM
-diagnostic image, verifies its stack and linker envelope, and runs synthetic
-capture/assembly/comparison regressions. Real target snapshots remain required
-for P1 closure.
+`warm-entry-to-startup` transition. Because the target's pre-existing rebind
+failure can stall the first post-startup WSM command, the diagnostic firmware
+also compares the warm entry image internally before reconstruction and places a
+bounded result in the ordinary startup indication label. `u` is the count of
+changed bytes outside reviewed writer ranges, `f` lists their first offsets, `c`
+is the count of canonical startup-value mismatches, and `e` lists their first
+offsets. This path requires no extra WSM command or MMIO read.
+
+Qualified target evidence:
+
+- cold COPY-to-platform: 43 changed bytes, all in reviewed writer ranges;
+- cold platform-to-startup: 398 changed bytes, all in reviewed writer ranges;
+- cold startup label: `XR819 DTCM u=0000 f=none c=0000 e=none`;
+- warm SDIO unbind/rebind startup label:
+  `XR819 DTCM u=0000 f=none c=0000 e=none`.
+
+The warm run subsequently reproduced the known command-channel failure
+(`0x0006` timeout followed by BH termination). The zero warm report classifies
+that failure outside initialized DTCM reconstruction: all warm-entry differences
+were writer-owned and all selected startup fields reached their canonical values.
+The normal software gate builds the ARM diagnostic image, verifies its stack and
+linker envelope, checks that the generated firmware contract matches the reviewed
+JSON, and runs synthetic capture/assembly/comparison regressions.
 
 - COPY-stable table ranges must match the qualified reference bytes;
 - rebuilt fields must eventually gain canonical startup values rather than only
