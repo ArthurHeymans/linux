@@ -247,10 +247,11 @@ fn register_interrupt_source(irq: u32) {
 /// entering main firmware. The custom raw downloader does not process those
 /// section records, so Rust must perform the equivalent initialization.
 pub fn initialize_runtime_state() {
-    let mut address = crate::dtcm::VENDOR_BSS_START.get();
-    while address < crate::dtcm::VENDOR_BSS_END.get() {
-        unsafe { (address as *mut u32).write_volatile(0) };
-        address += 4;
+    for index in 0..crate::dtcm::VENDOR_BSS_WORD_COUNT {
+        unsafe {
+            crate::dtcm::shared_ptr::<u32>(crate::dtcm::vendor_bss_word_unchecked(index))
+                .write_volatile(0)
+        };
     }
 
     // Initialized vendor SRAM supplies the scheduler/radio exclusion word

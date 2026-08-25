@@ -29,11 +29,17 @@ DIRECT_FIELD_ARITHMETIC = re.compile(
     r"(?:crate\s*::\s*)?dtcm\s*::\s*[A-Za-z_][A-Za-z0-9_]*"
     r"(?:\s*\([^()\n]*\))?\s*\.\s*get\s*\(\s*\)"
     r"(?:\s+as\s+(?:u32|usize))?\s*"
-    r"(?:[+-]|\.\s*wrapping_(?:add|sub)\s*\()"
+    r"(?:<<|>>|[+*/%|&^-]|\.\s*(?:wrapping|checked|saturating)_(?:add|sub|mul)\s*\()"
 )
 DIRECT_INTEGER_ALIAS = re.compile(
     r"\bconst\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?:u32|usize)\s*="
     r"[^;]*?(?:crate\s*::\s*)?dtcm\s*::\s*[^;]*?\.\s*get\s*\(\s*\)"
+)
+LOCAL_INTEGER_ALIAS = re.compile(
+    r"\blet\s+(?:mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*:\s*(?:u32|usize))?\s*=\s*(?:\(\s*)*"
+    r"(?:crate\s*::\s*)?dtcm\s*::\s*[^;]*?\.\s*get\s*\(\s*\)"
+    r"(?:\s+as\s+(?:u32|usize))?\s*\)*\s*;"
 )
 
 
@@ -94,6 +100,72 @@ def code_only(source: str) -> str:
                 output.append("\n" if source[index] == "\n" else " ")
                 index += 1
     return "".join(output)
+
+
+def local_integer_alias_arithmetic(code: str) -> list[tuple[int, str]]:
+    failures: list[tuple[int, str]] = []
+    for match in LOCAL_INTEGER_ALIAS.finditer(code):
+        name = match.group("name")
+        depth = code.count("{", 0, match.end()) - code.count("}", 0, match.end())
+        end = len(code)
+        cursor = match.end()
+        current_depth = depth
+        while cursor < len(code):
+            if code[cursor] == "{":
+                current_depth += 1
+            elif code[cursor] == "}":
+                current_depth -= 1
+                if current_depth < depth:
+                    end = cursor
+                    break
+            cursor += 1
+        scope_start = match.end()
+        scope = list(code[scope_start:end])
+        for redeclaration in re.finditer(
+            rf"\blet\s+(?:mut\s+)?{re.escape(name)}\b", "".join(scope)
+        ):
+            absolute = scope_start + redeclaration.start()
+            redeclaration_depth = code.count("{", 0, absolute) - code.count("}", 0, absolute)
+            if redeclaration_depth == depth:
+                scope[redeclaration.start():] = " " * (len(scope) - redeclaration.start())
+                break
+            shadow_end = redeclaration.end()
+            shadow_depth = redeclaration_depth
+            while shadow_end < len(scope):
+                absolute_shadow = scope_start + shadow_end
+                current_shadow_depth = (
+                    code.count("{", 0, absolute_shadow)
+                    - code.count("}", 0, absolute_shadow)
+                )
+                if current_shadow_depth < shadow_depth:
+                    break
+                shadow_end += 1
+            scope[redeclaration.start():shadow_end] = " " * (shadow_end - redeclaration.start())
+        scope_text = "".join(scope)
+        operator = re.compile(
+            r"(?:\+=|-=|<<=|>>=|<<|>>|[+*/%|&^-]|\.\s*(?:wrapping|checked|saturating)_(?:add|sub|mul)\s*\()"
+        )
+        used_for_arithmetic = False
+        for use in re.finditer(rf"\b{re.escape(name)}\b", scope_text):
+            suffix = scope_text[use.end():]
+            direct = re.match(r"(?:\s+as\s+(?:u32|usize))?\s*", suffix)
+            if direct and operator.match(suffix, direct.end()):
+                used_for_arithmetic = True
+                break
+            prefix = scope_text[:use.start()]
+            opening = len(prefix.rstrip()) - 1
+            if opening >= 0 and prefix.rstrip().endswith("("):
+                before_opening = prefix.rstrip()[:-1].rstrip()
+                if not before_opening or not re.search(r"[A-Za-z0-9_\)\]]$", before_opening):
+                    grouped = re.match(
+                        r"(?:\s+as\s+(?:u32|usize))?\s*\)\s*", suffix
+                    )
+                    if grouped and operator.match(suffix, grouped.end()):
+                        used_for_arithmetic = True
+                        break
+        if used_for_arithmetic:
+            failures.append((match.start(), name))
+    return failures
 
 
 def without_cfg_test_items(code: str) -> str:
@@ -175,6 +247,11 @@ def inventory() -> tuple[dict[str, dict[str, int]], list[str]]:
             failures.append(
                 f"{relative}:{line}: integer alias for a DTCM field root is forbidden"
             )
+        for position, name in local_integer_alias_arithmetic(code):
+            line = code.count("\n", 0, position) + 1
+            failures.append(
+                f"{relative}:{line}: arithmetic through local DTCM integer alias {name!r} is owned by {OWNER}"
+            )
     return result, failures
 
 
@@ -225,6 +302,8 @@ def check_regressions() -> None:
         "crate::dtcm::TABLE.get().wrapping_add(index)",
         "crate::dtcm::TABLE.get() as u32 + index * 4",
         "dtcm::field(index).get() as usize - 1",
+        "dtcm::field().get() & !3",
+        "crate::dtcm::TABLE.get().checked_add(4)",
     )
     accepted = (
         "crate::dtcm::table_entry_unchecked(index).get()",
@@ -236,6 +315,20 @@ def check_regressions() -> None:
         "const ROOT: usize = (crate::dtcm::TABLE.get());",
         "const ROOT: usize = crate::dtcm::TABLE\n    .get();",
     )
+    local_alias_rejected = (
+        "fn f() { let root = crate::dtcm::TABLE.get(); use_word(root + 4); }",
+        "fn f() { let mut root: usize = dtcm::field().get(); root += 4; }",
+        "fn f() { let root = dtcm::field().get() as u32; use_word(root.wrapping_add(4)); }",
+        "fn f() { let root = (crate::dtcm::TABLE.get()); use_word((root as u32) | 3); }",
+        "fn f() { let root = dtcm::field().get(); { let root = 0; use_word(root + 1); } use_word(root + 4); }",
+    )
+    local_alias_accepted = (
+        "fn f() { let address = crate::dtcm::field().get(); use_word(address); }",
+        "fn f() { let state = crate::dtcm::field().get() as *mut u8; state.write_volatile(0); }",
+        "fn f() { let root = dtcm::field().get(); { let root = 0; use_word(root + 1); } use_word(root); }",
+        "fn f() { let root = dtcm::field().get(); let root = 0; use_word(root + 1); }",
+        "fn f() { let value = read_u32(dtcm::field().get()); use_word(value + 1); }",
+    )
     if not all(DIRECT_FIELD_ARITHMETIC.search(source) for source in rejected):
         raise SystemExit("DTCM direct-field-arithmetic regression fixture was not rejected")
     if any(DIRECT_FIELD_ARITHMETIC.search(source) for source in accepted):
@@ -244,6 +337,10 @@ def check_regressions() -> None:
         raise SystemExit("DTCM integer-alias regression fixture was not rejected")
     if any(DIRECT_INTEGER_ALIAS.search(source) for source in accepted):
         raise SystemExit("DTCM integer-alias regression fixture was falsely rejected")
+    if not all(local_integer_alias_arithmetic(source) for source in local_alias_rejected):
+        raise SystemExit("DTCM local integer-alias arithmetic regression fixture was not rejected")
+    if any(local_integer_alias_arithmetic(source) for source in local_alias_accepted):
+        raise SystemExit("DTCM local integer-alias arithmetic regression fixture was falsely rejected")
 
 
 def main() -> None:

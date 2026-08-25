@@ -58,12 +58,8 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04009C40: 1}
-)
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
-    {('rust_main', 0x04009C40): 1}
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:
