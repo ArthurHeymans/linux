@@ -4456,21 +4456,26 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
 pub unsafe fn start_phy_operation_1() -> u8 {
     unsafe {
         debug_assert_eq!(phy_dispatch_switch_target(1), 0x0001_6f8c);
-        let state = crate::dtcm::MAC_PHY_OPERATION_ROOT.get();
-        let output = state + 0x18;
+        let output = crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get();
         let global_state = crate::dtcm::phy_retained_state().get();
-        write_u8(state + 0x10, 1);
-        write_u8(state + 0x21, 0);
+        write_u8(crate::dtcm::MAC_PHY_OPERATION_COMMAND.get(), 1);
+        write_u8(crate::dtcm::mac_phy_dispatch_command_byte_unchecked(1).get(), 0);
         if read_u8(global_state) != 5 {
             write_u8(global_state, 3);
         }
         write_u8(output, read_u8(global_state));
-        write_u32(output + 4, 0x0098_9680);
-        write_u32(state + 0x0c, u32::from(read_u8(output)));
+        write_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get(), 0x0098_9680);
+        write_u32(
+            crate::dtcm::MAC_PHY_OPERATION_STATE.get(),
+            u32::from(read_u8(output)),
+        );
         if publication_bisect_reached(4) {
             return 4;
         }
-        start_scheduler_timer((state - 8) as u32, read_u32(state + 0x1c))
+        start_scheduler_timer(
+            crate::dtcm::MAC_PHY_OPERATION_TIMER.get() as u32,
+            read_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get()),
+        )
     }
 }
 
@@ -4871,14 +4876,16 @@ fn phy_dispatch_switch_target(command: u8) -> u32 {
 pub unsafe fn start_phy_operation_7<B: PowerSaveCompletionEffects>(backend: &mut B) {
     unsafe {
         debug_assert_eq!(phy_dispatch_switch_target(7), 0x0001_6fb6);
-        let state = crate::dtcm::MAC_PHY_OPERATION_ROOT.get();
-        write_u8(state + 0x10, 7);
-        write_u8(state + 0x21, 0);
-        write_u8(state + 0x18, 1);
+        write_u8(crate::dtcm::MAC_PHY_OPERATION_COMMAND.get(), 7);
+        write_u8(crate::dtcm::mac_phy_dispatch_command_byte_unchecked(1).get(), 0);
+        write_u8(crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get(), 1);
         let (timer, duration) = phy_operation_7_timer();
-        write_u32(state + 0x1c, duration);
-        write_u32(state + 0x0c, u32::from(read_u8(state + 0x18)));
-        let timeout = read_u32(state + 0x1c);
+        write_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get(), duration);
+        write_u32(
+            crate::dtcm::MAC_PHY_OPERATION_STATE.get(),
+            u32::from(read_u8(crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get())),
+        );
+        let timeout = read_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get());
         if timeout != 0 {
             backend.timer_start(timer, timeout);
         }
@@ -7419,13 +7426,15 @@ pub fn probe_runtime_quiescent() -> bool {
 #[cfg(target_arch = "arm")]
 pub unsafe fn stop_phy_operation_7() {
     unsafe {
-        let state = crate::dtcm::MAC_PHY_OPERATION_ROOT.get();
-        write_u8(state + 0x10, 7);
-        write_u8(state + 0x21, 0);
-        write_u8(state + 0x18, 1);
+        write_u8(crate::dtcm::MAC_PHY_OPERATION_COMMAND.get(), 7);
+        write_u8(crate::dtcm::mac_phy_dispatch_command_byte_unchecked(1).get(), 0);
+        write_u8(crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get(), 1);
         let (timer, duration) = phy_operation_7_timer();
-        write_u32(state + 0x1c, duration);
-        write_u32(state + 0x0c, u32::from(read_u8(state + 0x18)));
+        write_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get(), duration);
+        write_u32(
+            crate::dtcm::MAC_PHY_OPERATION_STATE.get(),
+            u32::from(read_u8(crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get())),
+        );
         // `pac_phy_stop_op` cancels this timer immediately. The detached
         // low-MAC does not install the vendor callback/list ownership for this
         // object, so execute the identical stable end state without briefly
