@@ -24,14 +24,8 @@ fn internal_context_free_head() -> *mut u32 {
 }
 
 #[inline(always)]
-fn internal_context_base() -> usize {
-    crate::dtcm::internal_context_ptr(0).map_or_else(|| unreachable!(), |context| context as usize)
-}
-
-#[inline(always)]
-fn internal_context_address(index: usize) -> usize {
-    crate::dtcm::internal_context_ptr(index)
-        .map_or_else(|| unreachable!(), |context| context as usize)
+fn internal_context_address(index: usize) -> crate::dtcm::InternalContextAddress {
+    crate::dtcm::InternalContextAddress::from_index(index).unwrap_or_else(|| unreachable!())
 }
 
 #[repr(C)]
@@ -462,14 +456,15 @@ unsafe fn packet_ram_matches(destination: u32, source: &[u8]) -> bool {
 
 unsafe fn release_context_address(context: u32) {
     unsafe {
-        let address = context as usize;
-        ((address + 0x70) as *mut u16).write_volatile(0x00ff);
-        let flags = (address + 0x80) as *mut u32;
+        let address = crate::dtcm::InternalContextAddress::from_raw(context)
+            .unwrap_or_else(|| unreachable!());
+        crate::dtcm::shared_ptr::<u16>(address.terminal_status()).write_volatile(0x00ff);
+        let flags = crate::dtcm::shared_ptr::<u32>(address.ownership_bits());
         flags.write_volatile(flags.read_volatile() | 0x0002_0000);
         let free_head = internal_context_free_head();
         let old_head = free_head.read_volatile();
-        ((address + 4) as *mut u32).write_volatile(old_head);
-        free_head.write_volatile(context);
+        crate::dtcm::shared_ptr::<u32>(address.intrusive_next()).write_volatile(old_head);
+        free_head.write_volatile(address.raw());
         set_active_internal_contexts(active_internal_contexts().wrapping_sub(1));
     }
 }
@@ -479,11 +474,11 @@ unsafe fn release_wsm_context_address(context: crate::dtcm::HostContextAddress) 
     unsafe {
         let header = crate::dtcm::shared_ptr::<u32>(context.borrowed_frame_address()).read_volatile();
         let backing = (0..TX_CONTEXT_COUNT)
-            .map(|index| internal_context_address(index) as u32)
-            .find(|candidate| expected_header_address(*candidate) == Some(header));
+            .map(internal_context_address)
+            .find(|candidate| expected_header_address(candidate.raw()) == Some(header));
         crate::vendor_host_tx::free_host_context(context);
         if let Some(backing) = backing {
-            release_context_address(backing);
+            release_context_address(backing.raw());
         }
     }
 }
@@ -494,14 +489,8 @@ unsafe fn release_wsm_context_address(_context: crate::dtcm::HostContextAddress)
 }
 
 fn expected_header_address(context: u32) -> Option<u32> {
-    let offset = usize::try_from(context)
-        .ok()?
-        .checked_sub(internal_context_base())?;
-    if offset % TX_CONTEXT_SIZE != 0 {
-        return None;
-    }
-    let index = offset / TX_CONTEXT_SIZE;
-    (index < TX_CONTEXT_COUNT).then_some((packet_ram::internal_tx_buffer(index) + 0x40) as u32)
+    crate::dtcm::InternalContextAddress::from_raw(context)
+        .map(|address| (packet_ram::internal_tx_buffer(address.index()) + 0x40) as u32)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7578,11 +7567,13 @@ pub unsafe fn initialize_internal_pool() {
         for index in 0..TX_CONTEXT_COUNT {
             let context = internal_context_address(index);
             let buffer = packet_ram::internal_tx_buffer(index);
-            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_HEADER_80211_OFFSET) as *mut u32).write_volatile((buffer + 0x40) as u32);
-            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_CIPHER_BUFFER_OFFSET) as *mut u32).write_volatile((buffer + 0x20) as u32);
-            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_RESULT_OFFSET) as *mut u16).write_volatile(0x00ff);
-            ((context + crate::dtcm::INTERNAL_TX_CONTEXT_NEXT_FREE_OFFSET) as *mut u32).write_volatile(previous);
-            previous = context as u32;
+            crate::dtcm::shared_ptr::<u32>(context.borrowed_frame_address())
+                .write_volatile((buffer + 0x40) as u32);
+            crate::dtcm::shared_ptr::<u32>(context.cipher_buffer())
+                .write_volatile((buffer + 0x20) as u32);
+            crate::dtcm::shared_ptr::<u16>(context.terminal_status()).write_volatile(0x00ff);
+            crate::dtcm::shared_ptr::<u32>(context.intrusive_next()).write_volatile(previous);
+            previous = context.raw();
         }
         internal_context_free_head().write_volatile(previous);
     }
@@ -9118,10 +9109,10 @@ mod tests {
         assert_eq!(crate::dtcm::INTERNAL_TX_CONTEXT_SIZE, TX_CONTEXT_SIZE);
         assert_eq!(crate::dtcm::INTERNAL_TX_CONTEXT_COUNT, TX_CONTEXT_COUNT);
         assert_eq!(crate::dtcm::INTERNAL_CONTEXT_POOL.get(), 0x0400_9080);
-        assert_eq!(internal_context_address(0), internal_context_base());
+        assert_eq!(internal_context_address(0).raw(), 0x0400_9084);
         assert_eq!(
-            internal_context_address(2) - internal_context_base(),
-            2 * TX_CONTEXT_SIZE
+            internal_context_address(2).raw() - internal_context_address(0).raw(),
+            (2 * TX_CONTEXT_SIZE) as u32
         );
     }
 

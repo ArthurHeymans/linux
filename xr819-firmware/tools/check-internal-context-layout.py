@@ -67,16 +67,17 @@ FORBIDDEN_FORMS = (
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04009080: 8}
+    {0x04009080: 4, 0x04009084: 3, 0x04009364: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvMsH_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel', 0x04009080): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context', 0x04009080): 5,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx24initialize_internal_pool', 0x04009080): 3,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26service_host_management_tx', 0x04009080): 4,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27release_wsm_context_address', 0x04009080): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx33release_unpublished_probe_context', 0x04009080): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21prepare_probe_context', 0x04009080): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx23release_context_address', 0x04009080): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx23release_context_address', 0x04009084): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx24initialize_internal_pool', 0x04009080): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx24initialize_internal_pool', 0x04009084): 2,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx24initialize_internal_pool', 0x04009364): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27release_wsm_context_address', 0x04009084): 1,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009080): 1,
     }
 )

@@ -1451,6 +1451,11 @@ pub struct HostContextAddress(DtcmAddress);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostFrameNodeAddress(DtcmAddress);
 
+/// Checked identity of the intrusive PAS/frame node embedded in an internal TX context.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InternalFrameNodeAddress(DtcmAddress);
+
 /// Checked identity of the decoded PAS overlay beginning at context `+0x54`.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1477,6 +1482,19 @@ impl InternalContextAddress {
         }
     }
 
+    pub(crate) const fn from_raw(address: u32) -> Option<Self> {
+        let base = INTERNAL_CONTEXT_POOL.get() + core::mem::offset_of!(InternalContextPoolState, contexts);
+        let offset = (address as usize).wrapping_sub(base);
+        if address as usize >= base
+            && offset % core::mem::size_of::<InternalTxContext>() == 0
+            && offset / core::mem::size_of::<InternalTxContext>() < INTERNAL_TX_CONTEXT_COUNT
+        {
+            Self::from_index(offset / core::mem::size_of::<InternalTxContext>())
+        } else {
+            None
+        }
+    }
+
     /// Construct an internal-context address after the context family has
     /// already been distinguished from host contexts.
     ///
@@ -1487,6 +1505,12 @@ impl InternalContextAddress {
     }
 
     pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
+    pub(crate) const fn index(self) -> usize {
+        (self.0.offset()
+            - core::mem::offset_of!(DtcmLayout, internal_context_pool)
+            - core::mem::offset_of!(InternalContextPoolState, contexts))
+            / core::mem::size_of::<InternalTxContext>()
+    }
     pub(crate) const INTRUSIVE_NEXT_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, next_free) as u32;
     pub(crate) const BORROWED_FRAME_ADDRESS_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, header_80211) as u32;
     pub(crate) const COMPLETION_STATUS_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, completion_status) as u32;
@@ -1553,6 +1577,16 @@ impl InternalContextAddress {
     pub(crate) const fn host_link(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, host_link)) }
     pub(crate) const fn completion_byte_6c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, completion_byte_6c)) }
     pub(crate) const fn cipher_buffer(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, cipher_buffer)) }
+    pub(crate) const fn frame_node(self) -> InternalFrameNodeAddress { InternalFrameNodeAddress(self.frame_address()) }
+}
+
+impl InternalFrameNodeAddress {
+    pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
+    pub(crate) const fn context(self) -> InternalContextAddress {
+        InternalContextAddress(DtcmAddress::from_offset_unchecked(
+            self.0.offset() - core::mem::offset_of!(InternalTxContext, pas),
+        ))
+    }
 }
 
 impl HostContextAddress {
@@ -5141,6 +5175,14 @@ fn initialized_phy_gain_source_record_addresses_are_exact() { assert_eq!(INITIAL
         assert_eq!(first.raw(), 0x0400_9084);
         assert_eq!(second.raw(), 0x0400_91f4);
         assert_eq!(last.raw(), 0x0400_9364);
+        assert_eq!(first.index(), 0);
+        assert_eq!(last.index(), 2);
+        assert_eq!(InternalContextAddress::from_raw(first.raw()), Some(first));
+        assert_eq!(InternalContextAddress::from_raw(last.raw()), Some(last));
+        assert!(InternalContextAddress::from_raw(first.raw() + 4).is_none());
+        assert!(InternalContextAddress::from_raw(last.raw() + INTERNAL_TX_CONTEXT_SIZE as u32).is_none());
+        assert_eq!(first.frame_node().raw(), 0x0400_90d8);
+        assert_eq!(first.frame_node().context(), first);
         assert_eq!(first.intrusive_next().get(), 0x0400_9088);
         assert_eq!(first.borrowed_frame_address().get(), 0x0400_90a0);
         assert_eq!(first.completion_status().get(), 0x0400_90a4);
