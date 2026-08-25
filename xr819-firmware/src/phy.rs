@@ -1215,13 +1215,19 @@ pub unsafe fn lookup_channel_threshold(channel: u16) -> Result<i16, ChannelPower
         if profile > 1 {
             return Err(ChannelPowerError::InvalidThresholdTable);
         }
-        let descriptor = crate::dtcm::phy_channel_threshold_descriptor_unchecked(profile).get();
-        let count = usize::from(((descriptor + 1) as *const u8).read_volatile());
+        let count = usize::from(
+            (crate::dtcm::phy_channel_threshold_count_unchecked(profile).get() as *const u8)
+                .read_volatile(),
+        );
         if count > 64 {
             return Err(ChannelPowerError::InvalidThresholdTable);
         }
-        let default = ((descriptor + 2) as *const i16).read_volatile();
-        let records = ((descriptor + 4) as *const u32).read_volatile() as usize;
+        let default = (crate::dtcm::phy_channel_threshold_default_unchecked(profile).get()
+            as *const i16)
+            .read_volatile();
+        let records = (crate::dtcm::phy_channel_threshold_records_unchecked(profile).get()
+            as *const u32)
+            .read_volatile() as usize;
         let mut selected = default;
         for index in 0..count {
             let record = records + index * 4;
@@ -1473,16 +1479,16 @@ unsafe fn gain_computation_input(
         if profile > 1 {
             return Err(GainProgrammingError::InvalidProfile);
         }
-        let bank = crate::dtcm::sdd_profile_unchecked(usize::from(profile)).get();
+        let profile_index = usize::from(profile);
         let rate = rate.min(10);
-        let coefficient_base = crate::dtcm::sdd_gain_coefficient_unchecked(usize::from(profile) * 2).get();
+        let coefficient_index = profile_index * 2;
         Ok(GainComputationInput {
             rate,
             first_limit,
             second_limit,
-            rate_base: i32::from(((bank + usize::from(rate) * 2) as *const i16).read_volatile()),
-            gain_coefficient_a: i32::from((coefficient_base as *const u16).read_volatile()),
-            gain_coefficient_b: i32::from(((coefficient_base + 2) as *const u16).read_volatile()),
+            rate_base: i32::from((crate::dtcm::sdd_rate_limit_unchecked(profile_index, usize::from(rate)).get() as *const i16).read_volatile()),
+            gain_coefficient_a: i32::from((crate::dtcm::sdd_gain_coefficient_unchecked(coefficient_index).get() as *const u16).read_volatile()),
+            gain_coefficient_b: i32::from((crate::dtcm::sdd_gain_coefficient_unchecked(coefficient_index + 1).get() as *const u16).read_volatile()),
             rssi_rate_scale: i32::from(
                 (crate::dtcm::sdd_rssi_rate_scale_unchecked(usize::from(profile), usize::from(rate)).get() as *const i16).read_volatile(),
             ),
@@ -1530,12 +1536,15 @@ pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), Gai
             return Err(GainProgrammingError::InvalidProfile);
         }
         let requested_offset = gain_div(power_tenths_dbm.wrapping_shl(4), 10)?;
-        let first_table = crate::dtcm::sdd_profile_unchecked(usize::from(profile)).get();
+        let profile_index = usize::from(profile);
         for slot in 0..16usize {
             let rate = (slot as u8).min(10);
-            let rate_limit =
-                i32::from(((first_table + usize::from(rate) * 2) as *const i16).read_volatile())
-                    .wrapping_add(requested_offset);
+            let rate_limit = i32::from(
+                (crate::dtcm::sdd_rate_limit_unchecked(profile_index, usize::from(rate)).get()
+                    as *const i16)
+                    .read_volatile(),
+            )
+            .wrapping_add(requested_offset);
             let second_limit = rate_limit.min(i32::from(channel_power_limit(rate > 1)));
             let result = compute_gain_entry(gain_computation_input(
                 profile,
@@ -1544,14 +1553,28 @@ pub unsafe fn program_all_tx_gain_slots(power_tenths_dbm: i32) -> Result<(), Gai
                 second_limit,
             )?)?;
 
-            let record = crate::dtcm::phy_gain_programming_record_unchecked(slot).get();
-            write_u8(record, rate);
-            write_u16(record + 2, requested_offset as u16);
-            write_u16(record + 4, result.selected_power as u16);
-            write_u16(record + 6, 0);
-            write_u32(record + 8, 0);
-            write_u16(record + 0x0c, result.gain_code);
-            write_u16(record + 0x0e, result.rssi_value);
+            write_u8(crate::dtcm::phy_gain_programming_rate_unchecked(slot).get(), rate);
+            write_u16(
+                crate::dtcm::phy_gain_programming_requested_offset_unchecked(slot).get(),
+                requested_offset as u16,
+            );
+            write_u16(
+                crate::dtcm::phy_gain_programming_selected_power_unchecked(slot).get(),
+                result.selected_power as u16,
+            );
+            write_u16(crate::dtcm::phy_gain_programming_reserved_unchecked(slot).get(), 0);
+            write_u32(
+                crate::dtcm::phy_gain_programming_cleared_word_unchecked(slot).get(),
+                0,
+            );
+            write_u16(
+                crate::dtcm::phy_gain_programming_gain_code_unchecked(slot).get(),
+                result.gain_code,
+            );
+            write_u16(
+                crate::dtcm::phy_gain_programming_rssi_value_unchecked(slot).get(),
+                result.rssi_value,
+            );
 
             let (entry, companion) = encoded_gain_words(result.gain_code, result.rssi_value);
             write_u32(0x0abb_801c + slot * 4, entry);

@@ -1970,9 +1970,21 @@ pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_fiel
 pub(crate) const PHY_CHANNEL_THRESHOLD_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_channel_threshold_descriptors));
 pub(crate) const fn phy_channel_threshold_descriptor(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(phy_channel_threshold_descriptor_unchecked(profile)) } else { None } }
 pub(crate) const fn phy_channel_threshold_descriptor_unchecked(profile: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(PHY_CHANNEL_THRESHOLD_DESCRIPTORS.offset() + profile * core::mem::size_of::<PhyChannelThresholdDescriptor>()) }
+const fn phy_channel_threshold_descriptor_field_unchecked(profile: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(phy_channel_threshold_descriptor_unchecked(profile).offset() + offset) }
+pub(crate) const fn phy_channel_threshold_count_unchecked(profile: usize) -> DtcmAddress { phy_channel_threshold_descriptor_field_unchecked(profile, core::mem::offset_of!(PhyChannelThresholdDescriptor, count)) }
+pub(crate) const fn phy_channel_threshold_default_unchecked(profile: usize) -> DtcmAddress { phy_channel_threshold_descriptor_field_unchecked(profile, core::mem::offset_of!(PhyChannelThresholdDescriptor, default_threshold)) }
+pub(crate) const fn phy_channel_threshold_records_unchecked(profile: usize) -> DtcmAddress { phy_channel_threshold_descriptor_field_unchecked(profile, core::mem::offset_of!(PhyChannelThresholdDescriptor, records)) }
 pub(crate) const PHY_GAIN_PROGRAMMING_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_gain_programming_records));
 pub(crate) const fn phy_gain_programming_record(slot: usize) -> Option<DtcmAddress> { if slot < 16 { Some(phy_gain_programming_record_unchecked(slot)) } else { None } }
 pub(crate) const fn phy_gain_programming_record_unchecked(slot: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(PHY_GAIN_PROGRAMMING_RECORDS.offset() + slot * core::mem::size_of::<PhyGainProgrammingRecord>()) }
+const fn phy_gain_programming_field_unchecked(slot: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(phy_gain_programming_record_unchecked(slot).offset() + offset) }
+pub(crate) const fn phy_gain_programming_rate_unchecked(slot: usize) -> DtcmAddress { phy_gain_programming_field_unchecked(slot, core::mem::offset_of!(PhyGainProgrammingRecord, rate)) }
+pub(crate) const fn phy_gain_programming_requested_offset_unchecked(slot: usize) -> DtcmAddress { phy_gain_programming_field_unchecked(slot, core::mem::offset_of!(PhyGainProgrammingRecord, requested_offset)) }
+pub(crate) const fn phy_gain_programming_selected_power_unchecked(slot: usize) -> DtcmAddress { phy_gain_programming_field_unchecked(slot, core::mem::offset_of!(PhyGainProgrammingRecord, selected_power)) }
+pub(crate) const fn phy_gain_programming_reserved_unchecked(slot: usize) -> DtcmAddress { phy_gain_programming_field_unchecked(slot, core::mem::offset_of!(PhyGainProgrammingRecord, reserved_06)) }
+pub(crate) const fn phy_gain_programming_cleared_word_unchecked(slot: usize) -> DtcmAddress { phy_gain_programming_field_unchecked(slot, core::mem::offset_of!(PhyGainProgrammingRecord, cleared_word)) }
+pub(crate) const fn phy_gain_programming_gain_code_unchecked(slot: usize) -> DtcmAddress { phy_gain_programming_field_unchecked(slot, core::mem::offset_of!(PhyGainProgrammingRecord, gain_code)) }
+pub(crate) const fn phy_gain_programming_rssi_value_unchecked(slot: usize) -> DtcmAddress { phy_gain_programming_field_unchecked(slot, core::mem::offset_of!(PhyGainProgrammingRecord, rssi_value)) }
 pub(crate) const INITIALIZED_RATE_POLICIES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, initialized_rate_policies));
 pub(crate) const fn initialized_rate_policy_word(policy: usize, word: usize) -> Option<DtcmAddress> { if policy < 2 && word < 5 { Some(initialized_rate_policy_word_unchecked(policy, word)) } else { None } }
 pub(crate) const fn initialized_rate_policy_word_unchecked(policy: usize, word: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(INITIALIZED_RATE_POLICIES.offset() + (policy * 5 + word) * core::mem::size_of::<SharedU32>()) }
@@ -4374,9 +4386,19 @@ mod tests {
         assert_eq!(PHY_CHANNEL_THRESHOLD_DESCRIPTORS.get(), 0x0400_145c);
         assert_eq!(phy_channel_threshold_descriptor(0).unwrap().get(), 0x0400_145c);
         assert_eq!(phy_channel_threshold_descriptor(1).unwrap().get(), 0x0400_1464);
+        assert_eq!(phy_channel_threshold_count_unchecked(0).get(), 0x0400_145d);
+        assert_eq!(phy_channel_threshold_default_unchecked(0).get(), 0x0400_145e);
+        assert_eq!(phy_channel_threshold_records_unchecked(0).get(), 0x0400_1460);
         assert!(phy_channel_threshold_descriptor(2).is_none());
         assert_eq!(PHY_GAIN_PROGRAMMING_RECORDS.get(), 0x0400_146c);
         assert_eq!(phy_gain_programming_record(0).unwrap().get(), 0x0400_146c);
+        assert_eq!(phy_gain_programming_rate_unchecked(0).get(), 0x0400_146c);
+        assert_eq!(phy_gain_programming_requested_offset_unchecked(0).get(), 0x0400_146e);
+        assert_eq!(phy_gain_programming_selected_power_unchecked(0).get(), 0x0400_1470);
+        assert_eq!(phy_gain_programming_reserved_unchecked(0).get(), 0x0400_1472);
+        assert_eq!(phy_gain_programming_cleared_word_unchecked(0).get(), 0x0400_1474);
+        assert_eq!(phy_gain_programming_gain_code_unchecked(0).get(), 0x0400_1478);
+        assert_eq!(phy_gain_programming_rssi_value_unchecked(0).get(), 0x0400_147a);
         assert_eq!(phy_gain_programming_record(15).unwrap().get(), 0x0400_155c);
         assert_eq!(phy_gain_programming_record(15).unwrap().get() + 0x10, 0x0400_156c);
         assert!(phy_gain_programming_record(16).is_none());
