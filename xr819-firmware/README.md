@@ -23,10 +23,16 @@ could revisit it. Continuing through normal head reclamation fixes the terminal
 stall. RX resynchronization also defers its hardware-consumer update while
 zero-copy HIF slots remain host-owned.
 
-The clean production image qualified healthy in three fresh boots at
-4.87-5.09 Mbit/s TCP and 7.92-7.93 Mbit/s UDP delivered, with 20/20 final ping,
-zero TX failures, zero credit failures, and no exceptions. The exact image is
-`88298e828ef298af0644a4afe0dd0c206849061bc6b501f800bfdb5ca29f4a53`.
+The command-extracted production image qualified healthy in three fresh boots
+against the `Hoeve Luitenant Halleux` AP at 3.28-3.63 Mbit/s TCP and
+4.81-5.47 Mbit/s UDP delivered, with 20/20 final ping, every request buffer
+released, BH alive, WSM idle, and no fatal error or exception. The exact packed
+image is `4533b546e3147f787e4583bf177783cd4ea2b4bac1e9914289692fc4212b858d`.
+The preceding qualified image
+`88298e828ef298af0644a4afe0dd0c206849061bc6b501f800bfdb5ca29f4a53`
+reached 4.87-5.09 Mbit/s TCP and 7.92-7.93 Mbit/s UDP on the former AP; those
+figures are retained as a different-radio-environment baseline rather than a
+direct throughput comparison.
 The complete synchronous FIQ experiment is preserved separately on Jujutsu
 bookmark `feature/mac-fiq`; FIQ is not required for the production RX fix.
 The exact vendor call order, Radare2 excerpts, current implementation delta,
