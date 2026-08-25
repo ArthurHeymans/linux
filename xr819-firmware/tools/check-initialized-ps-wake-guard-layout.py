@@ -282,7 +282,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"MacPipeTail", "PsWakeGuardWords",
+    views = {"PsWakeGuardWords",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -374,8 +374,8 @@ def check_source() -> None:
         if name in views and name not in sanctioned_roots:
             failures.append(f"additional scheduler tail {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
-    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
-        failures.append("production impl for RfScaleHalfwordTable is forbidden")
+    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*PsWakeGuardWords", production):
+        failures.append("production impl for PsWakeGuardWords is forbidden")
     for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
         if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
             failures.append(f"direct scheduler tail const/static alias is forbidden: {match.group(1)}")

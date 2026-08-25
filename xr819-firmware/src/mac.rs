@@ -1115,27 +1115,53 @@ unsafe fn install_response_descriptors() {
 
 unsafe fn export_pipe_counters() {
     for index in 0..4 {
-        let record = SHARED + index * 0x44;
         let hardware = crate::platform::mac_register(0x0040) + index * 0x0c;
-        if unsafe { read_u32(record + 0x718) } == 0 {
+        if unsafe { read_u32(crate::dtcm::mac_pipe_tail_frame_count_unchecked(index).get()) } == 0 {
             unsafe {
                 write_u32(hardware + 0x20, u32::MAX);
                 write_u32(hardware + 0x24, 0xff);
                 write_u32(hardware + 0x28, 0xff);
             }
         } else {
-            let source = record + 0x6dc;
             let stats = crate::platform::mac_register(0x1200) + index * 0x20;
             unsafe {
-                write_u32(hardware + 0x20, read_u32(source));
-                write_u32(hardware + 0x24, read_u32(source + 4) & 0xffff);
-                write_u32(hardware + 0x28, u32::from(read_u8(record + 0x700)));
-                write_u32(stats + 0x10, read_u32(record + 0x708));
-                write_u32(stats + 0x14, read_u32(record + 0x70c));
-                write_u32(stats + 0x18, read_u32(record + 0x710));
-                write_u32(stats + 0x1c, read_u32(record + 0x714));
-                write_u32(stats + 4, read_u32(record + 0x71c));
-                write_u32(stats, read_u32(record + 0x718));
+                write_u32(
+                    hardware + 0x20,
+                    read_u32(crate::dtcm::mac_pipe_tail_setup_words_unchecked(index).get()),
+                );
+                write_u32(
+                    hardware + 0x24,
+                    read_u32(crate::dtcm::mac_pipe_tail_setup_word_6e0_unchecked(index).get())
+                        & 0xffff,
+                );
+                write_u32(
+                    hardware + 0x28,
+                    u32::from(read_u8(crate::dtcm::mac_pipe_tail_type_byte_unchecked(index).get())),
+                );
+                write_u32(
+                    stats + 0x10,
+                    read_u32(crate::dtcm::mac_pipe_tail_counter_708_unchecked(index).get()),
+                );
+                write_u32(
+                    stats + 0x14,
+                    read_u32(crate::dtcm::mac_pipe_tail_counter_70c_unchecked(index).get()),
+                );
+                write_u32(
+                    stats + 0x18,
+                    read_u32(crate::dtcm::mac_pipe_tail_counter_710_unchecked(index).get()),
+                );
+                write_u32(
+                    stats + 0x1c,
+                    read_u32(crate::dtcm::mac_pipe_tail_counter_714_unchecked(index).get()),
+                );
+                write_u32(
+                    stats + 4,
+                    read_u32(crate::dtcm::mac_pipe_tail_scratch_unchecked(index).get()),
+                );
+                write_u32(
+                    stats,
+                    read_u32(crate::dtcm::mac_pipe_tail_frame_count_unchecked(index).get()),
+                );
             }
         }
     }

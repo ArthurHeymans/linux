@@ -2013,6 +2013,17 @@ pub(crate) const fn mac_phy_dispatch_command_byte_unchecked(index: usize) -> Dtc
 pub(crate) const MAC_PHY_DISPATCH_OUTPUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_output_state));
 pub(crate) const MAC_PHY_COMPLETION_STATUS: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, completion_status));
 pub(crate) const MAC_PHY_INTERFACE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, interface));
+pub(crate) const MAC_PIPE_TAILS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_tails));
+const fn mac_pipe_tail_field_unchecked(pipe: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PIPE_TAILS.offset() + pipe * core::mem::size_of::<MacPipeTail>() + offset) }
+pub(crate) const fn mac_pipe_tail_setup_words_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, setup_word_6dc)) }
+pub(crate) const fn mac_pipe_tail_setup_word_6e0_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, setup_word_6e0)) }
+pub(crate) const fn mac_pipe_tail_type_byte_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, type_byte_700)) }
+pub(crate) const fn mac_pipe_tail_counter_708_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, counter_word_708)) }
+pub(crate) const fn mac_pipe_tail_counter_70c_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, counter_word_70c)) }
+pub(crate) const fn mac_pipe_tail_counter_710_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, counter_word_710)) }
+pub(crate) const fn mac_pipe_tail_counter_714_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, counter_word_714)) }
+pub(crate) const fn mac_pipe_tail_frame_count_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, frame_count_718)) }
+pub(crate) const fn mac_pipe_tail_scratch_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_tail_field_unchecked(pipe, core::mem::offset_of!(MacPipeTail, scratch_word_71c)) }
 pub(crate) const MAC_WAKE_RUNTIME_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_wake_runtime_state));
 pub(crate) const MAC_WAKE_TIMER: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, timer));
 pub(crate) const fn mac_wake_timer_initialization_fields() -> [DtcmAddress; 3] {
@@ -4362,7 +4373,24 @@ mod tests {
     }
 
     #[test]
-    fn initialized_mac_pipe_tails_are_exact() { let image = DTCM_STATE_BASE; let tails = image + core::mem::offset_of!(InitializedVendorImage, mac_pipe_tails); assert_eq!(core::mem::size_of::<MacPipeTail>(), 0x44); assert_eq!(core::mem::align_of::<MacPipeTail>(), 4); assert_eq!(core::mem::size_of::<MacPipeTails>(), 0x110); assert_eq!(core::mem::align_of::<MacPipeTails>(), 4); assert_eq!([core::mem::offset_of!(MacPipeTail, setup_word_6dc), core::mem::offset_of!(MacPipeTail, setup_word_6de), core::mem::offset_of!(MacPipeTail, setup_word_6e0), core::mem::offset_of!(MacPipeTail, opaque_6e2), core::mem::offset_of!(MacPipeTail, opaque_6e4), core::mem::offset_of!(MacPipeTail, type_byte_700), core::mem::offset_of!(MacPipeTail, opaque_701), core::mem::offset_of!(MacPipeTail, cleared_word_704), core::mem::offset_of!(MacPipeTail, counter_word_708), core::mem::offset_of!(MacPipeTail, counter_word_70c), core::mem::offset_of!(MacPipeTail, counter_word_710), core::mem::offset_of!(MacPipeTail, counter_word_714), core::mem::offset_of!(MacPipeTail, frame_count_718), core::mem::offset_of!(MacPipeTail, scratch_word_71c)], [0x00, 0x02, 0x04, 0x06, 0x08, 0x24, 0x25, 0x28, 0x2c, 0x30, 0x34, 0x38, 0x3c, 0x40]); assert_eq!(tails, 0x0400_1d5c); assert_eq!(tails + core::mem::size_of::<MacPipeTail>(), 0x0400_1da0); assert_eq!(tails + 3 * core::mem::size_of::<MacPipeTail>(), 0x0400_1e28); assert_eq!(tails + core::mem::size_of::<MacPipeTails>(), 0x0400_1e6c); assert_eq!(MAC_PHY_COMMAND_STATE.get() + core::mem::size_of::<MacPhyCommandState>(), 0x0400_1d5c); assert_eq!(MAC_RETRY_HARDWARE_STATE.get(), 0x0400_1e6c); assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078); assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4); assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<DtcmLayout>(), 4); assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<SharedDtcmState>(), 4); } #[test]
+    fn initialized_mac_pipe_tails_are_exact() { let image = DTCM_STATE_BASE; let tails = image + core::mem::offset_of!(InitializedVendorImage, mac_pipe_tails); assert_eq!(core::mem::size_of::<MacPipeTail>(), 0x44); assert_eq!(core::mem::align_of::<MacPipeTail>(), 4); assert_eq!(core::mem::size_of::<MacPipeTails>(), 0x110); assert_eq!(core::mem::align_of::<MacPipeTails>(), 4); assert_eq!([core::mem::offset_of!(MacPipeTail, setup_word_6dc), core::mem::offset_of!(MacPipeTail, setup_word_6de), core::mem::offset_of!(MacPipeTail, setup_word_6e0), core::mem::offset_of!(MacPipeTail, opaque_6e2), core::mem::offset_of!(MacPipeTail, opaque_6e4), core::mem::offset_of!(MacPipeTail, type_byte_700), core::mem::offset_of!(MacPipeTail, opaque_701), core::mem::offset_of!(MacPipeTail, cleared_word_704), core::mem::offset_of!(MacPipeTail, counter_word_708), core::mem::offset_of!(MacPipeTail, counter_word_70c), core::mem::offset_of!(MacPipeTail, counter_word_710), core::mem::offset_of!(MacPipeTail, counter_word_714), core::mem::offset_of!(MacPipeTail, frame_count_718), core::mem::offset_of!(MacPipeTail, scratch_word_71c)], [0x00, 0x02, 0x04, 0x06, 0x08, 0x24, 0x25, 0x28, 0x2c, 0x30, 0x34, 0x38, 0x3c, 0x40]); assert_eq!(tails, 0x0400_1d5c); assert_eq!(tails + core::mem::size_of::<MacPipeTail>(), 0x0400_1da0); assert_eq!(tails + 3 * core::mem::size_of::<MacPipeTail>(), 0x0400_1e28); assert_eq!(tails + core::mem::size_of::<MacPipeTails>(), 0x0400_1e6c); assert_eq!(MAC_PHY_COMMAND_STATE.get() + core::mem::size_of::<MacPhyCommandState>(), 0x0400_1d5c); assert_eq!(MAC_RETRY_HARDWARE_STATE.get(), 0x0400_1e6c); assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078); assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4); assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<DtcmLayout>(), 4); assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE); assert_eq!(core::mem::align_of::<SharedDtcmState>(), 4); }
+
+    #[test]
+    fn initialized_mac_pipe_tail_accessors_are_exact() {
+        assert_eq!(MAC_PIPE_TAILS.get(), 0x0400_1d5c);
+        assert_eq!(mac_pipe_tail_setup_words_unchecked(0).get(), 0x0400_1d5c);
+        assert_eq!(mac_pipe_tail_setup_word_6e0_unchecked(0).get(), 0x0400_1d60);
+        assert_eq!(mac_pipe_tail_type_byte_unchecked(0).get(), 0x0400_1d80);
+        assert_eq!(mac_pipe_tail_counter_708_unchecked(0).get(), 0x0400_1d88);
+        assert_eq!(mac_pipe_tail_counter_70c_unchecked(0).get(), 0x0400_1d8c);
+        assert_eq!(mac_pipe_tail_counter_710_unchecked(0).get(), 0x0400_1d90);
+        assert_eq!(mac_pipe_tail_counter_714_unchecked(0).get(), 0x0400_1d94);
+        assert_eq!(mac_pipe_tail_frame_count_unchecked(0).get(), 0x0400_1d98);
+        assert_eq!(mac_pipe_tail_scratch_unchecked(0).get(), 0x0400_1d9c);
+        assert_eq!(mac_pipe_tail_scratch_unchecked(3).get() + 4, 0x0400_1e6c);
+    }
+
+    #[test]
     fn initialized_mac_phy_command_addresses_are_exact() {
         assert_eq!(MAC_PHY_COMMAND_STATE.get(), 0x0400_1d10);
         assert_eq!(MAC_RADIO_STOP_STATE.get(), 0x0400_1d12);

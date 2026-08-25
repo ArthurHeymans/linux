@@ -267,7 +267,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"MacPipeTail", "TlvDispatchHandlerEntry", "TlvDispatchHandlerTable", "tlv_dispatch_handler_table",
+    views = {"TlvDispatchHandlerEntry", "TlvDispatchHandlerTable", "tlv_dispatch_handler_table",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -367,9 +367,9 @@ def check_source() -> None:
         if name in views and name not in sanctioned_roots:
             failures.append(f"additional scheduler tail {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
-    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
-        failures.append("production impl for RfScaleHalfwordTable is forbidden")
-    for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
+    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*TlvDispatchHandlerTable", production):
+        failures.append("production impl for TlvDispatchHandlerTable is forbidden")
+    for match in re.finditer(r"\b(?:const(?!\s+fn\b)|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
         if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
             failures.append(f"direct scheduler tail const/static alias is forbidden: {match.group(1)}")
     for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*register_write_lists_entry_marker[A-Za-z0-9_]*)", production, re.I):

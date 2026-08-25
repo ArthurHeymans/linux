@@ -11,18 +11,18 @@ loop refills 0x708..0x71c from MMIO scratch. The absolute root 0x04001e60
 counter_word_714 and the byte just past this range; those remain vendor
 operations, not Rust semantics.
 
-The single pinned aligned literal / decoded xref (0x04001d9c inside
-mac::reinitialize_after_wake) is the pre-existing retained Rust translation
-of vendor stats_export_pipe_counters (export_pipe_counters, SHARED-relative),
-inlined by LLVM; everything beyond it is drift evidence, never writer
-closure: computed, indirect, generic HIF/debug, vendor, IRQ, and FIQ mutation
-remain possible.
+The translated `mac::export_pipe_counters` reader now reaches each reviewed
+field through exact `src/dtcm.rs` accessors. The single pinned aligned literal /
+decoded xref (0x04001d9c inside `mac::reinitialize_after_wake`) is its inlined
+pipe-0 scratch-word read. This is reader closure only: computed, indirect,
+generic HIF/debug, vendor, IRQ, and FIQ mutation remain possible.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import re
 import struct
 import subprocess
@@ -47,11 +47,38 @@ ADJACENT_DECLARATIONS = {
     "tools/check-mac-phy-command-state-layout.py": "(0x04001D10, 0x04001D5C)",
     "tools/check-mac-retry-hardware-state-layout.py": "MAC_RETRY_HARDWARE_STATE_RANGE = (0x04001E6C, 0x04001E70)",
 }
-# Pre-existing retained consumer: mac::export_pipe_counters reads/writes the
-# per-pipe tail words through SHARED-relative offsets; LLVM folded one first-
-# iteration address (pipe 0 + 0x71c) into this literal inside the inlined
-# reinitialize_after_wake. Pinning it is inventory of the current build, not
-# new API: the structural addition adds no production operation.
+SANCTIONED_ROOTS = {"MAC_PIPE_TAILS"}
+SANCTIONED_APIS = {
+    "mac_pipe_tail_field_unchecked",
+    "mac_pipe_tail_setup_words_unchecked",
+    "mac_pipe_tail_setup_word_6e0_unchecked",
+    "mac_pipe_tail_type_byte_unchecked",
+    "mac_pipe_tail_counter_708_unchecked",
+    "mac_pipe_tail_counter_70c_unchecked",
+    "mac_pipe_tail_counter_710_unchecked",
+    "mac_pipe_tail_counter_714_unchecked",
+    "mac_pipe_tail_frame_count_unchecked",
+    "mac_pipe_tail_scratch_unchecked",
+}
+SANCTIONED_CONSUMER_FUNCTIONS = {
+    "src/dtcm.rs": SANCTIONED_APIS,
+    "src/mac.rs": {"export_pipe_counters"},
+}
+SANCTIONED_EXPORT_BODY_SHA256 = "64f5223d81e112027a32b47f2b8282da12bca58001be5b27eb0a1f4bed46a9bd"
+SANCTIONED_READER_PATTERNS = {
+    "mac_pipe_tail_setup_words_unchecked": ("read_u32", 1),
+    "mac_pipe_tail_setup_word_6e0_unchecked": ("read_u32", 1),
+    "mac_pipe_tail_type_byte_unchecked": ("read_u8", 1),
+    "mac_pipe_tail_counter_708_unchecked": ("read_u32", 1),
+    "mac_pipe_tail_counter_70c_unchecked": ("read_u32", 1),
+    "mac_pipe_tail_counter_710_unchecked": ("read_u32", 1),
+    "mac_pipe_tail_counter_714_unchecked": ("read_u32", 1),
+    "mac_pipe_tail_frame_count_unchecked": ("read_u32", 2),
+    "mac_pipe_tail_scratch_unchecked": ("read_u32", 1),
+}
+# Retained translated consumer: mac::export_pipe_counters reads the reviewed
+# per-pipe tail fields through exact owner APIs. LLVM folds the pipe-0 scratch
+# word into this literal inside the inlined reinitialize_after_wake.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001D9C: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ("_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reinitialize_after_wake", 0x04001D9C): 1,
@@ -92,6 +119,18 @@ REQUIRED = (
     "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
+    "MAC_PIPE_TAILS: DtcmAddress",
+    "fn mac_pipe_tail_field_unchecked(pipe: usize, offset: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_setup_words_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_setup_word_6e0_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_type_byte_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_counter_708_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_counter_70c_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_counter_710_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_counter_714_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_frame_count_unchecked(pipe: usize) -> DtcmAddress",
+    "fn mac_pipe_tail_scratch_unchecked(pipe: usize) -> DtcmAddress",
+    "fn initialized_mac_pipe_tail_accessors_are_exact()",
     "fn initialized_mac_pipe_tails_are_exact()",
     "size_of::<MacPipeTail>(), 0x44",
     "align_of::<MacPipeTail>(), 4",
@@ -210,6 +249,19 @@ def named_function(source: str, name: str) -> str | None:
     return None if depth else source[start.start():index]
 
 
+def macro_definitions(source: str) -> list[str]:
+    definitions: list[str] = []
+    for start in re.finditer(r"\bmacro_rules\s*!\s*[A-Za-z_][A-Za-z0-9_]*\s*\{", source):
+        depth = 1
+        index = start.end()
+        while index < len(source) and depth:
+            depth += (source[index] == "{") - (source[index] == "}")
+            index += 1
+        if depth == 0:
+            definitions.append(source[start.start():index])
+    return definitions
+
+
 def missing_inventory(scope: str, inventory: tuple[str, ...]) -> list[str]:
     compact = normalized(scope)
     return [item for item in inventory if normalized(item) not in compact]
@@ -307,7 +359,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"MacPipeTail", "MacPipeTails", "mac_pipe_tails",
+    views = {"MacPipeTail", "MacPipeTails", "mac_pipe_tails", *SANCTIONED_APIS,
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -395,23 +447,100 @@ def check_source() -> None:
     production = "\n".join(rust.values())
     views, declarations = family_aliases(production)
     for kind, name, _ in declarations:
-        if name in views:
+        if name in views and name not in SANCTIONED_ROOTS:
             failures.append(f"additional MAC pipe tail {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
     if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
         failures.append("production impl for MacPipeTails is forbidden")
-    for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
-        if view_pattern.search(match.group()):
+    for match in re.finditer(r"\b(?:const(?!\s+fn\b)|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
+        if view_pattern.search(match.group()) and match.group(1) not in SANCTIONED_ROOTS:
             failures.append(f"direct MAC pipe tail const/static alias is forbidden: {match.group(1)}")
     for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*pipe_tail[A-Za-z0-9_]*)", production, re.I):
-        failures.append(f"named MAC pipe tail production API is forbidden: {match.group(1)}")
-    forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b", re.I)
+        if match.group(1) not in SANCTIONED_APIS:
+            failures.append(f"named MAC pipe tail production API is forbidden: {match.group(1)}")
+    export_body = named_function(rust["src/mac.rs"], "export_pipe_counters")
+    if export_body is None:
+        failures.append("src/mac.rs: sanctioned export_pipe_counters reader is missing")
+    else:
+        export_hash = hashlib.sha256(normalized(export_body).encode()).hexdigest()
+        if export_hash != SANCTIONED_EXPORT_BODY_SHA256:
+            failures.append(
+                "src/mac.rs: export_pipe_counters body changed outside the exact reviewed reader inventory"
+            )
+        total_calls = sum(len(re.findall(rf"\b{re.escape(api)}\b", export_body)) for api in SANCTIONED_READER_PATTERNS)
+        expected_calls = sum(count for _, count in SANCTIONED_READER_PATTERNS.values())
+        if total_calls != expected_calls:
+            failures.append(
+                f"src/mac.rs: MAC pipe tail accessor count changed from {expected_calls} to {total_calls}"
+            )
+        reader_stripped = export_body
+        for api, (reader, count) in SANCTIONED_READER_PATTERNS.items():
+            pattern = re.compile(
+                rf"\b{reader}\s*\(\s*crate::dtcm::{re.escape(api)}\s*\(\s*index\s*\)\s*\.\s*get\s*\(\s*\)\s*\)"
+            )
+            actual = len(pattern.findall(export_body))
+            if actual != count:
+                failures.append(
+                    f"src/mac.rs: {api} must occur exactly {count} time(s) as a {reader} source, found {actual}"
+                )
+            reader_stripped = pattern.sub(" ", reader_stripped)
+        if view_pattern.search(reader_stripped):
+            failures.append(
+                "src/mac.rs: export_pipe_counters contains an unreviewed MAC pipe tail root or API use"
+            )
+
+    forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_[A-Za-z0-9]+)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b", re.I)
+
+    def mask_sanctioned_bodies(relative: str, code: str) -> str:
+        names: set[str] = set()
+        if relative == "src/dtcm.rs":
+            names = SANCTIONED_APIS
+        elif relative == "src/mac.rs" and export_body is not None:
+            names = {"export_pipe_counters"}
+        masked = code
+        for name in names:
+            body = named_function(masked, name)
+            if body is None:
+                continue
+            masked = masked.replace(
+                body,
+                "".join("\n" if char == "\n" else " " for char in body),
+                1,
+            )
+        return masked
+
+    def forbidden_line_numbers(relative: str, code: str) -> list[int]:
+        masked = mask_sanctioned_bodies(relative, code)
+        return [
+            line_number
+            for line_number, line in enumerate(masked.splitlines(), 1)
+            if view_pattern.search(line) and forbidden_operation.search(line)
+        ]
+
+    regression_fixtures = (
+        "macro_rules! leak { () => { write_u32(MAC_PIPE_TAILS.get(), 0) } }\nfn invoke() { leak!() }",
+        "macro_rules! leak { () => { write_u32(mac_pipe_tail_frame_count_unchecked(0).get(), 0) } }\nfn invoke() { leak!() }",
+    )
+    if any(not forbidden_line_numbers("src/dtcm.rs", fixture) for fixture in regression_fixtures):
+        raise SystemExit("checker self-test failed: macro-hidden MAC pipe tail write was accepted")
+    split_macro_fixture = (
+        "macro_rules! tails { () => { MAC_PIPE_TAILS } }\n"
+        "fn export_pipe_counters() { read_u32(tails!().get()) }"
+    )
+    if not any(view_pattern.search(definition) for definition in macro_definitions(split_macro_fixture)):
+        raise SystemExit("checker self-test failed: split macro MAC pipe tail alias was accepted")
+
     for relative, code in rust.items():
+        for definition in macro_definitions(code):
+            if view_pattern.search(definition):
+                failures.append(f"{relative}: macros over MAC pipe tail roots or APIs are forbidden")
+        sanctioned_functions = SANCTIONED_CONSUMER_FUNCTIONS.get(relative, set())
         for function in functions_consuming_family(code, views):
-            failures.append(f"{relative}: production function API over MAC pipe tail storage is forbidden: {function}")
+            if function not in sanctioned_functions:
+                failures.append(f"{relative}: production function API over MAC pipe tail storage is forbidden: {function}")
+        for line_number in forbidden_line_numbers(relative, code):
+            failures.append(f"{relative}:{line_number}: pointer/reference/read/write/value/init/offset/slice API is forbidden")
         for line_number, line in enumerate(code.splitlines(), 1):
-            if view_pattern.search(line) and forbidden_operation.search(line):
-                failures.append(f"{relative}:{line_number}: pointer/reference/read/write/value/init/offset/slice API is forbidden")
             for value in owned_literals(line):
                 if value in OFFSETS and relative != "src/dtcm.rs":
                     failures.append(f"{relative}:{line_number}: raw MAC pipe tail DTCM offset 0x{value:x} is forbidden")

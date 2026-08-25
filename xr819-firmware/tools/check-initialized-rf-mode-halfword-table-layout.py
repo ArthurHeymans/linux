@@ -277,7 +277,7 @@ def family_aliases(code: str) -> tuple[set[str], list[tuple[str, str, str]]]:
         for name, initializer in re.findall(pattern, code)
     ]
     imported = rust_use_aliases(code)
-    views = {"MacPipeTail", "RfModeHalfwordTable", "rf_mode_halfword_table",
+    views = {"RfModeHalfwordTable", "rf_mode_halfword_table",
              *(name for _, name, initializer in declarations if owned_literals(initializer))}
     while True:
         aliases = {name for _, name, initializer in declarations
@@ -368,7 +368,7 @@ def check_source() -> None:
         if name in views and name not in sanctioned_roots:
             failures.append(f"additional RF mode halfword table {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
-    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacPipeTail", production):
+    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*RfModeHalfwordTable", production):
         failures.append("production impl for RfModeHalfwordTable is forbidden")
     for match in re.finditer(r"\b(?:const|static)\s+(?!fn\b)(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
         if view_pattern.search(match.group()) and "RF_MODE_HALFWORD_TABLE:" not in normalized(match.group()):
