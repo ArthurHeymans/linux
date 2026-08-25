@@ -9,7 +9,6 @@
 //! Host backing uses an explicit re-entry-rejecting owner for test isolation.
 
 pub const VIF_COUNT: usize = crate::dtcm::VIF_RECORD_COUNT;
-pub const VIF_BASE: usize = crate::dtcm::VIF_RECORDS.get();
 pub const VIF_STRIDE: usize = crate::dtcm::VIF_RECORD_SIZE;
 
 pub const MODE_OFFSET: usize = 0x18;
@@ -786,7 +785,7 @@ pub unsafe fn teardown(interface: u8) -> bool {
 /// # Safety
 /// The selected vendor VIF record must be initialized and stable.
 #[cfg(target_arch = "arm")]
-pub unsafe fn snapshot(interface: u8) -> Option<VifState> {
+pub fn snapshot(interface: u8) -> Option<VifState> {
     let record = crate::dtcm::vif_record(usize::from(interface))?;
     let mut bssid = [0_u8; 6];
     for (index, byte) in bssid.iter_mut().enumerate() { *byte = vif_read_u8(record.bssid_byte(index)?); }

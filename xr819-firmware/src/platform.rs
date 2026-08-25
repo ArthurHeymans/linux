@@ -94,14 +94,8 @@ const SYSTEM_CONTROL_BASE: usize = 0x0a98_0000;
 const INTERRUPT_CONTROLLER_BASE: usize = 0x0a88_0000;
 const PERIPHERAL_CONTROL_BASE: usize = 0x0ac0_0000;
 const PLATFORM_CONTROL_BASE: usize = 0x0ac8_0000;
-const BOOT_STATE_BASE: usize = crate::dtcm::SCHEDULER_EVENT_ROOT.get();
-const CLOCK_PARAMETERS_BASE: usize = crate::dtcm::CLOCK_PARAMETERS.get();
 const INTERRUPT_ROUTING_BASE: usize = 0x0abb_0000;
-const HOST_DOWNLOAD_STATE: usize = crate::dtcm::initialized_tsf_resync_state().get();
 const HIF_SHARED_BASE: usize = 0x0ab0_0100;
-const IRQ_CALLBACK_TABLE: usize = crate::dtcm::IRQ_CALLBACK_TABLE.get();
-const VENDOR_BSS_START: usize = crate::dtcm::VENDOR_BSS_START.get();
-const VENDOR_BSS_END: usize = crate::dtcm::VENDOR_BSS_END.get();
 
 const MAC_REGISTER_BASE: usize = 0x09c0_0000;
 const PACKET_CONTROLLER_REGISTER_BASE: usize = 0x09c1_0000;
@@ -167,32 +161,44 @@ fn platform_control() -> &'static PlatformControl {
 
 #[inline(always)]
 fn boot_word(offset: usize) -> &'static ReadWrite<u32> {
-    register32(BOOT_STATE_BASE + offset)
+    register32(crate::dtcm::scheduler_event_offset_unchecked(offset).get())
 }
 
 #[inline(always)]
 fn boot_read_u16(offset: usize) -> u16 {
-    unsafe { (BOOT_STATE_BASE.wrapping_add(offset) as *const u16).read_volatile() }
+    unsafe {
+        crate::dtcm::shared_ptr::<u16>(crate::dtcm::scheduler_event_offset_unchecked(offset))
+            .read_volatile()
+    }
 }
 
 #[inline(always)]
 fn boot_write_u16(offset: usize, value: u16) {
-    unsafe { (BOOT_STATE_BASE.wrapping_add(offset) as *mut u16).write_volatile(value) }
+    unsafe {
+        crate::dtcm::shared_ptr::<u16>(crate::dtcm::scheduler_event_offset_unchecked(offset))
+            .write_volatile(value)
+    }
 }
 
 #[inline(always)]
 fn clock_parameter_word(offset: usize) -> &'static ReadWrite<u32> {
-    register32(CLOCK_PARAMETERS_BASE + offset)
+    register32(crate::dtcm::clock_parameter_offset_unchecked(offset).get())
 }
 
 #[inline(always)]
 fn clock_parameter_read_u8(offset: usize) -> u8 {
-    unsafe { (CLOCK_PARAMETERS_BASE.wrapping_add(offset) as *const u8).read_volatile() }
+    unsafe {
+        crate::dtcm::shared_ptr::<u8>(crate::dtcm::clock_parameter_offset_unchecked(offset))
+            .read_volatile()
+    }
 }
 
 #[inline(always)]
 fn clock_parameter_write_u8(offset: usize, value: u8) {
-    unsafe { (CLOCK_PARAMETERS_BASE.wrapping_add(offset) as *mut u8).write_volatile(value) }
+    unsafe {
+        crate::dtcm::shared_ptr::<u8>(crate::dtcm::clock_parameter_offset_unchecked(offset))
+            .write_volatile(value)
+    }
 }
 
 fn interrupt_routing() -> &'static InterruptRouting {
@@ -225,7 +231,7 @@ extern "C" fn packet_dma_irq26() {
 /// reverse-ordered 32-entry table and enable the interrupt source.
 fn register_interrupt_source_with(irq: u32, callback: extern "C" fn()) {
     let callback = callback as *const () as usize as u32 | 1;
-    register32(IRQ_CALLBACK_TABLE + ((31 - irq) as usize * 4)).set(callback);
+    register32(crate::dtcm::irq_callback_unchecked((31 - irq) as usize).get()).set(callback);
     let interrupts = interrupt_controller();
     interrupts.enable.set(interrupts.enable.get() | (1 << irq));
 }
@@ -241,8 +247,8 @@ fn register_interrupt_source(irq: u32) {
 /// entering main firmware. The custom raw downloader does not process those
 /// section records, so Rust must perform the equivalent initialization.
 pub fn initialize_runtime_state() {
-    let mut address = VENDOR_BSS_START;
-    while address < VENDOR_BSS_END {
+    let mut address = crate::dtcm::VENDOR_BSS_START.get();
+    while address < crate::dtcm::VENDOR_BSS_END.get() {
         unsafe { (address as *mut u32).write_volatile(0) };
         address += 4;
     }
@@ -256,14 +262,13 @@ pub fn initialize_runtime_state() {
 
     boot_word(0x04).set(0);
     boot_write_u16(0x08, 7);
+    boot_write_u16(0x0a, 9);
+    boot_word(0x0c).set(0x14a);
+    boot_word(0x10).set(0x0001_9600);
+    boot_word(0x14).set(0);
+    boot_word(0x18).set(0x200);
+    boot_word(0x1c).set(0);
     unsafe {
-        (BOOT_STATE_BASE.wrapping_add(0x0a) as *mut u16).write_volatile(9);
-        (BOOT_STATE_BASE.wrapping_add(0x0c) as *mut u32).write_volatile(0x14a);
-        (BOOT_STATE_BASE.wrapping_add(0x10) as *mut u32).write_volatile(0x0001_9600);
-        (BOOT_STATE_BASE.wrapping_add(0x14) as *mut u32).write_volatile(0);
-        (BOOT_STATE_BASE.wrapping_add(0x18) as *mut u32).write_volatile(0x200);
-        (BOOT_STATE_BASE.wrapping_add(0x1c) as *mut u32).write_volatile(0);
-
         // The vendor container's initialized-SRAM segment supplies the zero
         // observed by 0x164bc at 0x04001428. Our flat custom image omits that
         // segment, so reproduce its loader effect before entering startup.
@@ -277,7 +282,11 @@ pub fn initialize_runtime_state() {
 /// downloader/host releases main-firmware startup.
 pub fn wait_for_host_download_completion(max_polls: u32) -> bool {
     for _ in 0..max_polls {
-        if unsafe { (HOST_DOWNLOAD_STATE as *const u32).read_volatile() } == 0 {
+        if unsafe {
+            crate::dtcm::shared_ptr::<u32>(crate::dtcm::initialized_tsf_resync_state())
+                .read_volatile()
+        } == 0
+        {
             return true;
         }
         core::hint::spin_loop();

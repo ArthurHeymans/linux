@@ -2106,7 +2106,8 @@ pub(crate) const HOST_PAS_RING_SLOTS: DtcmAddress = DtcmAddress::from_offset(HOS
 pub(crate) const fn host_pas_ring_slot(index: usize) -> Option<DtcmAddress> { if index < 64 { Some(host_pas_ring_slot_unchecked(index)) } else { None } }
 pub(crate) const fn host_pas_ring_slot_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(HOST_PAS_RING_SLOTS.offset() + index * core::mem::size_of::<SharedU32>()) }
 pub(crate) const IRQ_CALLBACK_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, irq_callbacks)); pub(crate) const PHY_WATCHDOG_COUNTER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, phy_watchdog_counter) + core::mem::offset_of!(PhyWatchdogCounter, count)); pub(crate) const MULTI_VIF_BEACON_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, timer)); pub(crate) const MEASUREMENT_DWELL_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_dwell_timer));
-pub(crate) const fn irq_callback(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(DtcmAddress::from_offset(IRQ_CALLBACK_TABLE.offset() + index * core::mem::size_of::<SharedU32>())) } else { None } }
+pub(crate) const fn irq_callback(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(irq_callback_unchecked(index)) } else { None } }
+pub(crate) const fn irq_callback_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(IRQ_CALLBACK_TABLE.offset() + index * core::mem::size_of::<SharedU32>()) }
 pub(crate) const VISIBLE_COMPLETION_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, visible_completion_words));
 pub(crate) const fn visible_completion_word(index: usize) -> Option<DtcmAddress> { if index < 10 { Some(visible_completion_word_unchecked(index)) } else { None } }
 pub(crate) const fn visible_completion_word_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(VISIBLE_COMPLETION_WORDS.offset() + index * core::mem::size_of::<SharedU32>()) }
@@ -2408,6 +2409,9 @@ pub(crate) const fn phy_scale_i_byte(index: usize) -> Option<DtcmAddress> { if i
 pub(crate) const fn phy_scale_i_byte_unchecked(index: usize) -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_i) + index) }
 pub(crate) const fn phy_scale_q() -> DtcmAddress { phy_reference_field(core::mem::offset_of!(PhyCalibrationReferences, scale_q)) }
 pub(crate) const PHY_PROFILE_STATE: DtcmAddress = DtcmAddress::from_offset(0x994c);
+/// Vendor startup writes a contiguous observed state sequence rooted here and
+/// intentionally crosses the decoded profile/measurement/cache subrecords.
+pub(crate) const fn phy_startup_state_offset_unchecked(offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(PHY_PROFILE_STATE.offset() + offset) }
 const fn phy_profile_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_PROFILE_STATE.offset() + offset) }
 pub const fn phy_profile() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, profile)) }
 pub(crate) const fn phy_phase() -> DtcmAddress { phy_profile_field(core::mem::offset_of!(PhyProfileState, phase)) }
@@ -2889,6 +2893,7 @@ const fn scheduler_event_field(offset: usize) -> DtcmAddress {
             + offset,
     )
 }
+pub(crate) const fn scheduler_event_offset_unchecked(offset: usize) -> DtcmAddress { scheduler_event_field(offset) }
 pub(crate) const fn scheduler_exclusion_mask() -> DtcmAddress { scheduler_exclusion_field(core::mem::offset_of!(SchedulerExclusionState, exclusion_mask)) }
 pub(crate) const fn scheduler_secondary_exclusion() -> DtcmAddress { scheduler_exclusion_field(core::mem::offset_of!(SchedulerExclusionState, secondary_exclusion)) }
 pub(crate) const fn scheduler_pending_events() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, pending_events)) }
@@ -2918,11 +2923,15 @@ pub(crate) const fn scheduler_handler_unchecked(index: usize) -> DtcmAddress {
             + index * core::mem::size_of::<SharedU32>(),
     )
 }
-#[cfg(test)]
-const fn clock_parameter_field(offset: usize) -> DtcmAddress {
+pub(crate) const fn clock_parameter_offset_unchecked(offset: usize) -> DtcmAddress {
     DtcmAddress::from_offset_unchecked(
         core::mem::offset_of!(DtcmLayout, clock_parameters) + offset,
     )
+}
+
+#[cfg(test)]
+const fn clock_parameter_field(offset: usize) -> DtcmAddress {
+    clock_parameter_offset_unchecked(offset)
 }
 
 macro_rules! assert_type_layout {

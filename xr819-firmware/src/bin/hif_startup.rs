@@ -729,7 +729,7 @@ extern "C" fn rust_main() -> ! {
                     }
                 }
             } else if let Some(if_id) = vif::active_interface() {
-                let channel = unsafe { vif::snapshot(if_id) }
+                let channel = vif::snapshot(if_id)
                     .map(|state| state.channel)
                     .unwrap_or(0);
                 if transport.publication_available()

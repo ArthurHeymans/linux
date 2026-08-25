@@ -402,10 +402,10 @@ pub unsafe fn enqueue_post_crypto(retained: &mut RetainedHostTx) -> Result<(), P
         write_live_u32(pending_tail, context.raw());
         write_host_u32(context.ownership_bits(), read_host_u32(context.ownership_bits()) | 0x20);
         if read_host_u8(context.more()) == 0 {
-            const SCHEDULER_EVENTS: u32 = crate::dtcm::scheduler_pending_events().get() as u32;
+            let scheduler_events = crate::dtcm::scheduler_pending_events().get() as u32;
             write_live_u32(
-                SCHEDULER_EVENTS,
-                read_live_u32(SCHEDULER_EVENTS) | 0x0020_0000,
+                scheduler_events,
+                read_live_u32(scheduler_events) | 0x0020_0000,
             );
         }
         crate::tx::restore_irq_fiq_saved(previous);
@@ -603,16 +603,18 @@ unsafe fn push_live_pas(
     _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     context: HostContextAddress,
 ) -> Result<(), PendingServiceError> {
-    const RING: u32 = crate::dtcm::HOST_PAS_RING.get() as u32;
-    let old_tail = unsafe { read_live_u32(RING + 4) as u8 & 0x3f };
-    let mut scan = unsafe { read_live_u32(RING) as u8 & 0x3f };
+    let old_tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
+    let mut scan = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
     let mut write = old_tail;
     while scan != old_tail {
-        let slot = RING + 8 + u32::from(scan) * 4;
+        let slot = crate::dtcm::host_pas_ring_slot_unchecked(usize::from(scan)).get() as u32;
         let value = unsafe { read_live_u32(slot) };
         if value != 0 {
             unsafe {
-                write_live_u32(RING + 8 + u32::from(write) * 4, value);
+                write_live_u32(
+                    crate::dtcm::host_pas_ring_slot_unchecked(usize::from(write)).get() as u32,
+                    value,
+                );
                 write_live_u32(slot, 0);
             }
             write = write.wrapping_add(1) & 0x3f;
@@ -620,16 +622,19 @@ unsafe fn push_live_pas(
         scan = scan.wrapping_add(1) & 0x3f;
     }
     unsafe {
-        write_live_u32(RING, u32::from(old_tail));
-        write_live_u32(RING + 4, u32::from(write));
+        write_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32, u32::from(old_tail));
+        write_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32, u32::from(write));
     }
     let next = write.wrapping_add(1) & 0x3f;
     if next == old_tail {
         return Err(PendingServiceError::PasRingFull);
     }
     unsafe {
-        write_live_u32(RING + 8 + u32::from(write) * 4, context.pas().raw());
-        write_live_u32(RING + 4, u32::from(next));
+        write_live_u32(
+            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(write)).get() as u32,
+            context.pas().raw(),
+        );
+        write_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32, u32::from(next));
     }
     Ok(())
 }
@@ -639,14 +644,13 @@ unsafe fn remove_live_pas(
     _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     context: HostContextAddress,
 ) -> Result<(), CancelError> {
-    const RING: u32 = crate::dtcm::HOST_PAS_RING.get() as u32;
     let target = context.pas().raw();
-    let head = unsafe { read_live_u32(RING) as u8 & 0x3f };
-    let tail = unsafe { read_live_u32(RING + 4) as u8 & 0x3f };
+    let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
+    let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
     let mut scan = head;
     let mut found = false;
     while scan != tail {
-        let slot = RING + 8 + u32::from(scan) * 4;
+        let slot = crate::dtcm::host_pas_ring_slot_unchecked(usize::from(scan)).get() as u32;
         if unsafe { read_live_u32(slot) } == target {
             unsafe { write_live_u32(slot, 0) };
             found = true;

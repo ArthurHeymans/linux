@@ -31,6 +31,10 @@ DIRECT_FIELD_ARITHMETIC = re.compile(
     r"(?:\s+as\s+(?:u32|usize))?\s*"
     r"(?:[+-]|\.\s*wrapping_(?:add|sub)\s*\()"
 )
+DIRECT_INTEGER_ALIAS = re.compile(
+    r"\bconst\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?:u32|usize)\s*="
+    r"[^;]*?(?:crate\s*::\s*)?dtcm\s*::\s*[^;]*?\.\s*get\s*\(\s*\)"
+)
 
 
 def code_only(source: str) -> str:
@@ -166,6 +170,11 @@ def inventory() -> tuple[dict[str, dict[str, int]], list[str]]:
             failures.append(
                 f"{relative}:{line}: manual arithmetic on a DTCM field root is owned by {OWNER}"
             )
+        for match in DIRECT_INTEGER_ALIAS.finditer(code):
+            line = code.count("\n", 0, match.start()) + 1
+            failures.append(
+                f"{relative}:{line}: integer alias for a DTCM field root is forbidden"
+            )
     return result, failures
 
 
@@ -221,10 +230,20 @@ def check_regressions() -> None:
         "crate::dtcm::table_entry_unchecked(index).get()",
         "address.get() + index * 4",
     )
+    alias_rejected = (
+        "const ROOT: usize = crate::dtcm::TABLE.get();",
+        "const ROOT: u32 = dtcm::field().get() as u32;",
+        "const ROOT: usize = (crate::dtcm::TABLE.get());",
+        "const ROOT: usize = crate::dtcm::TABLE\n    .get();",
+    )
     if not all(DIRECT_FIELD_ARITHMETIC.search(source) for source in rejected):
         raise SystemExit("DTCM direct-field-arithmetic regression fixture was not rejected")
     if any(DIRECT_FIELD_ARITHMETIC.search(source) for source in accepted):
         raise SystemExit("DTCM direct-field-arithmetic regression fixture was falsely rejected")
+    if not all(DIRECT_INTEGER_ALIAS.search(source) for source in alias_rejected):
+        raise SystemExit("DTCM integer-alias regression fixture was not rejected")
+    if any(DIRECT_INTEGER_ALIAS.search(source) for source in accepted):
+        raise SystemExit("DTCM integer-alias regression fixture was falsely rejected")
 
 
 def main() -> None:

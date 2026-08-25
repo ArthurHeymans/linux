@@ -16,7 +16,6 @@ const FRAME_NODE_OFFSET: u32 = 0x54;
 // The class-0 allocation counter remains in the untranslated vendor
 // accounting record. Its independently decoded non-class-0 counter, probe
 // sequence, PAS accounting, and completed-frame FIFO are native Rust state.
-const CLASS0_INTERNAL_CONTEXTS: usize = crate::dtcm::class0_internal_context_count().get();
 const COMPLETION_RING_CAPACITY: usize = 64;
 
 #[inline(always)]
@@ -149,10 +148,6 @@ impl SharedCompletionRing {
     }
 }
 
-#[cfg(not(all(target_arch = "arm", target_feature = "thumb-mode")))]
-const SCHEDULER_PENDING: usize = crate::dtcm::scheduler_pending_events().get();
-#[cfg(not(target_arch = "arm"))]
-const PIPE_RETRY_RANDOM_STATE: u32 = crate::dtcm::initialized_random_lfsr().get() as u32;
 const PIPE_IRQ_PENDING: u32 = crate::platform::mac_register(0x0e84) as u32;
 const PIPE_IRQ_TRIGGER: u32 = crate::platform::mac_register(0x0e98) as u32;
 const PIPE_QUANTUM: u32 = 0x0000_0fff;
@@ -2208,7 +2203,7 @@ fn next_retry_random24<M: MacPipeMmio>(_mmio: &mut M) -> u32 {
     #[cfg(target_arch = "arm")]
     let state = unsafe { RETRY_RANDOM_STATE.0.get().read_volatile() };
     #[cfg(not(target_arch = "arm"))]
-    let state = _mmio.read_u32(PIPE_RETRY_RANDOM_STATE);
+    let state = _mmio.read_u32(crate::dtcm::initialized_random_lfsr().get() as u32);
 
     let mixed = (state >> 4) ^ state;
     let next = (state << 27) | (mixed & 0x07ff_ffff);
@@ -2218,7 +2213,7 @@ fn next_retry_random24<M: MacPipeMmio>(_mmio: &mut M) -> u32 {
         RETRY_RANDOM_STATE.0.get().write_volatile(next);
     }
     #[cfg(not(target_arch = "arm"))]
-    _mmio.write_u32(PIPE_RETRY_RANDOM_STATE, next);
+    _mmio.write_u32(crate::dtcm::initialized_random_lfsr().get() as u32, next);
 
     next & 0x00ff_ffff
 }
@@ -4132,7 +4127,7 @@ unsafe fn raise_scheduler_bits(bits: u32) {
             "orr r2, r2, r3",
             "str r2, [r0]",
             "msr cpsr_c, r1",
-            in("r0") SCHEDULER_PENDING,
+            in("r0") crate::dtcm::scheduler_pending_events().get(),
             in("r3") bits,
             lateout("r1") _,
             lateout("r2") _,
@@ -4180,7 +4175,7 @@ unsafe fn raise_scheduler_bits(bits: u32) {
 
     compiler_fence(Ordering::SeqCst);
     unsafe {
-        let pending = SCHEDULER_PENDING as *mut u32;
+        let pending = crate::dtcm::shared_ptr::<u32>(crate::dtcm::scheduler_pending_events());
         pending.write_volatile(pending.read_volatile() | bits);
     }
     compiler_fence(Ordering::SeqCst);
@@ -5477,7 +5472,9 @@ where
 
         let class = ((address + 0x53) as *const u8).read_volatile();
         if class == 0 {
-            let counter = CLASS0_INTERNAL_CONTEXTS as *mut u8;
+            let counter = crate::dtcm::shared_ptr::<u8>(
+                crate::dtcm::class0_internal_context_count(),
+            );
             counter.write_volatile(counter.read_volatile().wrapping_sub(1));
         } else {
             set_active_internal_contexts(active_internal_contexts().wrapping_sub(1));
@@ -8290,7 +8287,7 @@ mod tests {
         mmio.set(frame.raw() + 0x0f, 2);
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0xff);
-        mmio.set(PIPE_RETRY_RANDOM_STATE, 0x0012_3456);
+        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 0x0012_3456);
         mmio.set(
             crate::dtcm::pas_stride_view(0)
                 .unwrap()
@@ -8334,7 +8331,7 @@ mod tests {
         assert!(descriptor_index < trigger_index);
         assert!(trigger_index < command_mask_index);
         assert_eq!(mmio.get(0xa000), 0);
-        assert_eq!(mmio.get(PIPE_RETRY_RANDOM_STATE), 0xb013_1713);
+        assert_eq!(mmio.get(crate::dtcm::initialized_random_lfsr().get() as u32), 0xb013_1713);
         assert_eq!(mmio.get(PIPE_RETRY_RANDOM_STATS), 0x13);
         assert_eq!(mmio.get(PIPE_RETRY_RANDOM_STATS + 12), 1);
         assert_eq!(mmio.get(frame.raw() + 0x5a), 0x13);
@@ -8365,7 +8362,7 @@ mod tests {
         mmio.set(frame.raw() + 0x0f, 2);
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0x11);
-        mmio.set(PIPE_RETRY_RANDOM_STATE, 0x0012_3456);
+        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 0x0012_3456);
         mmio.set(
             crate::dtcm::pas_stride_view(0)
                 .unwrap()
@@ -8418,7 +8415,7 @@ mod tests {
         mmio.set(frame.raw() + 0x0f, 2);
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0xff);
-        mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
+        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 1);
         mmio.set(
             crate::dtcm::pas_stride_view(0)
                 .unwrap()
@@ -8463,7 +8460,7 @@ mod tests {
         mmio.set(frame.raw() + 0x0f, 1);
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x56, 0xff);
-        mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
+        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 1);
         mmio.set(
             crate::dtcm::pas_stride_view(0)
                 .unwrap()
@@ -8508,7 +8505,7 @@ mod tests {
         mmio.set(frame.raw() + 0x69, 0);
         mmio.set(frame.raw() + 0x0c, 0);
         mmio.set(0x0ac0_0004, 0x1234);
-        mmio.set(PIPE_RETRY_RANDOM_STATE, 1);
+        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 1);
         mmio.set(
             crate::dtcm::pas_stride_view(0)
                 .unwrap()
@@ -9068,7 +9065,7 @@ mod tests {
 
     #[test]
     fn only_class_zero_keeps_its_vendor_allocation_counter() {
-        assert_eq!(CLASS0_INTERNAL_CONTEXTS, 0x0400_8f71);
+        assert_eq!(crate::dtcm::class0_internal_context_count().get(), 0x0400_8f71);
     }
 
     #[test]

@@ -4399,37 +4399,35 @@ unsafe fn detect_rf_silicon_variant() -> u8 {
 }
 
 pub unsafe fn initialize_mac_software_state() {
-    const STATE: usize = crate::dtcm::PHY_PROFILE_STATE.get();
-
     unsafe {
-        write_u8(STATE, 2);
-        write_u8(STATE + 1, 3);
-        write_u8(STATE + 2, 0);
-        write_u8(STATE + 3, 2);
-        write_u16(STATE + 6, 7);
-        write_u32(STATE + 0x28, 0x0025_4310);
-        write_u8(STATE + 0x11, 0);
-        write_u8(STATE + 0x12, 0);
-        write_u8(STATE + 0x13, 0);
-        write_u8(STATE + 0x14, 0);
-        write_u8(STATE + 0x15, 0);
-        write_u16(STATE + 0x16, 7);
-        write_u32(STATE + 0x20, 0x0000_6590);
-        write_u32(STATE + 0x24, 0);
-        write_u32(STATE + 0x38, 0);
-        write_u16(STATE + 0x3c, 0);
-        write_u32(STATE + 0x48, 0x0000_9470);
-        write_u32(STATE + 0x4c, 0x0000_bb80);
-        write_u8(STATE + 0x0b, 40);
-        write_u8(STATE + 0x0c, 2);
-        write_u8(STATE + 0x0d, 0);
-        write_u16(STATE + 0x0e, 10);
-        write_u16(STATE + 0x36, 10);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0).get(), 2);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(1).get(), 3);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(2).get(), 0);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(3).get(), 2);
+        write_u16(crate::dtcm::phy_startup_state_offset_unchecked(6).get(), 7);
+        write_u32(crate::dtcm::phy_startup_state_offset_unchecked(0x28).get(), 0x0025_4310);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x11).get(), 0);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x12).get(), 0);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x13).get(), 0);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x14).get(), 0);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x15).get(), 0);
+        write_u16(crate::dtcm::phy_startup_state_offset_unchecked(0x16).get(), 7);
+        write_u32(crate::dtcm::phy_startup_state_offset_unchecked(0x20).get(), 0x0000_6590);
+        write_u32(crate::dtcm::phy_startup_state_offset_unchecked(0x24).get(), 0);
+        write_u32(crate::dtcm::phy_startup_state_offset_unchecked(0x38).get(), 0);
+        write_u16(crate::dtcm::phy_startup_state_offset_unchecked(0x3c).get(), 0);
+        write_u32(crate::dtcm::phy_startup_state_offset_unchecked(0x48).get(), 0x0000_9470);
+        write_u32(crate::dtcm::phy_startup_state_offset_unchecked(0x4c).get(), 0x0000_bb80);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x0b).get(), 40);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x0c).get(), 2);
+        write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x0d).get(), 0);
+        write_u16(crate::dtcm::phy_startup_state_offset_unchecked(0x0e).get(), 10);
+        write_u16(crate::dtcm::phy_startup_state_offset_unchecked(0x36).get(), 10);
 
         // Vendor startup mode bit 1 controls this compatibility flag.
         let startup_mode = (crate::dtcm::scheduler_startup_mode().get() as *const u16).read_volatile();
         if startup_mode & 2 == 0 {
-            write_u8(STATE + 0x15, 1);
+            write_u8(crate::dtcm::phy_startup_state_offset_unchecked(0x15).get(), 1);
         }
 
         // Wake-context bytes read by `mac_reprogram_after_channel` and the
