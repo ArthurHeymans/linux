@@ -2072,6 +2072,7 @@ pub(crate) const LOW_MAC_SLOT_TIME_CONSTANT: DtcmAddress = DtcmAddress::from_off
 pub(crate) const LOW_MAC_SLOT_TIME_X8: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x8));
 pub(crate) const LOW_MAC_SLOT_TIME_X16: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x16));
 pub(crate) const LOW_MAC_SLOT_TIME_X24: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x24));
+pub(crate) const LOW_MAC_TX_START_REGISTER_SNAPSHOT: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, opaque_40));
 pub(crate) const LOW_MAC_IFS_DURATION: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, ifs_duration));
 pub(crate) const LOW_MAC_FIFO_STATUS: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, fifo_status));
 pub(crate) const LOW_MAC_LEGACY_MODE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode));
@@ -4509,6 +4510,7 @@ mod tests {
         assert_eq!(LOW_MAC_SLOT_TIME_X8.get(), 0x0400_16b4);
         assert_eq!(LOW_MAC_SLOT_TIME_X16.get(), 0x0400_16b8);
         assert_eq!(LOW_MAC_SLOT_TIME_X24.get(), 0x0400_16bc);
+        assert_eq!(LOW_MAC_TX_START_REGISTER_SNAPSHOT.get(), 0x0400_16c0);
         assert_eq!(LOW_MAC_IFS_DURATION.get(), 0x0400_16c4);
         assert_eq!(LOW_MAC_SHORT_AIRTIME_TABLE.get(), 0x0400_16c8);
         assert_eq!(low_mac_short_airtime_unchecked(21).get(), 0x0400_16f2);

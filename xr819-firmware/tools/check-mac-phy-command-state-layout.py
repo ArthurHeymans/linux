@@ -48,7 +48,7 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001D1C: 1,
     0x04001D2C: 4,
     0x04001D38: 2,
-    0x04001D40: 3,
+    0x04001D40: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21start_phy_operation_1', 0x04001D18): 1,

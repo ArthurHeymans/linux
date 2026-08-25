@@ -42,7 +42,7 @@ FORBIDDEN_FORMS = (
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001F78: 7,
+    0x04001F78: 5,
     0x04001F84: 1,
     0x04001F90: 1,
     0x04001FBC: 6,

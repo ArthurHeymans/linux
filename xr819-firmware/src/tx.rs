@@ -4642,17 +4642,20 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
     unsafe {
         trace_tx_stage(TX_TRACE_SUCCESS);
         trace_tx_value(0x2c, u32::from(pipe));
-        let global = crate::dtcm::LOW_MAC_GLOBAL.get();
-        let pipe_state = global + usize::from(pipe) * 0x6c + 0xa0;
-        let current = read_u8(pipe_state + 2);
-        let current_slot = pipe_state + usize::from(current) * 0x18 + 0x0c;
-        let current_frame = FrameNodeAddress::new(read_u32(current_slot + 0x0c));
+        let pipe_index = usize::from(pipe);
+        let current = read_u8(crate::dtcm::mac_pipe_cursor_mirror_02_unchecked(pipe_index).get());
+        let current_index = usize::from(current);
+        let current_frame = FrameNodeAddress::new(read_u32(
+            crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, current_index).get(),
+        ));
 
         write_u32(0xfff0_1a98, read_u32(0xfff0_1a98).wrapping_add(1));
-        write_u8(global + 7, 0);
-        write_u8(current_slot + 3, 3);
+        write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
+        write_u8(crate::dtcm::mac_pipe_slot_control_03_unchecked(pipe_index, current_index).get(), 3);
 
-        if read_u8(pipe_state + 3) == 1 && read_u8(current_slot + 1) == 0xff {
+        if read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get()) == 1
+            && read_u8(crate::dtcm::mac_pipe_slot_retry_rate_unchecked(pipe_index, current_index).get()) == 0xff
+        {
             let frame = current_frame.context();
             let flags = read_u32(frame.control_bits_address());
             if flags & (1 << 4) == 0 {
@@ -4667,14 +4670,17 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
                 );
             }
 
-            let last = read_u8(pipe_state + 1);
+            let last = read_u8(crate::dtcm::mac_pipe_cursor_mirror_01_unchecked(pipe_index).get());
             if current == last {
-                let mut index = read_u8(pipe_state);
+                let mut index = read_u8(crate::dtcm::mac_pipe_current_slot_unchecked(pipe_index).get());
                 loop {
-                    let slot = pipe_state + usize::from(index) * 0x18 + 0x0c;
+                    let slot_index = usize::from(index);
+                    let slot = crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, slot_index);
                     complete_tx_pipe_slot(
-                        FrameNodeAddress::new(read_u32(slot + 0x0c)),
-                        slot as u32,
+                        FrameNodeAddress::new(read_u32(
+                            crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index).get(),
+                        )),
+                        slot.get() as u32,
                         0,
                         backend,
                     );
@@ -4683,12 +4689,15 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
                     }
                     index = index.wrapping_add(1) & 3;
                 }
-                write_u8(pipe_state, last.wrapping_add(1) & 3);
-                write_u8(pipe_state + 3, 0);
-                write_u8(pipe_state + 4, 0);
-                write_u8(pipe_state + 5, 5);
+                write_u8(crate::dtcm::mac_pipe_current_slot_unchecked(pipe_index).get(), last.wrapping_add(1) & 3);
+                write_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get(), 0);
+                write_u8(crate::dtcm::mac_pipe_control_byte_04_unchecked(pipe_index).get(), 0);
+                write_u8(crate::dtcm::mac_pipe_control_byte_05_unchecked(pipe_index).get(), 5);
             } else {
-                write_u8(pipe_state + 2, current.wrapping_add(1) & 3);
+                write_u8(
+                    crate::dtcm::mac_pipe_cursor_mirror_02_unchecked(pipe_index).get(),
+                    current.wrapping_add(1) & 3,
+                );
             }
         }
 
@@ -4724,22 +4733,24 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
     unsafe {
         trace_tx_stage(TX_TRACE_START);
         trace_tx_value(0x24, u32::from(pipe));
-        let global = crate::dtcm::LOW_MAC_GLOBAL.get();
         write_u32(
-            global + 0x40,
+            crate::dtcm::LOW_MAC_TX_START_REGISTER_SNAPSHOT.get(),
             read_u32(crate::platform::mac_register(0x0604)),
         );
-        let pipe_state = global + usize::from(pipe) * 0x6c + 0xa0;
-        let current = read_u8(pipe_state + 2);
-        let slot = pipe_state + usize::from(current) * 0x18 + 0x0c;
-        if read_u8(pipe_state + 3) == 0 {
+        let pipe_index = usize::from(pipe);
+        let current = read_u8(crate::dtcm::mac_pipe_cursor_mirror_02_unchecked(pipe_index).get());
+        let current_index = usize::from(current);
+        let slot = crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, current_index);
+        if read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get()) == 0 {
             backend.start_without_pending_diagnostic(pipe);
             return;
         }
 
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::TX_START);
-        write_u8(slot + 3, 2);
-        let frame_node = FrameNodeAddress::new(read_u32(slot + 0x0c));
+        write_u8(crate::dtcm::mac_pipe_slot_control_03_unchecked(pipe_index, current_index).get(), 2);
+        let frame_node = FrameNodeAddress::new(read_u32(
+            crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, current_index).get(),
+        ));
         let context = frame_node.context();
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 3 {
             let secondary = read_u8(
@@ -4756,8 +4767,8 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
             }
         }
 
-        if read_u8(pipe_state + 3) == 1
-            && read_u8(slot) == 0
+        if read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get()) == 1
+            && read_u8(slot.get()) == 0
             && read_u16(context.frame_control_address()) & 0x0f != 4
             && read_u32(context.control_bits_address()) & 1 == 0
         {
@@ -4770,14 +4781,20 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
                 context.control_bits_address(),
                 read_u32(context.control_bits_address()) | 1,
             );
-            write_u8(global + 6, 1);
-            write_u8(global + 0x0c, rate);
+            write_u8(crate::dtcm::LOW_MAC_EVENT_PENDING.get(), 1);
+            write_u8(crate::dtcm::LOW_MAC_SELECTED_RATE.get(), rate);
         }
 
-        let slot_state = read_u32(slot + 0x14);
-        if read_u32(slot_state as usize + 8) & (1 << 27) == 0 && current != read_u8(pipe_state + 1)
+        let slot_state = read_u32(
+            crate::dtcm::mac_pipe_slot_command_unchecked(pipe_index, current_index).get(),
+        );
+        if read_u32(slot_state as usize + 8) & (1 << 27) == 0
+            && current != read_u8(crate::dtcm::mac_pipe_cursor_mirror_01_unchecked(pipe_index).get())
         {
-            write_u8(pipe_state + 2, current.wrapping_add(1) & 3);
+            write_u8(
+                crate::dtcm::mac_pipe_cursor_mirror_02_unchecked(pipe_index).get(),
+                current.wrapping_add(1) & 3,
+            );
         }
     }
 }
