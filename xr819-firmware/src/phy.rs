@@ -1605,8 +1605,9 @@ pub unsafe fn record_calibrated_channel(channel: u16) {
 unsafe fn rf_init_stage_d_mode0() {
     const BASE: usize = 0x0abc_0040;
     unsafe {
-        let state = crate::dtcm::PHY_PROFILE_STATE.get();
-        let alternate = ((state + 0x40) as *const u8).read_volatile() == 1;
+        let alternate = (crate::dtcm::phy_silicon_variant().get() as *const u8)
+            .read_volatile()
+            == 1;
         write_u32(BASE - 0x3c, 0x304);
         write_u32(BASE - 0x38, if alternate { 0x9200 } else { 0x9000 });
         let remap = (crate::dtcm::scheduler_remap_primary().get() as *const u32).read_volatile();
@@ -2803,19 +2804,31 @@ pub unsafe fn publish_dynamic_iq_final_state(
     alternate_profile: bool,
     finalization: DynamicIqFinalization,
 ) {
-    let base = crate::dtcm::PHY_PROFILE_STATE.get();
+    let profile = usize::from(alternate_profile);
     unsafe {
         if finalization.verification.second_quality_failed {
-            write_u8(base + if alternate_profile { 0x7a } else { 0x78 }, 1);
+            write_u8(crate::dtcm::phy_dynamic_iq_quality_unchecked(profile, 0).get(), 1);
         }
         if finalization.verification.first_quality_failed {
-            write_u8(base + if alternate_profile { 0x7b } else { 0x79 }, 1);
+            write_u8(crate::dtcm::phy_dynamic_iq_quality_unchecked(profile, 1).get(), 1);
         }
         if let Some(publication) = finalization.publication {
-            let value_offset = if alternate_profile { 0x70 } else { 0x68 };
-            write_u32(base + value_offset, publication.first_value);
-            write_u32(base + value_offset + 4, publication.second_value);
-            write_u8(base + if alternate_profile { 0x15 } else { 0x0d }, 1);
+            write_u32(
+                crate::dtcm::phy_dynamic_iq_value_unchecked(profile, 0).get(),
+                publication.first_value,
+            );
+            write_u32(
+                crate::dtcm::phy_dynamic_iq_value_unchecked(profile, 1).get(),
+                publication.second_value,
+            );
+            write_u8(
+                if alternate_profile {
+                    crate::dtcm::phy_profile1_ready().get()
+                } else {
+                    crate::dtcm::phy_profile0_ready().get()
+                },
+                1,
+            );
         }
     }
 }
@@ -4230,12 +4243,13 @@ unsafe fn run_iq_calibration_core(
 
     unsafe { set_calibration_engine_enabled(true) };
     let selected_mode = unsafe { (0x0abb_80f0 as *const u32).read_volatile() as u8 & 3 };
-    let profile_base = crate::dtcm::PHY_PROFILE_STATE.get();
-    if unsafe { (profile_base as *const u8).add(0x10).read_volatile() } == 0 {
+    if unsafe { (crate::dtcm::phy_auxiliary_state().get() as *const u8).read_volatile() } == 0 {
         let shift_state = unsafe { (0x0abb_8680 as *const u32).read_volatile() };
-        unsafe { write_u32(profile_base + 0x2c, shift_state) };
+        unsafe { write_u32(crate::dtcm::phy_measurement_shift_state().get(), shift_state) };
     }
-    let initial_shift_state = unsafe { ((profile_base + 0x2c) as *const u32).read_volatile() };
+    let initial_shift_state = unsafe {
+        (crate::dtcm::phy_measurement_shift_state().get() as *const u32).read_volatile()
+    };
     unsafe { configure_calibration_mode(0) };
     let snapshot = unsafe { begin_iq_calibration_path(0, 0) };
     let samples = unsafe { &mut *IQ_CALIBRATION_SCRATCH.samples.get() };
@@ -4289,7 +4303,7 @@ unsafe fn run_iq_calibration_core(
         write_u32(crate::dtcm::phy_coefficient_q().get(), references.coefficient_q as u32);
         write_u32(crate::dtcm::phy_scale_i().get(), references.scale_i as u32);
         write_u32(crate::dtcm::phy_scale_q().get(), references.scale_q as u32);
-        write_u8(profile_base + 0x10, 1);
+        write_u8(crate::dtcm::phy_auxiliary_state().get(), 1);
     }
 
     let secondary = if include_secondary {

@@ -2427,6 +2427,7 @@ pub(crate) const fn phy_reference_word() -> DtcmAddress { phy_profile_field(core
 pub(crate) const PHY_MEASUREMENT_STATE: DtcmAddress = DtcmAddress::from_offset(0x9974);
 const fn phy_measurement_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(PHY_MEASUREMENT_STATE.offset() + offset) }
 pub(crate) const fn phy_frequency_khz() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, frequency_khz)) }
+pub(crate) const fn phy_measurement_shift_state() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, opaque_04)) }
 pub(crate) const fn phy_measurement_control() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, control_08)) }
 pub(crate) const fn phy_sample_width() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, sample_width)) }
 pub(crate) const fn phy_offset_word() -> DtcmAddress { phy_measurement_field(core::mem::offset_of!(PhyMeasurementState, offset_word)) }
@@ -2444,6 +2445,12 @@ const fn phy_channel_cache_field(offset: usize) -> DtcmAddress { DtcmAddress::fr
 pub(crate) const fn phy_channel_cache(slot: usize) -> Option<DtcmAddress> { if slot < 2 { Some(phy_channel_cache_unchecked(slot)) } else { None } }
 pub(crate) const fn phy_channel_cache_unchecked(slot: usize) -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, configuration_cache) + slot * core::mem::size_of::<SharedU32>()) }
 pub const fn phy_startup_observation() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, startup_observation)) }
+pub(crate) const fn phy_dynamic_iq_value_unchecked(profile: usize, index: usize) -> DtcmAddress {
+    phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, opaque_08) + profile * 0x08 + index * core::mem::size_of::<SharedU32>())
+}
+pub(crate) const fn phy_dynamic_iq_quality_unchecked(profile: usize, index: usize) -> DtcmAddress {
+    phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, startup_observation) + profile * 0x02 + index)
+}
 pub(crate) const fn phy_retained_channel() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, retained_channel)) }
 pub(crate) const fn phy_calibration_state() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, calibration_state)) }
 pub(crate) const fn phy_calibration_aux() -> DtcmAddress { phy_channel_cache_field(core::mem::offset_of!(PhyChannelCacheState, calibration_aux)) }
@@ -4199,6 +4206,7 @@ mod tests {
         assert_eq!(phy_reference_word().get(), 0x0400_996c);
         assert_eq!(phy_reference_word().get() + 8, 0x0400_9974);
         assert_eq!(PHY_MEASUREMENT_STATE.get(), 0x0400_9974);
+        assert_eq!(phy_measurement_shift_state().get(), 0x0400_9978);
         assert_eq!(phy_measurement_control().get(), 0x0400_997c);
         assert_eq!(phy_sample_width().get(), 0x0400_9982);
         assert_eq!(phy_offset_word().get(), 0x0400_9984);
@@ -4215,6 +4223,14 @@ mod tests {
         assert_eq!(phy_channel_cache(0).unwrap().get(), 0x0400_99ac);
         assert_eq!(phy_channel_cache(1).unwrap().get(), 0x0400_99b0);
         assert!(phy_channel_cache(2).is_none());
+        assert_eq!(phy_dynamic_iq_value_unchecked(0, 0).get(), 0x0400_99b4);
+        assert_eq!(phy_dynamic_iq_value_unchecked(0, 1).get(), 0x0400_99b8);
+        assert_eq!(phy_dynamic_iq_value_unchecked(1, 0).get(), 0x0400_99bc);
+        assert_eq!(phy_dynamic_iq_value_unchecked(1, 1).get(), 0x0400_99c0);
+        assert_eq!(phy_dynamic_iq_quality_unchecked(0, 0).get(), 0x0400_99c4);
+        assert_eq!(phy_dynamic_iq_quality_unchecked(0, 1).get(), 0x0400_99c5);
+        assert_eq!(phy_dynamic_iq_quality_unchecked(1, 0).get(), 0x0400_99c6);
+        assert_eq!(phy_dynamic_iq_quality_unchecked(1, 1).get(), 0x0400_99c7);
         assert_eq!(phy_startup_observation().get(), 0x0400_99c4);
         assert_eq!(phy_retained_channel().get(), 0x0400_99ce);
         assert_eq!(phy_calibration_state().get(), 0x0400_99d0);
