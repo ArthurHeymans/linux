@@ -4397,16 +4397,18 @@ pub trait PipeSuccessEffects: PipeSlotCompletionEffects {
 pub unsafe fn dispatch_phy_command_3() {
     unsafe {
         debug_assert_eq!(phy_dispatch_switch_target(3), 0x0001_6fa0);
-        let command = crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get();
         let output = crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get();
         let global_state = crate::dtcm::phy_retained_state().get();
-        write_u8(command, 3);
+        write_u8(crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get(), 3);
         if read_u8(global_state) == 4 {
-            write_u8(output + 1, read_u8(output + 1) | 2);
+            write_u8(
+                crate::dtcm::MAC_PHY_DISPATCH_OUTPUT_FLAGS.get(),
+                read_u8(crate::dtcm::MAC_PHY_DISPATCH_OUTPUT_FLAGS.get()) | 2,
+            );
             write_u8(global_state, 5);
         }
         write_u8(output, read_u8(global_state));
-        write_u32(output + 4, 0x0098_9680);
+        write_u32(crate::dtcm::MAC_PHY_DISPATCH_OUTPUT_TIMEOUT.get(), 0x0098_9680);
     }
 }
 
@@ -4422,11 +4424,10 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
         trace_tx_stage(TX_TRACE_PHY2);
         trace_tx_value(0x28, u32::from(secondary));
         debug_assert_eq!(phy_dispatch_switch_target(2), 0x0001_6f92);
-        let command = crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get();
         let output = crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get();
         let global_state = crate::dtcm::phy_retained_state().get();
-        write_u8(command, 2);
-        write_u8(command + 1, secondary);
+        write_u8(crate::dtcm::MAC_PHY_DISPATCH_COMMAND.get(), 2);
+        write_u8(crate::dtcm::mac_phy_dispatch_command_byte_unchecked(1).get(), secondary);
         if read_u8(global_state) != 5 {
             write_u8(crate::dtcm::phy_measurement_control().get(), secondary);
             write_u32(0x0abb_8004, read_u32(0x0abb_8004) | 0x800);
@@ -4441,7 +4442,7 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
             write_u8(global_state, 4);
         }
         write_u8(output, read_u8(global_state));
-        write_u32(output + 4, 0x0098_9680);
+        write_u32(crate::dtcm::MAC_PHY_DISPATCH_OUTPUT_TIMEOUT.get(), 0x0098_9680);
     }
 }
 

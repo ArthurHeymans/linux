@@ -2030,6 +2030,8 @@ pub(crate) const MAC_PHY_OPERATION_TIMEOUT: DtcmAddress = DtcmAddress::from_offs
 pub(crate) const MAC_PHY_DISPATCH_COMMAND: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_command));
 pub(crate) const fn mac_phy_dispatch_command_byte_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PHY_DISPATCH_COMMAND.offset() + index) }
 pub(crate) const MAC_PHY_DISPATCH_OUTPUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_output_state));
+pub(crate) const MAC_PHY_DISPATCH_OUTPUT_FLAGS: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_output_flags));
+pub(crate) const MAC_PHY_DISPATCH_OUTPUT_TIMEOUT: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, dispatch_output_timeout));
 pub(crate) const MAC_PHY_COMPLETION_STATUS: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, completion_status));
 pub(crate) const MAC_PHY_INTERFACE: DtcmAddress = DtcmAddress::from_offset(MAC_PHY_COMMAND_STATE.offset() + core::mem::offset_of!(MacPhyCommandState, interface));
 pub(crate) const MAC_PIPE_TAILS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_tails));
@@ -4478,6 +4480,8 @@ mod tests {
         assert_eq!(MAC_PHY_OPERATION_TIMEOUT.get(), 0x0400_1d3c);
         assert_eq!(MAC_PHY_DISPATCH_COMMAND.get(), 0x0400_1d40);
         assert_eq!(MAC_PHY_DISPATCH_OUTPUT.get(), 0x0400_1d48);
+        assert_eq!(MAC_PHY_DISPATCH_OUTPUT_FLAGS.get(), 0x0400_1d49);
+        assert_eq!(MAC_PHY_DISPATCH_OUTPUT_TIMEOUT.get(), 0x0400_1d4c);
         assert_eq!(MAC_PHY_COMPLETION_STATUS.get(), 0x0400_1d50);
         assert_eq!(MAC_PHY_INTERFACE.get(), 0x0400_1d58);
         assert_eq!(MAC_PHY_COMMAND_STATE.get() + 0x4c, 0x0400_1d5c);
