@@ -12,7 +12,8 @@ exclusive Rust ownership or permit address movement.
   including arithmetic hidden behind an immediate `u32`/`usize` cast. Older
   family-local aliases and record-internal arithmetic remain explicit P1
   audit debt under their existing ownership gates. The translated TX module's
-  former integer DTCM root aliases are now fully removed.
+  integer DTCM roots and the MAC module's former `SHARED`/`WAKE` roots are now
+  fully removed.
 - `.dtcm.*` section construction outside `src/dtcm.rs`: **zero**.
 - The main Rust image has no DTCM `PT_LOAD`, COPY, or FILL payload.
 - `InitializedVendorImage` remains exactly `0x2078` bytes at

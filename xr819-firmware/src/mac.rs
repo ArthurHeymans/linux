@@ -2,7 +2,6 @@
 
 use crate::{packet_ram, platform, radio};
 
-const SHARED: usize = crate::dtcm::LOW_MAC_GLOBAL.get();
 
 #[inline(always)]
 fn packet_offset(address: usize) -> u32 {
@@ -242,7 +241,7 @@ fn build_rate_entry(cfg: u16, hardware_class: u8, fallback: u8) -> [u32; 4] {
 }
 
 unsafe fn program_rate_tables(vif: usize) {
-    let cfg = unsafe { read_u16(SHARED + 2) };
+    let cfg = unsafe { read_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get()) };
     let basic = unsafe { read_u32(vif + 8) };
     let fallbacks = fill_fallbacks(basic);
     for (rate, fallback) in fallbacks.iter().copied().enumerate() {
@@ -252,19 +251,27 @@ unsafe fn program_rate_tables(vif: usize) {
         unsafe {
             write_u8(vif + 0x24 + rate, fallback);
             write_u16(
-                SHARED + 0x48 + rate * 2,
+                crate::dtcm::low_mac_short_airtime_unchecked(rate).get(),
                 extended_airtime(cfg, fallback, 14, true),
             );
             write_u16(
-                SHARED + 0x74 + rate * 2,
+                crate::dtcm::low_mac_long_airtime_unchecked(rate).get(),
                 extended_airtime(cfg, fallback, 32, true),
             );
-            write_u8(SHARED + 0x46c + rate, rate_phy_class(cfg, fallback, true));
+            write_u8(
+                crate::dtcm::mac_retry_rate_unchecked(rate).get(),
+                rate_phy_class(cfg, fallback, true),
+            );
         }
     }
     let secondary = secondary_fallbacks(basic, fallbacks[21]);
     for rate in 14..22 {
-        unsafe { write_u8(SHARED + 0x47a + rate, secondary[rate - 14]) };
+        unsafe {
+            write_u8(
+                crate::dtcm::mac_secondary_rate_overlay_unchecked(rate).get(),
+                secondary[rate - 14],
+            )
+        };
     }
 
     let column = if unsafe { read_u8(vif + 0x21) } == 0 {
@@ -284,7 +291,9 @@ unsafe fn program_rate_tables(vif: usize) {
             unsafe { write_u32(packet_ram::rate_entry(usize::from(index)) + word * 4, value) };
         }
         if hardware_class >= 4 {
-            let secondary = unsafe { read_u8(SHARED + 0x47a + usize::from(rate)) };
+            let secondary = unsafe {
+                read_u8(crate::dtcm::mac_secondary_rate_overlay_unchecked(usize::from(rate)).get())
+            };
             let secondary_index = OFFSET_TABLE[hardware_class as usize][1]
                 .wrapping_add(RATE_ATTRIBUTE[rate as usize]);
             let entry = build_rate_entry(cfg, hardware_class, secondary);
@@ -301,13 +310,13 @@ unsafe fn program_rate_tables(vif: usize) {
 }
 
 unsafe fn program_ifs_timing() {
-    let cfg = unsafe { read_u16(SHARED + 2) };
+    let cfg = unsafe { read_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get()) };
     let index = if cfg & 0x11 == 0x11 { 4 } else { 11 };
     let entry = unsafe { read_u32(packet_ram::rate_entry(index)) } & 0x00ff_ffff;
-    let base = unsafe { read_u32(SHARED + 0x1c) };
+    let base = unsafe { read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get()) };
     unsafe {
         write_u32(
-            SHARED + 0x44,
+            crate::dtcm::LOW_MAC_IFS_DURATION.get(),
             base.wrapping_mul(3).wrapping_add(entry).wrapping_mul(8),
         )
     };
@@ -368,7 +377,7 @@ unsafe fn build_control_frame(if_id: u8, pointer: usize, ack: bool) {
     unsafe {
         write_u32(
             pointer,
-            read_u32(SHARED + 0x30).wrapping_shl(16) | 0x2000_0000,
+            read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_CONSTANT.get()).wrapping_shl(16) | 0x2000_0000,
         );
         write_u16(pointer + 4, 0);
         write_u16(pointer + 6, 0);
@@ -442,9 +451,9 @@ pub unsafe fn prepare_scan_context(channel: u16) {
         }
 
         write_u32(crate::platform::mac_register(0x0200), 0);
-        write_u8(SHARED, 0);
-        write_u16(SHARED + 2, rate_config);
-        write_u8(SHARED + 5, 0);
+        write_u8(crate::dtcm::LOW_MAC_FIFO_CONTROL.get(), 0);
+        write_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get(), rate_config);
+        write_u8(crate::dtcm::LOW_MAC_LEGACY_MODE.get(), 0);
 
         // `syn_scan_program_channel` publishes the temporary VIF index and
         // active-record mask before entering `mac_apply_channel_and_vif_config`.
@@ -474,7 +483,7 @@ pub unsafe fn program_before_scan_channel(channel: u16) {
         );
         let scan_vif = crate::dtcm::pas_stride_view_unchecked(2);
         program_slot_timings(
-            read_u16(SHARED + 2),
+            read_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get()),
             read_u32(scan_vif.slot_timing_word().get()),
         );
 
@@ -514,7 +523,7 @@ pub unsafe fn program_before_scan_channel(channel: u16) {
 pub unsafe fn program_scan_station_mode() {
     unsafe {
         // Final publication at 0xfa34 in `mac_apply_channel_and_vif_config`.
-        write_u16(SHARED + 8, 0x1000);
+        write_u16(crate::dtcm::LOW_MAC_CONTROLLER_CONFIG.get(), 0x1000);
         write_u32(crate::dtcm::MAC_BEACON_SELECTOR.get(), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
         write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
@@ -688,8 +697,8 @@ pub unsafe fn initialize_tx_pipe_state() {
         // Vendor packet-controller startup publishes both global retry timing
         // terms. The second survives retained startup on this target, while
         // the first otherwise remains zero and shortens every retry by 18 us.
-        write_u32(SHARED + 0x1c, 9);
-        write_u32(SHARED + 0x20, 10);
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get(), 9);
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_INITIAL.get(), 10);
         // Hardware ring cursor -> software slot translation used by the
         // vendor's nontrivial retry-retirement branch.
         write_u32(crate::dtcm::QUEUE_PIPE_MAPPINGS.get(), 0x0201_0003);
@@ -743,9 +752,9 @@ pub unsafe fn initialize_wsm_tx_context_pool() {
 #[cfg(target_arch = "arm")]
 pub unsafe fn begin_unjoined_scan_radio_stop() {
     unsafe {
-        write_u32(SHARED + 0x18, 0);
+        write_u32(crate::dtcm::LOW_MAC_STATE_18.get(), 0);
         let previous = crate::tx::disable_irq_fiq_save();
-        write_u16(SHARED + 8, 0);
+        write_u16(crate::dtcm::LOW_MAC_CONTROLLER_CONFIG.get(), 0);
         write_u16(crate::dtcm::RADIO_STOP_WORD_02.get(), 0);
         write_u32(crate::dtcm::MAC_BEACON_CONTROL.get(), 0);
         write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 4);
@@ -770,8 +779,8 @@ pub unsafe fn finish_unjoined_scan_radio_stop() {
         write_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get(), 0);
         write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
         write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
-        write_u8(SHARED + 0x0a, 0);
-        write_u8(SHARED + 0x0b, 0);
+        write_u8(crate::dtcm::LOW_MAC_CONTROL_0A.get(), 0);
+        write_u8(crate::dtcm::LOW_MAC_CONTROL_0B.get(), 0);
         write_u8(crate::dtcm::MAC_RADIO_STOP_STATE.get(), 0);
         for vif in 0..3 {
             write_u8(
@@ -786,8 +795,8 @@ pub unsafe fn finish_unjoined_scan_radio_stop() {
 }
 
 unsafe fn build_tbtt(pointer: usize) {
-    let n = unsafe { read_u32(SHARED + 0x30) }
-        .wrapping_add(unsafe { read_u32(SHARED + 0x1c) }.wrapping_mul(8))
+    let n = unsafe { read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_CONSTANT.get()) }
+        .wrapping_add(unsafe { read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get()) }.wrapping_mul(8))
         & 0x1fff;
     unsafe {
         write_u32(pointer, n | (n << 16) | 0x2000_0000);
@@ -833,8 +842,8 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
 
         // 0x152 -> 0x10024: collapse producer, consumer, scan, and release.
         let producer = read_u32(crate::platform::mac_register(0x0604));
-        write_u32(SHARED + 0x10, producer);
-        write_u32(SHARED + 0x14, producer);
+        write_u32(crate::dtcm::LOW_MAC_PRODUCER.get(), producer);
+        write_u32(crate::dtcm::LOW_MAC_PRODUCER_MIRROR.get(), producer);
         write_u32(crate::platform::mac_register(0x0608), producer);
         let dma_control = read_u32(crate::platform::mac_register(0x0600));
         write_u32(crate::platform::mac_register(0x0600), dma_control);
@@ -865,14 +874,14 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         }
 
         write_u8(crate::dtcm::LOW_MAC_RESPONSE_CONTROL_BYTE.get(), 0);
-        write_u8(SHARED + 4, 0);
-        write_u16(SHARED + 2, 0x13);
-        write_u8(SHARED + 5, 0);
+        write_u8(crate::dtcm::LOW_MAC_CONTROL_04.get(), 0);
+        write_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get(), 0x13);
+        write_u8(crate::dtcm::LOW_MAC_LEGACY_MODE.get(), 0);
         write_u32(crate::dtcm::MAC_TX_QUEUE_HEAD.get(), 0);
         write_u32(crate::dtcm::MAC_TX_QUEUE_TAIL.get(), 0);
         write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 2);
-        write_u32(SHARED + 0x10, 0);
-        write_u32(SHARED + 0x14, 0);
+        write_u32(crate::dtcm::LOW_MAC_PRODUCER.get(), 0);
+        write_u32(crate::dtcm::LOW_MAC_PRODUCER_MIRROR.get(), 0);
         for address in [crate::dtcm::MAC_BEACON_CONTROL_STATE.get(), crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get(), crate::dtcm::MAC_BEACON_CONTROL.get(), crate::dtcm::MAC_BEACON_SELECTOR.get()] {
             write_u32(address, 0);
         }
@@ -969,17 +978,17 @@ unsafe fn reset_lmc_pool() {
 unsafe fn program_slot_timings(cfg: u16, base: u32) {
     let initial = if cfg & 0x20 != 0 { 0x10 } else { 10 };
     unsafe {
-        write_u32(SHARED + 0x24, base.wrapping_add(initial));
-        write_u32(SHARED + 0x28, base.wrapping_mul(2).wrapping_add(initial));
-        write_u32(SHARED + 0x20, initial);
-        write_u32(SHARED + 0x2c, base.wrapping_mul(3).wrapping_add(initial));
-        write_u32(SHARED + 0x30, 2);
-        write_u32(SHARED + 0x34, base.wrapping_mul(8).wrapping_add(2));
-        write_u32(SHARED + 0x1c, base);
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_X1.get(), base.wrapping_add(initial));
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_X2.get(), base.wrapping_mul(2).wrapping_add(initial));
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_INITIAL.get(), initial);
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_X3.get(), base.wrapping_mul(3).wrapping_add(initial));
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_CONSTANT.get(), 2);
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_X8.get(), base.wrapping_mul(8).wrapping_add(2));
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get(), base);
         let x16 = base.wrapping_mul(0x10).wrapping_add(2);
         let x24 = base.wrapping_mul(0x18).wrapping_add(2);
-        write_u32(SHARED + 0x38, x16);
-        write_u32(SHARED + 0x3c, x24);
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_X16.get(), x16);
+        write_u32(crate::dtcm::LOW_MAC_SLOT_TIME_X24.get(), x24);
         write_u32(
             crate::platform::mac_register(0x0e30),
             base.wrapping_mul(8).wrapping_sub(1),
@@ -1076,7 +1085,7 @@ unsafe fn install_response_descriptors() {
         unsafe {
             write_u32(
                 pointer,
-                read_u32(SHARED + 0x30).wrapping_shl(16) | 0x2000_0000,
+                read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_CONSTANT.get()).wrapping_shl(16) | 0x2000_0000,
             );
             write_u16(pointer + 4, 0);
             write_u16(pointer + 6, 0);
@@ -1279,7 +1288,7 @@ pub unsafe fn reinitialize_after_wake(max_polls: u32) -> Result<(), MacWakeError
 
         if read_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get()) != 0 {
             write_u8(crate::dtcm::MAC_WAKE_TRANSITION_PENDING.get(), 1);
-            program_slot_timings(read_u16(SHARED + 2), read_u32(SHARED + 0x1c));
+            program_slot_timings(read_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get()), read_u32(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get()));
             install_response_descriptors();
             export_pipe_counters();
             if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {

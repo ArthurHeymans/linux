@@ -454,7 +454,8 @@ while unrelated control bit 26 is expressed as a bit rather than an
 address-looking value. The same gate rejects direct arithmetic on a
 `dtcm::...get()` expression, including arithmetic after a numeric cast; new
 indexed and interior accesses must be derived by `src/dtcm.rs`. The TX module's
-integer DTCM roots are now eliminated, while older aliases in other families
+integer roots and the MAC module's former `SHARED`/`WAKE` roots are eliminated,
+while older aliases in other families
 remain audit debt. The current startup writer matrix, access rules, and
 cold/warm snapshot procedure are
 recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md). The optional
