@@ -6681,29 +6681,13 @@ unsafe fn emit_prepared_probe_descriptor(
 /// length, rate, classification, and duration fields are initialized.
 #[inline(always)]
 fn validated_host_context(context: u32) -> Option<crate::dtcm::HostContextAddress> {
-    let address = context as usize;
-    let base = crate::dtcm::HOST_TX_CONTEXTS.get();
-    if (base..base + crate::dtcm::HOST_TX_CONTEXT_COUNT * crate::dtcm::HOST_TX_CONTEXT_SIZE)
-        .contains(&address)
-        && (address - base).is_multiple_of(crate::dtcm::HOST_TX_CONTEXT_SIZE)
-    {
-        Some(unsafe { crate::dtcm::HostContextAddress::from_raw_unchecked(context) })
-    } else {
-        None
-    }
+    crate::dtcm::host_context_from_raw(context)
 }
 
 #[inline(never)]
 fn host_prepared_context(context: u32) -> Result<PreparedProbeContext, ProbeBuildError> {
-    let raw = context as usize;
-    let base = crate::dtcm::HOST_TX_CONTEXTS.get();
-    if !(base..base + crate::dtcm::HOST_TX_CONTEXT_COUNT * crate::dtcm::HOST_TX_CONTEXT_SIZE)
-        .contains(&raw)
-        || !(raw - base).is_multiple_of(crate::dtcm::HOST_TX_CONTEXT_SIZE)
-    {
-        return Err(ProbeBuildError::InvalidContextPointer);
-    }
-    let address = unsafe { crate::dtcm::HostContextAddress::from_raw_unchecked(context) };
+    let address = crate::dtcm::host_context_from_raw(context)
+        .ok_or(ProbeBuildError::InvalidContextPointer)?;
     Ok(PreparedProbeContext {
         context,
         header: unsafe { crate::dtcm::shared_ptr::<u32>(address.frame_address()).read_volatile() },
@@ -6810,27 +6794,37 @@ unsafe fn vendor_queue_handoff_before_direct_publication(
         );
 
         // `pas_txq_push_global(context + 0x54)` appends class-0 host frames.
-        let ring = crate::dtcm::HOST_PAS_RING.get();
-        let head = read_u32(ring) as u8 & 0x3f;
-        let tail = read_u32(ring + 4) as u8 & 0x3f;
+        let head = read_u32(crate::dtcm::HOST_PAS_RING_HEAD.get()) as u8 & 0x3f;
+        let tail = read_u32(crate::dtcm::HOST_PAS_RING_TAIL.get()) as u8 & 0x3f;
         let following = tail.wrapping_add(1) & 0x3f;
         if head != tail || following == head {
             restore_irq_fiq(previous);
             return Err(ProbeBuildError::PipeSlotBusy);
         }
         let frame_node = host.frame_node().raw();
-        write_u32(ring + 8 + usize::from(tail) * 4, frame_node);
-        write_u32(ring + 4, u32::from(following));
+        write_u32(
+            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(tail)).get(),
+            frame_node,
+        );
+        write_u32(crate::dtcm::HOST_PAS_RING_TAIL.get(), u32::from(following));
 
         // The minimum scheduler diagnostic consumes exactly the frame it just
         // enqueued, preserving an otherwise-empty ring for the direct backend.
-        let selected = read_u32(ring + 8 + usize::from(head) * 4);
+        let selected = read_u32(
+            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get(),
+        );
         if selected != frame_node {
             restore_irq_fiq(previous);
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
-        write_u32(ring + 8 + usize::from(head) * 4, 0);
-        write_u32(ring, u32::from(head.wrapping_add(1) & 0x3f));
+        write_u32(
+            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get(),
+            0,
+        );
+        write_u32(
+            crate::dtcm::HOST_PAS_RING_HEAD.get(),
+            u32::from(head.wrapping_add(1) & 0x3f),
+        );
         // The non-aggregate scheduler branch marks the selected frame before
         // `txp_build_pipe_descriptor(..., 0)`.
         write_u32(

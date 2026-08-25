@@ -60,7 +60,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     {
         ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04005A24): 1,
         ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040083D4): 1,
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040087B0): 8,
+        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040087B0): 7,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx17free_host_context', 0x040087B0): 1,
     }
 )
