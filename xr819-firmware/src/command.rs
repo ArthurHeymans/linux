@@ -23,8 +23,9 @@ use crate::wsm::encode_read_mib_data_response_in_place;
 use crate::wsm::{
     ADD_KEY_REQ_ID, AddKeyRequest, CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID,
     EdcaParameters, JOIN_REQ_ID, JoinRequest, READ_MIB_REQ_ID, REMOVE_KEY_REQ_ID, RESET_REQ_ID,
-    RemoveKeyRequest, ResetRequest, START_SCAN_REQ_ID, STATUS_FAILURE, StartScanRequest,
-    TX_QUEUE_PARAMS_REQ_ID, TX_REQ_ID, TxPowerRange, TxQueueParameters, TxRequest,
+    RemoveKeyRequest, ResetRequest, SET_BSS_PARAMS_REQ_ID, START_SCAN_REQ_ID, STATUS_FAILURE,
+    SetBssParameters, StartScanRequest, TX_QUEUE_PARAMS_REQ_ID, TX_REQ_ID, TxPowerRange,
+    TxQueueParameters, TxRequest,
     WRITE_MIB_REQ_ID, WriteMibRequest, encode_configuration_response, encode_join_response,
     encode_read_mib_data_response, encode_read_mib_response, encode_status_response,
     encode_tx_confirm, encode_xr819_tx_confirm, encode_xr819_tx_confirm_details,
@@ -227,6 +228,15 @@ pub unsafe fn service_one(
             },
             Err(_) => 2,
         };
+        encode_status_response(request_id | 0x0400, status, output)
+    } else if request_id == SET_BSS_PARAMS_REQ_ID {
+        // JOIN already publishes the active VIF, channel, and rate state used by
+        // this firmware. Accept the driver's post-association beacon-loss/AID
+        // policy so it can complete SAE/PMF setup; beacon-loss offload remains
+        // intentionally host-managed until that event path is implemented.
+        let status = SetBssParameters::parse(request_payload)
+            .map(|_| 0)
+            .unwrap_or(STATUS_FAILURE);
         encode_status_response(request_id | 0x0400, status, output)
     } else if request_id == TX_QUEUE_PARAMS_REQ_ID {
         let status = match TxQueueParameters::parse(request_payload) {

@@ -28,6 +28,8 @@ pub const ADD_KEY_RESP_ID: u16 = 0x040c;
 pub const REMOVE_KEY_REQ_ID: u16 = 0x000d;
 pub const REMOVE_KEY_RESP_ID: u16 = 0x040d;
 pub const JOIN_COMPLETE_IND_ID: u16 = 0x080f;
+pub const SET_BSS_PARAMS_REQ_ID: u16 = 0x0011;
+pub const SET_BSS_PARAMS_RESP_ID: u16 = 0x0411;
 pub const TX_QUEUE_PARAMS_REQ_ID: u16 = 0x0012;
 pub const TX_QUEUE_PARAMS_RESP_ID: u16 = 0x0412;
 pub const EDCA_PARAMS_REQ_ID: u16 = 0x0013;
@@ -107,6 +109,30 @@ pub struct EdcaQueueParameters {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EdcaParameters {
     pub queues: [EdcaQueueParameters; 4],
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SetBssParameters {
+    pub reset_beacon_loss: u8,
+    pub beacon_lost_count: u8,
+    pub aid: u16,
+    pub operational_rate_set: u32,
+}
+
+impl SetBssParameters {
+    pub fn parse(payload: &[u8]) -> Result<Self, Error> {
+        if payload.len() != 8 {
+            return Err(Error::InvalidLength);
+        }
+        Ok(Self {
+            reset_beacon_loss: payload[0],
+            beacon_lost_count: payload[1],
+            aid: u16::from_le_bytes([payload[2], payload[3]]),
+            operational_rate_set: u32::from_le_bytes([
+                payload[4], payload[5], payload[6], payload[7],
+            ]),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -958,6 +984,20 @@ mod tests {
         assert_eq!(request.channel(1).unwrap().number, 11);
         assert_eq!(request.channel(1).unwrap().max_channel_time, 50);
         assert_eq!(request.ssid(0).unwrap(), b"test");
+    }
+
+    #[test]
+    fn set_bss_parameters_match_cw1200_layout() {
+        let parameters = SetBssParameters::parse(&[
+            1, 20, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12,
+        ])
+        .unwrap();
+
+        assert_eq!(parameters.reset_beacon_loss, 1);
+        assert_eq!(parameters.beacon_lost_count, 20);
+        assert_eq!(parameters.aid, 0x1234);
+        assert_eq!(parameters.operational_rate_set, 0x1234_5678);
+        assert_eq!(SetBssParameters::parse(&[0; 7]), Err(Error::InvalidLength));
     }
 
     #[test]
