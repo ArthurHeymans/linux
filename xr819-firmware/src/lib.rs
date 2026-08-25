@@ -3,6 +3,8 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(target_arch = "arm")]
+pub mod command;
 pub mod configuration;
 pub mod crypto;
 pub mod download;

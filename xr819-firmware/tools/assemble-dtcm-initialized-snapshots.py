@@ -31,6 +31,8 @@ def validate_firmware_contract() -> None:
             "SnapshotStage::Entry",
             "SnapshotStage::Platform",
             "SnapshotStage::Startup",
+        ),
+        "src/command.rs": (
             "write_initialized_image_snapshot_mib",
             "encode_read_mib_data_response_in_place",
         ),
