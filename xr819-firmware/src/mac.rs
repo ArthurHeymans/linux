@@ -645,20 +645,22 @@ unsafe fn rebuild_pipe_state() {
         }
     }
     for index in 0..4 {
-        let record = SHARED + index * 0x6c;
         let descriptor = descriptors[index];
         let slot = ((unsafe { read_u32(descriptor + 0x20) } & 0x07ff_ffff) >> 24) as u8;
         unsafe {
-            write_u8(record + 0xa0, slot);
-            write_u8(record + 0xa1, slot);
-            write_u8(record + 0xa2, slot);
-            write_u8(record + 0xa3, 0);
-            write_u32(record + 0xa8, descriptor as u32);
+            write_u8(crate::dtcm::mac_pipe_current_slot_unchecked(index).get(), slot);
+            write_u8(crate::dtcm::mac_pipe_cursor_mirror_01_unchecked(index).get(), slot);
+            write_u8(crate::dtcm::mac_pipe_cursor_mirror_02_unchecked(index).get(), slot);
+            write_u8(crate::dtcm::mac_pipe_state_unchecked(index).get(), 0);
+            write_u32(
+                crate::dtcm::mac_pipe_hardware_ring_unchecked(index).get(),
+                descriptor as u32,
+            );
         }
         for entry in 0..4 {
             unsafe {
                 write_u32(
-                    record + 0xc0 + entry * 0x18,
+                    crate::dtcm::mac_pipe_slot_command_unchecked(index, entry).get(),
                     packet_ram::tx_command(index, entry) as u32,
                 )
             };
@@ -941,10 +943,9 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
 
         for pipe in 0..4 {
-            let state = SHARED + 0xa0 + pipe * 0x6c;
-            write_u8(state + 4, 0);
-            write_u8(state + 5, 5);
-            write_u16(state + 6, 0);
+            write_u8(crate::dtcm::mac_pipe_control_byte_04_unchecked(pipe).get(), 0);
+            write_u8(crate::dtcm::mac_pipe_control_byte_05_unchecked(pipe).get(), 5);
+            write_u16(crate::dtcm::mac_pipe_control_halfword_06_unchecked(pipe).get(), 0);
         }
     }
     Ok(())
