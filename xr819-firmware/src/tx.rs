@@ -5189,16 +5189,27 @@ where
 
             let flags = read_u32(context.control_bits_address());
             if flags & (1 << 5) != 0 {
-                let stats = crate::dtcm::AMPDU_TELEMETRY_COUNTERS.get();
-                let accumulated =
-                    u64::from(read_u32(stats + 8)) | (u64::from(read_u32(stats + 0x0c)) << 32);
+                let accumulated = u64::from(read_u32(
+                    crate::dtcm::ampdu_tx_duration_low().get(),
+                )) | (u64::from(read_u32(
+                    crate::dtcm::ampdu_tx_duration_high().get(),
+                )) << 32);
                 let accumulated = accumulated.wrapping_add(u64::from(read_u16(context.frame_length_address())));
-                write_u32(stats + 8, accumulated as u32);
-                write_u32(stats + 0x0c, (accumulated >> 32) as u32);
-                write_u32(stats + 4, read_u32(stats + 4).wrapping_add(1));
+                write_u32(crate::dtcm::ampdu_tx_duration_low().get(), accumulated as u32);
+                write_u32(
+                    crate::dtcm::ampdu_tx_duration_high().get(),
+                    (accumulated >> 32) as u32,
+                );
+                write_u32(
+                    crate::dtcm::ampdu_tx_counted_frames().get(),
+                    read_u32(crate::dtcm::ampdu_tx_counted_frames().get()).wrapping_add(1),
+                );
 
                 if flags & (1 << 6) != 0 {
-                    write_u32(stats, read_u32(stats).wrapping_add(1));
+                    write_u32(
+                        crate::dtcm::ampdu_tx_error_frames().get(),
+                        read_u32(crate::dtcm::ampdu_tx_error_frames().get()).wrapping_add(1),
+                    );
                     if backend.completion_messages_enabled()
                         && (flags >> 20) & 3 != 0
                         && read_u8(crate::dtcm::lmc_message_control().get()) & 1 != 0
