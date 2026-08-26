@@ -6331,7 +6331,7 @@ pub struct PreparedProbePublication {
     pipe: u8,
     slot: u8,
     slot_record: crate::dtcm::MacPipeSlotAddress,
-    command: u32,
+    command: TxDescriptorAddress,
     original_slot_header: u32,
     original_slot_frame: u32,
     original_command: [u32; 16],
@@ -6410,8 +6410,8 @@ impl PreparedProbePublication {
             let pipe_state = pipe_state_address(self.pipe);
             let hardware_ring = read_u32(pipe_state as usize + 8);
             let live_command = read_u32(self.slot_record.command().get());
-            if self.command != live_command
-                || !packet_ram::tx_commands().contains(&(self.command as usize))
+            if self.command.raw() != live_command
+                || !packet_ram::tx_commands().contains(&(self.command.raw() as usize))
             {
                 crate::hif::publish_halting_exception(
                     [
@@ -6419,7 +6419,7 @@ impl PreparedProbePublication {
                         u32::from(self.pipe),
                         u32::from(self.slot),
                         self.slot_record.raw(),
-                        self.command,
+                        self.command.raw(),
                         live_command,
                         pipe_state,
                         hardware_ring,
@@ -6462,7 +6462,7 @@ impl PreparedProbePublication {
                 return Ok(publication(8));
             }
             #[cfg(feature = "vendor-host-tx-diagnostics")]
-            crate::radio::record_tx_command_signature(6, self.command);
+            crate::radio::record_tx_command_signature(6, self.command.raw());
             execute_single_probe_publication(
                 &mut VolatileMacPipeMmio,
                 SingleProbePublicationInput {
@@ -6470,7 +6470,7 @@ impl PreparedProbePublication {
                     slot: self.slot,
                     pipe_state,
                     slot_record: self.slot_record.raw(),
-                    command_storage: self.command,
+                    command_storage: self.command.raw(),
                     hardware_ring,
                     frame_node,
                     expects_ack: self.context.expects_ack,
@@ -6504,7 +6504,7 @@ impl PreparedProbePublication {
                 .cast_mut::<u32>()
                 .write_volatile(self.original_slot_header);
             for (index, word) in self.original_command.into_iter().enumerate() {
-                ((self.command as usize + index * 4) as *mut u32).write_volatile(word);
+                (self.command.word_unchecked(index as u32) as *mut u32).write_volatile(word);
             }
             if let Some(context) = crate::dtcm::host_context_from_raw(self.context.context) {
                 release_wsm_context_address(context);
@@ -7110,9 +7110,10 @@ unsafe fn prepare_context_publication(
             crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index),
         )
         .read_volatile();
+        let command = TxDescriptorAddress::new(command);
         let mut original_command = [0_u32; 16];
         for (index, word) in original_command.iter_mut().enumerate() {
-            *word = ((command as usize + index * 4) as *const u32).read_volatile();
+            *word = (command.word_unchecked(index as u32) as *const u32).read_volatile();
         }
         write_u32(
             context_address.ownership_bits_address(),
@@ -7139,10 +7140,10 @@ unsafe fn prepare_context_publication(
             crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index),
         )
         .write_volatile(context_address.frame_node().raw());
-        (command as *mut u32).write_volatile(0);
-        ((command + 4) as *mut u32).write_volatile(0);
-        ((command + 8) as *mut u32).write_volatile(0xdc00_0000);
-        let checksum = match emit_prepared_probe_descriptor(&context, command + 0x0c) {
+        (command.word_unchecked(0) as *mut u32).write_volatile(0);
+        (command.word_unchecked(1) as *mut u32).write_volatile(0);
+        (command.word_unchecked(2) as *mut u32).write_volatile(0xdc00_0000);
+        let checksum = match emit_prepared_probe_descriptor(&context, command.word_unchecked(3)) {
             Ok(checksum) => checksum,
             Err(error) => {
                 crate::dtcm::shared_ptr::<u32>(
@@ -7154,7 +7155,7 @@ unsafe fn prepare_context_publication(
                     .cast_mut::<u32>()
                     .write_volatile(original_slot_header);
                 for (index, word) in original_command.into_iter().enumerate() {
-                    ((command as usize + index * 4) as *mut u32).write_volatile(word);
+                    (command.word_unchecked(index as u32) as *mut u32).write_volatile(word);
                 }
                 release_unpublished_probe_context(context);
                 return Err(error);
