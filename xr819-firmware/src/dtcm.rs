@@ -564,7 +564,17 @@ struct LowMacGlobalPrefix { fifo_control: SharedU8, fifo_status: SharedU8, rate_
 #[repr(C, align(4))]
 struct MacPipeSlot { state_word: SharedU32, opaque_04: OpaqueBytes<0x08>, frame: SharedU32, auxiliary: SharedU32, command: SharedU32 }
 #[repr(C, align(4))]
-struct MacPipeRecord { current_slot: SharedU8, opaque_01: OpaqueBytes<0x02>, state: SharedU8, opaque_04: SharedU32, hardware_ring: SharedU32, slots: [MacPipeSlot; 4] }
+struct MacPipeRecord {
+    producer_slot: SharedU8,
+    last_slot: SharedU8,
+    current_slot: SharedU8,
+    state: SharedU8,
+    control: SharedU8,
+    watchdog: SharedU8,
+    abort_status: SharedU16,
+    hardware_ring: SharedU32,
+    slots: [MacPipeSlot; 4],
+}
 #[repr(C, align(4))]
 struct MacTxQueueState { head: SharedU32, tail: SharedU32 }
 #[repr(C, align(4))]
@@ -1464,6 +1474,16 @@ pub struct HostFrameNodeAddress(DtcmAddress);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InternalFrameNodeAddress(DtcmAddress);
 
+/// Identity of one of the four fixed MAC TX pipe records.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MacPipeRecordAddress(DtcmAddress);
+
+/// Identity of one of the four unchecked slots embedded in a MAC TX pipe.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MacPipeSlotAddress(DtcmAddress);
+
 /// Checked identity of the decoded PAS overlay beginning at context `+0x54`.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1577,6 +1597,54 @@ impl InternalFrameNodeAddress {
             self.0.offset() - core::mem::offset_of!(InternalTxContext, pas),
         ))
     }
+}
+
+impl MacPipeRecordAddress {
+    pub(crate) const fn from_index(pipe: usize) -> Option<Self> {
+        if pipe < 4 { Some(Self::from_index_unchecked(pipe)) } else { None }
+    }
+
+    pub(crate) const fn from_index_unchecked(pipe: usize) -> Self {
+        Self(DtcmAddress::from_offset_unchecked(
+            MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>(),
+        ))
+    }
+
+    pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
+    const fn field(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+
+    pub(crate) const fn producer_slot(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, producer_slot)) }
+    pub(crate) const fn last_slot(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, last_slot)) }
+    pub(crate) const fn current_slot(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, current_slot)) }
+    pub(crate) const fn state(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, state)) }
+    pub(crate) const fn control(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, control)) }
+    pub(crate) const fn watchdog(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, watchdog)) }
+    pub(crate) const fn abort_status(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, abort_status)) }
+    pub(crate) const fn hardware_ring(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeRecord, hardware_ring)) }
+    pub(crate) const fn slot_unchecked(self, slot: usize) -> MacPipeSlotAddress {
+        MacPipeSlotAddress(DtcmAddress::from_offset_unchecked(
+            self.0.offset()
+                + core::mem::offset_of!(MacPipeRecord, slots)
+                + slot * core::mem::size_of::<MacPipeSlot>(),
+        ))
+    }
+}
+
+impl MacPipeSlotAddress {
+    pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
+    const fn field(self, offset: usize) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
+    }
+
+    pub(crate) const fn state_word(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word)) }
+    pub(crate) const fn retry_rate(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 1) }
+    pub(crate) const fn control_02(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 2) }
+    pub(crate) const fn control_03(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 3) }
+    pub(crate) const fn frame(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, frame)) }
+    pub(crate) const fn auxiliary(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, auxiliary)) }
+    pub(crate) const fn command(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, command)) }
 }
 
 impl HostContextAddress {
@@ -2243,18 +2311,18 @@ pub(crate) const fn low_mac_short_airtime_unchecked(rate: usize) -> DtcmAddress 
 pub(crate) const LOW_MAC_LONG_AIRTIME_TABLE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, long_airtimes));
 pub(crate) const fn low_mac_long_airtime_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(LOW_MAC_LONG_AIRTIME_TABLE.offset() + rate * core::mem::size_of::<SharedU16>()) }
 pub(crate) const MAC_PIPE_RECORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_pipe_records));
-pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { if pipe < 4 { Some(mac_pipe_record_unchecked(pipe)) } else { None } }
-pub(crate) const fn mac_pipe_record_unchecked(pipe: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_PIPE_RECORDS.offset() + pipe * core::mem::size_of::<MacPipeRecord>()) }
-const fn mac_pipe_record_field_unchecked(pipe: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(mac_pipe_record_unchecked(pipe).offset() + offset) }
-pub(crate) const fn mac_pipe_current_slot_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, current_slot)) }
-pub(crate) const fn mac_pipe_cursor_mirror_01_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, opaque_01)) }
-pub(crate) const fn mac_pipe_cursor_mirror_02_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, opaque_01) + 1) }
+pub(crate) const fn mac_pipe_record(pipe: usize) -> Option<DtcmAddress> { match MacPipeRecordAddress::from_index(pipe) { Some(record) => Some(record.0), None => None } }
+pub(crate) const fn mac_pipe_record_unchecked(pipe: usize) -> DtcmAddress { MacPipeRecordAddress::from_index_unchecked(pipe).0 }
+const fn mac_pipe_record_field_unchecked(pipe: usize, offset: usize) -> DtcmAddress { MacPipeRecordAddress::from_index_unchecked(pipe).field(offset) }
+pub(crate) const fn mac_pipe_current_slot_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, producer_slot)) }
+pub(crate) const fn mac_pipe_cursor_mirror_01_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, last_slot)) }
+pub(crate) const fn mac_pipe_cursor_mirror_02_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, current_slot)) }
 pub(crate) const fn mac_pipe_state_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, state)) }
-pub(crate) const fn mac_pipe_control_byte_04_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, opaque_04)) }
-pub(crate) const fn mac_pipe_control_byte_05_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, opaque_04) + 1) }
-pub(crate) const fn mac_pipe_control_halfword_06_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, opaque_04) + 2) }
+pub(crate) const fn mac_pipe_control_byte_04_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, control)) }
+pub(crate) const fn mac_pipe_control_byte_05_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, watchdog)) }
+pub(crate) const fn mac_pipe_control_halfword_06_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, abort_status)) }
 pub(crate) const fn mac_pipe_hardware_ring_unchecked(pipe: usize) -> DtcmAddress { mac_pipe_record_field_unchecked(pipe, core::mem::offset_of!(MacPipeRecord, hardware_ring)) }
-const fn mac_pipe_slot_field_unchecked(pipe: usize, slot: usize, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(mac_pipe_record_unchecked(pipe).offset() + core::mem::offset_of!(MacPipeRecord, slots) + slot * core::mem::size_of::<MacPipeSlot>() + offset) }
+const fn mac_pipe_slot_field_unchecked(pipe: usize, slot: usize, offset: usize) -> DtcmAddress { MacPipeRecordAddress::from_index_unchecked(pipe).slot_unchecked(slot).field(offset) }
 pub(crate) const fn mac_pipe_slot_state_word_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, state_word)) }
 pub(crate) const fn mac_pipe_slot_retry_rate_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, state_word) + 1) }
 pub(crate) const fn mac_pipe_slot_control_02_unchecked(pipe: usize, slot: usize) -> DtcmAddress { mac_pipe_slot_field_unchecked(pipe, slot, core::mem::offset_of!(MacPipeSlot, state_word) + 2) }
@@ -4758,6 +4826,28 @@ mod tests {
     #[test]
     fn initialized_mac_pipe_record_addresses_are_exact() {
         assert_eq!(MAC_PIPE_RECORDS.get(), 0x0400_1720);
+        let first = MacPipeRecordAddress::from_index(0).unwrap();
+        let last = MacPipeRecordAddress::from_index(3).unwrap();
+        let first_slot = first.slot_unchecked(0);
+        assert_eq!(first.raw(), 0x0400_1720);
+        assert_eq!(first.producer_slot().get(), 0x0400_1720);
+        assert_eq!(first.last_slot().get(), 0x0400_1721);
+        assert_eq!(first.current_slot().get(), 0x0400_1722);
+        assert_eq!(first.state().get(), 0x0400_1723);
+        assert_eq!(first.control().get(), 0x0400_1724);
+        assert_eq!(first.watchdog().get(), 0x0400_1725);
+        assert_eq!(first.abort_status().get(), 0x0400_1726);
+        assert_eq!(first.hardware_ring().get(), 0x0400_1728);
+        assert_eq!(first_slot.raw(), 0x0400_172c);
+        assert_eq!(first_slot.state_word().get(), 0x0400_172c);
+        assert_eq!(first_slot.retry_rate().get(), 0x0400_172d);
+        assert_eq!(first_slot.control_02().get(), 0x0400_172e);
+        assert_eq!(first_slot.control_03().get(), 0x0400_172f);
+        assert_eq!(first_slot.frame().get(), 0x0400_1738);
+        assert_eq!(first_slot.auxiliary().get(), 0x0400_173c);
+        assert_eq!(first_slot.command().get(), 0x0400_1740);
+        assert_eq!(last.slot_unchecked(3).command().get() + 4, 0x0400_18d0);
+        assert!(MacPipeRecordAddress::from_index(4).is_none());
         assert_eq!(mac_pipe_record(0).unwrap().get(), 0x0400_1720);
         assert_eq!(mac_pipe_current_slot_unchecked(0).get(), 0x0400_1720);
         assert_eq!(mac_pipe_cursor_mirror_01_unchecked(0).get(), 0x0400_1721);

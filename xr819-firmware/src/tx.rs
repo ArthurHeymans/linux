@@ -1201,20 +1201,20 @@ fn pipe_state_address(pipe: u8) -> u32 {
 /// Returns true when the pipe was still armed, which selects the vendor
 /// slot-record cleanup sweep in `txp_fn_4425` (`0x38c`).
 pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
-    let pipe_state = pipe_state_address(pipe);
-    let armed = mmio.read_u8(pipe_state + 3) != 0;
+    let record = crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe));
+    let armed = mmio.read_u8(record.state().get() as u32) != 0;
     let cursor = if armed {
-        mmio.write_u8(pipe_state + 3, 0);
+        mmio.write_u8(record.state().get() as u32, 0);
         // Vendor saturates this abort counter at 0xff rather than wrapping.
-        let aborts = mmio.read_u8(pipe_state + 6);
+        let aborts = mmio.read_u8(record.abort_status().get() as u32);
         if aborts != 0xff {
-            mmio.write_u8(pipe_state + 6, aborts.wrapping_add(1));
+            mmio.write_u8(record.abort_status().get() as u32, aborts.wrapping_add(1));
         }
-        mmio.read_u8(pipe_state + 1).wrapping_add(1) & 3
+        mmio.read_u8(record.last_slot().get() as u32).wrapping_add(1) & 3
     } else {
-        mmio.read_u8(pipe_state) & 3
+        mmio.read_u8(record.producer_slot().get() as u32) & 3
     };
-    let ring = mmio.read_u32(pipe_state + 8);
+    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
     mmio.write_u32(ring + 0x18, PIPE_RETRY_INACTIVE_SENTINEL);
     mmio.write_u32(
         PIPE_IRQ_PENDING,
@@ -1349,10 +1349,9 @@ unsafe fn capture_status2_ownership(
 }
 
 fn current_slot_address<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> u32 {
-    let pipe_state = pipe_state_address(pipe);
-    pipe_state
-        .wrapping_add(0x0c)
-        .wrapping_add(u32::from(mmio.read_u8(pipe_state + 2)) * 0x18)
+    let record = crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe));
+    let slot = usize::from(mmio.read_u8(record.current_slot().get() as u32));
+    record.slot_unchecked(slot).raw()
 }
 
 fn publish_current_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u32) {
@@ -1889,33 +1888,33 @@ pub unsafe fn service_pipe_watchdog_tick_runtime() {
 pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
     unsafe {
         for pipe in 0..4_u8 {
-            let pipe_state = pipe_state_address(pipe) as usize;
-            let programmed = read_u8(pipe_state + 4) & 1 != 0;
-            let armed = read_u8(pipe_state + 3) == 1;
-            let counter = read_u8(pipe_state + 5) as i8;
+            let record = crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe));
+            let programmed = read_u8(record.control().get()) & 1 != 0;
+            let armed = read_u8(record.state().get()) == 1;
+            let counter = read_u8(record.watchdog().get()) as i8;
             match plan_pipe_watchdog(programmed, armed, counter) {
                 PipeWatchdogAction::Idle => (),
                 PipeWatchdogAction::Tick | PipeWatchdogAction::Nudge => {
-                    write_u8(pipe_state + 5, counter.wrapping_sub(1) as u8);
+                    write_u8(record.watchdog().get(), counter.wrapping_sub(1) as u8);
                 }
                 PipeWatchdogAction::Expired => {
-                    let current = read_u8(pipe_state + 2) & 3;
-                    let slot = pipe_state + usize::from(current) * 0x18 + 0x0c;
+                    let current = read_u8(record.current_slot().get()) & 3;
+                    let slot = record.slot_unchecked(usize::from(current)).raw() as usize;
                     let cursor = hardware_pipe_cursor(&mut VolatileMacPipeMmio, pipe)
                         .map(|cursor| OrdinaryTxPipeCursorPlan::Recycle {
                             next_head: cursor & 3,
                         })
                         .unwrap_or(OrdinaryTxPipeCursorPlan::Recycle {
-                            next_head: read_u8(pipe_state + 1).wrapping_add(1) & 3,
+                            next_head: read_u8(record.last_slot().get()).wrapping_add(1) & 3,
                         });
                     crate::host_tx_diagnostics::bump(
                         crate::host_tx_diagnostics::counter::WATCHDOG_RECOVERED,
                     );
-                    retire_unmatched_tx_slot(pipe_state, slot, cursor, backend);
+                    retire_unmatched_tx_slot(record.raw() as usize, slot, cursor, backend);
                     // Vendor `txp_fn_4155` clears the programmed/abort bits and
                     // reloads the counter after a recovery pass.
-                    write_u8(pipe_state + 4, read_u8(pipe_state + 4) & 0xf6);
-                    write_u8(pipe_state + 5, 5);
+                    write_u8(record.control().get(), read_u8(record.control().get()) & 0xf6);
+                    write_u8(record.watchdog().get(), 5);
                 }
             }
         }
