@@ -189,6 +189,13 @@ pub fn response_pointer(index: usize) -> usize {
 }
 
 #[inline(always)]
+pub fn ampdu_spacing_word_address(selector: u8) -> u32 {
+    automatic_response_list()
+        .end
+        .wrapping_sub(4)
+        .wrapping_sub(usize::from(selector) * 4) as u32
+}
+
 pub fn tx_commands() -> Range<usize> {
     let start = object_address!(TX_COMMANDS);
     start..start + TX_PIPE_COUNT * TX_COMMANDS_PER_PIPE * TX_COMMAND_SIZE

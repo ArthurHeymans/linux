@@ -789,6 +789,73 @@ pub fn build_single_frame_pipe_descriptor(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DepthTwoAmpduInput {
+    pub first_frame_state: u32,
+    pub second_frame_state: u32,
+    pub first_frame_length: u16,
+    pub second_frame_length: u16,
+    pub phy_rate_word: u32,
+    pub phy_control_word: u32,
+    pub hardware_rate: u8,
+    /// Vendor spacing selector used by opcode 4. Zero emits no spacing word.
+    pub spacing_selector: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DepthTwoAmpduDescriptor {
+    pub words: [u32; 9],
+    pub length: u8,
+    pub aggregate_length: u16,
+}
+
+const fn ampdu_transfer_word(address: u32) -> u32 {
+    0x6500_0000 | (address & 0x001f_fffc)
+}
+
+fn ampdu_spacing_word(selector: u8) -> Option<u32> {
+    if selector == 0 {
+        None
+    } else {
+        Some(ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(selector)))
+    }
+}
+
+/// Build the vendor opcode stream for exactly two MPDUs.
+///
+/// This is the body reached through the slot command's initial opcode-0 jump;
+/// reservation and publication own that outer word separately. The first
+/// subframe includes delimiter/alignment overhead while the last contributes
+/// its frame and FCS length directly.
+pub fn build_depth_two_ampdu_descriptor(input: DepthTwoAmpduInput) -> DepthTwoAmpduDescriptor {
+    let mut words = [0_u32; 9];
+    let mut length = 0_usize;
+    words[length] = ampdu_transfer_word(input.first_frame_state.wrapping_add(8));
+    length += 1;
+    words[length] = 0x6600_0000;
+    length += 1;
+    if let Some(spacing) = ampdu_spacing_word(input.spacing_selector) {
+        words[length] = spacing;
+        length += 1;
+    }
+    words[length] = ampdu_transfer_word(input.second_frame_state.wrapping_add(8));
+    length += 1;
+    words[length] = 0xe400_0000;
+    length += 1;
+    words[length] = 0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff);
+    length += 1;
+    words[length] = 0x5000_0000 | (input.phy_control_word & 0x00ff_ffff);
+    length += 1;
+    let aggregate_length = (u32::from(input.first_frame_length).wrapping_add(0x0b) & !3)
+        .wrapping_add(u32::from(input.second_frame_length))
+        .wrapping_add(8) as u16;
+    words[length] = 0x5200_0000
+        | (u32::from(input.hardware_rate) << 16)
+        | u32::from(aggregate_length);
+    length += 1;
+    DepthTwoAmpduDescriptor { words, length: length as u8, aggregate_length }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MacEvent {
     pub raw: u32,
     pub event_type: u8,
@@ -9900,6 +9967,53 @@ mod tests {
                 0x4e14_0000,
                 0xf000_0000,
             ]
+        );
+    }
+
+    #[test]
+    fn depth_two_ampdu_descriptor_matches_vendor_opcode_stream() {
+        let descriptor = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
+            first_frame_state: 0x0901_0000,
+            second_frame_state: 0x0901_0400,
+            first_frame_length: 1500,
+            second_frame_length: 1500,
+            phy_rate_word: 0x031407,
+            phy_control_word: 0x06c006,
+            hardware_rate: 0x0c,
+            spacing_selector: 0,
+        });
+        assert_eq!(descriptor.aggregate_length, 0x0bc8);
+        assert_eq!(descriptor.length, 7);
+        assert_eq!(
+            &descriptor.words[..usize::from(descriptor.length)],
+            &[
+                0x6501_0008,
+                0x6600_0000,
+                0x6501_0408,
+                0xe400_0000,
+                0x5103_1407,
+                0x5006_c006,
+                0x520c_0bc8,
+            ],
+        );
+
+        let spaced = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
+            spacing_selector: 2,
+            ..DepthTwoAmpduInput {
+                first_frame_state: 0x0901_0000,
+                second_frame_state: 0x0901_0400,
+                first_frame_length: 1500,
+                second_frame_length: 1500,
+                phy_rate_word: 0x031407,
+                phy_control_word: 0x06c006,
+                hardware_rate: 0x0c,
+                spacing_selector: 0,
+            }
+        });
+        assert_eq!(spaced.length, 8);
+        assert_eq!(
+            spaced.words[2],
+            ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(2)),
         );
     }
 
