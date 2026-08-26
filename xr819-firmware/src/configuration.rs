@@ -45,6 +45,8 @@ struct ConfigurationStorage {
     template_frame: [u8; MAX_TEMPLATE_FRAME_LEN],
     rx_filter: u32,
     current_tx_power_encoded: u32,
+    block_ack_tx_tids: u8,
+    block_ack_rx_tids: u8,
 }
 
 impl ConfigurationStorage {
@@ -81,6 +83,8 @@ impl ConfigurationStorage {
             template_frame: [0; MAX_TEMPLATE_FRAME_LEN],
             rx_filter: 0,
             current_tx_power_encoded: 0,
+            block_ack_tx_tids: 0,
+            block_ack_rx_tids: 0,
         }
     }
 }
@@ -172,6 +176,11 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
             storage.rx_filter = u32::from_le_bytes([*a, *b, *c, *d]);
             true
         }
+        (crate::wsm::MIB_ID_BLOCK_ACK_POLICY, [tx, 0, rx, 0]) => {
+            storage.block_ack_tx_tids = *tx;
+            storage.block_ack_rx_tids = *rx;
+            true
+        }
         // The cooperative joined RX path currently delivers a superset and
         // lets mac80211 apply these optional filters. Accepting the standard
         // CW1200 MIBs is therefore honest even before hardware offload exists.
@@ -190,6 +199,11 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
         }
         _ => false,
     }
+}
+
+pub(crate) fn block_ack_policy() -> (u8, u8) {
+    let storage = unsafe { &*XR819_CONFIGURATION.0.get() };
+    (storage.block_ack_tx_tids, storage.block_ack_rx_tids)
 }
 
 pub fn current_tx_power_tenths_dbm() -> Option<i32> {
@@ -504,6 +518,15 @@ mod tests {
             &(-135_i32).to_le_bytes(),
         ));
         assert_eq!(current_tx_power_tenths_dbm(), Some(-135));
+        assert!(retain_interface_mib(
+            crate::wsm::MIB_ID_BLOCK_ACK_POLICY,
+            &[0x3f, 0, 0x0f, 0],
+        ));
+        assert_eq!(block_ack_policy(), (0x3f, 0x0f));
+        assert!(!retain_interface_mib(
+            crate::wsm::MIB_ID_BLOCK_ACK_POLICY,
+            &[0x3f, 1, 0x0f, 0],
+        ));
 
         assert_eq!(
             tx_power_ranges(),

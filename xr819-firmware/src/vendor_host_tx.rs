@@ -91,7 +91,13 @@ pub(crate) struct AmpduCandidate {
 pub(crate) fn can_form_ampdu_pair(first: AmpduCandidate, second: AmpduCandidate) -> bool {
     let first_qos_data = first.frame_control & 0x008c == 0x0088;
     let second_qos_data = second.frame_control & 0x008c == 0x0088;
-    first_qos_data && second_qos_data && first.key == second.key
+    let (tx_tids, _) = crate::configuration::block_ack_policy();
+    let tid_enabled = first.key.tid < 8 && tx_tids & (1 << first.key.tid) != 0;
+    first_qos_data
+        && second_qos_data
+        && tid_enabled
+        && first.key.rate >= 14
+        && first.key == second.key
 }
 
 /// One borrowed HIF request and its class-0 context identity. The release
@@ -2512,6 +2518,10 @@ mod tests {
 
     #[test]
     fn ampdu_pair_requires_qos_data_and_one_grouping_key() {
+        assert!(crate::configuration::retain_interface_mib(
+            crate::wsm::MIB_ID_BLOCK_ACK_POLICY,
+            &[0x3f, 0, 0x3f, 0],
+        ));
         let first = AmpduCandidate {
             key: AmpduGroupingKey { interface: 0, link: 2, tid: 5, rate: 19 },
             frame_control: 0x0188,
