@@ -42,10 +42,10 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Field-derived reservation cancellation now materializes the slot-frame field
-# root in HostTxDriver::reset instead of reconstructing it from a raw slot base.
+# Foreground reactor ownership lets the compiler share one pipe-record root
+# literal while retaining the same decoded consumers and volatile order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001720: 6,
+    0x04001720: 5,
     0x04001723: 1,
     0x04001738: 2,
 })

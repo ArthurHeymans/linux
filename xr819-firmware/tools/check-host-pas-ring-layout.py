@@ -42,12 +42,12 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Field-derived host-scheduler ring indexing materializes one additional copy of
-# the same ring root in the service-index literal pool; decoded consumers and
-# their volatile operation order remain unchanged.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001578: 7})
+# Foreground reactor ownership changes compiler sharing between the caller and
+# `service_index`: two literal-pool copies fold into the existing decoded loads.
+# The consumer set and volatile operation order remain unchanged.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001578: 5})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001578): 4,
+    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001578): 6,
     ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001578): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx15remove_live_pas', 0x04001578): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x04001578): 1,
