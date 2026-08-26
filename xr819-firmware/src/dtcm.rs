@@ -1495,13 +1495,13 @@ impl InternalContextAddress {
         }
     }
 
-    /// Construct an internal-context address after the context family has
-    /// already been distinguished from host contexts.
-    ///
-    /// # Safety
-    /// `address` must identify the start of one `InternalTxContext` record.
-    pub(crate) const unsafe fn from_raw_unchecked(address: u32) -> Self {
-        Self(DtcmAddress::from_offset_unchecked(address as usize - DTCM_STATE_BASE))
+    /// Preserve the vendor-compatible context-family classification used by
+    /// TX completion paths: after host-context rejection, the raw identity is
+    /// interpreted as an internal context without adding another range branch.
+    pub(crate) const fn from_non_host_raw(address: u32) -> Self {
+        Self(DtcmAddress::from_offset_unchecked(
+            (address as usize).wrapping_sub(DTCM_STATE_BASE),
+        ))
     }
 
     pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
@@ -1511,37 +1511,6 @@ impl InternalContextAddress {
             - core::mem::offset_of!(InternalContextPoolState, contexts))
             / core::mem::size_of::<InternalTxContext>()
     }
-    pub(crate) const INTRUSIVE_NEXT_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, next_free) as u32;
-    pub(crate) const BORROWED_FRAME_ADDRESS_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, header_80211) as u32;
-    pub(crate) const COMPLETION_STATUS_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, completion_status) as u32;
-    pub(crate) const SAVED_STATUS_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, saved_status) as u32;
-    pub(crate) const COMPLETION_FLAGS_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, completion_flags) as u32;
-    pub(crate) const OPTIONAL_PIPE_OBJECT_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, optional_pipe_object) as u32;
-    pub(crate) const COMPLETION_CLASS_OFFSET: u32 = core::mem::offset_of!(InternalTxContext, completion_class) as u32;
-    pub(crate) const FRAME_ADDRESS_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, frame_address)) as u32;
-    pub(crate) const CONTROL_BITS_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, control_bits)) as u32;
-    pub(crate) const FRAME_LENGTH_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, frame_length)) as u32;
-    pub(crate) const FRAME_CONTROL_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, frame_control)) as u32;
-    pub(crate) const ACCESS_CATEGORY_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, access_category)) as u32;
-    pub(crate) const REQUEST_FLAG_RATE_BITS_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, request_flag_rate_bits)) as u32;
-    pub(crate) const RETRY_POLICY_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, retry_policy)) as u32;
-    pub(crate) const TX_RATE_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, tx_rate)) as u32;
-    pub(crate) const COMPLETION_TIMESTAMP_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, completion_timestamp)) as u32;
-    pub(crate) const SCHEDULER_TIMESTAMP_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, scheduler_timestamp)) as u32;
-    pub(crate) const TERMINAL_STATUS_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, terminal_status)) as u32;
-    pub(crate) const TRY_COUNT_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, try_count)) as u32;
-    pub(crate) const OWNERSHIP_BITS_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, ownership_bits)) as u32;
-    pub(crate) const DURATION_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, duration)) as u32;
-    pub(crate) const DESCRIPTOR_STATE_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, descriptor_state)) as u32;
-    pub(crate) const FRAME_STATE_ADDRESS_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, frame_state_address)) as u32;
-    pub(crate) const AUXILIARY_STATE_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, auxiliary_state)) as u32;
-    pub(crate) const TID_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, tid)) as u32;
-    pub(crate) const SEQUENCE_NUMBER_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, sequence_number)) as u32;
-    pub(crate) const RETRY_RATE_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, retry_rate)) as u32;
-    pub(crate) const INTERFACE_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, interface)) as u32;
-    pub(crate) const DURATION_SLOT_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, duration_slot)) as u32;
-    pub(crate) const HOST_LINK_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, host_link)) as u32;
-    pub(crate) const COMPLETION_BYTE_6C_OFFSET: u32 = (core::mem::offset_of!(InternalTxContext, pas) + core::mem::offset_of!(InternalPasContext, completion_byte_6c)) as u32;
     const fn field(self, offset: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(self.0.offset() + offset) }
     const fn pas_field(self, offset: usize) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, pas) + offset) }
 
