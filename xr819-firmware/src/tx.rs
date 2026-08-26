@@ -759,6 +759,7 @@ pub fn build_single_frame_pipe_descriptor(
     input: SingleFramePipeInput,
 ) -> SingleFramePipeDescriptor {
     let mut words = [0_u32; 13];
+    let header = TxFrameAddress::new(input.header_address);
     let frame_control = u32::from(input.frame_control) | if input.retry_flag { 0x0800 } else { 0 };
     words[0] = 0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff);
     words[1] = 0x5000_0000 | (input.phy_control_word & 0x00ff_ffff);
@@ -769,13 +770,14 @@ pub fn build_single_frame_pipe_descriptor(
     words[4] = 0x4700_0000 + (frame_control >> 8);
     words[5] = 0x2080_0000 | (input.metadata_address & 0x007f_ffff);
     words[6] = 0x3200_0000 | u32::from(input.duration);
-    words[7] = 0x2900_0000 | (input.header_address.wrapping_add(4) & 0x007f_ffff);
+    words[7] = 0x2900_0000 | (header.descriptor_tail() & 0x007f_ffff);
     words[8] = input.secondary_command;
     let mut length = 9;
-    if input.frame_length > 24 {
-        let payload = input.header_address.wrapping_add(24);
+    if input.frame_length > DOT11_FIXED_HEADER_LENGTH {
+        let payload = header.payload_after_fixed_header();
         words[9] = 0x4000_0000 | (input.address_mask & payload & 0xf6ff_ffff);
-        words[10] = (u32::from(input.frame_length - 24) & 0x0fff) << 12 | (payload & 3);
+        words[10] = (u32::from(input.frame_length - DOT11_FIXED_HEADER_LENGTH) & 0x0fff) << 12
+            | (payload & 3);
         length = 11;
     }
     words[length] = input.terminal_command;
@@ -1236,6 +1238,63 @@ impl TxHardwareRingAddress {
     const fn inactive_sentinel(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, inactive_sentinel)) }
     const fn completion_word(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, completion_word)) }
     const fn cursor_and_pending_mask(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, cursor_and_pending_mask)) }
+}
+
+const DOT11_FIXED_HEADER_LENGTH: u16 = 24;
+
+#[repr(C, packed)]
+struct Dot11FixedHeaderLayout {
+    frame_control: u16,
+    duration: u16,
+    address_1: [u8; 6],
+    address_2: [u8; 6],
+    address_3: [u8; 6],
+    sequence_control: u16,
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TxFrameAddress(u32);
+
+impl TxFrameAddress {
+    const fn new(address: u32) -> Self { Self(address) }
+    const fn raw(self) -> u32 { self.0 }
+    const fn field(self, offset: usize) -> u32 { self.0.wrapping_add(offset as u32) }
+    const fn frame_control(self) -> u32 { self.field(core::mem::offset_of!(Dot11FixedHeaderLayout, frame_control)) }
+    const fn address_1(self) -> u32 { self.field(core::mem::offset_of!(Dot11FixedHeaderLayout, address_1)) }
+    const fn address_1_halfword_unchecked(self, word: u32) -> u32 { self.address_1().wrapping_add(word * 2) }
+    const fn address_2_byte_unchecked(self, byte: u32) -> u32 {
+        self.field(core::mem::offset_of!(Dot11FixedHeaderLayout, address_2)).wrapping_add(byte)
+    }
+    const fn address_2_halfword_unchecked(self, word: u32) -> u32 {
+        self.address_2_byte_unchecked(word * 2)
+    }
+    const fn sequence_control(self) -> u32 { self.field(core::mem::offset_of!(Dot11FixedHeaderLayout, sequence_control)) }
+    const fn descriptor_tail(self) -> u32 { self.address_1() }
+    const fn payload_after_fixed_header(self) -> u32 {
+        self.0.wrapping_add(DOT11_FIXED_HEADER_LENGTH as u32)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Dot11HeaderShape {
+    length: u32,
+    qos_data: bool,
+}
+
+fn classify_dot11_header(frame_control: u16, legacy_eapol: bool) -> Dot11HeaderShape {
+    let four_address = frame_control & 0x0300 == 0x0300;
+    let qos_data = !legacy_eapol && frame_control & 0x008f == 0x0088;
+    let base = if four_address { 30 } else { u32::from(DOT11_FIXED_HEADER_LENGTH) };
+    let qos_extension = if qos_data {
+        if frame_control & 0x8000 != 0 { 6 } else { 2 }
+    } else {
+        0
+    };
+    Dot11HeaderShape {
+        length: base + qos_extension,
+        qos_data,
+    }
 }
 
 #[repr(C)]
@@ -4898,8 +4957,8 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         {
             let rate = read_u8(context.duration_slot_address());
             let duration = read_u16(packet_ram::duration_word(usize::from(rate)));
-            let header = read_u32(context.frame_address_address()) as usize;
-            write_u16(header + 0x16, duration);
+            let header = TxFrameAddress::new(read_u32(context.frame_address_address()));
+            write_u16(header.sequence_control() as usize, duration);
             write_u16(context.sequence_number_address(), duration);
             write_u32(
                 context.control_bits_address(),
@@ -5339,10 +5398,19 @@ where
                                 read_u8(crate::dtcm::access_category_to_queue_unchecked(queue).get()),
                             );
                             write_u16(message.completion_sequence().get(), read_u16(context.sequence_number_address()) << 4);
-                            let header = read_u32(context.frame_address_address()) as usize;
-                            write_u16(message.completion_mac_word(0).unwrap().get(), read_u16(header + 4));
-                            write_u16(message.completion_mac_word(1).unwrap().get(), read_u16(header + 6));
-                            write_u16(message.completion_mac_word(2).unwrap().get(), read_u16(header + 8));
+                            let header = TxFrameAddress::new(read_u32(context.frame_address_address()));
+                            write_u16(
+                                message.completion_mac_word(0).unwrap().get(),
+                                read_u16(header.address_1_halfword_unchecked(0) as usize),
+                            );
+                            write_u16(
+                                message.completion_mac_word(1).unwrap().get(),
+                                read_u16(header.address_1_halfword_unchecked(1) as usize),
+                            );
+                            write_u16(
+                                message.completion_mac_word(2).unwrap().get(),
+                                read_u16(header.address_1_halfword_unchecked(2) as usize),
+                            );
                             raise_scheduler_bits(1 << 22);
                         }
                     }
@@ -6468,10 +6536,10 @@ unsafe fn prepare_single_frame_pas_timing(
             crate::dtcm::low_mac_short_airtime_unchecked(timing_index).get()
         });
         let mode = read_u8(pas.mode_byte().get());
-        let header = read_u32(frame.frame_address() as usize) as usize;
+        let header = TxFrameAddress::new(read_u32(frame.frame_address() as usize));
         let special_peer = (mode == 5 || mode == 6)
             && (0..6).all(|offset| {
-                read_u8(header + 10 + offset)
+                read_u8(header.address_2_byte_unchecked(offset as u32) as usize)
                     == read_u8(
                         crate::dtcm::low_mac_peer_address_byte_unchecked(interface, offset).get(),
                     )
@@ -6548,12 +6616,13 @@ pub unsafe fn prepare_probe_context(
         write_u8(context_address.request_flag_rate_bits_address(), 0);
 
         let header = read_u32(context_address.borrowed_frame_address_address());
+        let frame = TxFrameAddress::new(header);
         if expected_header_address(context) != Some(header) {
             release_context_address(context);
             return Err(ProbeBuildError::InvalidContextPointer);
         }
-        copy_to_packet_ram(header, probe.bytes());
-        if !packet_ram_matches(header, probe.bytes()) {
+        copy_to_packet_ram(frame.raw(), probe.bytes());
+        if !packet_ram_matches(frame.raw(), probe.bytes()) {
             release_context_address(context);
             return Err(ProbeBuildError::PacketRamMismatch);
         }
@@ -6563,7 +6632,7 @@ pub unsafe fn prepare_probe_context(
                 release_context_address(context);
                 return Err(ProbeBuildError::InvalidContextPointer);
             };
-            ((header + 0x0a + word as u32 * 2) as *mut u16).write_volatile(value);
+            (frame.address_2_halfword_unchecked(word as u32) as *mut u16).write_volatile(value);
         }
         write_u16(context_address.frame_length_address(), probe.length as u16);
         write_u8(context_address.host_link_address(), 0x0f);
@@ -6587,20 +6656,23 @@ pub unsafe fn prepare_probe_context(
         write_u8(context_address.retry_policy_address(), 0x0f);
         write_u8(context_address.byte_57_address(), 0xff);
         write_u32(context_address.expiry_time_address(), 0);
-        write_u32(context_address.frame_address_address(), header);
+        write_u32(context_address.frame_address_address(), frame.raw());
         flags |= 0x1000;
-        if ((header + 4) as *const u32).read_volatile() & 1 != 0 {
+        if (frame.address_1() as *const u32).read_volatile() & 1 != 0 {
             flags |= 0x300;
         }
         write_u32(context_address.control_bits_address(), flags);
         write_u32(context_address.ownership_bits_address(), 3);
 
-        let frame_control = (header as *const u32).read_volatile() as u16;
+        let frame_control = (frame.frame_control() as *const u16).read_volatile();
         write_u16(context_address.frame_control_address(), frame_control);
-        write_u32(context_address.header_length_address(), 24);
+        write_u32(
+            context_address.header_length_address(),
+            u32::from(DOT11_FIXED_HEADER_LENGTH),
+        );
         write_u32(
             context_address.payload_length_address(),
-            (probe.length as u32).saturating_sub(24),
+            (probe.length as u32).saturating_sub(u32::from(DOT11_FIXED_HEADER_LENGTH)),
         );
         let duration_slot = (crate::dtcm::pas_stride_view_unchecked(usize::from(if_id))
             .slot_bits()
@@ -6614,7 +6686,7 @@ pub unsafe fn prepare_probe_context(
         write_u16(context_address.word_7c_address(), 0x10);
         let mut prepared = PreparedProbeContext {
             context,
-            header,
+            header: frame.raw(),
             length: probe.length as u16,
             rate,
             expects_ack: false,
@@ -6750,6 +6822,8 @@ unsafe fn emit_prepared_probe_descriptor(
 ) -> Result<u32, ProbeBuildError> {
     unsafe {
         let address = ContextAddress::new(context.context);
+        let frame = TxFrameAddress::new(context.header);
+        let descriptor = TxDescriptorAddress::new(destination);
         let rate = (address.tx_rate_address() as *const u8).read_volatile();
         let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
         let request_flag_rate_bits =
@@ -6780,7 +6854,7 @@ unsafe fn emit_prepared_probe_descriptor(
         let mut word_index = 0_u32;
         let mut mismatch = false;
         let mut add = |word: u32| {
-            let pointer = (destination + word_index * 4) as *mut u32;
+            let pointer = descriptor.word_unchecked(word_index) as *mut u32;
             pointer.write_volatile(word);
             mismatch |= pointer.read_volatile() != word;
             word_index += 1;
@@ -6794,16 +6868,23 @@ unsafe fn emit_prepared_probe_descriptor(
         add(0x2080_0000
             | (packet_ram::interface_metadata_byte(usize::from(if_id)) as u32 & 0x007f_ffff));
         add(0x3200_0000 | u32::from((address.duration_address() as *const u16).read_volatile()));
-        add(0x2900_0000 | (context.header.wrapping_add(4) & 0x007f_ffff));
+        add(0x2900_0000 | (frame.descriptor_tail() & 0x007f_ffff));
         add(single_frame_secondary_command(
             tx_flags,
-            (context.header.wrapping_add(0x16) as *const u16).read_volatile(),
+            (frame.sequence_control() as *const u16).read_volatile(),
             duration_slot,
         ));
-        if context.length > 24 {
-            let payload = context.header.wrapping_add(24);
+        // The hardware descriptor always splits after the fixed three-address
+        // 24-byte prefix. Optional address-4, QoS, and HT-control bytes remain
+        // in the payload segment; this is independent of the context's parsed
+        // 24/26/30/32/36-byte software header length.
+        if context.length > DOT11_FIXED_HEADER_LENGTH {
+            let payload = frame.payload_after_fixed_header();
             add(0x4000_0000 | (0x007f_fffc & payload & 0xf6ff_ffff));
-            add((u32::from(context.length - 24) & 0x0fff) << 12 | (payload & 3));
+            add(
+                (u32::from(context.length - DOT11_FIXED_HEADER_LENGTH) & 0x0fff) << 12
+                    | (payload & 3),
+            );
         }
         add(0x0700_4600);
         add(0xf000_0000);
@@ -7123,7 +7204,7 @@ unsafe fn prepare_legacy_control_publication(
     scratch.rate = request.max_tx_rate;
 
     let mut context = unsafe { prepare_probe_context(scratch, if_id) }?;
-    let address = context.context as usize;
+    let address = ContextAddress::new(context.context);
     unsafe { copy_to_packet_ram(context.header, request.frame) };
     if !unsafe { packet_ram_matches(context.header, request.frame) } {
         unsafe { release_context_address(context.context) };
@@ -7135,16 +7216,16 @@ unsafe fn prepare_legacy_control_publication(
             crate::dtcm::queue_to_access_category_unchecked(usize::from(queue)),
         )
         .read_volatile();
-        ((address + 0x60) as *mut u8).write_volatile(ac);
-        ((address + 0x61) as *mut u8).write_volatile((request.flags & 0x0f) >> 1);
-        ((address + 0x62) as *mut u8).write_volatile((request.flags & 0x7f) >> 4);
-        ((address + 0xbf) as *mut u8).write_volatile(1);
+        write_u8(address.access_category_address(), ac);
+        write_u8(address.request_flag_rate_bits_address(), (request.flags & 0x0f) >> 1);
+        write_u8(address.retry_policy_address(), (request.flags & 0x7f) >> 4);
+        write_u8(address.host_link_address(), 1);
     }
     if request.max_tx_rate < 22 {
         context.rate = request.max_tx_rate;
         unsafe {
-            ((address + 0x0c) as *mut u8).write_volatile(context.rate);
-            ((address + 0x63) as *mut u8).write_volatile(context.rate);
+            write_u8(address.requested_rate_address(), context.rate);
+            write_u8(address.tx_rate_address(), context.rate);
         }
     }
     let mut tx_flags = 0x0080_1000_u32;
@@ -7159,8 +7240,8 @@ unsafe fn prepare_legacy_control_publication(
     }
     tx_flags |= (request.ht_tx_parameters >> 11) & 0xe0;
     unsafe {
-        ((address + 0x58) as *mut u32).write_volatile(tx_flags);
-        ((address + 0x64) as *mut u32).write_volatile(request.expire_time);
+        write_u32(address.control_bits_address(), tx_flags);
+        write_u32(address.expiry_time_address(), request.expire_time);
     }
     if let Err(error) = unsafe { prepare_single_frame_pas_timing(&mut context) } {
         unsafe { release_context_address(context.context) };
@@ -7211,12 +7292,9 @@ unsafe fn prepare_host_management_publication(
         return Err(ProbeBuildError::PacketRamMismatch);
     }
     let frame_control = u16::from_le_bytes([prepared_frame[0], prepared_frame[1]]);
-    let address_mode = frame_control & 0x0300;
-    let mut header_length = if address_mode == 0x0300 { 30_u32 } else { 24_u32 };
-    let qos_data = !legacy_eapol && frame_control & 0x008f == 0x0088;
-    if qos_data {
-        header_length += if frame_control & 0x8000 != 0 { 6 } else { 2 };
-    }
+    let header = classify_dot11_header(frame_control, legacy_eapol);
+    let header_length = header.length;
+    let qos_data = header.qos_data;
     let queue = host_queue;
     unsafe {
         if !legacy_eapol {
@@ -9620,6 +9698,52 @@ mod tests {
             0xff,
             0x11,
         ));
+    }
+
+    #[test]
+    fn dot11_header_view_and_classification_make_split_boundaries_explicit() {
+        assert_eq!(core::mem::size_of::<Dot11FixedHeaderLayout>(), 24);
+        assert_eq!(core::mem::offset_of!(Dot11FixedHeaderLayout, frame_control), 0);
+        assert_eq!(core::mem::offset_of!(Dot11FixedHeaderLayout, duration), 2);
+        assert_eq!(core::mem::offset_of!(Dot11FixedHeaderLayout, address_1), 4);
+        assert_eq!(core::mem::offset_of!(Dot11FixedHeaderLayout, address_2), 10);
+        assert_eq!(core::mem::offset_of!(Dot11FixedHeaderLayout, address_3), 16);
+        assert_eq!(core::mem::offset_of!(Dot11FixedHeaderLayout, sequence_control), 22);
+
+        let frame = TxFrameAddress::new(0x0901_4fe8);
+        assert_eq!(frame.frame_control(), 0x0901_4fe8);
+        assert_eq!(frame.address_1(), 0x0901_4fec);
+        assert_eq!(frame.address_2_byte_unchecked(5), 0x0901_4ff7);
+        assert_eq!(frame.address_2_halfword_unchecked(2), 0x0901_4ff6);
+        assert_eq!(frame.sequence_control(), 0x0901_4ffe);
+        assert_eq!(frame.payload_after_fixed_header(), 0x0901_5000);
+
+        assert_eq!(classify_dot11_header(0x0008, false), Dot11HeaderShape { length: 24, qos_data: false });
+        assert_eq!(classify_dot11_header(0x0088, false), Dot11HeaderShape { length: 26, qos_data: true });
+        assert_eq!(classify_dot11_header(0x8088, false), Dot11HeaderShape { length: 30, qos_data: true });
+        assert_eq!(classify_dot11_header(0x0308, false), Dot11HeaderShape { length: 30, qos_data: false });
+        assert_eq!(classify_dot11_header(0x0388, false), Dot11HeaderShape { length: 32, qos_data: true });
+        assert_eq!(classify_dot11_header(0x8388, false), Dot11HeaderShape { length: 36, qos_data: true });
+        assert_eq!(classify_dot11_header(0x0088, true), Dot11HeaderShape { length: 24, qos_data: false });
+    }
+
+    #[test]
+    fn dot11_header_shapes_keep_software_parsing_separate_from_descriptor_split() {
+        assert_eq!(core::mem::size_of::<Dot11FixedHeaderLayout>(), 24);
+        let frame = TxFrameAddress::new(0x0901_4fe8);
+        assert_eq!(frame.frame_control(), 0x0901_4fe8);
+        assert_eq!(frame.address_1(), 0x0901_4fec);
+        assert_eq!(frame.address_2_byte_unchecked(0), 0x0901_4ff2);
+        assert_eq!(frame.sequence_control(), 0x0901_4ffe);
+        assert_eq!(frame.payload_after_fixed_header(), 0x0901_5000);
+
+        assert_eq!(classify_dot11_header(0x0008, false), Dot11HeaderShape { length: 24, qos_data: false });
+        assert_eq!(classify_dot11_header(0x0308, false), Dot11HeaderShape { length: 30, qos_data: false });
+        assert_eq!(classify_dot11_header(0x0088, false), Dot11HeaderShape { length: 26, qos_data: true });
+        assert_eq!(classify_dot11_header(0x8088, false), Dot11HeaderShape { length: 30, qos_data: true });
+        assert_eq!(classify_dot11_header(0x0388, false), Dot11HeaderShape { length: 32, qos_data: true });
+        assert_eq!(classify_dot11_header(0x8388, false), Dot11HeaderShape { length: 36, qos_data: true });
+        assert_eq!(classify_dot11_header(0x0088, true), Dot11HeaderShape { length: 24, qos_data: false });
     }
 
     #[test]
