@@ -1183,8 +1183,31 @@ pub fn capture_pipe_scheduler_word<M: MacPipeMmio>(mmio: &mut M) -> SchedulerWor
     SchedulerWord::new(mmio.read_u32(PIPE_IRQ_PENDING))
 }
 
+#[repr(C)]
+struct TxHardwareRingLayout {
+    opaque_00: [u8; 0x18],
+    inactive_sentinel: u32,
+    opaque_1c: u32,
+    cursor_word: u32,
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TxHardwareRingAddress(u32);
+
+impl TxHardwareRingAddress {
+    const fn new(address: u32) -> Self { Self(address) }
+    const fn field(self, offset: usize) -> u32 { self.0.wrapping_add(offset as u32) }
+    const fn inactive_sentinel(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, inactive_sentinel)) }
+    const fn cursor_word(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, cursor_word)) }
+}
+
+fn pipe_record_address(pipe: u8) -> crate::dtcm::MacPipeRecordAddress {
+    crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe & 3))
+}
+
 fn pipe_state_address(pipe: u8) -> u32 {
-    crate::dtcm::mac_pipe_record_unchecked(usize::from(pipe & 3)).get() as u32
+    pipe_record_address(pipe).raw()
 }
 
 /// Exact translation of vendor `txp_pipe_advance_slot` (`0xa9f2`).
@@ -1201,7 +1224,7 @@ fn pipe_state_address(pipe: u8) -> u32 {
 /// Returns true when the pipe was still armed, which selects the vendor
 /// slot-record cleanup sweep in `txp_fn_4425` (`0x38c`).
 pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
-    let record = crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe));
+    let record = pipe_record_address(pipe);
     let armed = mmio.read_u8(record.state().get() as u32) != 0;
     let cursor = if armed {
         mmio.write_u8(record.state().get() as u32, 0);
@@ -1214,8 +1237,8 @@ pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
     } else {
         mmio.read_u8(record.producer_slot().get() as u32) & 3
     };
-    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
-    mmio.write_u32(ring + 0x18, PIPE_RETRY_INACTIVE_SENTINEL);
+    let ring = TxHardwareRingAddress::new(mmio.read_u32(record.hardware_ring().get() as u32));
+    mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
     mmio.write_u32(
         PIPE_IRQ_PENDING,
         0_u32.wrapping_sub((PIPE_ADVANCE_ACK_BASE << (pipe & 3)).wrapping_add(0x10)),
@@ -1228,11 +1251,15 @@ pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
 /// bits 23:0 and the two hardware-owned high bits. This is the only part of
 /// `txp_pipe_advance_slot` that the packet controller reads back, and it is the
 /// half the open firmware has never performed.
-fn resync_pipe_ring_cursor<M: MacPipeMmio>(mmio: &mut M, ring: u32, cursor: u8) {
+fn resync_pipe_ring_cursor<M: MacPipeMmio>(
+    mmio: &mut M,
+    ring: TxHardwareRingAddress,
+    cursor: u8,
+) {
     let cursor = u32::from(cursor & 3);
-    let word = mmio.read_u32(ring + 0x20);
+    let word = mmio.read_u32(ring.cursor_word());
     mmio.write_u32(
-        ring + 0x20,
+        ring.cursor_word(),
         (word & 0xc0ff_ffff) | (cursor << 24) | (cursor << 27),
     );
 }
@@ -1243,13 +1270,13 @@ fn resync_pipe_ring_cursor<M: MacPipeMmio>(mmio: &mut M, ring: u32, cursor: u8) 
 /// touches neither the pipe acknowledgement nor the command sentinel, so it is
 /// safe to call from the completion handler that already retired the burst.
 pub fn resync_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) {
-    let pipe_state = pipe_state_address(pipe);
-    let ring = mmio.read_u32(pipe_state + 8);
+    let record = pipe_record_address(pipe);
+    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
     if ring == 0 {
         return;
     }
-    let producer = mmio.read_u8(pipe_state);
-    resync_pipe_ring_cursor(mmio, ring, producer);
+    let producer = mmio.read_u8(record.producer_slot().get() as u32);
+    resync_pipe_ring_cursor(mmio, TxHardwareRingAddress::new(ring), producer);
 }
 
 /// The invariant asserted at the end of vendor `txp_fn_4425` (`0x38c`): the
@@ -1268,18 +1295,18 @@ pub fn pipe_cursor_invariant_holds(packed: u32) -> bool {
 ///
 /// The invariant holds when nibble 1 equals nibble 6.
 pub fn pipe_cursor_diagnostic<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u32) {
-    let pipe_state = pipe_state_address(pipe);
-    let ring = mmio.read_u32(pipe_state + 8);
+    let record = pipe_record_address(pipe);
+    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
     let ring_word = if ring == 0 {
         0
     } else {
-        mmio.read_u32(ring + 0x20)
+        mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_word())
     };
     let packed = u32::from(pipe & 3)
-        | (u32::from(mmio.read_u8(pipe_state) & 0x0f) << 4)
-        | (u32::from(mmio.read_u8(pipe_state + 1) & 0x0f) << 8)
-        | (u32::from(mmio.read_u8(pipe_state + 2) & 0x0f) << 12)
-        | (u32::from(mmio.read_u8(pipe_state + 3) & 0x0f) << 16)
+        | (u32::from(mmio.read_u8(record.producer_slot().get() as u32) & 0x0f) << 4)
+        | (u32::from(mmio.read_u8(record.last_slot().get() as u32) & 0x0f) << 8)
+        | (u32::from(mmio.read_u8(record.current_slot().get() as u32) & 0x0f) << 12)
+        | (u32::from(mmio.read_u8(record.state().get() as u32) & 0x0f) << 16)
         | (((ring_word >> 24) & 7) << 20)
         | (((ring_word >> 27) & 7) << 24);
     (packed, ring_word)
@@ -1349,13 +1376,13 @@ unsafe fn capture_status2_ownership(
 }
 
 fn current_slot_address<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> u32 {
-    let record = crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe));
+    let record = pipe_record_address(pipe);
     let slot = usize::from(mmio.read_u8(record.current_slot().get() as u32));
     record.slot_unchecked(slot).raw()
 }
 
 fn publish_current_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u32) {
-    let pipe_state = pipe_state_address(pipe);
+    let pipe_state = pipe_record_address(pipe).raw();
     let slot = current_slot_address(mmio, pipe);
     mmio.write_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get() as u32, pipe_state);
     mmio.write_u32(crate::dtcm::MAC_CURRENT_SLOT.get() as u32, slot);
@@ -1888,7 +1915,7 @@ pub unsafe fn service_pipe_watchdog_tick_runtime() {
 pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
     unsafe {
         for pipe in 0..4_u8 {
-            let record = crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe));
+            let record = pipe_record_address(pipe);
             let programmed = read_u8(record.control().get()) & 1 != 0;
             let armed = read_u8(record.state().get()) == 1;
             let counter = read_u8(record.watchdog().get()) as i8;
@@ -1924,11 +1951,12 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
 /// Reads the hardware ring cursor (`ring + 0x20` bits 29:27) for one pipe.
 /// `None` when the pipe has no programmed ring.
 fn hardware_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> Option<u8> {
-    let ring = mmio.read_u32(pipe_state_address(pipe) + 8);
+    let record = pipe_record_address(pipe);
+    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
     if ring == 0 {
         return None;
     }
-    Some(((mmio.read_u32(ring + 0x20) >> 27) & 3) as u8)
+    Some(((mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_word()) >> 27) & 3) as u8)
 }
 
 /// Policy boundary for the unresolved `pas_backoff_reset` in ordinary status.
@@ -8145,6 +8173,14 @@ mod tests {
         // the producer rather than `last + 1`.
         assert_eq!(mmio.get(pipe_state + 6), 0xff);
         assert_eq!(mmio.get(0x9020), (2 << 24) | (2 << 27));
+    }
+
+    #[test]
+    fn hardware_ring_view_matches_cursor_and_sentinel_offsets() {
+        let ring = TxHardwareRingAddress::new(0x9000);
+        assert_eq!(core::mem::size_of::<TxHardwareRingLayout>(), 0x24);
+        assert_eq!(ring.inactive_sentinel(), 0x9018);
+        assert_eq!(ring.cursor_word(), 0x9020);
     }
 
     #[test]
