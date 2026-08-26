@@ -5684,15 +5684,16 @@ where
     F: FnOnce(),
 {
     unsafe {
-        let address = context.raw() as usize;
         let free_head = internal_context_free_head();
-        ((address + 4) as *mut u32).write_volatile(free_head.read_volatile());
-        ((address + 0x70) as *mut u16).write_volatile(0x00ff);
-        let flags = (address + 0x80) as *mut u32;
-        flags.write_volatile(flags.read_volatile() | (1 << 17));
+        write_u32(context.intrusive_next_address(), free_head.read_volatile());
+        write_u16(context.terminal_status_address(), 0x00ff);
+        write_u32(
+            context.ownership_bits_address(),
+            read_u32(context.ownership_bits_address()) | (1 << 17),
+        );
         free_head.write_volatile(context.raw());
 
-        let class = ((address + 0x53) as *const u8).read_volatile();
+        let class = read_u8(context.completion_class_address());
         if class == 0 {
             let counter = crate::dtcm::shared_ptr::<u8>(
                 crate::dtcm::class0_internal_context_count(),
