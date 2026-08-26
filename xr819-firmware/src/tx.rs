@@ -318,8 +318,13 @@ impl ContextAddress {
     fn terminal_status_address(self) -> usize { self.field_address(|c| c.terminal_status(), |c| c.terminal_status()) }
     fn try_count_address(self) -> usize { self.field_address(|c| c.try_count(), |c| c.try_count()) }
     fn ownership_bits_address(self) -> usize { self.field_address(|c| c.ownership_bits(), |c| c.ownership_bits()) }
+    fn timing_reset_32_address(self) -> usize { self.field_address(|c| c.timing_reset_32(), |c| c.timing_reset_32()) }
+    fn timing_reset_34_address(self) -> usize { self.field_address(|c| c.timing_reset_34(), |c| c.timing_reset_34()) }
     fn duration_address(self) -> usize { self.field_address(|c| c.duration(), |c| c.duration()) }
+    fn payload_extended_address(self) -> usize { self.field_address(|c| c.payload_extended(), |c| c.payload_extended()) }
+    fn payload_base_address(self) -> usize { self.field_address(|c| c.payload_base(), |c| c.payload_base()) }
     fn descriptor_state_address(self) -> usize { self.field_address(|c| c.descriptor_state(), |c| c.descriptor_state()) }
+    fn word_48_address(self) -> usize { self.field_address(|c| c.word_48(), |c| c.word_48()) }
     fn frame_state_address_address(self) -> usize { self.field_address(|c| c.frame_state_address(), |c| c.frame_state_address()) }
     fn auxiliary_state_address(self) -> usize { self.field_address(|c| c.auxiliary_state(), |c| c.auxiliary_state()) }
     fn tid_address(self) -> usize { self.field_address(|c| c.tid(), |c| c.tid()) }
@@ -327,6 +332,7 @@ impl ContextAddress {
     fn sequence_number_address(self) -> usize { self.field_address(|c| c.sequence_number(), |c| c.sequence_number()) }
     fn retry_rate_address(self) -> usize { self.field_address(|c| c.retry_rate(), |c| c.retry_rate()) }
     fn byte_57_address(self) -> usize { self.field_address(|c| c.byte_57(), |c| c.byte_57()) }
+    fn retry_random_address(self) -> usize { self.field_address(|c| c.retry_random(), |c| c.retry_random()) }
     fn interface_address(self) -> usize { self.field_address(|c| c.interface(), |c| c.interface()) }
     fn duration_slot_address(self) -> usize { self.field_address(|c| c.duration_slot(), |c| c.duration_slot()) }
     fn host_link_address(self) -> usize { self.field_address(|c| c.host_link(), |c| c.host_link()) }
@@ -348,6 +354,28 @@ impl FrameNodeAddress {
     pub const fn context(self) -> ContextAddress {
         ContextAddress(self.0.wrapping_sub(FRAME_NODE_OFFSET))
     }
+
+    fn frame_address(self) -> u32 { self.context().frame_address_address() as u32 }
+    fn control_bits(self) -> u32 { self.context().control_bits_address() as u32 }
+    fn frame_length(self) -> u32 { self.context().frame_length_address() as u32 }
+    fn frame_control(self) -> u32 { self.context().frame_control_address() as u32 }
+    fn access_category(self) -> u32 { self.context().access_category_address() as u32 }
+    fn request_flag_rate_bits(self) -> u32 { self.context().request_flag_rate_bits_address() as u32 }
+    fn tx_rate(self) -> u32 { self.context().tx_rate_address() as u32 }
+    fn scheduler_timestamp(self) -> u32 { self.context().scheduler_timestamp_address() as u32 }
+    fn ownership_bits(self) -> u32 { self.context().ownership_bits_address() as u32 }
+    fn timing_reset_32(self) -> u32 { self.context().timing_reset_32_address() as u32 }
+    fn timing_reset_34(self) -> u32 { self.context().timing_reset_34_address() as u32 }
+    fn duration(self) -> u32 { self.context().duration_address() as u32 }
+    fn payload_extended(self) -> u32 { self.context().payload_extended_address() as u32 }
+    fn payload_base(self) -> u32 { self.context().payload_base_address() as u32 }
+    fn descriptor_state(self) -> u32 { self.context().descriptor_state_address() as u32 }
+    fn total_airtime(self) -> u32 { self.context().word_48_address() as u32 }
+    fn auxiliary_state(self) -> u32 { self.context().auxiliary_state_address() as u32 }
+    fn frame_kind(self) -> u32 { self.context().retry_rate_address() as u32 }
+    fn retry_random(self) -> u32 { self.context().retry_random_address() as u32 }
+    fn interface(self) -> u32 { self.context().interface_address() as u32 }
+    fn duration_slot(self) -> u32 { self.context().duration_slot_address() as u32 }
 }
 
 /// A class-0 completion tied to the exact published MAC slot that owned it.
@@ -1212,8 +1240,9 @@ impl TxHardwareRingAddress {
 
 #[repr(C)]
 struct TxDescriptorLayout {
-    opaque_00: u32,
+    command: u32,
     flags: u32,
+    duration: u32,
 }
 
 #[repr(transparent)]
@@ -1223,9 +1252,16 @@ struct TxDescriptorAddress(u32);
 impl TxDescriptorAddress {
     const fn new(address: u32) -> Self { Self(address) }
     const fn raw(self) -> u32 { self.0 }
+    const fn command(self) -> u32 {
+        self.0.wrapping_add(core::mem::offset_of!(TxDescriptorLayout, command) as u32)
+    }
     const fn flags(self) -> u32 {
         self.0.wrapping_add(core::mem::offset_of!(TxDescriptorLayout, flags) as u32)
     }
+    const fn duration(self) -> u32 {
+        self.0.wrapping_add(core::mem::offset_of!(TxDescriptorLayout, duration) as u32)
+    }
+    const fn word_unchecked(self, index: u32) -> u32 { self.0.wrapping_add(index * 4) }
 }
 
 fn pipe_record_address(pipe: u8) -> crate::dtcm::MacPipeRecordAddress {
@@ -2282,11 +2318,11 @@ fn build_single_frame_duration<M: MacPipeMmio>(
     frame_node: FrameNodeAddress,
     expects_ack: bool,
 ) {
-    let frame = frame_node.raw();
-    mmio.write_u32(descriptor, 0);
+    let descriptor = TxDescriptorAddress::new(descriptor);
+    mmio.write_u32(descriptor.command(), 0);
 
-    let interface = u32::from(mmio.read_u8(frame + 0x69));
-    let selector = u32::from(mmio.read_u8(frame + 0x0c));
+    let interface = u32::from(mmio.read_u8(frame_node.interface()));
+    let selector = u32::from(mmio.read_u8(frame_node.access_category()));
     let random_mask = mmio.read_u16(
         crate::dtcm::pas_stride_view_unchecked(interface as usize)
             .contention_window_unchecked(selector as usize)
@@ -2312,11 +2348,11 @@ fn build_single_frame_duration<M: MacPipeMmio>(
     let bucket_count = mmio.read_u32(bucket_address).wrapping_add(1);
     mmio.write_u32(bucket_address, bucket_count);
 
-    mmio.write_u16(frame + 0x5a, random);
-    mmio.write_u32(descriptor + 4, (u32::from(random) & 0x0fff) << 10);
+    mmio.write_u16(frame_node.retry_random(), random);
+    mmio.write_u32(descriptor.flags(), (u32::from(random) & 0x0fff) << 10);
 
     let duration_word = if expects_ack {
-        let rate = u32::from(mmio.read_u8(frame + 0x0f));
+        let rate = u32::from(mmio.read_u8(frame_node.tx_rate()));
         let timing_index = u32::from(mmio.read_u8(
             crate::dtcm::mac_retry_rate_unchecked(rate as usize).get() as u32,
         ));
@@ -2335,7 +2371,7 @@ fn build_single_frame_duration<M: MacPipeMmio>(
     } else {
         0xdc00_0000
     };
-    mmio.write_u32(descriptor + 8, duration_word);
+    mmio.write_u32(descriptor.duration(), duration_word);
 }
 
 /// Exact mode-1 `tx_build_duration_desc` used by a fixed-rate, non-aggregate
@@ -5952,7 +5988,8 @@ fn prepare_pre_go_publication<M: MacPipeMmio>(
     input: SingleProbePublicationInput,
     duration: u32,
 ) {
-    let frame = input.frame_node.raw();
+    let frame = input.frame_node;
+    let descriptor = TxDescriptorAddress::new(input.command_storage);
     let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(input.pipe_state);
     let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(input.slot_record);
     let ring = TxHardwareRingAddress::new(input.hardware_ring);
@@ -5978,52 +6015,52 @@ fn prepare_pre_go_publication<M: MacPipeMmio>(
             4,
             mmio.read_u32(slot.command().get() as u32),
         );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(5, mmio.read_u32(frame + 4));
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(5, mmio.read_u32(frame.control_bits()));
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             6,
-            u32::from(mmio.read_u16(frame + 8)),
+            u32::from(mmio.read_u16(frame.frame_length())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             7,
-            u32::from(mmio.read_u16(frame + 0x0a)),
+            u32::from(mmio.read_u16(frame.frame_control())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             8,
-            u32::from(mmio.read_u8(frame + 0x0d)),
+            u32::from(mmio.read_u8(frame.request_flag_rate_bits())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             9,
-            u32::from(mmio.read_u8(frame + 0x0f)),
+            u32::from(mmio.read_u8(frame.tx_rate())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             10,
-            u32::from(mmio.read_u16(frame + 0x36)),
+            u32::from(mmio.read_u16(frame.duration())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             11,
-            u32::from(mmio.read_u16(frame + 0x38)),
+            u32::from(mmio.read_u16(frame.payload_extended())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             12,
-            u32::from(mmio.read_u16(frame + 0x3a)),
+            u32::from(mmio.read_u16(frame.payload_base())),
         );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(13, mmio.read_u32(frame + 0x48));
+        crate::host_tx_diagnostics::write_pre_go_snapshot_word(13, mmio.read_u32(frame.total_airtime()));
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             14,
-            u32::from(mmio.read_u8(frame + 0x56)),
+            u32::from(mmio.read_u8(frame.frame_kind())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             15,
-            u32::from(mmio.read_u8(frame + 0x69)),
+            u32::from(mmio.read_u8(frame.interface())),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             16,
-            u32::from(mmio.read_u8(frame + 0x6a)),
+            u32::from(mmio.read_u8(frame.duration_slot())),
         );
         for index in 0..16_u32 {
             crate::host_tx_diagnostics::write_pre_go_snapshot_word(
                 17 + index as usize,
-                mmio.read_u32(input.command_storage + index * 4),
+                mmio.read_u32(descriptor.word_unchecked(index)),
             );
         }
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(33, duration);
@@ -6053,7 +6090,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(input.slot_record);
     let descriptor = TxDescriptorAddress::new(input.command_storage);
     let ring = TxHardwareRingAddress::new(input.hardware_ring);
-    let frame = input.frame_node.raw();
+    let frame = input.frame_node;
 
     // `current` tracks hardware progress through the batch, so only the first
     // staged frame sets it (vendor: `*(byte *)(iVar4 + 0xa2) = *pbVar8`, once,
@@ -6065,21 +6102,21 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     // call `txp_pipe_advance_slot`; startup already synchronized the ring and
     // software cursors. Slot-advance publication belongs only to cleanup/rearm
     // paths where pipe state +3 was already active.
-    let ownership_flags = mmio.read_u32(frame + 0x2c) | 0x100;
-    mmio.write_u32(frame + 0x2c, ownership_flags);
+    let ownership_flags = mmio.read_u32(frame.ownership_bits()) | 0x100;
+    mmio.write_u32(frame.ownership_bits(), ownership_flags);
     let timestamp = mmio.read_u32(0x0ac0_0004);
-    mmio.write_u32(frame + 0x18, timestamp);
-    mmio.write_u32(frame + 0x3c, 0);
+    mmio.write_u32(frame.scheduler_timestamp(), timestamp);
+    mmio.write_u32(frame.descriptor_state(), 0);
     if publication_bisect_reached(4) {
         return 4;
     }
 
     let timing = SingleFramePasTiming {
-        payload_extended: mmio.read_u16(frame + 0x38),
-        payload_base: mmio.read_u16(frame + 0x3a),
-        ack: mmio.read_u16(frame + 0x36),
-        total_airtime: mmio.read_u32(frame + 0x48),
-        frame_kind: mmio.read_u8(frame + 0x56),
+        payload_extended: mmio.read_u16(frame.payload_extended()),
+        payload_base: mmio.read_u16(frame.payload_base()),
+        ack: mmio.read_u16(frame.duration()),
+        total_airtime: mmio.read_u32(frame.total_airtime()),
+        frame_kind: mmio.read_u8(frame.frame_kind()),
     };
     let expects_ack = timing.frame_kind != 0xff;
     debug_assert_eq!(input.expects_ack, expects_ack);
@@ -6101,7 +6138,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         return 5;
     }
 
-    let interface = u32::from(mmio.read_u8(frame + 0x69));
+    let interface = u32::from(mmio.read_u8(frame.interface()));
     let pas = crate::dtcm::pas_stride_view_unchecked(interface as usize);
     let edca_slot_timing = mmio.read_u32(pas.packed_aifs().get() as u32);
     if mmio.read_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get() as u32) != edca_slot_timing {
@@ -6120,14 +6157,14 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     ));
     let mut quantum =
         u32::from(mmio.read_u16(pas.txop_limit_unchecked(queue as usize).get() as u32));
-    let airtime = mmio.read_u32(frame + 0x48) & 0xffff;
+    let airtime = mmio.read_u32(frame.total_airtime()) & 0xffff;
     if quantum == 0 {
-        if (mmio.read_u32(frame + 4) & 0x0fff) >> 10 != 0 {
+        if (mmio.read_u32(frame.control_bits()) & 0x0fff) >> 10 != 0 {
             quantum = airtime;
         }
     } else if quantum <= airtime {
-        let frame_policy = mmio.read_u16(frame + 0x50) | 8;
-        mmio.write_u16(frame + 0x50, frame_policy);
+        let frame_policy = mmio.read_u16(frame.auxiliary_state()) | 8;
+        mmio.write_u16(frame.auxiliary_state(), frame_policy);
         quantum = airtime;
     }
     let quantum_destination = mmio.read_u32(
@@ -6410,13 +6447,13 @@ unsafe fn prepare_single_frame_pas_timing(
     context: &mut PreparedProbeContext,
 ) -> Result<(), ProbeBuildError> {
     unsafe {
-        let frame = context.context as usize + FRAME_NODE_OFFSET as usize;
-        let interface = usize::from(read_u8(frame + 0x69));
+        let frame = FrameNodeAddress::new(context.context.wrapping_add(FRAME_NODE_OFFSET));
+        let interface = usize::from(read_u8(frame.interface() as usize));
         if interface > 2 {
             return Err(ProbeBuildError::InvalidInterface);
         }
-        let flags = read_u32(frame + 4);
-        let rate = read_u8(frame + 0x0f);
+        let flags = read_u32(frame.control_bits() as usize);
+        let rate = read_u8(frame.tx_rate() as usize);
         let pas = crate::dtcm::pas_stride_view_unchecked(interface);
         let rate_map = pas.rate_map_unchecked(usize::from(rate));
         let timing_index = usize::from(read_u8(rate_map.get()));
@@ -6431,7 +6468,7 @@ unsafe fn prepare_single_frame_pas_timing(
             crate::dtcm::low_mac_short_airtime_unchecked(timing_index).get()
         });
         let mode = read_u8(pas.mode_byte().get());
-        let header = read_u32(frame) as usize;
+        let header = read_u32(frame.frame_address() as usize) as usize;
         let special_peer = (mode == 5 || mode == 6)
             && (0..6).all(|offset| {
                 read_u8(header + 10 + offset)
@@ -6442,20 +6479,20 @@ unsafe fn prepare_single_frame_pas_timing(
         let timing = compute_single_frame_pas_timing(
             read_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get()),
             rate,
-            read_u16(frame + 8),
+            read_u16(frame.frame_length() as usize),
             flags,
             ack_duration,
             special_peer,
         )
         .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
 
-        write_u16(frame + 0x32, 0);
-        write_u16(frame + 0x34, 0);
-        write_u16(frame + 0x36, timing.ack);
-        write_u16(frame + 0x38, timing.payload_extended);
-        write_u16(frame + 0x3a, timing.payload_base);
-        write_u32(frame + 0x48, timing.total_airtime);
-        write_u8(frame + 0x56, timing.frame_kind);
+        write_u16(frame.timing_reset_32() as usize, 0);
+        write_u16(frame.timing_reset_34() as usize, 0);
+        write_u16(frame.duration() as usize, timing.ack);
+        write_u16(frame.payload_extended() as usize, timing.payload_extended);
+        write_u16(frame.payload_base() as usize, timing.payload_base);
+        write_u32(frame.total_airtime() as usize, timing.total_airtime);
+        write_u8(frame.frame_kind() as usize, timing.frame_kind);
         context.expects_ack = timing.frame_kind != 0xff;
     }
     Ok(())
@@ -8240,9 +8277,11 @@ mod tests {
         assert_eq!(ring.completion_word(), 0x901c);
         assert_eq!(ring.cursor_and_pending_mask(), 0x9020);
         let descriptor = TxDescriptorAddress::new(0xa000);
-        assert_eq!(core::mem::size_of::<TxDescriptorLayout>(), 8);
+        assert_eq!(core::mem::size_of::<TxDescriptorLayout>(), 12);
         assert_eq!(descriptor.raw(), 0xa000);
+        assert_eq!(descriptor.command(), 0xa000);
         assert_eq!(descriptor.flags(), 0xa004);
+        assert_eq!(descriptor.duration(), 0xa008);
     }
 
     #[test]
@@ -9287,8 +9326,15 @@ mod tests {
         assert_eq!(internal.frame_address_address(), 0x0400_90d8);
         assert_eq!(internal.expiry_time_address(), 0x0400_90e8);
         assert_eq!(internal.ownership_bits_address(), 0x0400_9104);
+        assert_eq!(internal.timing_reset_32_address(), 0x0400_910a);
+        assert_eq!(internal.timing_reset_34_address(), 0x0400_910c);
+        assert_eq!(internal.duration_address(), 0x0400_910e);
+        assert_eq!(internal.payload_extended_address(), 0x0400_9110);
+        assert_eq!(internal.payload_base_address(), 0x0400_9112);
+        assert_eq!(internal.word_48_address(), 0x0400_9120);
         assert_eq!(internal.insertion_mode_address(), 0x0400_912b);
         assert_eq!(internal.byte_57_address(), 0x0400_912f);
+        assert_eq!(internal.retry_random_address(), 0x0400_9132);
         assert_eq!(internal.completion_byte_6c_address(), 0x0400_9144);
         assert_eq!(internal.qos_control_address(), 0x0400_914c);
         assert_eq!(internal.cipher_class_address(), 0x0400_914e);
@@ -9305,8 +9351,15 @@ mod tests {
         assert_eq!(host.frame_address_address(), 0x0400_5a78);
         assert_eq!(host.expiry_time_address(), 0x0400_5a88);
         assert_eq!(host.ownership_bits_address(), 0x0400_5aa4);
+        assert_eq!(host.timing_reset_32_address(), 0x0400_5aaa);
+        assert_eq!(host.timing_reset_34_address(), 0x0400_5aac);
+        assert_eq!(host.duration_address(), 0x0400_5aae);
+        assert_eq!(host.payload_extended_address(), 0x0400_5ab0);
+        assert_eq!(host.payload_base_address(), 0x0400_5ab2);
+        assert_eq!(host.word_48_address(), 0x0400_5ac0);
         assert_eq!(host.insertion_mode_address(), 0x0400_5acb);
         assert_eq!(host.byte_57_address(), 0x0400_5acf);
+        assert_eq!(host.retry_random_address(), 0x0400_5ad2);
         assert_eq!(host.completion_byte_6c_address(), 0x0400_5ae4);
         assert_eq!(host.qos_control_address(), 0x0400_5aec);
         assert_eq!(host.cipher_class_address(), 0x0400_5aee);

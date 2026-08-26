@@ -911,9 +911,12 @@ struct HostPasContext {
     try_count: SharedU16,                          // +0x1e
     opaque_20: OpaqueBytes<0x0c>,
     ownership_bits: SharedU32,                     // +0x2c
-    opaque_30: OpaqueBytes<0x06>,
+    opaque_30: OpaqueBytes<0x02>,
+    timing_reset_32: SharedU16,                    // +0x32
+    timing_reset_34: SharedU16,                    // +0x34
     duration: SharedU16,                           // +0x36
-    opaque_38: OpaqueBytes<0x04>,
+    payload_extended: SharedU16,                   // +0x38
+    payload_base: SharedU16,                       // +0x3a
     descriptor_state: SharedU32,                   // +0x3c
     opaque_40: OpaqueBytes<0x08>,
     word_48: SharedU32,                            // +0x48; unresolved timing/accounting word
@@ -924,7 +927,9 @@ struct HostPasContext {
     sequence_number: SharedU16,                    // +0x54
     retry_rate: SharedU8,                          // +0x56
     byte_57: SharedU8,                             // +0x57; unresolved retry/encoding overlay
-    opaque_58: OpaqueBytes<0x11>,
+    opaque_58: OpaqueBytes<0x02>,
+    retry_random: SharedU16,                       // +0x5a
+    opaque_5c: OpaqueBytes<0x0d>,
     interface: SharedU8,                           // +0x69
     duration_slot: SharedU8,                       // +0x6a
     host_link: SharedU8,                           // +0x6b
@@ -1156,11 +1161,15 @@ struct InternalPasContext {
     try_count: SharedU16,
     opaque_20: OpaqueBytes<0x0c>,
     ownership_bits: SharedU32,
-    opaque_30: OpaqueBytes<0x06>,
+    opaque_30: OpaqueBytes<0x02>,
+    timing_reset_32: SharedU16,
+    timing_reset_34: SharedU16,
     duration: SharedU16,
-    opaque_38: OpaqueBytes<0x04>,
+    payload_extended: SharedU16,
+    payload_base: SharedU16,
     descriptor_state: SharedU32,
-    opaque_40: OpaqueBytes<0x0c>,
+    opaque_40: OpaqueBytes<0x08>,
+    word_48: SharedU32,
     frame_state_address: SharedU32,
     auxiliary_state: SharedU16,
     tid: SharedU8,
@@ -1168,7 +1177,9 @@ struct InternalPasContext {
     sequence_number: SharedU16,
     retry_rate: SharedU8,
     byte_57: SharedU8,
-    opaque_58: OpaqueBytes<0x11>,
+    opaque_58: OpaqueBytes<0x02>,
+    retry_random: SharedU16,
+    opaque_5c: OpaqueBytes<0x0d>,
     interface: SharedU8,
     duration_slot: SharedU8,
     host_link: SharedU8,
@@ -1570,8 +1581,13 @@ impl InternalContextAddress {
     pub(crate) const fn terminal_status(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, terminal_status)) }
     pub(crate) const fn try_count(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, try_count)) }
     pub(crate) const fn ownership_bits(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, ownership_bits)) }
+    pub(crate) const fn timing_reset_32(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, timing_reset_32)) }
+    pub(crate) const fn timing_reset_34(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, timing_reset_34)) }
     pub(crate) const fn duration(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, duration)) }
+    pub(crate) const fn payload_extended(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, payload_extended)) }
+    pub(crate) const fn payload_base(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, payload_base)) }
     pub(crate) const fn descriptor_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, descriptor_state)) }
+    pub(crate) const fn word_48(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, word_48)) }
     pub(crate) const fn frame_state_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, frame_state_address)) }
     pub(crate) const fn auxiliary_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, auxiliary_state)) }
     pub(crate) const fn tid(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, tid)) }
@@ -1579,6 +1595,7 @@ impl InternalContextAddress {
     pub(crate) const fn sequence_number(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, sequence_number)) }
     pub(crate) const fn retry_rate(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, retry_rate)) }
     pub(crate) const fn byte_57(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, byte_57)) }
+    pub(crate) const fn retry_random(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, retry_random)) }
     pub(crate) const fn interface(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, interface)) }
     pub(crate) const fn duration_slot(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, duration_slot)) }
     pub(crate) const fn host_link(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, host_link)) }
@@ -1759,7 +1776,11 @@ impl HostContextAddress {
         if index < 3 { Some(self.pas_field(core::mem::offset_of!(HostPasContext, opaque_20) + index * 4)) } else { None }
     }
     pub(crate) const fn ownership_bits(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, ownership_bits)) }
+    pub(crate) const fn timing_reset_32(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, timing_reset_32)) }
+    pub(crate) const fn timing_reset_34(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, timing_reset_34)) }
     pub(crate) const fn duration(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, duration)) }
+    pub(crate) const fn payload_extended(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, payload_extended)) }
+    pub(crate) const fn payload_base(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, payload_base)) }
     pub(crate) const fn descriptor_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, descriptor_state)) }
     pub(crate) const fn word_48(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, word_48)) }
     pub(crate) const fn frame_state_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, frame_state_address)) }
@@ -1769,6 +1790,7 @@ impl HostContextAddress {
     pub(crate) const fn sequence_number(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, sequence_number)) }
     pub(crate) const fn retry_rate(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, retry_rate)) }
     pub(crate) const fn byte_57(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, byte_57)) }
+    pub(crate) const fn retry_random(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, retry_random)) }
     pub(crate) const fn interface(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, interface)) }
     pub(crate) const fn duration_slot(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, duration_slot)) }
     pub(crate) const fn host_link(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, host_link)) }
@@ -3378,8 +3400,11 @@ const _: () = {
     assert!(core::mem::offset_of!(HostPasContext, opaque_20) == 0x20);
     assert!(core::mem::offset_of!(HostPasContext, ownership_bits) == 0x2c);
     assert!(core::mem::offset_of!(HostPasContext, opaque_30) == 0x30);
+    assert!(core::mem::offset_of!(HostPasContext, timing_reset_32) == 0x32);
+    assert!(core::mem::offset_of!(HostPasContext, timing_reset_34) == 0x34);
     assert!(core::mem::offset_of!(HostPasContext, duration) == 0x36);
-    assert!(core::mem::offset_of!(HostPasContext, opaque_38) == 0x38);
+    assert!(core::mem::offset_of!(HostPasContext, payload_extended) == 0x38);
+    assert!(core::mem::offset_of!(HostPasContext, payload_base) == 0x3a);
     assert!(core::mem::offset_of!(HostPasContext, descriptor_state) == 0x3c);
     assert!(core::mem::offset_of!(HostPasContext, opaque_40) == 0x40);
     assert!(core::mem::offset_of!(HostPasContext, word_48) == 0x48);
@@ -3391,6 +3416,8 @@ const _: () = {
     assert!(core::mem::offset_of!(HostPasContext, retry_rate) == 0x56);
     assert!(core::mem::offset_of!(HostPasContext, byte_57) == 0x57);
     assert!(core::mem::offset_of!(HostPasContext, opaque_58) == 0x58);
+    assert!(core::mem::offset_of!(HostPasContext, retry_random) == 0x5a);
+    assert!(core::mem::offset_of!(HostPasContext, opaque_5c) == 0x5c);
     assert!(core::mem::offset_of!(HostPasContext, interface) == 0x69);
     assert!(core::mem::offset_of!(HostPasContext, duration_slot) == 0x6a);
     assert!(core::mem::offset_of!(HostPasContext, host_link) == 0x6b);
