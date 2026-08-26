@@ -222,6 +222,29 @@ unsafe impl Sync for SharedLifecycleCounters {}
 static LIFECYCLE_COUNTERS: SharedLifecycleCounters =
     SharedLifecycleCounters(UnsafeCell::new([0; counter::COUNT]));
 
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+struct SharedBatchCounter(UnsafeCell<u32>);
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+unsafe impl Sync for SharedBatchCounter {}
+
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static BATCH_PUBLICATIONS: SharedBatchCounter = SharedBatchCounter(UnsafeCell::new(0));
+
+/// Record one batch crossing the shared MAC trigger boundary.
+#[inline]
+pub unsafe fn record_batch_publication(depth: u8) {
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    unsafe {
+        let counter = BATCH_PUBLICATIONS.0.get();
+        let current = counter.read_volatile();
+        let count = (current & 0x00ff_ffff).wrapping_add(1) & 0x00ff_ffff;
+        counter.write_volatile((u32::from(depth) << 24) | count);
+    }
+    #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
+    let _ = depth;
+}
+
 /// Increments one class-0 lifecycle counter.
 ///
 /// # Safety
@@ -810,6 +833,10 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
             let _ = transport;
             values.fill(0);
             values[..snapshot.len()].copy_from_slice(&snapshot);
+            #[cfg(feature = "vendor-host-tx-diagnostics")]
+            unsafe {
+                values[20] = BATCH_PUBLICATIONS.0.get().read_volatile();
+            }
             return;
         }
     }

@@ -44,7 +44,7 @@ FORBIDDEN_FORMS = (
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
-    0x04001687: 1, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 5,
+    0x04001687: 1, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 6,
     0x04001694: 6, 0x0400169C: 4, 0x040016B0: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
@@ -74,7 +74,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio15poll_indication', 0x04001694): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio22resynchronize_consumer', 0x04001690): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware5radio7release', 0x04001690): 3,
-    ('rust_main', 0x04001690): 1,
+    ('rust_main', 0x04001690): 2,
 })
 
 

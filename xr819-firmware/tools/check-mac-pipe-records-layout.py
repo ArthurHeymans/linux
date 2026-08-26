@@ -42,18 +42,20 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Foreground reactor ownership lets the compiler share one pipe-record root
-# literal while retaining the same decoded consumers and volatile order.
+# Two-frame scheduling moves slot reservation out of service_index and adds a
+# single finalizer for the staged range. The reservation and finalizer retain
+# the reviewed descriptor-before-trigger and slot-before-GO operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001720: 5,
-    0x04001723: 1,
+    0x04001723: 2,
     0x04001738: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
     ('_RNvMsK_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001720): 2,
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001738): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001720): 3,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04001723): 2,
+    ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation6cancel', 0x04001738): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001723): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001738): 1,

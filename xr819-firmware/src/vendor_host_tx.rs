@@ -1034,8 +1034,9 @@ impl HostSchedulerReservation {
     }
 
     /// Stage this reservation as part of a pipe batch. `Only` is the historic
-    /// single-frame path; `First`/`Middle` write the slot without arming, and
-    /// `Last` arms the pipe for every slot staged since `First`.
+    /// single-frame path; `First`/`Middle`/`Last` write slots without arming.
+    /// After every member succeeds, the batch owner arms them together through
+    /// `finalize_staged_host_class0_pipe`.
     ///
     /// # Safety
     /// Same as `publish`.
@@ -1123,8 +1124,34 @@ const fn scheduler_batch_control_bits(original: u32, staged: u8) -> u32 {
 
 #[cfg(target_arch = "arm")]
 pub unsafe fn reserve_non_aggregate_scheduler(
+    guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    retained: &mut RetainedHostTx,
+) -> Result<HostSchedulerReservation, SchedulerReserveError> {
+    unsafe { reserve_non_aggregate_scheduler_at(guard, retained, None) }
+}
+
+/// Reserve a later slot in the same software-owned non-aggregate batch.
+///
+/// # Safety
+/// `pipe` must be the pipe reserved by the first batch member, and `slot`
+/// must be its next unowned ring slot. No staged slot may have crossed the MAC
+/// trigger boundary.
+#[cfg(target_arch = "arm")]
+pub unsafe fn reserve_non_aggregate_scheduler_in_batch(
+    guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    retained: &mut RetainedHostTx,
+    pipe: u8,
+    slot: u8,
+    staged: u8,
+) -> Result<HostSchedulerReservation, SchedulerReserveError> {
+    unsafe { reserve_non_aggregate_scheduler_at(guard, retained, Some((pipe, slot, staged))) }
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn reserve_non_aggregate_scheduler_at(
     _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     retained: &mut RetainedHostTx,
+    batch: Option<(u8, u8, u8)>,
 ) -> Result<HostSchedulerReservation, SchedulerReserveError> {
     if retained.phase != HostTxPhase::PasQueued {
         return Err(SchedulerReserveError::WrongPhase);
@@ -1181,10 +1208,18 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         NonAggregateSchedulerDecision::ReservePipe(_) => {}
     }
 
+    let (slot, staged) = if let Some((batch_pipe, slot, staged)) = batch {
+        if batch_pipe != pipe {
+            return Err(SchedulerReserveError::LeaveQueued);
+        }
+        (slot & 3, staged)
+    } else {
+        let slot = unsafe {
+            read_live_u8(crate::dtcm::mac_pipe_current_slot_unchecked(usize::from(pipe)).get() as u32)
+        } & 3;
+        (slot, 0)
+    };
     let pipe_index = usize::from(pipe);
-    let slot = unsafe {
-        read_live_u8(crate::dtcm::mac_pipe_current_slot_unchecked(pipe_index).get() as u32)
-    } & 3;
     let slot_index = usize::from(slot);
     let slot_record = crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, slot_index).get() as u32;
     let slot_frame = crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index).get() as u32;
@@ -1230,7 +1265,7 @@ pub unsafe fn reserve_non_aggregate_scheduler(
         // `txp_build_pipe_descriptor(..., 0)`.
         write_host_u32(
             context.control_bits(),
-            scheduler_batch_control_bits(original_control_bits, 0),
+            scheduler_batch_control_bits(original_control_bits, staged),
         );
         write_host_u32(
             context.ownership_bits(),

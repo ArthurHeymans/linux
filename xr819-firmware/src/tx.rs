@@ -6312,6 +6312,73 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     0
 }
 
+/// Publish every slot staged by a non-aggregate scheduler batch and arm the
+/// pipe once. Descriptor construction and all fallible ownership checks must
+/// complete before this boundary.
+#[cfg(any(target_arch = "arm", test))]
+fn finalize_staged_pipe<M: MacPipeMmio>(
+    mmio: &mut M,
+    pipe: u8,
+    pipe_state: u32,
+    hardware_ring: u32,
+    first_slot: u8,
+    last_slot: u8,
+) {
+    let pipe = pipe & 3;
+    let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
+    let ring = TxHardwareRingAddress::new(hardware_ring);
+    mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
+
+    let mut slot_index = first_slot & 3;
+    loop {
+        let slot = record.slot_unchecked(usize::from(slot_index));
+        let active_count = mmio
+            .read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32)
+            .wrapping_add(1);
+        mmio.write_u8(
+            crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32,
+            active_count,
+        );
+        mmio.write_u8(slot.state().get() as u32, 1);
+        let duration = mmio.read_u32(slot.duration().get() as u32);
+        mmio.write_u32(ring.duration_fifo(), duration);
+        if slot_index == last_slot & 3 {
+            break;
+        }
+        slot_index = slot_index.wrapping_add(1) & 3;
+    }
+
+    mmio.write_u8(record.state().get() as u32, 1);
+    let pipe_flags = mmio.read_u8(record.control().get() as u32) | 1;
+    mmio.write_u8(record.control().get() as u32, pipe_flags);
+    mmio.write_u8(record.watchdog().get() as u32, 5);
+    mmio.write_u32(ring.go(), 1);
+}
+
+/// Cross the shared MAC trigger boundary for a fully staged class-0 batch.
+///
+/// # Safety
+/// Every slot from `first_slot` through `last_slot` must be reserved by the
+/// caller in this pipe, and no other owner may mutate the pipe or ring.
+#[cfg(target_arch = "arm")]
+pub unsafe fn finalize_staged_host_class0_pipe(
+    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    pipe: u8,
+    first_slot: u8,
+    last_slot: u8,
+) {
+    let pipe_state = pipe_state_address(pipe);
+    let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
+    finalize_staged_pipe(
+        &mut VolatileMacPipeMmio,
+        pipe,
+        pipe_state,
+        hardware_ring,
+        first_slot,
+        last_slot,
+    );
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublishedProbePublication {
     pub context: ContextAddress,
@@ -8893,6 +8960,47 @@ mod tests {
             .rposition(|&(address, value)| address == hardware_ring + 0x14 && value == 1)
             .unwrap_or_else(|| panic!("missing GO write"));
         assert!(trigger_index < go_index);
+    }
+
+    #[test]
+    fn staged_two_slot_batch_triggers_once_and_publishes_both_durations() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe = 1;
+        let pipe_state = pipe_state_address(pipe);
+        let hardware_ring = 0x8800;
+        let first_slot = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state)
+            .slot_unchecked(3);
+        let last_slot = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state)
+            .slot_unchecked(0);
+        mmio.set(first_slot.duration().get() as u32, 0x1111);
+        mmio.set(last_slot.duration().get() as u32, 0x2222);
+        mmio.set(pipe_state + 4, 8);
+        mmio.set(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32, 4);
+
+        finalize_staged_pipe(
+            &mut mmio,
+            pipe,
+            pipe_state,
+            hardware_ring,
+            3,
+            0,
+        );
+
+        assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), (1_u32 << pipe) << 25);
+        assert_eq!(mmio.get(first_slot.state().get() as u32), 1);
+        assert_eq!(mmio.get(last_slot.state().get() as u32), 1);
+        assert_eq!(mmio.get(hardware_ring), 0x2222);
+        assert_eq!(mmio.get(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32), 6);
+        assert_eq!(mmio.get(pipe_state + 3), 1);
+        assert_eq!(mmio.get(pipe_state + 4), 9);
+        assert_eq!(mmio.get(pipe_state + 5), 5);
+        assert_eq!(mmio.get(hardware_ring + 0x14), 1);
+        let duration_writes = mmio.writes[..mmio.write_count]
+            .iter()
+            .filter(|&&(address, _)| address == hardware_ring)
+            .map(|&(_, value)| value)
+            .collect::<std::vec::Vec<_>>();
+        assert_eq!(duration_writes, [0x1111, 0x2222]);
     }
 
     #[test]

@@ -38,9 +38,9 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
         0x04003688: 1,
         0x04003768: 1,
         0x04003A50: 1,
-        0x04003A68: 5,
+        0x04003A68: 6,
         0x04003A6A: 6,
-        0x04003A6C: 3,
+        0x04003A6C: 4,
         0x04003A6D: 5,
         0x04003A70: 2,
         0x04003ACC: 1,
@@ -69,8 +69,9 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x04003B34): 1,
         ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x04003A6C): 1,
         ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x04003B74): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04003A6C): 1,
         ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start', 0x04003A68): 1,
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04003A6D): 1,
+        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04003A6D): 1,
         ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04003A6A): 1,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx21program_pipe_eligible', 0x04003AEC): 1,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x04003A6D): 4,
@@ -105,7 +106,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4join12activate_sta', 0x04003AE8): 1,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service', 0x04003A6D): 1,
         ('_RNvNtCsiHlLB2CErfM_14xr819_firmware8platform23program_station_address', 0x04003ACC): 1,
-        ('rust_main', 0x04003A68): 1,
+        ('rust_main', 0x04003A68): 2,
     }
 )
 

@@ -24,6 +24,7 @@ pub struct HostTxDriver {
     service_cursor: usize,
     next_confirmation_order: u32,
     scheduler_phy_started_this_pass: bool,
+    scheduler_single_wait: u8,
 }
 
 enum HostTxState {
@@ -88,6 +89,7 @@ impl HostTxDriver {
             service_cursor: 0,
             next_confirmation_order: 0,
             scheduler_phy_started_this_pass: false,
+            scheduler_single_wait: 0,
         }
     }
 
@@ -213,7 +215,7 @@ impl HostTxDriver {
                     index,
                     events,
                     mac_domain,
-                    allow_hardware_publication,
+                    false,
                     allow_debug_event && diagnostic.is_none(),
                 )
             };
@@ -221,6 +223,9 @@ impl HostTxDriver {
                 diagnostic = event;
             }
             budget -= 1;
+        }
+        if allow_hardware_publication && self.hardware_runtime_owner().is_none() {
+            unsafe { self.publish_ready_batch(mac_domain) };
         }
         diagnostic
     }
@@ -297,6 +302,198 @@ impl HostTxDriver {
             completion.ack_failures,
             completion_order,
         ));
+    }
+
+    /// Publish one or two ready PAS contexts. A pair is staged into consecutive
+    /// slots of the same pipe and crosses the MAC trigger boundary once.
+    unsafe fn publish_ready_batch(&mut self, mac_domain: &mut crate::mac_domain::MacDomain) {
+        let ready_count = self
+            .states
+            .iter()
+            .filter(|state| {
+                matches!(
+                    state,
+                    Some(HostTxState::Owned { retained, hardware: None, .. })
+                        if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
+                )
+            })
+            .take(2)
+            .count();
+        if ready_count == 1 && self.scheduler_single_wait == 0 {
+            // The command lane admits at most one request after this service
+            // pass. Give it one pass to supply a partner before falling back
+            // to the latency-safe single-frame path.
+            self.scheduler_single_wait = 1;
+            return;
+        }
+        self.scheduler_single_wait = 0;
+        let Some(first_index) = self.states.iter().position(|state| {
+            matches!(
+                state,
+                Some(HostTxState::Owned { retained, hardware: None, .. })
+                    if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
+            )
+        }) else {
+            return;
+        };
+        let Some(HostTxState::Owned {
+            retained: mut first,
+            wait_diagnostic: first_wait,
+            hardware: None,
+        }) = self.states[first_index].take()
+        else {
+            return;
+        };
+
+        let mut guard = mac_domain.enter();
+        if !self.scheduler_phy_started_this_pass {
+            let _ = unsafe { tx::start_phy_operation_1() };
+            self.scheduler_phy_started_this_pass = true;
+        }
+        let first_reservation = match unsafe {
+            vendor_host_tx::reserve_non_aggregate_scheduler(&mut guard, &mut first)
+        } {
+            Ok(reservation) => reservation,
+            Err(_) => {
+                self.states[first_index] = Some(HostTxState::Owned {
+                    retained: first,
+                    wait_diagnostic: first_wait,
+                    hardware: None,
+                });
+                return;
+            }
+        };
+        let pipe = first_reservation.pipe();
+        let first_slot = first_reservation.slot();
+
+        let second_index = self.states.iter().position(|state| {
+            matches!(
+                state,
+                Some(HostTxState::Owned { retained, hardware: None, .. })
+                    if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
+                        && unsafe { vendor_host_tx::scheduler_live_diagnostic(retained) }.pipe == pipe
+            )
+        });
+        let Some(second_index) = second_index else {
+            match unsafe { first_reservation.publish(&mut guard, &mut first) } {
+                Ok(()) => {
+                    self.states[first_index] = Some(HostTxState::Owned {
+                        hardware: Some(HardwareOwner {
+                            pipe,
+                            slot: first_slot,
+                            frame_node: first.context().frame_node().raw(),
+                        }),
+                        retained: first,
+                        wait_diagnostic: 3,
+                    });
+                }
+                Err((reservation, _)) => {
+                    self.states[first_index] = Some(HostTxState::Reserved {
+                        retained: first,
+                        reservation,
+                        wait_diagnostic: first_wait,
+                    });
+                }
+            }
+            return;
+        };
+        let Some(HostTxState::Owned {
+            retained: mut second,
+            wait_diagnostic: second_wait,
+            hardware: None,
+        }) = self.states[second_index].take()
+        else {
+            let _ = unsafe { first_reservation.cancel(&mut guard, &mut first) };
+            self.states[first_index] = Some(HostTxState::Owned {
+                retained: first,
+                wait_diagnostic: first_wait,
+                hardware: None,
+            });
+            return;
+        };
+        let second_slot = first_slot.wrapping_add(1) & 3;
+        let second_reservation = match unsafe {
+            vendor_host_tx::reserve_non_aggregate_scheduler_in_batch(
+                &mut guard,
+                &mut second,
+                pipe,
+                second_slot,
+                1,
+            )
+        } {
+            Ok(reservation) => reservation,
+            Err(_) => {
+                self.states[second_index] = Some(HostTxState::Owned {
+                    retained: second,
+                    wait_diagnostic: second_wait,
+                    hardware: None,
+                });
+                match unsafe { first_reservation.publish(&mut guard, &mut first) } {
+                    Ok(()) => {
+                        self.states[first_index] = Some(HostTxState::Owned {
+                            hardware: Some(HardwareOwner {
+                                pipe,
+                                slot: first_slot,
+                                frame_node: first.context().frame_node().raw(),
+                            }),
+                            retained: first,
+                            wait_diagnostic: 3,
+                        });
+                    }
+                    Err((reservation, _)) => {
+                        self.states[first_index] = Some(HostTxState::Reserved {
+                            retained: first,
+                            reservation,
+                            wait_diagnostic: first_wait,
+                        });
+                    }
+                }
+                return;
+            }
+        };
+
+        let first_frame_node = first.context().frame_node().raw();
+        let second_frame_node = second.context().frame_node().raw();
+        let first_result = unsafe {
+            first_reservation.publish_in_batch(&mut guard, &mut first, tx::BatchPosition::First)
+        };
+        let Err((_reservation, _)) = first_result else {
+            let second_result = unsafe {
+                second_reservation.publish_in_batch(&mut guard, &mut second, tx::BatchPosition::Last)
+            };
+            if second_result.is_err() {
+                crate::halt_always!();
+            }
+            unsafe {
+                tx::finalize_staged_host_class0_pipe(
+                    &mut guard,
+                    pipe,
+                    first_slot,
+                    second_slot,
+                );
+                host_tx_diagnostics::record_batch_publication(2);
+            }
+            self.states[first_index] = Some(HostTxState::Owned {
+                retained: first,
+                wait_diagnostic: 3,
+                hardware: Some(HardwareOwner {
+                    pipe,
+                    slot: first_slot,
+                    frame_node: first_frame_node,
+                }),
+            });
+            self.states[second_index] = Some(HostTxState::Owned {
+                retained: second,
+                wait_diagnostic: 3,
+                hardware: Some(HardwareOwner {
+                    pipe,
+                    slot: second_slot,
+                    frame_node: second_frame_node,
+                }),
+            });
+            return;
+        };
+        crate::halt_always!();
     }
 
     unsafe fn service_index(
@@ -628,6 +825,7 @@ impl HostTxDriver {
     /// # Safety
     /// The caller must serialize scheduler, pending-list, and HIF mutation.
     pub unsafe fn reset(&mut self, mac_domain: &mut crate::mac_domain::MacDomain) {
+        self.scheduler_single_wait = 0;
         let mut guard = mac_domain.enter();
         for index in 0..HOST_CONTEXT_COUNT {
             let Some(state) = self.states[index].take() else {

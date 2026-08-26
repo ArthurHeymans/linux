@@ -42,13 +42,14 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Foreground reactor ownership changes compiler sharing between the caller and
-# `service_index`: two literal-pool copies fold into the existing decoded loads.
-# The consumer set and volatile operation order remain unchanged.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001578: 5})
+# The two-frame scheduler moves PAS-ring selection/removal into the shared
+# reservation helper. rust_main retains two caller-side ring-root loads while
+# the helper owns the four reservation loads; operation order is unchanged.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001578: 6})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001578): 6,
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001578): 1,
+    ('rust_main', 0x04001578): 2,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001578): 4,
+    ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation6cancel', 0x04001578): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx15remove_live_pas', 0x04001578): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x04001578): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001578): 1,

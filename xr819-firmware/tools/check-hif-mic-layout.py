@@ -53,8 +53,10 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
+# Two-frame scheduling changes rust_main register allocation so the retained HIF
+# root materializes at 0x0400980a; no HIF access was added.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04009809: 1}
+    {0x0400980A: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
