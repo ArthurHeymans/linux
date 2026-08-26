@@ -6330,7 +6330,7 @@ pub struct PreparedProbePublication {
     context: PreparedProbeContext,
     pipe: u8,
     slot: u8,
-    slot_record: u32,
+    slot_record: crate::dtcm::MacPipeSlotAddress,
     command: u32,
     original_slot_header: u32,
     original_slot_frame: u32,
@@ -6370,12 +6370,11 @@ impl PreparedProbePublication {
         unsafe {
             let frame_node = FrameNodeAddress::new(self.context.context + FRAME_NODE_OFFSET);
             let context_address = frame_node.context();
-            let slot_record = self.slot_record as usize;
             let valid = single_frame_slot_matches(
-                read_u32(slot_record + 0x0c),
+                read_u32(self.slot_record.frame().get()),
                 frame_node.raw(),
-                read_u8(slot_record),
-                read_u8(slot_record + 1),
+                read_u8(self.slot_record.kind().get()),
+                read_u8(self.slot_record.retry_rate().get()),
                 read_u8(context_address.retry_rate_address()),
             );
             if !valid {
@@ -6410,7 +6409,7 @@ impl PreparedProbePublication {
             }
             let pipe_state = pipe_state_address(self.pipe);
             let hardware_ring = read_u32(pipe_state as usize + 8);
-            let live_command = read_u32(slot_record + 0x14);
+            let live_command = read_u32(self.slot_record.command().get());
             if self.command != live_command
                 || !packet_ram::tx_commands().contains(&(self.command as usize))
             {
@@ -6419,15 +6418,15 @@ impl PreparedProbePublication {
                         0x5458_4341,
                         u32::from(self.pipe),
                         u32::from(self.slot),
-                        self.slot_record,
+                        self.slot_record.raw(),
                         self.command,
                         live_command,
                         pipe_state,
                         hardware_ring,
-                        read_u32(slot_record),
-                        read_u32(slot_record + 8),
-                        read_u32(slot_record + 0x0c),
-                        read_u32(slot_record + 0x10),
+                        read_u32(self.slot_record.state_word().get()),
+                        read_u32(self.slot_record.duration().get()),
+                        read_u32(self.slot_record.frame().get()),
+                        read_u32(self.slot_record.auxiliary().get()),
                         read_u32(pipe_state as usize),
                         read_u32(pipe_state as usize + 4),
                         read_u32(pipe_state as usize + 8),
@@ -6470,7 +6469,7 @@ impl PreparedProbePublication {
                     pipe: self.pipe,
                     slot: self.slot,
                     pipe_state,
-                    slot_record: self.slot_record,
+                    slot_record: self.slot_record.raw(),
                     command_storage: self.command,
                     hardware_ring,
                     frame_node,
@@ -6492,13 +6491,18 @@ impl PreparedProbePublication {
     /// been published or triggered.
     pub unsafe fn cancel(self) -> Result<u32, ProbeBuildError> {
         unsafe {
-            let slot_record = self.slot_record as usize;
             let expected = ContextAddress::new(self.context.context).frame_node().raw();
-            if ((slot_record + 0x0c) as *const u32).read_volatile() != expected {
+            if (self.slot_record.frame().get() as *const u32).read_volatile() != expected {
                 return Err(ProbeBuildError::PipeSlotOwnershipMismatch);
             }
-            ((slot_record + 0x0c) as *mut u32).write_volatile(self.original_slot_frame);
-            (slot_record as *mut u32).write_volatile(self.original_slot_header);
+            self.slot_record
+                .frame()
+                .cast_mut::<u32>()
+                .write_volatile(self.original_slot_frame);
+            self.slot_record
+                .state_word()
+                .cast_mut::<u32>()
+                .write_volatile(self.original_slot_header);
             for (index, word) in self.original_command.into_iter().enumerate() {
                 ((self.command as usize + index * 4) as *mut u32).write_volatile(word);
             }
@@ -7087,7 +7091,9 @@ unsafe fn prepare_context_publication(
         .read_volatile()
             & 3;
         let slot_index = usize::from(slot);
-        let slot_record = crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, slot_index);
+        let slot_record = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(
+            crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, slot_index).get() as u32,
+        );
         let command = crate::dtcm::shared_ptr::<u32>(
             crate::dtcm::mac_pipe_slot_command_unchecked(pipe_index, slot_index),
         )
@@ -7099,7 +7105,7 @@ unsafe fn prepare_context_publication(
         // Startup imports persistent slot tails from vendor state. They are not
         // zero-valued idle sentinels, so detached reservation must preserve and
         // restore them rather than infer ownership from their contents.
-        let original_slot_header = crate::dtcm::shared_ptr::<u32>(slot_record).read_volatile();
+        let original_slot_header = read_u32(slot_record.state_word().get());
         let original_slot_frame = crate::dtcm::shared_ptr::<u32>(
             crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index),
         )
@@ -7116,7 +7122,7 @@ unsafe fn prepare_context_publication(
         // base. Its kind-0 branch stores frame-node `+0x56` (context `+0xaa`)
         // in `slot+1`; success handler `0x9cdc` requires this marker to be
         // `0xff` before entering the release loop.
-        crate::dtcm::shared_ptr::<u8>(slot_record).write_volatile(0);
+        slot_record.kind().cast_mut::<u8>().write_volatile(0);
         crate::dtcm::shared_ptr::<u8>(
             crate::dtcm::mac_pipe_slot_retry_rate_unchecked(pipe_index, slot_index),
         )
@@ -7143,7 +7149,10 @@ unsafe fn prepare_context_publication(
                     crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index),
                 )
                 .write_volatile(original_slot_frame);
-                crate::dtcm::shared_ptr::<u32>(slot_record).write_volatile(original_slot_header);
+                slot_record
+                    .state_word()
+                    .cast_mut::<u32>()
+                    .write_volatile(original_slot_header);
                 for (index, word) in original_command.into_iter().enumerate() {
                     ((command as usize + index * 4) as *mut u32).write_volatile(word);
                 }
@@ -7155,7 +7164,7 @@ unsafe fn prepare_context_publication(
             context,
             pipe,
             slot,
-            slot_record: slot_record.get() as u32,
+            slot_record,
             command,
             original_slot_header,
             original_slot_frame,
