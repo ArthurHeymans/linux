@@ -323,7 +323,7 @@ impl ContextAddress {
     fn duration_address(self) -> usize { self.field_address(|c| c.duration(), |c| c.duration()) }
     fn payload_extended_address(self) -> usize { self.field_address(|c| c.payload_extended(), |c| c.payload_extended()) }
     fn payload_base_address(self) -> usize { self.field_address(|c| c.payload_base(), |c| c.payload_base()) }
-    fn descriptor_state_address(self) -> usize { self.field_address(|c| c.descriptor_state(), |c| c.descriptor_state()) }
+    fn next_in_ampdu_address(self) -> usize { self.field_address(|c| c.next_in_ampdu(), |c| c.next_in_ampdu()) }
     fn word_48_address(self) -> usize { self.field_address(|c| c.word_48(), |c| c.word_48()) }
     fn frame_state_address_address(self) -> usize { self.field_address(|c| c.frame_state_address(), |c| c.frame_state_address()) }
     fn auxiliary_state_address(self) -> usize { self.field_address(|c| c.auxiliary_state(), |c| c.auxiliary_state()) }
@@ -336,7 +336,7 @@ impl ContextAddress {
     fn interface_address(self) -> usize { self.field_address(|c| c.interface(), |c| c.interface()) }
     fn duration_slot_address(self) -> usize { self.field_address(|c| c.duration_slot(), |c| c.duration_slot()) }
     fn host_link_address(self) -> usize { self.field_address(|c| c.host_link(), |c| c.host_link()) }
-    fn completion_byte_6c_address(self) -> usize { self.field_address(|c| c.completion_byte_6c(), |c| c.completion_byte_6c()) }
+    fn link_id_address(self) -> usize { self.field_address(|c| c.link_id(), |c| c.link_id()) }
     fn qos_control_address(self) -> usize { self.field_address(|c| c.qos_control(), |c| c.qos_control()) }
     fn cipher_class_address(self) -> usize { self.field_address(|c| c.cipher_class(), |c| c.cipher_class()) }
     fn word_7c_address(self) -> usize { self.field_address(|c| c.word_7c(), |c| c.word_7c()) }
@@ -369,7 +369,7 @@ impl FrameNodeAddress {
     fn duration(self) -> u32 { self.context().duration_address() as u32 }
     fn payload_extended(self) -> u32 { self.context().payload_extended_address() as u32 }
     fn payload_base(self) -> u32 { self.context().payload_base_address() as u32 }
-    fn descriptor_state(self) -> u32 { self.context().descriptor_state_address() as u32 }
+    fn next_in_ampdu(self) -> u32 { self.context().next_in_ampdu_address() as u32 }
     fn total_airtime(self) -> u32 { self.context().word_48_address() as u32 }
     fn auxiliary_state(self) -> u32 { self.context().auxiliary_state_address() as u32 }
     fn frame_kind(self) -> u32 { self.context().retry_rate_address() as u32 }
@@ -4661,7 +4661,7 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
         let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot);
         let timestamp = read_u32(0x0ac0_0004);
         let mut final_link_state = 10_u8;
-        let link = read_u8(first_frame_node.context().completion_byte_6c_address());
+        let link = read_u8(first_frame_node.context().link_id_address());
         let slot_kind = read_u8(slot.kind().get());
 
         if slot_kind != 0 {
@@ -4720,7 +4720,7 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 });
             }
 
-            let next = read_u32(context.descriptor_state_address());
+            let next = read_u32(context.next_in_ampdu_address());
             if next == 0 {
                 break;
             }
@@ -5391,7 +5391,7 @@ where
                             write_u8(message.kind().get(), 7);
                             write_u8(message.interface().get(), interface as u8);
                             write_u8(message.completion_tid().get(), read_u8(context.tid_address()));
-                            write_u8(message.completion_state().get(), read_u8(context.completion_byte_6c_address()));
+                            write_u8(message.completion_state().get(), read_u8(context.link_id_address()));
                             let queue = usize::from(read_u8(context.access_category_address()));
                             write_u8(
                                 message.completion_queue().get(),
@@ -6175,7 +6175,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     mmio.write_u32(frame.ownership_bits(), ownership_flags);
     let timestamp = mmio.read_u32(0x0ac0_0004);
     mmio.write_u32(frame.scheduler_timestamp(), timestamp);
-    mmio.write_u32(frame.descriptor_state(), 0);
+    mmio.write_u32(frame.next_in_ampdu(), 0);
     if publication_bisect_reached(4) {
         return 4;
     }
@@ -6676,7 +6676,7 @@ pub unsafe fn prepare_probe_context(
         write_u16(context_address.try_count_address(), 0);
         write_u16(context_address.auxiliary_state_address(), 0);
         write_u32(context_address.ownership_bits_address(), 1);
-        write_u32(context_address.descriptor_state_address(), 0);
+        write_u32(context_address.next_in_ampdu_address(), 0);
         // Vendor sources `ctx+0x98` from a ROM-owned pointer. Preserve the
         // pool value until that ROM/global state is translated; zero is not a
         // reference-faithful substitute once the context becomes live.
@@ -9534,7 +9534,7 @@ mod tests {
         assert_eq!(internal.insertion_mode_address(), 0x0400_912b);
         assert_eq!(internal.byte_57_address(), 0x0400_912f);
         assert_eq!(internal.retry_random_address(), 0x0400_9132);
-        assert_eq!(internal.completion_byte_6c_address(), 0x0400_9144);
+        assert_eq!(internal.link_id_address(), 0x0400_9144);
         assert_eq!(internal.qos_control_address(), 0x0400_914c);
         assert_eq!(internal.cipher_class_address(), 0x0400_914e);
         assert_eq!(internal.word_7c_address(), 0x0400_9154);
@@ -9559,7 +9559,7 @@ mod tests {
         assert_eq!(host.insertion_mode_address(), 0x0400_5acb);
         assert_eq!(host.byte_57_address(), 0x0400_5acf);
         assert_eq!(host.retry_random_address(), 0x0400_5ad2);
-        assert_eq!(host.completion_byte_6c_address(), 0x0400_5ae4);
+        assert_eq!(host.link_id_address(), 0x0400_5ae4);
         assert_eq!(host.qos_control_address(), 0x0400_5aec);
         assert_eq!(host.cipher_class_address(), 0x0400_5aee);
         assert_eq!(host.word_7c_address(), 0x0400_5af4);

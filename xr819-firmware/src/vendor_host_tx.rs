@@ -67,6 +67,33 @@ pub const fn valid_phase_transition(current: HostTxPhase, next: HostTxPhase) -> 
     )
 }
 
+/// Fields which must remain identical across one vendor A-MPDU chain.
+///
+/// The decompiled builder compares the internal link and rate directly. The
+/// queue-to-pipe mapping supplies the TID grouping upstream; retaining it here
+/// makes that otherwise implicit contract testable before any chain pointer is
+/// published.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AmpduGroupingKey {
+    pub(crate) interface: u8,
+    pub(crate) link: u8,
+    pub(crate) tid: u8,
+    pub(crate) rate: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AmpduCandidate {
+    pub(crate) key: AmpduGroupingKey,
+    pub(crate) frame_control: u16,
+}
+
+/// Restrict the first aggregate slice to same-interface/link/TID/rate QoS data.
+pub(crate) fn can_form_ampdu_pair(first: AmpduCandidate, second: AmpduCandidate) -> bool {
+    let first_qos_data = first.frame_control & 0x008c == 0x0088;
+    let second_qos_data = second.frame_control & 0x008c == 0x0088;
+    first_qos_data && second_qos_data && first.key == second.key
+}
+
 /// One borrowed HIF request and its class-0 context identity. The release
 /// token stays here until the inherited confirmation handoff or an explicit
 /// abort. This does not claim the vendor's request-buffer lifetime is matched.
@@ -929,6 +956,24 @@ pub struct SchedulerLiveDiagnostic {
     pub receive_gate: u8,
 }
 
+/// Snapshot the aggregation grouping fields at the scheduler decision point.
+///
+/// # Safety
+/// The retained PAS context must remain mapped and software-owned.
+#[cfg(target_arch = "arm")]
+pub(crate) unsafe fn ampdu_candidate(retained: &RetainedHostTx) -> AmpduCandidate {
+    let context = retained.context;
+    AmpduCandidate {
+        key: AmpduGroupingKey {
+            interface: unsafe { read_host_u8(context.interface()) },
+            link: unsafe { read_host_u8(context.link_id()) },
+            tid: unsafe { read_host_u8(context.tid()) },
+            rate: unsafe { read_host_u8(context.tx_rate()) },
+        },
+        frame_control: unsafe { read_host_u16(context.frame_control()) },
+    }
+}
+
 /// Snapshot the non-aggregate scheduler gates without changing ownership.
 ///
 /// # Safety
@@ -1272,7 +1317,7 @@ unsafe fn reserve_non_aggregate_scheduler_at(
             read_host_u32(context.ownership_bits()) | 0x100,
         );
         write_host_u32(context.scheduler_timestamp(), vendor_timer());
-        write_host_u32(context.descriptor_state(), 0);
+        write_host_u32(context.next_in_ampdu(), 0);
         write_live_u8(slot_record, 0);
         write_live_u8(
             crate::dtcm::mac_pipe_slot_retry_rate_unchecked(pipe_index, slot_index).get() as u32,
@@ -1408,7 +1453,7 @@ pub fn write_host_context_fields<W: HostContextWriter>(
     writer.write_u16(context.try_count(), 0);
     writer.write_u16(context.auxiliary_state(), 0);
     writer.write_u8(context.insertion_mode(), 1);
-    writer.write_u32(context.descriptor_state(), 0);
+    writer.write_u32(context.next_in_ampdu(), 0);
     writer.write_u8(context.tx_rate(), metadata.max_tx_rate);
 }
 
@@ -2463,6 +2508,33 @@ mod tests {
             }),
             NonAggregateSchedulerDecision::Complete(10)
         );
+    }
+
+    #[test]
+    fn ampdu_pair_requires_qos_data_and_one_grouping_key() {
+        let first = AmpduCandidate {
+            key: AmpduGroupingKey { interface: 0, link: 2, tid: 5, rate: 19 },
+            frame_control: 0x0188,
+        };
+        assert!(can_form_ampdu_pair(first, first));
+        assert!(!can_form_ampdu_pair(
+            first,
+            AmpduCandidate { frame_control: 0x0008, ..first },
+        ));
+        assert!(!can_form_ampdu_pair(
+            first,
+            AmpduCandidate {
+                key: AmpduGroupingKey { rate: 18, ..first.key },
+                ..first
+            },
+        ));
+        assert!(!can_form_ampdu_pair(
+            first,
+            AmpduCandidate {
+                key: AmpduGroupingKey { tid: 4, ..first.key },
+                ..first
+            },
+        ));
     }
 
     #[test]

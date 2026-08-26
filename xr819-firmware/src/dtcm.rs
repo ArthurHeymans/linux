@@ -917,7 +917,7 @@ struct HostPasContext {
     duration: SharedU16,                           // +0x36
     payload_extended: SharedU16,                   // +0x38
     payload_base: SharedU16,                       // +0x3a
-    descriptor_state: SharedU32,                   // +0x3c
+    next_in_ampdu: SharedU32,                      // +0x3c
     opaque_40: OpaqueBytes<0x08>,
     word_48: SharedU32,                            // +0x48; unresolved timing/accounting word
     frame_state_address: SharedScalar<PacketRamAddress>, // +0x4c
@@ -933,7 +933,7 @@ struct HostPasContext {
     interface: SharedU8,                           // +0x69
     duration_slot: SharedU8,                       // +0x6a
     host_link: SharedU8,                           // +0x6b
-    completion_byte_6c: SharedU8,                  // +0x6c; copied into completion metadata
+    link_id: SharedU8,                             // +0x6c; TX BA/aggregate link identity
     opaque_6d: OpaqueBytes<0x07>,
     qos_control: SharedU16,                        // +0x74
     cipher_class: SharedU8,                        // +0x76
@@ -1167,7 +1167,7 @@ struct InternalPasContext {
     duration: SharedU16,
     payload_extended: SharedU16,
     payload_base: SharedU16,
-    descriptor_state: SharedU32,
+    next_in_ampdu: SharedU32,
     opaque_40: OpaqueBytes<0x08>,
     word_48: SharedU32,
     frame_state_address: SharedU32,
@@ -1183,7 +1183,7 @@ struct InternalPasContext {
     interface: SharedU8,
     duration_slot: SharedU8,
     host_link: SharedU8,
-    completion_byte_6c: SharedU8,
+    link_id: SharedU8,
     opaque_6d: OpaqueBytes<0x03>,
     cipher_buffer: SharedU32,
     qos_control: SharedU16,
@@ -1586,7 +1586,7 @@ impl InternalContextAddress {
     pub(crate) const fn duration(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, duration)) }
     pub(crate) const fn payload_extended(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, payload_extended)) }
     pub(crate) const fn payload_base(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, payload_base)) }
-    pub(crate) const fn descriptor_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, descriptor_state)) }
+    pub(crate) const fn next_in_ampdu(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, next_in_ampdu)) }
     pub(crate) const fn word_48(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, word_48)) }
     pub(crate) const fn frame_state_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, frame_state_address)) }
     pub(crate) const fn auxiliary_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, auxiliary_state)) }
@@ -1599,7 +1599,7 @@ impl InternalContextAddress {
     pub(crate) const fn interface(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, interface)) }
     pub(crate) const fn duration_slot(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, duration_slot)) }
     pub(crate) const fn host_link(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, host_link)) }
-    pub(crate) const fn completion_byte_6c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, completion_byte_6c)) }
+    pub(crate) const fn link_id(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, link_id)) }
     pub(crate) const fn cipher_buffer(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, cipher_buffer)) }
     pub(crate) const fn qos_control(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, qos_control)) }
     pub(crate) const fn cipher_class(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, cipher_class)) }
@@ -1781,7 +1781,7 @@ impl HostContextAddress {
     pub(crate) const fn duration(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, duration)) }
     pub(crate) const fn payload_extended(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, payload_extended)) }
     pub(crate) const fn payload_base(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, payload_base)) }
-    pub(crate) const fn descriptor_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, descriptor_state)) }
+    pub(crate) const fn next_in_ampdu(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, next_in_ampdu)) }
     pub(crate) const fn word_48(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, word_48)) }
     pub(crate) const fn frame_state_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, frame_state_address)) }
     pub(crate) const fn auxiliary_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, auxiliary_state)) }
@@ -1794,7 +1794,7 @@ impl HostContextAddress {
     pub(crate) const fn interface(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, interface)) }
     pub(crate) const fn duration_slot(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, duration_slot)) }
     pub(crate) const fn host_link(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, host_link)) }
-    pub(crate) const fn completion_byte_6c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, completion_byte_6c)) }
+    pub(crate) const fn link_id(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, link_id)) }
     pub(crate) const fn qos_control(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, qos_control)) }
     pub(crate) const fn cipher_class(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, cipher_class)) }
     pub(crate) const fn word_7c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(HostPasContext, word_7c)) }
@@ -3405,7 +3405,7 @@ const _: () = {
     assert!(core::mem::offset_of!(HostPasContext, duration) == 0x36);
     assert!(core::mem::offset_of!(HostPasContext, payload_extended) == 0x38);
     assert!(core::mem::offset_of!(HostPasContext, payload_base) == 0x3a);
-    assert!(core::mem::offset_of!(HostPasContext, descriptor_state) == 0x3c);
+    assert!(core::mem::offset_of!(HostPasContext, next_in_ampdu) == 0x3c);
     assert!(core::mem::offset_of!(HostPasContext, opaque_40) == 0x40);
     assert!(core::mem::offset_of!(HostPasContext, word_48) == 0x48);
     assert!(core::mem::offset_of!(HostPasContext, frame_state_address) == 0x4c);
@@ -3421,7 +3421,7 @@ const _: () = {
     assert!(core::mem::offset_of!(HostPasContext, interface) == 0x69);
     assert!(core::mem::offset_of!(HostPasContext, duration_slot) == 0x6a);
     assert!(core::mem::offset_of!(HostPasContext, host_link) == 0x6b);
-    assert!(core::mem::offset_of!(HostPasContext, completion_byte_6c) == 0x6c);
+    assert!(core::mem::offset_of!(HostPasContext, link_id) == 0x6c);
     assert!(core::mem::offset_of!(HostPasContext, opaque_6d) == 0x6d);
     assert!(core::mem::offset_of!(HostPasContext, qos_control) == 0x74);
     assert!(core::mem::offset_of!(HostPasContext, cipher_class) == 0x76);
@@ -3607,7 +3607,7 @@ const _: () = {
     assert!(core::mem::offset_of!(InternalPasContext, completion_timestamp) == 0x14);
     assert!(core::mem::offset_of!(InternalPasContext, terminal_status) == 0x1c);
     assert!(core::mem::offset_of!(InternalPasContext, ownership_bits) == 0x2c);
-    assert!(core::mem::offset_of!(InternalPasContext, descriptor_state) == 0x3c);
+    assert!(core::mem::offset_of!(InternalPasContext, next_in_ampdu) == 0x3c);
     assert!(core::mem::offset_of!(InternalPasContext, frame_state_address) == 0x4c);
     assert!(core::mem::offset_of!(InternalPasContext, interface) == 0x69);
     assert!(core::mem::offset_of!(InternalPasContext, cipher_buffer) == 0x70);
@@ -4323,7 +4323,7 @@ mod tests {
             (context.try_count(), 0x72),
             (context.ownership_bits(), 0x80),
             (context.duration(), 0x8a),
-            (context.descriptor_state(), 0x90),
+            (context.next_in_ampdu(), 0x90),
             (context.word_48(), 0x9c),
             (context.frame_state_address(), 0xa0),
             (context.auxiliary_state(), 0xa4),
@@ -4335,7 +4335,7 @@ mod tests {
             (context.interface(), 0xbd),
             (context.duration_slot(), 0xbe),
             (context.host_link(), 0xbf),
-            (context.completion_byte_6c(), 0xc0),
+            (context.link_id(), 0xc0),
             (context.qos_control(), 0xc8),
             (context.cipher_class(), 0xca),
             (context.word_7c(), 0xd0),
@@ -5322,7 +5322,7 @@ fn initialized_phy_gain_source_record_addresses_are_exact() { assert_eq!(INITIAL
         assert_eq!(first.expiry_time().get(), 0x0400_90e8);
         assert_eq!(first.terminal_status().get(), 0x0400_90f4);
         assert_eq!(first.cipher_buffer().get(), 0x0400_9148);
-        assert_eq!(last.completion_byte_6c().get(), 0x0400_9424);
+        assert_eq!(last.link_id().get(), 0x0400_9424);
         assert!(InternalContextAddress::from_index(3).is_none());
     }
 
