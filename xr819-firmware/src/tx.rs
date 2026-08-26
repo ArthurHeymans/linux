@@ -1185,10 +1185,12 @@ pub fn capture_pipe_scheduler_word<M: MacPipeMmio>(mmio: &mut M) -> SchedulerWor
 
 #[repr(C)]
 struct TxHardwareRingLayout {
-    opaque_00: [u8; 0x18],
+    duration_fifo: u32,
+    opaque_04: [u8; 0x10],
+    go: u32,
     inactive_sentinel: u32,
-    opaque_1c: u32,
-    cursor_word: u32,
+    completion_word: u32,
+    cursor_and_pending_mask: u32,
 }
 
 #[repr(transparent)]
@@ -1197,9 +1199,31 @@ struct TxHardwareRingAddress(u32);
 
 impl TxHardwareRingAddress {
     const fn new(address: u32) -> Self { Self(address) }
+    const fn raw(self) -> u32 { self.0 }
     const fn field(self, offset: usize) -> u32 { self.0.wrapping_add(offset as u32) }
+    const fn duration_fifo(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, duration_fifo)) }
+    const fn go(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, go)) }
     const fn inactive_sentinel(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, inactive_sentinel)) }
-    const fn cursor_word(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, cursor_word)) }
+    const fn completion_word(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, completion_word)) }
+    const fn cursor_and_pending_mask(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, cursor_and_pending_mask)) }
+}
+
+#[repr(C)]
+struct TxDescriptorLayout {
+    opaque_00: u32,
+    flags: u32,
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TxDescriptorAddress(u32);
+
+impl TxDescriptorAddress {
+    const fn new(address: u32) -> Self { Self(address) }
+    const fn raw(self) -> u32 { self.0 }
+    const fn flags(self) -> u32 {
+        self.0.wrapping_add(core::mem::offset_of!(TxDescriptorLayout, flags) as u32)
+    }
 }
 
 fn pipe_record_address(pipe: u8) -> crate::dtcm::MacPipeRecordAddress {
@@ -1257,9 +1281,9 @@ fn resync_pipe_ring_cursor<M: MacPipeMmio>(
     cursor: u8,
 ) {
     let cursor = u32::from(cursor & 3);
-    let word = mmio.read_u32(ring.cursor_word());
+    let word = mmio.read_u32(ring.cursor_and_pending_mask());
     mmio.write_u32(
-        ring.cursor_word(),
+        ring.cursor_and_pending_mask(),
         (word & 0xc0ff_ffff) | (cursor << 24) | (cursor << 27),
     );
 }
@@ -1300,7 +1324,7 @@ pub fn pipe_cursor_diagnostic<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u
     let ring_word = if ring == 0 {
         0
     } else {
-        mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_word())
+        mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_and_pending_mask())
     };
     let packed = u32::from(pipe & 3)
         | (u32::from(mmio.read_u8(record.producer_slot().get() as u32) & 0x0f) << 4)
@@ -1375,10 +1399,17 @@ unsafe fn capture_status2_ownership(
     unsafe { crate::host_tx_diagnostics::record_status2_snapshot(phase, &words) };
 }
 
-fn current_slot_address<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> u32 {
+fn current_slot<M: MacPipeMmio>(
+    mmio: &mut M,
+    pipe: u8,
+) -> crate::dtcm::MacPipeSlotAddress {
     let record = pipe_record_address(pipe);
     let slot = usize::from(mmio.read_u8(record.current_slot().get() as u32));
-    record.slot_unchecked(slot).raw()
+    record.slot_unchecked(slot)
+}
+
+fn current_slot_address<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> u32 {
+    current_slot(mmio, pipe).raw()
 }
 
 fn publish_current_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u32) {
@@ -1415,9 +1446,9 @@ pub fn execute_mac_pipe_service<M: MacPipeMmio, P: TxPolicy>(
         } => {
             for pipe in 0..3_u8 {
                 if asserted & (1 << pipe) != 0 {
-                    let slot = current_slot_address(mmio, pipe);
-                    let pas = mmio.read_u32(slot + 0x0c);
-                    let backoff_word = mmio.read_u32(slot + 0x14);
+                    let slot = current_slot(mmio, pipe);
+                    let pas = mmio.read_u32(slot.frame().get() as u32);
+                    let backoff_word = mmio.read_u32(slot.command().get() as u32);
                     policy.program_random_backoff(pipe, backoff_word, pas);
                 }
             }
@@ -1806,34 +1837,29 @@ pub(crate) fn ineligible_tx_status_snapshot() -> (u32, u32, u32) {
 /// own the pipe records and completion state.
 #[cfg(target_arch = "arm")]
 unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
-    pipe_state: usize,
-    slot: usize,
+    record: crate::dtcm::MacPipeRecordAddress,
+    slot: crate::dtcm::MacPipeSlotAddress,
     cursor: OrdinaryTxPipeCursorPlan,
     backend: &mut B,
 ) {
     unsafe {
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RETIRED);
-        let frame_node = read_u32(slot + 0x0c);
+        let frame_node = read_u32(slot.frame().get());
         if frame_node != 0 {
-            complete_tx_pipe_slot(
-                FrameNodeAddress::new(frame_node),
-                slot as u32,
-                0x0b,
-                backend,
-            );
+            complete_tx_pipe_slot(FrameNodeAddress::new(frame_node), slot.raw(), 0x0b, backend);
         } else {
-            write_u32(slot + 0x0c, 0);
+            write_u32(slot.frame().get(), 0);
         }
         match cursor {
             OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current } => {
-                write_u8(pipe_state + 2, next_current);
-                write_u8(pipe_state, next_current);
+                write_u8(record.current_slot().get(), next_current);
+                write_u8(record.producer_slot().get(), next_current);
             }
             OrdinaryTxPipeCursorPlan::Recycle { next_head } => {
-                write_u8(pipe_state, next_head);
-                write_u8(pipe_state + 3, 0);
-                write_u8(pipe_state + 4, 0);
-                write_u8(pipe_state + 5, 5);
+                write_u8(record.producer_slot().get(), next_head);
+                write_u8(record.state().get(), 0);
+                write_u8(record.control().get(), 0);
+                write_u8(record.watchdog().get(), 5);
             }
         }
     }
@@ -1926,7 +1952,7 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                 }
                 PipeWatchdogAction::Expired => {
                     let current = read_u8(record.current_slot().get()) & 3;
-                    let slot = record.slot_unchecked(usize::from(current)).raw() as usize;
+                    let slot = record.slot_unchecked(usize::from(current));
                     let cursor = hardware_pipe_cursor(&mut VolatileMacPipeMmio, pipe)
                         .map(|cursor| OrdinaryTxPipeCursorPlan::Recycle {
                             next_head: cursor & 3,
@@ -1937,7 +1963,7 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                     crate::host_tx_diagnostics::bump(
                         crate::host_tx_diagnostics::counter::WATCHDOG_RECOVERED,
                     );
-                    retire_unmatched_tx_slot(record.raw() as usize, slot, cursor, backend);
+                    retire_unmatched_tx_slot(record, slot, cursor, backend);
                     // Vendor `txp_fn_4155` clears the programmed/abort bits and
                     // reloads the counter after a recovery pass.
                     write_u8(record.control().get(), read_u8(record.control().get()) & 0xf6);
@@ -1956,7 +1982,7 @@ fn hardware_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> Option<u8> {
     if ring == 0 {
         return None;
     }
-    Some(((mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_word()) >> 27) & 3) as u8)
+    Some(((mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_and_pending_mask()) >> 27) & 3) as u8)
 }
 
 /// Policy boundary for the unresolved `pas_backoff_reset` in ordinary status.
@@ -1976,21 +2002,22 @@ pub trait TxStatusPolicy: PipeSlotCompletionEffects {
 /// exclusively owned by the caller.
 pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend: &mut B) {
     let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) } & 3;
-    let pipe_state = pipe_state_address(pipe) as usize;
-    let slot = current_slot_address(&mut VolatileMacPipeMmio, pipe) as usize;
+    let record = pipe_record_address(pipe);
+    let current = unsafe { read_u8(record.current_slot().get()) };
+    let slot = record.slot_unchecked(usize::from(current));
     unsafe {
-        write_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get(), pipe_state as u32);
-        write_u32(crate::dtcm::MAC_CURRENT_SLOT.get(), slot as u32);
+        write_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get(), record.raw());
+        write_u32(crate::dtcm::MAC_CURRENT_SLOT.get(), slot.raw());
 
         let input = OrdinaryTxPipeStatusInput {
-            pipe_active: read_u8(pipe_state + 3) == 1,
-            expected_status: read_u8(slot + 1),
-            slot_kind: read_u8(slot),
-            slot_state: read_u8(slot + 3),
+            pipe_active: read_u8(record.state().get()) == 1,
+            expected_status: read_u8(slot.expected_status().get()),
+            slot_kind: read_u8(slot.kind().get()),
+            slot_state: read_u8(slot.state().get()),
             global_busy: read_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get()) != 0,
-            pipe_current: read_u8(pipe_state + 2),
-            pipe_last: read_u8(pipe_state + 1),
-            pipe_status: read_u8(pipe_state + 5),
+            pipe_current: read_u8(record.current_slot().get()),
+            pipe_last: read_u8(record.last_slot().get()),
+            pipe_status: read_u8(record.watchdog().get()),
         };
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::STATUS);
         crate::host_tx_diagnostics::observe(
@@ -2018,7 +2045,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
         }
 
         // This write must precede the busy/suppression decision.
-        write_u8(slot + 3, 5);
+        write_u8(slot.state().get(), 5);
         match plan {
             OrdinaryTxPipeStatusPlan::Ineligible => unreachable!(),
             OrdinaryTxPipeStatusPlan::SuppressedAfterSlotMark => (),
@@ -2027,7 +2054,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                 next_current,
             } => {
                 if initialize_pipe_status {
-                    write_u8(pipe_state + 5, 1);
+                    write_u8(record.watchdog().get(), 1);
                 }
                 write_u32(
                     PIPE_STATUS_COUNTER as usize,
@@ -2037,7 +2064,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                     crate::dtcm::MAC_STATUS_ACCOUNTING.get(),
                     read_u32(crate::dtcm::MAC_STATUS_ACCOUNTING.get()).wrapping_add(1),
                 );
-                write_u8(pipe_state + 2, next_current);
+                write_u8(record.current_slot().get(), next_current);
             }
             OrdinaryTxPipeStatusPlan::Complete {
                 initialize_pipe_status,
@@ -2045,9 +2072,9 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
             } => {
                 crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::COMPLETED);
                 if initialize_pipe_status {
-                    write_u8(pipe_state + 5, 1);
+                    write_u8(record.watchdog().get(), 1);
                 }
-                let pas = read_u32(slot + 0x0c);
+                let pas = read_u32(slot.frame().get());
                 backend.reset_status_backoff(
                     read_u8(pas as usize + 0x69),
                     read_u8(
@@ -2058,17 +2085,17 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                 );
                 let pas_address = pas as usize;
                 write_u32(pas_address + 0x2c, read_u32(pas_address + 0x2c) | 0x200);
-                complete_tx_pipe_slot(FrameNodeAddress::new(pas), slot as u32, 0, backend);
+                complete_tx_pipe_slot(FrameNodeAddress::new(pas), slot.raw(), 0, backend);
                 match cursor {
                     OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current } => {
-                        write_u8(pipe_state + 2, next_current);
-                        write_u8(pipe_state, next_current);
+                        write_u8(record.current_slot().get(), next_current);
+                        write_u8(record.producer_slot().get(), next_current);
                     }
                     OrdinaryTxPipeCursorPlan::Recycle { next_head } => {
-                        write_u8(pipe_state, next_head);
-                        write_u8(pipe_state + 3, 0);
-                        write_u8(pipe_state + 4, 0);
-                        write_u8(pipe_state + 5, 5);
+                        write_u8(record.producer_slot().get(), next_head);
+                        write_u8(record.state().get(), 0);
+                        write_u8(record.control().get(), 0);
+                        write_u8(record.watchdog().get(), 5);
                     }
                 }
             }
@@ -2357,27 +2384,28 @@ where
     B: SingleFrameRearmBackend,
 {
     let pipe = pipe & 3;
-    let pipe_state = pipe_state_address(pipe);
+    let record = pipe_record_address(pipe);
+    let slot_address = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot);
 
     let flags = mmio.read_u32(frame_node.raw() + 4);
-    if mmio.read_u8(slot) == 1 {
+    if mmio.read_u8(slot_address.kind().get() as u32) == 1 {
         backend.fatal_unsupported_rearm_shape(pipe, slot, frame_node);
     }
     if flags & 0x0008_0000 != 0 {
         backend.rebuild_rate_descriptor(pipe, slot, frame_node);
     }
 
-    let descriptor = mmio.read_u32(slot + 0x14);
-    let status = mmio.read_u8(slot + 1);
-    build_fixed_rate_retry_duration(mmio, descriptor, frame_node);
-    let descriptor_flags = mmio.read_u32(descriptor + 4) | u32::from(status).wrapping_add(0x80);
-    mmio.write_u32(descriptor + 4, descriptor_flags);
+    let descriptor = TxDescriptorAddress::new(mmio.read_u32(slot_address.command().get() as u32));
+    let status = mmio.read_u8(slot_address.expected_status().get() as u32);
+    build_fixed_rate_retry_duration(mmio, descriptor.raw(), frame_node);
+    let descriptor_flags = mmio.read_u32(descriptor.flags()) | u32::from(status).wrapping_add(0x80);
+    mmio.write_u32(descriptor.flags(), descriptor_flags);
 
     mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
 
-    let command = mmio.read_u32(pipe_state + 8);
+    let ring = TxHardwareRingAddress::new(mmio.read_u32(record.hardware_ring().get() as u32));
     if mmio.read_u8(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32) & 2 != 0 {
-        mmio.write_u32(command + 0x18, PIPE_RETRY_INACTIVE_SENTINEL);
+        mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
         mmio.write_u32(
             PIPE_IRQ_PENDING,
             0_u32.wrapping_sub(pending_mask.wrapping_add(PIPE_RETRY_SPECIAL_ACK)),
@@ -2385,8 +2413,8 @@ where
         return SingleFrameRearmOutcome::HardwareSentinelAcknowledged;
     }
 
-    let producer = mmio.read_u8(pipe_state) & 3;
-    let current = mmio.read_u8(pipe_state + 2) & 3;
+    let producer = mmio.read_u8(record.producer_slot().get() as u32) & 3;
+    let current = mmio.read_u8(record.current_slot().get() as u32) & 3;
     if producer != current {
         // Vendor's multi-slot branch first checks a mapped companion slot. For
         // an ordinary legacy batch that slot has kind 0 and a different PAS;
@@ -2394,10 +2422,12 @@ where
         // current command-mask bit and acknowledge, without forcing producer
         // to follow the hardware cursor. The remaining remapped/A-MPDU shape
         // is still deliberately unsupported.
-        if mmio.read_u8(slot) == 0 && flags & (1 << 15) == 0 {
-            let command = mmio.read_u32(pipe_state + 8);
-            let command_mask = mmio.read_u32(command + 0x20);
-            mmio.write_u32(command + 0x20, command_mask & !(1_u32 << current));
+        if mmio.read_u8(slot_address.kind().get() as u32) == 0 && flags & (1 << 15) == 0 {
+            let command_mask = mmio.read_u32(ring.cursor_and_pending_mask());
+            mmio.write_u32(
+                ring.cursor_and_pending_mask(),
+                command_mask & !(1_u32 << current),
+            );
             mmio.write_u32(
                 PIPE_IRQ_PENDING,
                 0_u32.wrapping_sub(pending_mask.wrapping_add(1)),
@@ -2410,11 +2440,14 @@ where
     // The vendor repeats descriptor-flag publication for a non-0xff frame
     // kind before clearing the command ownership bit.
     if mmio.read_u8(frame_node.raw() + 0x56) != 0xff {
-        let descriptor_flags = mmio.read_u32(descriptor + 4) | u32::from(status).wrapping_add(0x80);
-        mmio.write_u32(descriptor + 4, descriptor_flags);
+        let descriptor_flags = mmio.read_u32(descriptor.flags()) | u32::from(status).wrapping_add(0x80);
+        mmio.write_u32(descriptor.flags(), descriptor_flags);
     }
-    let command_mask = mmio.read_u32(command + 0x20);
-    mmio.write_u32(command + 0x20, command_mask & !(1_u32 << current));
+    let command_mask = mmio.read_u32(ring.cursor_and_pending_mask());
+    mmio.write_u32(
+        ring.cursor_and_pending_mask(),
+        command_mask & !(1_u32 << current),
+    );
     mmio.write_u32(
         PIPE_IRQ_PENDING,
         0_u32.wrapping_sub(pending_mask.wrapping_add(1)),
@@ -2440,30 +2473,33 @@ where
     B: SingleTxRetryBackend,
 {
     let pipe = mmio.read_u8(crate::dtcm::MAC_CURRENT_PIPE.get() as u32) & 3;
-    let pipe_state = pipe_state_address(pipe);
-    mmio.write_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get() as u32, pipe_state);
-    let slot = current_slot_address(mmio, pipe);
-    mmio.write_u32(crate::dtcm::MAC_CURRENT_SLOT.get() as u32, slot);
+    let record = pipe_record_address(pipe);
+    mmio.write_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get() as u32, record.raw());
+    let slot = current_slot(mmio, pipe);
+    mmio.write_u32(crate::dtcm::MAC_CURRENT_SLOT.get() as u32, slot.raw());
     let owned_mask = 0x100_u32 << pipe;
     let pending = scheduler_word.raw();
 
     if pending & owned_mask == 0 {
         return SingleTxRetryOutcome::MaskNotOwned;
     }
-    if mmio.read_u8(slot + 3) != 3 {
+    if mmio.read_u8(slot.state().get() as u32) != 3 {
         return SingleTxRetryOutcome::SlotNotStarted;
     }
 
-    let frame_node = FrameNodeAddress::new(mmio.read_u32(slot + 0x0c));
+    let frame_node = FrameNodeAddress::new(mmio.read_u32(slot.frame().get() as u32));
     // Vendor ownership transition: started -> retry-owned, then globally busy.
-    mmio.write_u8(slot + 3, 4);
+    mmio.write_u8(slot.state().get() as u32, 4);
     mmio.write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32, 1);
 
-    if mmio.read_u8(pipe_state + 3) != 1 {
+    if mmio.read_u8(record.state().get() as u32) != 1 {
         for selected_pipe in 0..4_u8 {
             if pending & (0x100_u32 << selected_pipe) != 0 {
-                let command = mmio.read_u32(pipe_state_address(selected_pipe) + 8);
-                mmio.write_u32(command + 0x18, PIPE_RETRY_INACTIVE_SENTINEL);
+                let selected_record = pipe_record_address(selected_pipe);
+                let ring = TxHardwareRingAddress::new(
+                    mmio.read_u32(selected_record.hardware_ring().get() as u32),
+                );
+                mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
             }
         }
         mmio.write_u32(
@@ -2473,35 +2509,37 @@ where
         return SingleTxRetryOutcome::InactivePipeAcknowledged;
     }
 
-    if mmio.read_u8(slot + 1) == 6 {
-        backend.fatal_unsupported_multi_slot_retry(pipe, slot, frame_node);
+    if mmio.read_u8(slot.expected_status().get() as u32) == 6 {
+        backend.fatal_unsupported_multi_slot_retry(pipe, slot.raw(), frame_node);
     }
-    if (mmio.read_u8(pipe_state + 5) as i8) < 1 {
-        mmio.write_u8(pipe_state + 5, 1);
+    if (mmio.read_u8(record.watchdog().get() as u32) as i8) < 1 {
+        mmio.write_u8(record.watchdog().get() as u32, 1);
     }
 
-    match backend.decide_retry(pipe, slot, frame_node) {
+    match backend.decide_retry(pipe, slot.raw(), frame_node) {
         SingleTxRetryDecision::Rearm => {
-            backend.rearm_and_ack(pipe, slot, frame_node, owned_mask);
+            backend.rearm_and_ack(pipe, slot.raw(), frame_node, owned_mask);
             SingleTxRetryOutcome::Rearmed
         }
         SingleTxRetryDecision::GiveUp => {
             // The trigger precedes completion and the command completion word
             // follows `txp_fn_2441`, exactly as in the non-status-6 branch.
             mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
-            let current = mmio.read_u8(pipe_state + 2);
-            let last = mmio.read_u8(pipe_state + 1);
-            backend.complete_give_up(frame_node, slot, 0x0b);
-            let command = mmio.read_u32(pipe_state + 8);
-            mmio.write_u32(command + 0x1c, 1);
+            let current = mmio.read_u8(record.current_slot().get() as u32);
+            let last = mmio.read_u8(record.last_slot().get() as u32);
+            backend.complete_give_up(frame_node, slot.raw(), 0x0b);
+            let ring = TxHardwareRingAddress::new(
+                mmio.read_u32(record.hardware_ring().get() as u32),
+            );
+            mmio.write_u32(ring.completion_word(), 1);
 
             let next = current.wrapping_add(1) & 3;
-            mmio.write_u8(pipe_state + 2, next);
-            mmio.write_u8(pipe_state, next);
+            mmio.write_u8(record.current_slot().get() as u32, next);
+            mmio.write_u8(record.producer_slot().get() as u32, next);
             if current == last {
-                mmio.write_u8(pipe_state + 3, 0);
-                mmio.write_u8(pipe_state + 4, 0);
-                mmio.write_u8(pipe_state + 5, 5);
+                mmio.write_u8(record.state().get() as u32, 0);
+                mmio.write_u8(record.control().get() as u32, 0);
+                mmio.write_u8(record.watchdog().get() as u32, 5);
             }
             mmio.write_u32(
                 PIPE_IRQ_PENDING,
@@ -2804,12 +2842,13 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
             return;
         }
 
-        let pipe_state = pipe_state_address(pipe) as usize;
-        if unsafe { read_u8(pipe_state + 3) } != 1 {
+        let record = pipe_record_address(pipe);
+        if unsafe { read_u8(record.state().get()) } != 1 {
             return;
         }
-        let slot = pipe_state + 0x0c + usize::from(unsafe { read_u8(pipe_state + 2) }) * 0x18;
-        if unsafe { read_u8(slot + 1) } == status {
+        let current = unsafe { read_u8(record.current_slot().get()) };
+        let slot = record.slot_unchecked(usize::from(current));
+        if unsafe { read_u8(slot.expected_status().get()) } == status {
             return;
         }
         let mismatch = self.backend.mismatch_count(pipe).wrapping_add(1);
@@ -4522,11 +4561,11 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
     backend: &mut B,
 ) {
     unsafe {
-        let slot = slot as usize;
+        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot);
         let timestamp = read_u32(0x0ac0_0004);
         let mut final_link_state = 10_u8;
         let link = read_u8(first_frame_node.context().completion_byte_6c_address());
-        let slot_kind = read_u8(slot);
+        let slot_kind = read_u8(slot.kind().get());
 
         if slot_kind != 0 {
             if slot_kind != 1 {
@@ -4539,13 +4578,13 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
             if link < 8 {
                 backend.link_set_state(link, 10);
             }
-            let descriptor = read_u32(slot + 0x10);
+            let descriptor = read_u32(slot.auxiliary().get());
             write_u32(descriptor as usize, read_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()));
             write_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get(), descriptor);
         }
 
         backend.rate_recovery_on_success(first_frame_node, status);
-        write_u32(slot + 0x0c, 0);
+        write_u32(slot.frame().get(), 0);
 
         let mut frame_node = first_frame_node;
         loop {
@@ -4650,8 +4689,12 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                         infallible_to_never(backend.invalid_link_assertion());
                     }
                 } else {
-                    let fifo = read_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get()) as usize;
-                    if read_u8(fifo + 2) == read_u8(fifo + 1) && link < 8 {
+                    let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(
+                        read_u32(crate::dtcm::MAC_CURRENT_PIPE_RECORD.get()),
+                    );
+                    if read_u8(record.current_slot().get()) == read_u8(record.last_slot().get())
+                        && link < 8
+                    {
                         let link_index = usize::from(link);
                         write_u32(crate::dtcm::ba_pipe_bitmap_low_unchecked(link_index).get(), 0);
                         write_u32(crate::dtcm::ba_pipe_bitmap_high_unchecked(link_index).get(), 0);
@@ -8179,8 +8222,16 @@ mod tests {
     fn hardware_ring_view_matches_cursor_and_sentinel_offsets() {
         let ring = TxHardwareRingAddress::new(0x9000);
         assert_eq!(core::mem::size_of::<TxHardwareRingLayout>(), 0x24);
+        assert_eq!(ring.raw(), 0x9000);
+        assert_eq!(ring.duration_fifo(), 0x9000);
+        assert_eq!(ring.go(), 0x9014);
         assert_eq!(ring.inactive_sentinel(), 0x9018);
-        assert_eq!(ring.cursor_word(), 0x9020);
+        assert_eq!(ring.completion_word(), 0x901c);
+        assert_eq!(ring.cursor_and_pending_mask(), 0x9020);
+        let descriptor = TxDescriptorAddress::new(0xa000);
+        assert_eq!(core::mem::size_of::<TxDescriptorLayout>(), 8);
+        assert_eq!(descriptor.raw(), 0xa000);
+        assert_eq!(descriptor.flags(), 0xa004);
     }
 
     #[test]

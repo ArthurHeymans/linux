@@ -51,7 +51,7 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
-    ('_RNvMsI_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
+    ('_RNvMsJ_NtCsiHlLB2CErfM_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
     ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04001720): 2,
     ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001738): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,

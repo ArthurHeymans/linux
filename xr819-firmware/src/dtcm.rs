@@ -1600,6 +1600,12 @@ impl InternalFrameNodeAddress {
 }
 
 impl MacPipeRecordAddress {
+    pub(crate) const fn from_raw_unchecked(address: u32) -> Self {
+        Self(DtcmAddress::from_offset_unchecked(
+            (address as usize).wrapping_sub(DTCM_STATE_BASE),
+        ))
+    }
+
     pub(crate) const fn from_index(pipe: usize) -> Option<Self> {
         if pipe < 4 { Some(Self::from_index_unchecked(pipe)) } else { None }
     }
@@ -1633,15 +1639,24 @@ impl MacPipeRecordAddress {
 }
 
 impl MacPipeSlotAddress {
+    pub(crate) const fn from_raw_unchecked(address: u32) -> Self {
+        Self(DtcmAddress::from_offset_unchecked(
+            (address as usize).wrapping_sub(DTCM_STATE_BASE),
+        ))
+    }
+
     pub(crate) const fn raw(self) -> u32 { self.0.get() as u32 }
     const fn field(self, offset: usize) -> DtcmAddress {
         DtcmAddress::from_offset_unchecked(self.0.offset() + offset)
     }
 
     pub(crate) const fn state_word(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word)) }
+    pub(crate) const fn kind(self) -> DtcmAddress { self.state_word() }
     pub(crate) const fn retry_rate(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 1) }
+    pub(crate) const fn expected_status(self) -> DtcmAddress { self.retry_rate() }
     pub(crate) const fn control_02(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 2) }
     pub(crate) const fn control_03(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 3) }
+    pub(crate) const fn state(self) -> DtcmAddress { self.control_03() }
     pub(crate) const fn frame(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, frame)) }
     pub(crate) const fn auxiliary(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, auxiliary)) }
     pub(crate) const fn command(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, command)) }
@@ -4840,13 +4855,18 @@ mod tests {
         assert_eq!(first.hardware_ring().get(), 0x0400_1728);
         assert_eq!(first_slot.raw(), 0x0400_172c);
         assert_eq!(first_slot.state_word().get(), 0x0400_172c);
+        assert_eq!(first_slot.kind().get(), 0x0400_172c);
         assert_eq!(first_slot.retry_rate().get(), 0x0400_172d);
+        assert_eq!(first_slot.expected_status().get(), 0x0400_172d);
         assert_eq!(first_slot.control_02().get(), 0x0400_172e);
         assert_eq!(first_slot.control_03().get(), 0x0400_172f);
+        assert_eq!(first_slot.state().get(), 0x0400_172f);
         assert_eq!(first_slot.frame().get(), 0x0400_1738);
         assert_eq!(first_slot.auxiliary().get(), 0x0400_173c);
         assert_eq!(first_slot.command().get(), 0x0400_1740);
         assert_eq!(last.slot_unchecked(3).command().get() + 4, 0x0400_18d0);
+        assert_eq!(MacPipeRecordAddress::from_raw_unchecked(first.raw()), first);
+        assert_eq!(MacPipeSlotAddress::from_raw_unchecked(first_slot.raw()), first_slot);
         assert!(MacPipeRecordAddress::from_index(4).is_none());
         assert_eq!(mac_pipe_record(0).unwrap().get(), 0x0400_1720);
         assert_eq!(mac_pipe_current_slot_unchecked(0).get(), 0x0400_1720);
