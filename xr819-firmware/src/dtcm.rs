@@ -1657,6 +1657,7 @@ impl MacPipeSlotAddress {
     pub(crate) const fn control_02(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 2) }
     pub(crate) const fn control_03(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, state_word) + 3) }
     pub(crate) const fn state(self) -> DtcmAddress { self.control_03() }
+    pub(crate) const fn duration(self) -> DtcmAddress { self.field(0x08) }
     pub(crate) const fn frame(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, frame)) }
     pub(crate) const fn auxiliary(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, auxiliary)) }
     pub(crate) const fn command(self) -> DtcmAddress { self.field(core::mem::offset_of!(MacPipeSlot, command)) }
@@ -4861,6 +4862,7 @@ mod tests {
         assert_eq!(first_slot.control_02().get(), 0x0400_172e);
         assert_eq!(first_slot.control_03().get(), 0x0400_172f);
         assert_eq!(first_slot.state().get(), 0x0400_172f);
+        assert_eq!(first_slot.duration().get(), 0x0400_1734);
         assert_eq!(first_slot.frame().get(), 0x0400_1738);
         assert_eq!(first_slot.auxiliary().get(), 0x0400_173c);
         assert_eq!(first_slot.command().get(), 0x0400_1740);

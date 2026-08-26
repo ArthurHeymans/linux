@@ -1202,6 +1202,8 @@ impl TxHardwareRingAddress {
     const fn raw(self) -> u32 { self.0 }
     const fn field(self, offset: usize) -> u32 { self.0.wrapping_add(offset as u32) }
     const fn duration_fifo(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, duration_fifo)) }
+    const fn diagnostic_word_0c(self) -> u32 { self.field(0x0c) }
+    const fn diagnostic_word_10(self) -> u32 { self.field(0x10) }
     const fn go(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, go)) }
     const fn inactive_sentinel(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, inactive_sentinel)) }
     const fn completion_word(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, completion_word)) }
@@ -5951,6 +5953,9 @@ fn prepare_pre_go_publication<M: MacPipeMmio>(
     duration: u32,
 ) {
     let frame = input.frame_node.raw();
+    let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(input.pipe_state);
+    let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(input.slot_record);
+    let ring = TxHardwareRingAddress::new(input.hardware_ring);
     // Vendor txp_scheduler_run performs no descriptor readback between its
     // trigger and GO writes. Gather the expensive image directly into BSS
     // while the pipe is inactive, avoiding a 152-byte firmware stack copy.
@@ -5958,20 +5963,20 @@ fn prepare_pre_go_publication<M: MacPipeMmio>(
         crate::host_tx_diagnostics::begin_pre_go_snapshot();
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             0,
-            mmio.read_u32(input.slot_record) & 0x00ff_ffff | 0x0100_0000,
+            mmio.read_u32(slot.state_word().get() as u32) & 0x00ff_ffff | 0x0100_0000,
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(1, duration);
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             2,
-            mmio.read_u32(input.slot_record + 0x0c),
+            mmio.read_u32(slot.frame().get() as u32),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             3,
-            mmio.read_u32(input.slot_record + 0x10),
+            mmio.read_u32(slot.auxiliary().get() as u32),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             4,
-            mmio.read_u32(input.slot_record + 0x14),
+            mmio.read_u32(slot.command().get() as u32),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(5, mmio.read_u32(frame + 4));
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
@@ -6024,16 +6029,16 @@ fn prepare_pre_go_publication<M: MacPipeMmio>(
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(33, duration);
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             34,
-            mmio.read_u32(input.hardware_ring + 0x0c),
+            mmio.read_u32(ring.diagnostic_word_0c()),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             35,
-            mmio.read_u32(input.hardware_ring + 0x10),
+            mmio.read_u32(ring.diagnostic_word_10()),
         );
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(36, 0);
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(
             37,
-            mmio.read_u32(input.pipe_state) & 0x00ff_ffff | 0x0100_0000,
+            mmio.read_u32(record.producer_slot().get() as u32) & 0x00ff_ffff | 0x0100_0000,
         );
     }
 }
@@ -6043,14 +6048,18 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     input: SingleProbePublicationInput,
 ) -> u8 {
     let pipe = input.pipe & 3;
-    let slot = input.slot & 3;
+    let slot_index = input.slot & 3;
+    let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(input.pipe_state);
+    let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(input.slot_record);
+    let descriptor = TxDescriptorAddress::new(input.command_storage);
+    let ring = TxHardwareRingAddress::new(input.hardware_ring);
     let frame = input.frame_node.raw();
 
     // `current` tracks hardware progress through the batch, so only the first
     // staged frame sets it (vendor: `*(byte *)(iVar4 + 0xa2) = *pbVar8`, once,
     // before the publish loop).
     if input.batch.sets_current() {
-        mmio.write_u8(input.pipe_state + 2, slot);
+        mmio.write_u8(record.current_slot().get() as u32, slot_index);
     }
     // The inactive first-submission branch of `txp_scheduler_run` does not
     // call `txp_pipe_advance_slot`; startup already synchronized the ring and
@@ -6074,18 +6083,18 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     };
     let expects_ack = timing.frame_kind != 0xff;
     debug_assert_eq!(input.expects_ack, expects_ack);
-    mmio.write_u32(input.slot_record + 8, single_frame_slot_duration(timing));
-    build_single_frame_duration(mmio, input.command_storage, input.frame_node, expects_ack);
+    mmio.write_u32(slot.duration().get() as u32, single_frame_slot_duration(timing));
+    build_single_frame_duration(mmio, descriptor.raw(), input.frame_node, expects_ack);
     if expects_ack {
-        let flags = mmio.read_u32(input.command_storage + 4)
+        let flags = mmio.read_u32(descriptor.flags())
             | u32::from(timing.frame_kind).wrapping_add(0x80);
-        mmio.write_u32(input.command_storage + 4, flags);
+        mmio.write_u32(descriptor.flags(), flags);
     }
-    mmio.write_u8(input.pipe_state + 1, slot);
-    mmio.write_u32(input.hardware_ring + 0x14, 0);
+    mmio.write_u8(record.last_slot().get() as u32, slot_index);
+    mmio.write_u32(ring.go(), 0);
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     {
-        let diagnostic_duration = mmio.read_u32(input.slot_record + 8);
+        let diagnostic_duration = mmio.read_u32(slot.duration().get() as u32);
         prepare_pre_go_publication(mmio, input, diagnostic_duration);
     }
     if publication_bisect_reached(5) {
@@ -6141,7 +6150,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         crate::hif::validate_tx_boundary(
             0x13,
             pipe,
-            slot,
+            slot_index,
             input.command_storage,
             input.hardware_ring,
         );
@@ -6160,16 +6169,16 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     );
     // Vendor's publish loop body: mark the slot published and push its duration
     // into the ring, once per slot from producer to `last`.
-    mmio.write_u8(input.slot_record + 3, 1);
-    let duration = mmio.read_u32(input.slot_record + 8);
-    mmio.write_u32(input.hardware_ring, duration);
-    mmio.write_u8(input.pipe_state + 3, 1);
-    let pipe_flags = mmio.read_u8(input.pipe_state + 4) | 1;
-    mmio.write_u8(input.pipe_state + 4, pipe_flags);
-    mmio.write_u8(input.pipe_state + 5, 5);
+    mmio.write_u8(slot.state().get() as u32, 1);
+    let duration = mmio.read_u32(slot.duration().get() as u32);
+    mmio.write_u32(ring.duration_fifo(), duration);
+    mmio.write_u8(record.state().get() as u32, 1);
+    let pipe_flags = mmio.read_u8(record.control().get() as u32) | 1;
+    mmio.write_u8(record.control().get() as u32, pipe_flags);
+    mmio.write_u8(record.watchdog().get() as u32, 5);
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
-        let actual_ring_duration = mmio.read_u32(input.hardware_ring);
+        let actual_ring_duration = mmio.read_u32(ring.duration_fifo());
         crate::host_tx_diagnostics::write_pre_go_snapshot_word(33, actual_ring_duration);
         crate::host_tx_diagnostics::commit_pre_go_snapshot();
     }
@@ -6178,18 +6187,18 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         crate::hif::validate_tx_boundary(
             0x14,
             pipe,
-            slot,
+            slot_index,
             input.command_storage,
             input.hardware_ring,
         );
     }
-    mmio.write_u32(input.hardware_ring + 0x14, 1);
+    mmio.write_u32(ring.go(), 1);
     #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
     unsafe {
         crate::hif::validate_tx_boundary(
             0x15,
             pipe,
-            slot,
+            slot_index,
             input.command_storage,
             input.hardware_ring,
         );
@@ -8224,6 +8233,8 @@ mod tests {
         assert_eq!(core::mem::size_of::<TxHardwareRingLayout>(), 0x24);
         assert_eq!(ring.raw(), 0x9000);
         assert_eq!(ring.duration_fifo(), 0x9000);
+        assert_eq!(ring.diagnostic_word_0c(), 0x900c);
+        assert_eq!(ring.diagnostic_word_10(), 0x9010);
         assert_eq!(ring.go(), 0x9014);
         assert_eq!(ring.inactive_sentinel(), 0x9018);
         assert_eq!(ring.completion_word(), 0x901c);
