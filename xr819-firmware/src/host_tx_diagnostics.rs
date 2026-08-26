@@ -231,6 +231,22 @@ unsafe impl Sync for SharedBatchCounter {}
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 static BATCH_PUBLICATIONS: SharedBatchCounter = SharedBatchCounter(UnsafeCell::new(0));
 
+#[cfg(feature = "vendor-host-tx-diagnostics")]
+static AMPDU_CANDIDATES: SharedBatchCounter = SharedBatchCounter(UnsafeCell::new(0));
+
+/// Record one same-link/TID/rate pair accepted by the A-MPDU grouping gate.
+#[inline]
+pub unsafe fn record_ampdu_candidate(tid: u8, rate: u8) {
+    #[cfg(feature = "vendor-host-tx-diagnostics")]
+    unsafe {
+        let counter = AMPDU_CANDIDATES.0.get();
+        let count = (counter.read_volatile() & 0xffff).wrapping_add(1) & 0xffff;
+        counter.write_volatile((u32::from(rate) << 24) | (u32::from(tid) << 16) | count);
+    }
+    #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
+    let _ = (tid, rate);
+}
+
 /// Record one batch crossing the shared MAC trigger boundary.
 #[inline]
 pub unsafe fn record_batch_publication(depth: u8) {
@@ -835,6 +851,7 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
             values[..snapshot.len()].copy_from_slice(&snapshot);
             #[cfg(feature = "vendor-host-tx-diagnostics")]
             unsafe {
+                values[19] = AMPDU_CANDIDATES.0.get().read_volatile();
                 values[20] = BATCH_PUBLICATIONS.0.get().read_volatile();
             }
             return;

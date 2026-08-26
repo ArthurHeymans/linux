@@ -411,6 +411,16 @@ impl HostTxDriver {
             });
             return;
         };
+        let first_ampdu = unsafe { vendor_host_tx::ampdu_candidate(&first) };
+        let second_ampdu = unsafe { vendor_host_tx::ampdu_candidate(&second) };
+        if vendor_host_tx::can_form_ampdu_pair(first_ampdu, second_ampdu) {
+            unsafe {
+                host_tx_diagnostics::record_ampdu_candidate(
+                    first_ampdu.key.tid,
+                    first_ampdu.key.rate,
+                );
+            }
+        }
         let second_slot = first_slot.wrapping_add(1) & 3;
         let second_reservation = match unsafe {
             vendor_host_tx::reserve_non_aggregate_scheduler_in_batch(
