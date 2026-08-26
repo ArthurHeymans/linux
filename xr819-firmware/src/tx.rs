@@ -6493,7 +6493,7 @@ impl PreparedProbePublication {
     pub unsafe fn cancel(self) -> Result<u32, ProbeBuildError> {
         unsafe {
             let slot_record = self.slot_record as usize;
-            let expected = self.context.context + 0x54;
+            let expected = ContextAddress::new(self.context.context).frame_node().raw();
             if ((slot_record + 0x0c) as *const u32).read_volatile() != expected {
                 return Err(ProbeBuildError::PipeSlotOwnershipMismatch);
             }
@@ -7065,8 +7065,8 @@ unsafe fn prepare_context_publication(
     context: PreparedProbeContext,
 ) -> Result<PreparedProbePublication, ProbeBuildError> {
     unsafe {
-        let address = context.context as usize;
-        let queue = ((address + 0x60) as *const u8).read_volatile();
+        let context_address = ContextAddress::new(context.context);
+        let queue = read_u8(context_address.access_category_address());
         let pipe =
             crate::dtcm::shared_ptr::<u8>(crate::dtcm::access_category_to_queue_unchecked(
                 usize::from(queue),
@@ -7108,8 +7108,10 @@ unsafe fn prepare_context_publication(
         for (index, word) in original_command.iter_mut().enumerate() {
             *word = ((command as usize + index * 4) as *const u32).read_volatile();
         }
-        ((address + 0x80) as *mut u32)
-            .write_volatile(((address + 0x80) as *const u32).read_volatile() | 0x100);
+        write_u32(
+            context_address.ownership_bits_address(),
+            read_u32(context_address.ownership_bits_address()) | 0x100,
+        );
         // `0xa712` receives the frame node at `context+0x54`, not the context
         // base. Its kind-0 branch stores frame-node `+0x56` (context `+0xaa`)
         // in `slot+1`; success handler `0x9cdc` requires this marker to be
@@ -7118,7 +7120,7 @@ unsafe fn prepare_context_publication(
         crate::dtcm::shared_ptr::<u8>(
             crate::dtcm::mac_pipe_slot_retry_rate_unchecked(pipe_index, slot_index),
         )
-        .write_volatile(((address + 0xaa) as *const u8).read_volatile());
+        .write_volatile(read_u8(context_address.retry_rate_address()));
         crate::dtcm::shared_ptr::<u8>(
             crate::dtcm::mac_pipe_slot_control_02_unchecked(pipe_index, slot_index),
         )
@@ -7130,7 +7132,7 @@ unsafe fn prepare_context_publication(
         crate::dtcm::shared_ptr::<u32>(
             crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index),
         )
-        .write_volatile(context.context + 0x54);
+        .write_volatile(context_address.frame_node().raw());
         (command as *mut u32).write_volatile(0);
         ((command + 4) as *mut u32).write_volatile(0);
         ((command + 8) as *mut u32).write_volatile(0xdc00_0000);
