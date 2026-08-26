@@ -1175,15 +1175,23 @@ struct InternalPasContext {
 pub(crate) struct InternalTxContext {
     opaque_00: SharedU32,
     next_free: SharedU32,
-    opaque_08: OpaqueBytes<0x14>,
+    opaque_08: SharedU32,
+    requested_rate: SharedU8,
+    queue_id: SharedU8,
+    opaque_0e: SharedU8,
+    request_flags: SharedU8,
+    opaque_10: OpaqueBytes<0x0c>,
     header_80211: SharedU32,
     completion_status: SharedU32,
     rate_copy: SharedU8,
     saved_status: SharedU8,
     completion_flags: SharedU16,
-    opaque_28: OpaqueBytes<0x24>,
+    opaque_28: OpaqueBytes<0x1c>,
+    header_length: SharedU32,
+    payload_length: SharedU32,
     optional_pipe_object: SharedU32,
-    opaque_50: OpaqueBytes<0x03>,
+    sequence_or_callback_state: SharedU16,
+    submit_state: SharedU8,
     completion_class: SharedU8,
     pas: InternalPasContext,
     opaque_d4: OpaqueBytes<0x9c>,
@@ -1515,11 +1523,18 @@ impl InternalContextAddress {
     const fn pas_field(self, offset: usize) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, pas) + offset) }
 
     pub(crate) const fn intrusive_next(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, next_free)) }
+    pub(crate) const fn requested_rate(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, requested_rate)) }
+    pub(crate) const fn queue_id(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, queue_id)) }
+    pub(crate) const fn request_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, request_flags)) }
     pub(crate) const fn borrowed_frame_address(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, header_80211)) }
     pub(crate) const fn completion_status(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, completion_status)) }
     pub(crate) const fn saved_status(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, saved_status)) }
     pub(crate) const fn completion_flags(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, completion_flags)) }
+    pub(crate) const fn header_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, header_length)) }
+    pub(crate) const fn payload_length(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, payload_length)) }
     pub(crate) const fn optional_pipe_object(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, optional_pipe_object)) }
+    pub(crate) const fn sequence_or_callback_state(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, sequence_or_callback_state)) }
+    pub(crate) const fn submit_state(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, submit_state)) }
     pub(crate) const fn completion_class(self) -> DtcmAddress { self.field(core::mem::offset_of!(InternalTxContext, completion_class)) }
     pub(crate) const fn frame_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, frame_address)) }
     pub(crate) const fn control_bits(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, control_bits)) }
@@ -1529,6 +1544,7 @@ impl InternalContextAddress {
     pub(crate) const fn request_flag_rate_bits(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, request_flag_rate_bits)) }
     pub(crate) const fn retry_policy(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, retry_policy)) }
     pub(crate) const fn tx_rate(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, tx_rate)) }
+    pub(crate) const fn expiry_time(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, expiry_time)) }
     pub(crate) const fn completion_timestamp(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, completion_timestamp)) }
     pub(crate) const fn scheduler_timestamp(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, scheduler_timestamp)) }
     pub(crate) const fn terminal_status(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, terminal_status)) }
@@ -1539,13 +1555,18 @@ impl InternalContextAddress {
     pub(crate) const fn frame_state_address(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, frame_state_address)) }
     pub(crate) const fn auxiliary_state(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, auxiliary_state)) }
     pub(crate) const fn tid(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, tid)) }
+    pub(crate) const fn insertion_mode(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, insertion_mode)) }
     pub(crate) const fn sequence_number(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, sequence_number)) }
     pub(crate) const fn retry_rate(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, retry_rate)) }
+    pub(crate) const fn byte_57(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, byte_57)) }
     pub(crate) const fn interface(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, interface)) }
     pub(crate) const fn duration_slot(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, duration_slot)) }
     pub(crate) const fn host_link(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, host_link)) }
     pub(crate) const fn completion_byte_6c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, completion_byte_6c)) }
     pub(crate) const fn cipher_buffer(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, cipher_buffer)) }
+    pub(crate) const fn qos_control(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, qos_control)) }
+    pub(crate) const fn cipher_class(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, cipher_class)) }
+    pub(crate) const fn word_7c(self) -> DtcmAddress { self.pas_field(core::mem::offset_of!(InternalPasContext, word_7c)) }
     pub(crate) const fn frame_node(self) -> InternalFrameNodeAddress { InternalFrameNodeAddress(self.frame_address()) }
 }
 
@@ -5153,9 +5174,13 @@ fn initialized_phy_gain_source_record_addresses_are_exact() { assert_eq!(INITIAL
         assert_eq!(first.frame_node().raw(), 0x0400_90d8);
         assert_eq!(first.frame_node().context(), first);
         assert_eq!(first.intrusive_next().get(), 0x0400_9088);
+        assert_eq!(first.requested_rate().get(), 0x0400_9090);
         assert_eq!(first.borrowed_frame_address().get(), 0x0400_90a0);
         assert_eq!(first.completion_status().get(), 0x0400_90a4);
+        assert_eq!(first.header_length().get(), 0x0400_90c8);
+        assert_eq!(first.payload_length().get(), 0x0400_90cc);
         assert_eq!(first.frame_address().get(), 0x0400_90d8);
+        assert_eq!(first.expiry_time().get(), 0x0400_90e8);
         assert_eq!(first.terminal_status().get(), 0x0400_90f4);
         assert_eq!(first.cipher_buffer().get(), 0x0400_9148);
         assert_eq!(last.completion_byte_6c().get(), 0x0400_9424);

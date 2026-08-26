@@ -291,11 +291,18 @@ impl ContextAddress {
     }
 
     fn intrusive_next_address(self) -> usize { self.field_address(|c| c.intrusive_next(), |c| c.intrusive_next()) }
+    fn requested_rate_address(self) -> usize { self.field_address(|c| c.requested_rate(), |c| c.requested_rate()) }
+    fn queue_id_address(self) -> usize { self.field_address(|c| c.queue_id(), |c| c.queue_id()) }
+    fn request_flags_address(self) -> usize { self.field_address(|c| c.request_flags(), |c| c.request_flags()) }
     fn borrowed_frame_address_address(self) -> usize { self.field_address(|c| c.borrowed_frame_address(), |c| c.borrowed_frame_address()) }
     fn completion_status_address(self) -> usize { self.field_address(|c| c.completion_status(), |c| c.completion_status()) }
     fn saved_status_address(self) -> usize { self.field_address(|c| c.saved_status(), |c| c.saved_status()) }
     fn completion_flags_address(self) -> usize { self.field_address(|c| c.completion_flags(), |c| c.completion_flags()) }
+    fn header_length_address(self) -> usize { self.field_address(|c| c.header_length(), |c| c.header_length()) }
+    fn payload_length_address(self) -> usize { self.field_address(|c| c.payload_length(), |c| c.payload_length()) }
     fn optional_pipe_object_address(self) -> usize { self.field_address(|c| c.optional_pipe_object(), |c| c.optional_pipe_object()) }
+    fn sequence_or_callback_state_address(self) -> usize { self.field_address(|c| c.sequence_or_callback_state(), |c| c.sequence_or_callback_state()) }
+    fn submit_state_address(self) -> usize { self.field_address(|c| c.submit_state(), |c| c.submit_state()) }
     fn completion_class_address(self) -> usize { self.field_address(|c| c.completion_class(), |c| c.completion_class()) }
     fn frame_address_address(self) -> usize { self.field_address(|c| c.frame_address(), |c| c.frame_address()) }
     fn control_bits_address(self) -> usize { self.field_address(|c| c.control_bits(), |c| c.control_bits()) }
@@ -305,6 +312,7 @@ impl ContextAddress {
     fn request_flag_rate_bits_address(self) -> usize { self.field_address(|c| c.request_flag_rate_bits(), |c| c.request_flag_rate_bits()) }
     fn retry_policy_address(self) -> usize { self.field_address(|c| c.retry_policy(), |c| c.retry_policy()) }
     fn tx_rate_address(self) -> usize { self.field_address(|c| c.tx_rate(), |c| c.tx_rate()) }
+    fn expiry_time_address(self) -> usize { self.field_address(|c| c.pas_expiry_time(), |c| c.expiry_time()) }
     fn completion_timestamp_address(self) -> usize { self.field_address(|c| c.completion_timestamp(), |c| c.completion_timestamp()) }
     fn scheduler_timestamp_address(self) -> usize { self.field_address(|c| c.scheduler_timestamp(), |c| c.scheduler_timestamp()) }
     fn terminal_status_address(self) -> usize { self.field_address(|c| c.terminal_status(), |c| c.terminal_status()) }
@@ -315,12 +323,17 @@ impl ContextAddress {
     fn frame_state_address_address(self) -> usize { self.field_address(|c| c.frame_state_address(), |c| c.frame_state_address()) }
     fn auxiliary_state_address(self) -> usize { self.field_address(|c| c.auxiliary_state(), |c| c.auxiliary_state()) }
     fn tid_address(self) -> usize { self.field_address(|c| c.tid(), |c| c.tid()) }
+    fn insertion_mode_address(self) -> usize { self.field_address(|c| c.insertion_mode(), |c| c.insertion_mode()) }
     fn sequence_number_address(self) -> usize { self.field_address(|c| c.sequence_number(), |c| c.sequence_number()) }
     fn retry_rate_address(self) -> usize { self.field_address(|c| c.retry_rate(), |c| c.retry_rate()) }
+    fn byte_57_address(self) -> usize { self.field_address(|c| c.byte_57(), |c| c.byte_57()) }
     fn interface_address(self) -> usize { self.field_address(|c| c.interface(), |c| c.interface()) }
     fn duration_slot_address(self) -> usize { self.field_address(|c| c.duration_slot(), |c| c.duration_slot()) }
     fn host_link_address(self) -> usize { self.field_address(|c| c.host_link(), |c| c.host_link()) }
     fn completion_byte_6c_address(self) -> usize { self.field_address(|c| c.completion_byte_6c(), |c| c.completion_byte_6c()) }
+    fn qos_control_address(self) -> usize { self.field_address(|c| c.qos_control(), |c| c.qos_control()) }
+    fn cipher_class_address(self) -> usize { self.field_address(|c| c.cipher_class(), |c| c.cipher_class()) }
+    fn word_7c_address(self) -> usize { self.field_address(|c| c.word_7c(), |c| c.word_7c()) }
 }
 
 impl FrameNodeAddress {
@@ -6389,35 +6402,36 @@ pub unsafe fn prepare_probe_context(
         if context == 0 {
             return Err(ProbeBuildError::ContextPoolEmpty);
         }
-        let context_address = context as usize;
-        free_head.write_volatile(((context_address + 4) as *const u32).read_volatile());
+        let context_address = ContextAddress::new(context);
+        free_head.write_volatile(read_u32(context_address.intrusive_next_address()));
 
         set_active_internal_contexts(active_internal_contexts().wrapping_add(1));
-        ((context_address + 0x0d) as *mut u8).write_volatile(0);
-        ((context_address + 0x4c) as *mut u32).write_volatile(0);
-        ((context_address + 0x53) as *mut u8).write_volatile(6);
-        ((context_address + 0x52) as *mut u8).write_volatile(1);
+        write_u8(context_address.queue_id_address(), 0);
+        write_u32(context_address.optional_pipe_object_address(), 0);
+        write_u8(context_address.completion_class_address(), 6);
+        write_u8(context_address.submit_state_address(), 1);
         let sequence = probe_context_sequence();
-        ((context_address + 0x50) as *mut u16).write_volatile(sequence);
+        write_u16(context_address.sequence_or_callback_state_address(), sequence);
         set_probe_context_sequence(sequence.wrapping_add(1));
-        ((context_address + 0x0f) as *mut u8).write_volatile(0);
-        ((context_address + 0xa7) as *mut u8).write_volatile(1);
-        ((context_address + 0x58) as *mut u32).write_volatile(0);
-        ((context_address + 0x70) as *mut u16).write_volatile(0x00fe);
-        ((context_address + 0x72) as *mut u16).write_volatile(0);
-        ((context_address + 0xa4) as *mut u16).write_volatile(0);
-        ((context_address + 0x80) as *mut u32).write_volatile(1);
-        ((context_address + 0x90) as *mut u32).write_volatile(0);
+        write_u8(context_address.request_flags_address(), 0);
+        write_u8(context_address.insertion_mode_address(), 1);
+        write_u32(context_address.control_bits_address(), 0);
+        write_u16(context_address.terminal_status_address(), 0x00fe);
+        write_u16(context_address.try_count_address(), 0);
+        write_u16(context_address.auxiliary_state_address(), 0);
+        write_u32(context_address.ownership_bits_address(), 1);
+        write_u32(context_address.descriptor_state_address(), 0);
         // Vendor sources `ctx+0x98` from a ROM-owned pointer. Preserve the
         // pool value until that ROM/global state is translated; zero is not a
         // reference-faithful substitute once the context becomes live.
-        ((context_address + 0x60) as *mut u8).write_volatile(
+        write_u8(
+            context_address.access_category_address(),
             crate::dtcm::shared_ptr::<u8>(crate::dtcm::queue_to_access_category_unchecked(0))
                 .read_volatile(),
         );
-        ((context_address + 0x61) as *mut u8).write_volatile(0);
+        write_u8(context_address.request_flag_rate_bits_address(), 0);
 
-        let header = ((context_address + 0x1c) as *const u32).read_volatile();
+        let header = read_u32(context_address.borrowed_frame_address_address());
         if expected_header_address(context) != Some(header) {
             release_context_address(context);
             return Err(ProbeBuildError::InvalidContextPointer);
@@ -6435,9 +6449,9 @@ pub unsafe fn prepare_probe_context(
             };
             ((header + 0x0a + word as u32 * 2) as *mut u16).write_volatile(value);
         }
-        ((context_address + 0x5c) as *mut u16).write_volatile(probe.length as u16);
-        ((context_address + 0xbf) as *mut u8).write_volatile(0x0f);
-        ((context_address + 0xbd) as *mut u8).write_volatile(if_id);
+        write_u16(context_address.frame_length_address(), probe.length as u16);
+        write_u8(context_address.host_link_address(), 0x0f);
+        write_u8(context_address.interface_address(), if_id);
 
         // Ordinary foreground scans store explicit rate 0xff, after which
         // `lmc_tx_assign_default_rate` resolves the VIF default.
@@ -6452,34 +6466,36 @@ pub unsafe fn prepare_probe_context(
         } else {
             flags |= 8;
         }
-        ((context_address + 0x0c) as *mut u8).write_volatile(rate);
-        ((context_address + 0x63) as *mut u8).write_volatile(rate);
-        ((context_address + 0x62) as *mut u8).write_volatile(0x0f);
-        ((context_address + 0xab) as *mut u8).write_volatile(0xff);
-        ((context_address + 0x64) as *mut u32).write_volatile(0);
-        ((context_address + 0x54) as *mut u32).write_volatile(header);
+        write_u8(context_address.requested_rate_address(), rate);
+        write_u8(context_address.tx_rate_address(), rate);
+        write_u8(context_address.retry_policy_address(), 0x0f);
+        write_u8(context_address.byte_57_address(), 0xff);
+        write_u32(context_address.expiry_time_address(), 0);
+        write_u32(context_address.frame_address_address(), header);
         flags |= 0x1000;
         if ((header + 4) as *const u32).read_volatile() & 1 != 0 {
             flags |= 0x300;
         }
-        ((context_address + 0x58) as *mut u32).write_volatile(flags);
-        ((context_address + 0x80) as *mut u32).write_volatile(3);
+        write_u32(context_address.control_bits_address(), flags);
+        write_u32(context_address.ownership_bits_address(), 3);
 
         let frame_control = (header as *const u32).read_volatile() as u16;
-        ((context_address + 0x5e) as *mut u16).write_volatile(frame_control);
-        ((context_address + 0x44) as *mut u32).write_volatile(24);
-        ((context_address + 0x48) as *mut u32)
-            .write_volatile((probe.length as u32).saturating_sub(24));
+        write_u16(context_address.frame_control_address(), frame_control);
+        write_u32(context_address.header_length_address(), 24);
+        write_u32(
+            context_address.payload_length_address(),
+            (probe.length as u32).saturating_sub(24),
+        );
         let duration_slot = (crate::dtcm::pas_stride_view_unchecked(usize::from(if_id))
             .slot_bits()
             .get() as *const u8)
             .read_volatile()
             & 1;
-        ((context_address + 0xbe) as *mut u8).write_volatile(duration_slot);
-        ((context_address + 0xaa) as *mut u8).write_volatile(0xff);
-        ((context_address + 0xc8) as *mut u16).write_volatile(0);
-        ((context_address + 0xca) as *mut u8).write_volatile(9);
-        ((context_address + 0xd0) as *mut u16).write_volatile(0x10);
+        write_u8(context_address.duration_slot_address(), duration_slot);
+        write_u8(context_address.retry_rate_address(), 0xff);
+        write_u16(context_address.qos_control_address(), 0);
+        write_u8(context_address.cipher_class_address(), 9);
+        write_u16(context_address.word_7c_address(), 0x10);
         let mut prepared = PreparedProbeContext {
             context,
             header,
@@ -7068,7 +7084,7 @@ unsafe fn prepare_host_management_publication(
     let host_queue = request.queue_id & 3;
 
     let mut context = unsafe { prepare_probe_context(scratch, if_id) }?;
-    let address = context.context as usize;
+    let address = ContextAddress::new(context.context);
     // Probe templates deliberately patch address fields at +0x0a/+0x0c/+0x0e.
     // Host WSM frames already contain their final DA/SA/BSSID and must be
     // restored byte-for-byte after reusing the probe context initializer.
@@ -7080,7 +7096,7 @@ unsafe fn prepare_host_management_publication(
     }
     let frame_control = u16::from_le_bytes([prepared_frame[0], prepared_frame[1]]);
     let address_mode = frame_control & 0x0300;
-    let mut header_length = if address_mode == 0x0300 { 30 } else { 24 };
+    let mut header_length = if address_mode == 0x0300 { 30_u32 } else { 24_u32 };
     let qos_data = !legacy_eapol && frame_control & 0x008f == 0x0088;
     if qos_data {
         header_length += if frame_control & 0x8000 != 0 { 6 } else { 2 };
@@ -7088,15 +7104,17 @@ unsafe fn prepare_host_management_publication(
     let queue = host_queue;
     unsafe {
         if !legacy_eapol {
-            ((address + 0x44) as *mut u32).write_volatile(header_length);
-            ((address + 0x48) as *mut u32)
-                .write_volatile((scratch.length as u32).saturating_sub(header_length));
+            write_u32(address.header_length_address(), header_length);
+            write_u32(
+                address.payload_length_address(),
+                (scratch.length as u32).saturating_sub(header_length),
+            );
             // RustCrypto has already filled the host-reserved CCMP header and
             // MIC space. Mark ordinary data as having no pending hardware
             // crypto work. The validated EAPOL compatibility path preserves
             // the original class-6 context status unchanged.
             if frame_control & 0x400c == 0x4008 {
-                ((address + 0x70) as *mut u16).write_volatile(0x0010);
+                write_u16(address.terminal_status_address(), 0x0010);
             }
         }
         // `ctx+0x60` is the vendor AC selected through the four-entry WSM
@@ -7106,19 +7124,22 @@ unsafe fn prepare_host_management_publication(
             crate::dtcm::queue_to_access_category_unchecked(usize::from(queue)),
         )
         .read_volatile();
-        ((address + 0x60) as *mut u8).write_volatile(ac);
-        ((address + 0x61) as *mut u8).write_volatile((request.flags & 0x0f) >> 1);
-        ((address + 0x62) as *mut u8).write_volatile((request.flags & 0x7f) >> 4);
+        write_u8(address.access_category_address(), ac);
+        write_u8(
+            address.request_flag_rate_bits_address(),
+            (request.flags & 0x0f) >> 1,
+        );
+        write_u8(address.retry_policy_address(), (request.flags & 0x7f) >> 4);
         // This direct cooperative publisher still uses an internal class-6
         // context rather than the vendor WSM class-0 pool. Link slot 1 is the
         // validated internal slot for that temporary path.
-        ((address + 0xbf) as *mut u8).write_volatile(1);
+        write_u8(address.host_link_address(), 1);
     }
     if request.max_tx_rate < 22 {
         context.rate = request.max_tx_rate;
         unsafe {
-            ((address + 0x0c) as *mut u8).write_volatile(context.rate);
-            ((address + 0x63) as *mut u8).write_volatile(context.rate);
+            write_u8(address.requested_rate_address(), context.rate);
+            write_u8(address.tx_rate_address(), context.rate);
         }
     }
     // `tx_lmac_req_submit` seeds bit 23, then `tx_classify_hdr_len` adds the
@@ -7138,8 +7159,8 @@ unsafe fn prepare_host_management_publication(
     }
     tx_flags |= (request.ht_tx_parameters >> 11) & 0xe0;
     unsafe {
-        ((address + 0x58) as *mut u32).write_volatile(tx_flags);
-        ((address + 0x64) as *mut u32).write_volatile(request.expire_time);
+        write_u32(address.control_bits_address(), tx_flags);
+        write_u32(address.expiry_time_address(), request.expire_time);
     }
     // Recompute the complete PAS timing image after replacing the probe
     // template's rate, flags, and header with the host-supplied frame.
@@ -9158,14 +9179,41 @@ mod tests {
         let internal = ContextAddress::new(0x0400_9084);
         let host = ContextAddress::new(0x0400_5a24);
 
+        assert_eq!(internal.requested_rate_address(), 0x0400_9090);
+        assert_eq!(internal.queue_id_address(), 0x0400_9091);
+        assert_eq!(internal.request_flags_address(), 0x0400_9093);
         assert_eq!(internal.completion_status_address(), 0x0400_90a4);
+        assert_eq!(internal.header_length_address(), 0x0400_90c8);
+        assert_eq!(internal.payload_length_address(), 0x0400_90cc);
+        assert_eq!(internal.sequence_or_callback_state_address(), 0x0400_90d4);
+        assert_eq!(internal.submit_state_address(), 0x0400_90d6);
         assert_eq!(internal.frame_address_address(), 0x0400_90d8);
+        assert_eq!(internal.expiry_time_address(), 0x0400_90e8);
         assert_eq!(internal.ownership_bits_address(), 0x0400_9104);
+        assert_eq!(internal.insertion_mode_address(), 0x0400_912b);
+        assert_eq!(internal.byte_57_address(), 0x0400_912f);
         assert_eq!(internal.completion_byte_6c_address(), 0x0400_9144);
+        assert_eq!(internal.qos_control_address(), 0x0400_914c);
+        assert_eq!(internal.cipher_class_address(), 0x0400_914e);
+        assert_eq!(internal.word_7c_address(), 0x0400_9154);
+
+        assert_eq!(host.requested_rate_address(), 0x0400_5a30);
+        assert_eq!(host.queue_id_address(), 0x0400_5a31);
+        assert_eq!(host.request_flags_address(), 0x0400_5a33);
         assert_eq!(host.completion_status_address(), 0x0400_5a44);
+        assert_eq!(host.header_length_address(), 0x0400_5a68);
+        assert_eq!(host.payload_length_address(), 0x0400_5a6c);
+        assert_eq!(host.sequence_or_callback_state_address(), 0x0400_5a74);
+        assert_eq!(host.submit_state_address(), 0x0400_5a76);
         assert_eq!(host.frame_address_address(), 0x0400_5a78);
+        assert_eq!(host.expiry_time_address(), 0x0400_5a88);
         assert_eq!(host.ownership_bits_address(), 0x0400_5aa4);
+        assert_eq!(host.insertion_mode_address(), 0x0400_5acb);
+        assert_eq!(host.byte_57_address(), 0x0400_5acf);
         assert_eq!(host.completion_byte_6c_address(), 0x0400_5ae4);
+        assert_eq!(host.qos_control_address(), 0x0400_5aec);
+        assert_eq!(host.cipher_class_address(), 0x0400_5aee);
+        assert_eq!(host.word_7c_address(), 0x0400_5af4);
     }
 
     #[test]
