@@ -850,6 +850,19 @@ pub fn plan_depth_two_block_ack_actions(
     })
 }
 
+pub fn depth_two_whole_retry_allowed(
+    retry_allowed: [bool; 2],
+    session_active: bool,
+    next_rates: [u8; 2],
+) -> bool {
+    plan_depth_two_block_ack_actions(
+        [BlockAckMemberState::Missing; 2],
+        retry_allowed,
+        session_active,
+    ) == [BlockAckMemberAction::Retry; 2]
+        && next_rates[0] == next_rates[1]
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthTwoAmpduDescriptor {
     /// Auxiliary stream reached by the top-level opcode-0 transfer.
@@ -3597,6 +3610,149 @@ impl SingleFrameRearmBackend for SingleProbeMacBackend {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+const DEPTH_TWO_WHOLE_RETRY_LIMIT: u16 = 2;
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+unsafe fn prepare_depth_two_whole_retry(
+    first_frame_node: FrameNodeAddress,
+) -> Option<(ContextAddress, ContextAddress)> {
+    unsafe {
+        let first = first_frame_node.context();
+        let second_raw = read_u32(first.next_in_ampdu_address());
+        if second_raw == 0 {
+            return None;
+        }
+        let second = FrameNodeAddress::new(second_raw).context();
+        let tid = read_u8(first.tid_address());
+        let session_active = tid < 8
+            && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
+
+        let contexts = [first, second];
+        let mut next_rates = [0_u8; 2];
+        let mut current_rates = [0_u8; 2];
+        let mut try_counts = [0_u16; 2];
+        let mut flags = [0_u32; 2];
+        for (index, context) in contexts.into_iter().enumerate() {
+            let host = context.host()?;
+            let rate = read_u8(context.tx_rate_address());
+            let policy = crate::rate_policy::get(read_u8(context.retry_policy_address()))?;
+            let tries = read_u16(context.try_count_address());
+            if tries >= DEPTH_TWO_WHOLE_RETRY_LIMIT {
+                return None;
+            }
+            let control = read_u32(context.control_bits_address());
+            let long_frame = (control & 0x7ff) >> 9 != 0;
+            let crate::rate_policy::RetryStep::Rearm { rate: next_rate } =
+                crate::rate_policy::retry_step(policy, rate, tries, long_frame)
+            else {
+                return None;
+            };
+            if host.rate_try(usize::from(rate >> 3)).is_none() {
+                return None;
+            }
+            current_rates[index] = rate;
+            next_rates[index] = next_rate;
+            try_counts[index] = tries;
+            flags[index] = control;
+        }
+        if !depth_two_whole_retry_allowed([true; 2], session_active, next_rates) {
+            return None;
+        }
+
+        for (index, context) in contexts.into_iter().enumerate() {
+            let host = context.host().unwrap();
+            let rate = current_rates[index];
+            let status_address = host.rate_try(usize::from(rate >> 3)).unwrap().get();
+            let shift = u32::from((rate & 7) * 4);
+            let status = read_u32(status_address);
+            let attempts = (status >> shift) & 0x0f;
+            if attempts < 0x0f {
+                write_u32(
+                    status_address,
+                    (status & !(0x0f << shift)) | ((attempts + 1) << shift),
+                );
+            }
+            let next_rate = next_rates[index];
+            let rate_changed = next_rate != rate && (flags[index] & 0x20 == 0 || next_rate > 13);
+            write_u8(context.tx_rate_address(), if rate_changed { next_rate } else { rate });
+            write_u32(
+                context.control_bits_address(),
+                flags[index]
+                    | 0x10
+                    | 0x0008_0000
+                    | if rate_changed && rate > 3 && next_rate < 4 {
+                        0x0004_0000
+                    } else {
+                        0
+                    },
+            );
+            write_u16(
+                context.try_count_address(),
+                try_counts[index].wrapping_add(1),
+            );
+        }
+        Some((first, second))
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+unsafe fn rearm_depth_two_whole_ampdu(
+    pipe: u8,
+    slot_raw: u32,
+    first_frame_node: FrameNodeAddress,
+    pending_mask: u32,
+) -> Result<(), ProbeBuildError> {
+    unsafe {
+        let pipe = pipe & 3;
+        let record = pipe_record_address(pipe);
+        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
+        let first = first_frame_node.context();
+        let second_raw = read_u32(first.next_in_ampdu_address());
+        if second_raw == 0 {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        let second = FrameNodeAddress::new(second_raw).context();
+        let command = read_u32(slot.command().get());
+        let descriptor_node = read_u32(slot.auxiliary().get());
+        if command == 0 || descriptor_node == 0 {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        let packet_record = read_u32(command as usize + 0x18) & 0x001f_fffc;
+        if packet_record == 0 {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        prepare_depth_two_host_ampdu(
+            first.raw(),
+            second.raw(),
+            pipe,
+            read_u8(record.current_slot().get()) & 3,
+            slot_raw,
+            command,
+            descriptor_node,
+            packet_record,
+        )?;
+
+        let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
+        // Retry ownership is already live in the hardware ring. As in the
+        // ordinary vendor rearm path, rebuild the command in place, preserve
+        // slot state 4, trigger the pipe, then release only the current command
+        // mask bit. Re-running GO would publish a second active owner instead.
+        write_u8(slot.state().get(), 4);
+        write_u32(PIPE_IRQ_TRIGGER as usize, (1_u32 << pipe) << 25);
+        let current = read_u8(record.current_slot().get()) & 3;
+        write_u32(
+            ring.cursor_and_pending_mask() as usize,
+            read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
+        );
+        write_u32(
+            PIPE_IRQ_PENDING as usize,
+            0_u32.wrapping_sub(pending_mask.wrapping_add(1)),
+        );
+        Ok(())
+    }
+}
+
 #[cfg(target_arch = "arm")]
 impl SingleTxRetryBackend for SingleProbeMacBackend {
     fn decide_retry(
@@ -3605,9 +3761,11 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         slot: u32,
         frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
-        // A kind-1 retry event precedes software interpretation of the received
-        // BlockAck bitmap. Keep aggregate ownership intact until the RX lane
-        // matches that bitmap instead of entering the single-frame rearm path.
+        // A kind-1 retry event means the hardware did not close the aggregate
+        // through its ordinary status path. No firmware-visible BA bitmap has
+        // been found, so conservatively retry both members together. This
+        // preserves both sequence numbers and only gives up when either member
+        // exhausts its ordinary rate policy or the TX BA session has stopped.
         if unsafe {
             read_u8(
                 crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
@@ -3615,6 +3773,14 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     .get(),
             ) == 1
         } {
+            #[cfg(feature = "experimental-depth-two-ampdu")]
+            return if unsafe { prepare_depth_two_whole_retry(frame_node) }.is_some() {
+                self.retry.record_rearm();
+                SingleTxRetryDecision::Rearm
+            } else {
+                SingleTxRetryDecision::GiveUp
+            };
+            #[cfg(not(feature = "experimental-depth-two-ampdu"))]
             return SingleTxRetryDecision::AwaitBlockAck;
         }
         let Some(context) = crate::dtcm::host_context_from_raw(
@@ -3689,6 +3855,23 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         frame_node: FrameNodeAddress,
         pending_mask: u32,
     ) {
+        #[cfg(feature = "experimental-depth-two-ampdu")]
+        if unsafe {
+            read_u8(
+                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
+                    .kind()
+                    .get(),
+            ) == 1
+        } {
+            if unsafe {
+                rearm_depth_two_whole_ampdu(pipe, slot, frame_node, pending_mask)
+            }
+            .is_err()
+            {
+                terminal_probe_backend_fault(pipe);
+            }
+            return;
+        }
         execute_fixed_rate_single_frame_rearm(
             &mut VolatileMacPipeMmio,
             pipe,
@@ -3701,7 +3884,17 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
 
     fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16) {
         unsafe { crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP) };
+        let aggregate = unsafe {
+            read_u8(
+                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
+                    .kind()
+                    .get(),
+            ) == 1
+        };
         unsafe { complete_tx_pipe_slot(frame_node, slot, status, self) };
+        if aggregate {
+            unsafe { write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0) };
+        }
     }
 
     fn fatal_unsupported_multi_slot_retry(
@@ -10459,6 +10652,10 @@ mod tests {
             ),
             [BlockAckMemberAction::Retry, BlockAckMemberAction::GiveUp],
         );
+        assert!(depth_two_whole_retry_allowed([true; 2], true, [19; 2]));
+        assert!(!depth_two_whole_retry_allowed([true, false], true, [19; 2]));
+        assert!(!depth_two_whole_retry_allowed([true; 2], false, [19; 2]));
+        assert!(!depth_two_whole_retry_allowed([true; 2], true, [19, 18]));
     }
 
     #[test]

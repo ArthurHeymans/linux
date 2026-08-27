@@ -276,9 +276,21 @@ OR remained only `0x2bf`. The experiment was removed immediately and packed
 image `1958067d4e12c44c73bccc8c3b0409d42f2865e673cf258ad7cc3cfac2704e3a`
 restored.
 
-This leaves no observed per-member hardware result source. The next safe runtime
-slice is therefore vendor state-11 no-BA recovery: retain both members at
-status `0x0c`, perform a bounded retry of the whole depth-two aggregate when no
-bitmap is visible, and give up truthfully at the retry/session limit. Selective
-retry can replace that conservative fallback only after a bitmap source is
-found.
+This leaves no observed per-member hardware result source. The implemented
+state-11 fallback now treats a kind-1 retry event as a missing result for both
+members. It preserves both sequence numbers, advances both ordinary rate-policy
+try counters together, requires an active TX BA session and a common next rate,
+and allows at most two whole-aggregate retries. Rearm follows the vendor retry
+ownership sequence: rebuild the command in place, retain slot state 4, trigger
+the pipe, clear only the current hardware command-mask bit, then acknowledge the
+owned retry event. Re-running GO was rejected because it stalled after eight
+aggregates and left active ownership behind.
+
+A forced-loss qualification repeated the first descriptor in place of the
+second. The bounded command-mask rearm sustained 304 Kbit/s and 3/3 ping under
+that permanent second-member loss, then drained to zero used buffers with the
+BH alive and WSM idle. The normal image
+`ea856dfc52287542f5baf02747b09bc6531a88b78db1b364cf999b292d16cbd9`
+then reached 5.45 Mbit/s over ten seconds, 4,882 aggregate confirmations, 20/20
+ping, and zero used buffers. Selective retry can replace this conservative
+fallback only after a bitmap source is found.
