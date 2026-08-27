@@ -234,3 +234,11 @@ than being falsely confirmed. Packed image
 `18dcc3bb45ce4776f2b394a865a30cc56ca8c7c8e570dfee80123eb6c5c2caaa`
 completed a 5-second TCP run at 3.14 Mbit/s with 1,386 aggregate confirmations,
 10/10 ping, and zero used buffers after drain.
+
+A second pure layer, `plan_depth_two_block_ack_actions()`, now maps those member
+states to confirm, retry, or give-up actions using explicit per-member retry
+eligibility and the operational-session state. Acknowledged members always
+confirm; missing and outside-window members retry only while both policy and
+the BA session permit it. This remains unconnected to runtime ownership until
+a real bitmap is visible, but fixes the decision contract needed by the next
+per-member requeue slice.

@@ -808,6 +808,13 @@ pub enum BlockAckMemberState {
     OutsideWindow,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockAckMemberAction {
+    Confirm,
+    Retry,
+    GiveUp,
+}
+
 pub fn classify_depth_two_block_ack(
     start_sequence: u16,
     bitmap: u64,
@@ -821,6 +828,24 @@ pub fn classify_depth_two_block_ack(
             BlockAckMemberState::Acknowledged
         } else {
             BlockAckMemberState::Missing
+        }
+    })
+}
+
+pub fn plan_depth_two_block_ack_actions(
+    members: [BlockAckMemberState; 2],
+    retry_allowed: [bool; 2],
+    session_active: bool,
+) -> [BlockAckMemberAction; 2] {
+    core::array::from_fn(|index| match members[index] {
+        BlockAckMemberState::Acknowledged => BlockAckMemberAction::Confirm,
+        BlockAckMemberState::Missing | BlockAckMemberState::OutsideWindow
+            if session_active && retry_allowed[index] =>
+        {
+            BlockAckMemberAction::Retry
+        }
+        BlockAckMemberState::Missing | BlockAckMemberState::OutsideWindow => {
+            BlockAckMemberAction::GiveUp
         }
     })
 }
@@ -10413,9 +10438,26 @@ mod tests {
             classify_depth_two_block_ack(0x0100, 0b01, [0x0100, 0x0101]),
             [BlockAckMemberState::Acknowledged, BlockAckMemberState::Missing],
         );
+        let outside = classify_depth_two_block_ack(0x0100, u64::MAX, [0x0100, 0x0140]);
         assert_eq!(
-            classify_depth_two_block_ack(0x0100, u64::MAX, [0x0100, 0x0140]),
+            outside,
             [BlockAckMemberState::Acknowledged, BlockAckMemberState::OutsideWindow],
+        );
+        assert_eq!(
+            plan_depth_two_block_ack_actions(outside, [true, true], true),
+            [BlockAckMemberAction::Confirm, BlockAckMemberAction::Retry],
+        );
+        assert_eq!(
+            plan_depth_two_block_ack_actions(outside, [true, true], false),
+            [BlockAckMemberAction::Confirm, BlockAckMemberAction::GiveUp],
+        );
+        assert_eq!(
+            plan_depth_two_block_ack_actions(
+                [BlockAckMemberState::Missing, BlockAckMemberState::Missing],
+                [true, false],
+                true,
+            ),
+            [BlockAckMemberAction::Retry, BlockAckMemberAction::GiveUp],
         );
     }
 
