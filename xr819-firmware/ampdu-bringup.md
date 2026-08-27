@@ -223,3 +223,14 @@ completed at 5.10 Mbit/s TCP with 4,602 aggregate confirmations, 20/20 ping,
 an alive BH, idle WSM, and zero used buffers. This does not prove partial-BA
 retirement, but it establishes the exact vendor member-tracking ownership that
 `bab_process_ba_bitmap()` will consume once the BA bitmap becomes visible.
+
+The depth-two subset of the BA window decision is now pure and explicit:
+`classify_depth_two_block_ack()` masks 12-bit sequence numbers, handles wrap at
+4095, distinguishes acknowledged and missing members inside the 64-bit window,
+and separately marks members outside that window. The existing qualified
+all-ack consumer now uses this classifier without changing its ownership rule;
+missing or outside-window members remain owned for the bounded watchdog rather
+than being falsely confirmed. Packed image
+`18dcc3bb45ce4776f2b394a865a30cc56ca8c7c8e570dfee80123eb6c5c2caaa`
+completed a 5-second TCP run at 3.14 Mbit/s with 1,386 aggregate confirmations,
+10/10 ping, and zero used buffers after drain.

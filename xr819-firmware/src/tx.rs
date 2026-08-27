@@ -802,6 +802,30 @@ pub struct DepthTwoAmpduInput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockAckMemberState {
+    Acknowledged,
+    Missing,
+    OutsideWindow,
+}
+
+pub fn classify_depth_two_block_ack(
+    start_sequence: u16,
+    bitmap: u64,
+    sequences: [u16; 2],
+) -> [BlockAckMemberState; 2] {
+    sequences.map(|sequence| {
+        let delta = (sequence & 0x0fff).wrapping_sub(start_sequence & 0x0fff) & 0x0fff;
+        if delta >= 64 {
+            BlockAckMemberState::OutsideWindow
+        } else if bitmap & (1_u64 << delta) != 0 {
+            BlockAckMemberState::Acknowledged
+        } else {
+            BlockAckMemberState::Missing
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthTwoAmpduDescriptor {
     /// Auxiliary stream reached by the top-level opcode-0 transfer.
     pub words: [u32; 6],
@@ -5253,16 +5277,19 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
         let start = read_u16(frame + 0x12) >> 4;
         let bitmap = u64::from(read_u32(frame + 0x14))
             | (u64::from(read_u32(frame + 0x18)) << 32);
-        let acknowledged = |context: ContextAddress| {
-            let sequence = read_u16(context.sequence_number_address()) & 0x0fff;
-            let delta = sequence.wrapping_sub(start) & 0x0fff;
-            delta < 64 && bitmap & (1_u64 << delta) != 0
-        };
+        let members = classify_depth_two_block_ack(
+            start,
+            bitmap,
+            [
+                read_u16(publication.context.sequence_number_address()),
+                read_u16(second_node.context().sequence_number_address()),
+            ],
+        );
 
         // Compressed BA frames can arrive repeatedly while the receiver grows
         // its bitmap. Keep ownership until both members are acknowledged; a
         // bounded watchdog fallback will handle a genuinely missing member.
-        if !acknowledged(publication.context) || !acknowledged(second_node.context()) {
+        if members != [BlockAckMemberState::Acknowledged; 2] {
             return true;
         }
 
@@ -10373,6 +10400,22 @@ mod tests {
                 0x4e14_0000,
                 0xf000_0000,
             ]
+        );
+    }
+
+    #[test]
+    fn depth_two_block_ack_classifies_wrapped_window_members() {
+        assert_eq!(
+            classify_depth_two_block_ack(0x0fff, 0b11, [0x0fff, 0x0000]),
+            [BlockAckMemberState::Acknowledged; 2],
+        );
+        assert_eq!(
+            classify_depth_two_block_ack(0x0100, 0b01, [0x0100, 0x0101]),
+            [BlockAckMemberState::Acknowledged, BlockAckMemberState::Missing],
+        );
+        assert_eq!(
+            classify_depth_two_block_ack(0x0100, u64::MAX, [0x0100, 0x0140]),
+            [BlockAckMemberState::Acknowledged, BlockAckMemberState::OutsideWindow],
         );
     }
 
