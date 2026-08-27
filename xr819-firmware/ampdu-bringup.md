@@ -155,8 +155,26 @@ Follow-up visibility probes closed the remaining timing ambiguity:
 
 Therefore state 11 cannot yet be translated as a software timing/retry loop:
 the XR819 is not publishing the received BA control frame or bitmap to the
-firmware-visible structures used by vendor `bab_process_ba_bitmap()`. The next
-slice is hardware response-pipe/session setup—specifically the configuration
-that routes subtype `0x94` into packet RAM or the per-link bitmap—not another
-cursor or scheduler approximation. Keep the qualified all-members-success
-fallback until that visibility contract is demonstrated.
+firmware-visible structures used by vendor `bab_process_ba_bitmap()`.
+
+A follow-up response-pipe audit rejected another false lead. Vendor literal
+`DAT_00010928` is `0x09007000`, the packet-RAM response-pointer table, not the
+MAC register block at `0x09c00a00`. `txp_program_pipe_slot()` already publishes
+slots 2, 3, 11, and 12 there. Writing the same values to MAC registers broke
+association traffic, while replacing the open retained aliases with only the
+packet-RAM writes also regressed operation. Likewise, forcing descriptor mode
+1 (`0x94`) stalled traffic. These descriptors construct immediate transmitted
+responses; they do not establish received-BA visibility.
+
+The vendor raw words around `txp_build_ba_desc()` also cannot be copied without
+relocation: its `0x07002000` operand names vendor packet-RAM state, whereas the
+open image's corresponding object is at a different packet-RAM offset. Tests
+that substituted the raw word or zeroed the currently qualified selector words
+stalled traffic. All such experiments were removed and packed image
+`ba6ff60e...` restored.
+
+The next slice must instead reconstruct ownership of the normal RX FIFO around
+`rxfifo_next_frame()`/`rxfifo_release_slot()`, particularly why vendor cursor
+`+0x40` remains on a live slot until `rxfifo_find_frame_by_subtype(0x94)` while
+the open consumer observes only a released sentinel. Keep the qualified
+all-members-success fallback until that ownership contract is demonstrated.
