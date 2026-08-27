@@ -752,7 +752,7 @@ pub unsafe fn initialize_wsm_tx_context_pool() {
 #[cfg(target_arch = "arm")]
 pub unsafe fn begin_unjoined_scan_radio_stop() {
     unsafe {
-        write_u32(crate::dtcm::LOW_MAC_STATE_18.get(), 0);
+        write_u32(crate::dtcm::RX_FIFO_STATE.deferred_consumer().get(), 0);
         let previous = crate::tx::disable_irq_fiq_save();
         write_u16(crate::dtcm::LOW_MAC_CONTROLLER_CONFIG.get(), 0);
         write_u16(crate::dtcm::RADIO_STOP_WORD_02.get(), 0);
@@ -842,8 +842,8 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
 
         // 0x152 -> 0x10024: collapse producer, consumer, scan, and release.
         let producer = read_u32(crate::platform::mac_register(0x0604));
-        write_u32(crate::dtcm::LOW_MAC_PRODUCER.get(), producer);
-        write_u32(crate::dtcm::LOW_MAC_PRODUCER_MIRROR.get(), producer);
+        write_u32(crate::dtcm::RX_FIFO_STATE.release_cursor().get(), producer);
+        write_u32(crate::dtcm::RX_FIFO_STATE.claim_cursor().get(), producer);
         write_u32(crate::platform::mac_register(0x0608), producer);
         let dma_control = read_u32(crate::platform::mac_register(0x0600));
         write_u32(crate::platform::mac_register(0x0600), dma_control);
@@ -880,8 +880,8 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u32(crate::dtcm::MAC_TX_QUEUE_HEAD.get(), 0);
         write_u32(crate::dtcm::MAC_TX_QUEUE_TAIL.get(), 0);
         write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 2);
-        write_u32(crate::dtcm::LOW_MAC_PRODUCER.get(), 0);
-        write_u32(crate::dtcm::LOW_MAC_PRODUCER_MIRROR.get(), 0);
+        write_u32(crate::dtcm::RX_FIFO_STATE.release_cursor().get(), 0);
+        write_u32(crate::dtcm::RX_FIFO_STATE.claim_cursor().get(), 0);
         for address in [crate::dtcm::MAC_BEACON_CONTROL_STATE.get(), crate::dtcm::MAC_BEACON_SECONDARY_COMMAND.get(), crate::dtcm::MAC_BEACON_CONTROL.get(), crate::dtcm::MAC_BEACON_SELECTOR.get()] {
             write_u32(address, 0);
         }

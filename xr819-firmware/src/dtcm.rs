@@ -560,7 +560,7 @@ struct InitializedHifControl {
 #[repr(C, align(4))]
 struct HostPasRing { head: SharedU32, tail: SharedU32, slots: [SharedU32; 64] }
 #[repr(C, align(4))]
-struct LowMacGlobalPrefix { fifo_control: SharedU8, fifo_status: SharedU8, rate_config: SharedU16, control_04: SharedU8, legacy_mode: SharedU8, event_pending: SharedU8, pipe_busy: SharedU8, controller_config: SharedU16, control_0a: SharedU8, control_0b: SharedU8, selected_rate: SharedU8, opaque_0d: OpaqueBytes<0x03>, producer: SharedU32, producer_mirror: SharedU32, state_18: SharedU32, slot_time_base: SharedU32, slot_time_initial: SharedU32, slot_time_x1: SharedU32, slot_time_x2: SharedU32, slot_time_x3: SharedU32, slot_time_constant: SharedU32, slot_time_x8: SharedU32, slot_time_x16: SharedU32, slot_time_x24: SharedU32, opaque_40: SharedU32, ifs_duration: SharedU32, short_airtimes: [SharedU16; 22], long_airtimes: [SharedU16; 22] }
+struct LowMacGlobalPrefix { fifo_control: SharedU8, fifo_status: SharedU8, rate_config: SharedU16, control_04: SharedU8, legacy_mode: SharedU8, event_pending: SharedU8, pipe_busy: SharedU8, controller_config: SharedU16, control_0a: SharedU8, control_0b: SharedU8, selected_rate: SharedU8, opaque_0d: OpaqueBytes<0x03>, rx_release_cursor: SharedU32, rx_claim_cursor: SharedU32, rx_deferred_consumer: SharedU32, slot_time_base: SharedU32, slot_time_initial: SharedU32, slot_time_x1: SharedU32, slot_time_x2: SharedU32, slot_time_x3: SharedU32, slot_time_constant: SharedU32, slot_time_x8: SharedU32, slot_time_x16: SharedU32, slot_time_x24: SharedU32, rx_ba_scan_cursor: SharedU32, ifs_duration: SharedU32, short_airtimes: [SharedU16; 22], long_airtimes: [SharedU16; 22] }
 #[repr(C, align(4))]
 struct MacPipeSlot { state_word: SharedU32, opaque_04: OpaqueBytes<0x08>, frame: SharedU32, auxiliary: SharedU32, command: SharedU32 }
 #[repr(C, align(4))]
@@ -1495,6 +1495,28 @@ pub(crate) struct MacPipeRecordAddress(DtcmAddress);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MacPipeSlotAddress(DtcmAddress);
 
+/// Typed view of the vendor RX FIFO cursors embedded in the low-MAC prefix.
+/// The surrounding record also contains MAC timing values, so this view owns
+/// only the four cursor/control fields translated from `rx_fifo.c`.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RxFifoStateAddress(DtcmAddress);
+
+impl RxFifoStateAddress {
+    pub(crate) const fn release_cursor(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + core::mem::offset_of!(LowMacGlobalPrefix, rx_release_cursor))
+    }
+    pub(crate) const fn claim_cursor(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + core::mem::offset_of!(LowMacGlobalPrefix, rx_claim_cursor))
+    }
+    pub(crate) const fn deferred_consumer(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + core::mem::offset_of!(LowMacGlobalPrefix, rx_deferred_consumer))
+    }
+    pub(crate) const fn ba_scan_cursor(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + core::mem::offset_of!(LowMacGlobalPrefix, rx_ba_scan_cursor))
+    }
+}
+
 /// Checked identity of the decoded PAS overlay beginning at context `+0x54`.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2334,9 +2356,7 @@ pub(crate) const LOW_MAC_CONTROLLER_CONFIG: DtcmAddress = DtcmAddress::from_offs
 pub(crate) const LOW_MAC_CONTROL_0A: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, control_0a));
 pub(crate) const LOW_MAC_CONTROL_0B: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, control_0b));
 pub(crate) const LOW_MAC_SELECTED_RATE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, selected_rate));
-pub(crate) const LOW_MAC_PRODUCER: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, producer));
-pub(crate) const LOW_MAC_PRODUCER_MIRROR: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, producer_mirror));
-pub(crate) const LOW_MAC_STATE_18: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, state_18));
+pub(crate) const RX_FIFO_STATE: RxFifoStateAddress = RxFifoStateAddress(LOW_MAC_GLOBAL);
 pub(crate) const LOW_MAC_SLOT_TIME_BASE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_base));
 pub(crate) const LOW_MAC_SLOT_TIME_INITIAL: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_initial));
 pub(crate) const LOW_MAC_SLOT_TIME_X1: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x1));
@@ -2346,7 +2366,6 @@ pub(crate) const LOW_MAC_SLOT_TIME_CONSTANT: DtcmAddress = DtcmAddress::from_off
 pub(crate) const LOW_MAC_SLOT_TIME_X8: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x8));
 pub(crate) const LOW_MAC_SLOT_TIME_X16: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x16));
 pub(crate) const LOW_MAC_SLOT_TIME_X24: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x24));
-pub(crate) const LOW_MAC_TX_START_REGISTER_SNAPSHOT: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, opaque_40));
 pub(crate) const LOW_MAC_IFS_DURATION: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, ifs_duration));
 pub(crate) const LOW_MAC_FIFO_STATUS: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, fifo_status));
 pub(crate) const LOW_MAC_LEGACY_MODE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode));
@@ -3905,7 +3924,7 @@ const _: () = {
     assert!(core::mem::size_of::<LowMacGlobalPrefix>() == 0xa0);
     assert!(core::mem::offset_of!(LowMacGlobalPrefix, rate_config) == 0x02);
     assert!(core::mem::offset_of!(LowMacGlobalPrefix, legacy_mode) == 0x05);
-    assert!(core::mem::offset_of!(LowMacGlobalPrefix, producer) == 0x10);
+    assert!(core::mem::offset_of!(LowMacGlobalPrefix, rx_release_cursor) == 0x10);
     assert!(core::mem::offset_of!(LowMacGlobalPrefix, slot_time_base) == 0x1c);
     assert!(core::mem::offset_of!(LowMacGlobalPrefix, ifs_duration) == 0x44);
     assert!(core::mem::offset_of!(LowMacGlobalPrefix, short_airtimes) == 0x48);
@@ -4857,9 +4876,9 @@ mod tests {
         assert_eq!(LOW_MAC_CONTROL_0A.get(), 0x0400_168a);
         assert_eq!(LOW_MAC_CONTROL_0B.get(), 0x0400_168b);
         assert_eq!(LOW_MAC_SELECTED_RATE.get(), 0x0400_168c);
-        assert_eq!(LOW_MAC_PRODUCER.get(), 0x0400_1690);
-        assert_eq!(LOW_MAC_PRODUCER_MIRROR.get(), 0x0400_1694);
-        assert_eq!(LOW_MAC_STATE_18.get(), 0x0400_1698);
+        assert_eq!(RX_FIFO_STATE.release_cursor().get(), 0x0400_1690);
+        assert_eq!(RX_FIFO_STATE.claim_cursor().get(), 0x0400_1694);
+        assert_eq!(RX_FIFO_STATE.deferred_consumer().get(), 0x0400_1698);
         assert_eq!(LOW_MAC_SLOT_TIME_BASE.get(), 0x0400_169c);
         assert_eq!(LOW_MAC_SLOT_TIME_INITIAL.get(), 0x0400_16a0);
         assert_eq!(LOW_MAC_SLOT_TIME_X1.get(), 0x0400_16a4);
@@ -4869,7 +4888,7 @@ mod tests {
         assert_eq!(LOW_MAC_SLOT_TIME_X8.get(), 0x0400_16b4);
         assert_eq!(LOW_MAC_SLOT_TIME_X16.get(), 0x0400_16b8);
         assert_eq!(LOW_MAC_SLOT_TIME_X24.get(), 0x0400_16bc);
-        assert_eq!(LOW_MAC_TX_START_REGISTER_SNAPSHOT.get(), 0x0400_16c0);
+        assert_eq!(RX_FIFO_STATE.ba_scan_cursor().get(), 0x0400_16c0);
         assert_eq!(LOW_MAC_IFS_DURATION.get(), 0x0400_16c4);
         assert_eq!(LOW_MAC_SHORT_AIRTIME_TABLE.get(), 0x0400_16c8);
         assert_eq!(low_mac_short_airtime_unchecked(21).get(), 0x0400_16f2);

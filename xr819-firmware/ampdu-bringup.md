@@ -176,5 +176,10 @@ stalled traffic. All such experiments were removed and packed image
 The next slice must instead reconstruct ownership of the normal RX FIFO around
 `rxfifo_next_frame()`/`rxfifo_release_slot()`, particularly why vendor cursor
 `+0x40` remains on a live slot until `rxfifo_find_frame_by_subtype(0x94)` while
-the open consumer observes only a released sentinel. Keep the qualified
-all-members-success fallback until that ownership contract is demonstrated.
+the open consumer observes only a released sentinel. The shared DTCM words are
+now represented by `RxFifoStateAddress` rather than unrelated low-MAC producer
+aliases: release cursor `+0x10`, claim cursor `+0x14`, deferred consumer `+0x18`,
+and BA scan cursor `+0x40`. This is a typed view over the existing fixed-layout
+record, not a relocation or claim over its adjacent MAC timing fields. Keep the
+qualified all-members-success fallback until that ownership contract is
+demonstrated.

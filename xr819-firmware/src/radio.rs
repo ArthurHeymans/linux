@@ -173,7 +173,7 @@ pub struct PendingIndication {
 /// Packet DMA must already be initialized and must not have an active consumer.
 pub unsafe fn initialize() {
     unsafe {
-        crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_STATE_18).write_volatile(0);
+        crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.deferred_consumer()).write_volatile(0);
         synchronize_after_wake(0);
         *DIAGNOSTICS.0.get() = ReceiveDiagnostics::default();
     }
@@ -188,9 +188,9 @@ pub unsafe fn synchronize_after_wake(producer: u32) {
     let producer = producer & FIFO_MASK;
     unsafe {
         rx_ring().synchronize(producer);
-        crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER)
+        crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.release_cursor())
             .write_volatile(producer);
-        crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER_MIRROR)
+        crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.claim_cursor())
             .write_volatile(producer);
         DMA_CONSUMER.write_volatile(producer);
         let control = (crate::platform::mac_register(0x0600) as *mut u32).read_volatile();
@@ -280,7 +280,7 @@ const fn pending_release_state(value: u32) -> u32 {
 unsafe fn set_release_offset(ring: &mut RxRing, next: u32) {
     unsafe {
         ring.set_release_offset(next);
-        crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER).write_volatile(next);
+        crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.release_cursor()).write_volatile(next);
         DMA_CONSUMER.write_volatile(next);
     }
 }
@@ -288,7 +288,7 @@ unsafe fn set_release_offset(ring: &mut RxRing, next: u32) {
 unsafe fn set_claim_offset(ring: &mut RxRing, next: u32) {
     unsafe {
         ring.set_claim_offset(next);
-        crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER_MIRROR)
+        crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.claim_cursor())
             .write_volatile(next);
     }
 }
@@ -316,7 +316,7 @@ unsafe fn set_claim_offset(ring: &mut RxRing, next: u32) {
 unsafe fn apply_resynchronized_offset(ring: &mut RxRing, previous_claim: u32, target: u32) {
     unsafe {
         let release = ring.resynchronize(previous_claim, target);
-        crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER_MIRROR)
+        crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.claim_cursor())
             .write_volatile(target);
         if let Some(target) = release {
             set_release_offset(ring, target);
@@ -766,7 +766,7 @@ unsafe fn release_head_slot(ring: &mut RxRing, slot: usize, next: u32, low_state
         // software release cursor, mark and clear the slot, then expose the
         // new consumer pointer to packet DMA.
         ring.set_release_offset(next);
-        crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER).write_volatile(next);
+        crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.release_cursor()).write_volatile(next);
         ((slot + 8) as *mut u32).write_volatile(FIFO_RELEASED | low_state);
         (slot as *mut u32).write_volatile(0);
         DMA_CONSUMER.write_volatile(next);
@@ -859,7 +859,7 @@ unsafe fn release(ring: &mut RxRing, token: RxToken) {
         if let Some(target) = ring.finish_deferred_resync() {
             // `finish_deferred_resync` already updates the software cursor;
             // preserve the existing hardware write order here.
-            crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER)
+            crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.release_cursor())
                 .write_volatile(target);
             DMA_CONSUMER.write_volatile(target);
         }
@@ -980,7 +980,7 @@ unsafe fn vendor_rx_slot_valid(offset: u32) -> bool {
 pub unsafe fn find_low_mac_frame_by_subtype(subtype: u8) -> Option<(usize, usize)> {
     unsafe {
         let mut cursor = vendor_rx_offset(
-            crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_TX_START_REGISTER_SNAPSHOT)
+            crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.ba_scan_cursor())
                 .read_volatile(),
         );
         let producer = vendor_rx_offset(DMA_PRODUCER.read_volatile());
@@ -1084,7 +1084,7 @@ unsafe fn poll_indication(
             let slot_state = claimed_slot_state(state.read_volatile());
             state.write_volatile(slot_state);
             let token = ring.claim(next);
-            crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_PRODUCER_MIRROR)
+            crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.claim_cursor())
                 .write_volatile(next);
             crate::host_tx_diagnostics::record(
                 crate::host_tx_diagnostics::EVENT_RX_CLAIM,

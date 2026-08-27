@@ -2338,7 +2338,7 @@ pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, 
         if plan.service_status_0e_side_effects {
             write_u32(
                 crate::dtcm::MAC_PHY_COMPLETION_STATUS.get(),
-                read_u32(crate::dtcm::LOW_MAC_PRODUCER_MIRROR.get()),
+                read_u32(crate::dtcm::RX_FIFO_STATE.claim_cursor().get()),
             );
             let _ = backend.find_rx_frame_by_subtype(0x80);
             if read_u32(crate::dtcm::MAC_WAKE_CONTROL.get()) != 0 {
@@ -5380,7 +5380,7 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         trace_tx_stage(TX_TRACE_START);
         trace_tx_value(0x24, u32::from(pipe));
         write_u32(
-            crate::dtcm::LOW_MAC_TX_START_REGISTER_SNAPSHOT.get(),
+            crate::dtcm::RX_FIFO_STATE.ba_scan_cursor().get(),
             read_u32(crate::platform::mac_register(0x0604)),
         );
         let pipe_index = usize::from(pipe);
