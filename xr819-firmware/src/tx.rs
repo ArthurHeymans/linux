@@ -3891,6 +3891,18 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     .get(),
             ) == 1
         };
+        if aggregate {
+            unsafe {
+                let pipe = read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3;
+                let record = pipe_record_address(pipe);
+                let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
+                let current = read_u8(record.current_slot().get()) & 3;
+                write_u32(
+                    ring.cursor_and_pending_mask() as usize,
+                    read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
+                );
+            }
+        }
         unsafe { complete_tx_pipe_slot(frame_node, slot, status, self) };
         if aggregate {
             unsafe { write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0) };

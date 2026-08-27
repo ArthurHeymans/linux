@@ -39,7 +39,7 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
         0x04003768: 1,
         0x04003A50: 1,
         0x04003A68: 6,
-        0x04003A6A: 6,
+        0x04003A6A: 5,
         0x04003A6C: 4,
         0x04003A6D: 5,
         0x04003A70: 2,

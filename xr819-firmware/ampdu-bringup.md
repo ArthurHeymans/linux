@@ -292,5 +292,25 @@ that permanent second-member loss, then drained to zero used buffers with the
 BH alive and WSM idle. The normal image
 `ea856dfc52287542f5baf02747b09bc6531a88b78db1b364cf999b292d16cbd9`
 then reached 5.45 Mbit/s over ten seconds, 4,882 aggregate confirmations, 20/20
-ping, and zero used buffers. Selective retry can replace this conservative
+ping, and zero used buffers.
+
+The stopped-session edge initially exposed a distinct ownership bug: giving up
+before any rearm left the aggregate's current hardware command-mask bit set, so
+the host eventually killed the BH with 14 TX buffers stuck. Aggregate give-up
+now releases that bit before member completion and clears global busy ownership.
+With the BA session forced inactive at the first retry event and the second
+member permanently withheld, the corrected path sustained 520 Kbit/s and 3/3
+ping, then drained to zero used buffers with the BH alive and WSM idle.
+
+The restored normal image
+`dff39906ac610da24205ce9167fc1ab50827f68ffd36497adee3f9eecf49c14d`
+reached 4.55 Mbit/s in a five-second smoke test and 5.21 Mbit/s over 60 seconds.
+The long run completed 26,442 aggregate confirmations and 20/20 follow-up pings
+with the BH alive, WSM idle, and zero used buffers.
+
+Warm SDIO unbind/rebind remains a separate pre-existing failure: firmware
+download completes, but startup times out with HIF `0x0ab00100 = 0x00013f4c`,
+`0x0ab00104 = 0x000000a9`, and `0x0ab00000 = 0x0000800c`. A cold reboot restores
+normal operation. The retry/session-stop changes neither fix nor worsen that
+post-download startup contract. Selective retry can replace this conservative
 fallback only after a bitmap source is found.
