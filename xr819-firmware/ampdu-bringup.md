@@ -180,6 +180,14 @@ the open consumer observes only a released sentinel. The shared DTCM words are
 now represented by `RxFifoStateAddress` rather than unrelated low-MAC producer
 aliases: release cursor `+0x10`, claim cursor `+0x14`, deferred consumer `+0x18`,
 and BA scan cursor `+0x40`. This is a typed view over the existing fixed-layout
-record, not a relocation or claim over its adjacent MAC timing fields. Keep the
-qualified all-members-success fallback until that ownership contract is
-demonstrated.
+record, not a relocation or claim over its adjacent MAC timing fields.
+
+A hardware experiment then initialized the BA scan cursor with the live producer
+at RX synchronization and advanced it whenever release would otherwise leave it
+on the cleared head slot. The path remained healthy (3.16 Mbit/s, 10/10 ping,
+zero used buffers), but 746 matching aggregate completions still found zero
+subtype-`0x94` frames. The speculative cursor coupling was removed. This rules
+out a merely stale `+0x40` value: the BA frame is absent from the firmware-visible
+normal RX stream before cursor policy can recover it. Keep the qualified
+all-members-success fallback until the earlier hardware admission/filter stage
+is identified.
