@@ -92,7 +92,10 @@ pub(crate) fn can_form_ampdu_pair(first: AmpduCandidate, second: AmpduCandidate)
     let first_qos_data = first.frame_control & 0x008c == 0x0088;
     let second_qos_data = second.frame_control & 0x008c == 0x0088;
     let (tx_tids, _) = crate::configuration::block_ack_policy();
-    let tid_enabled = first.key.tid < 8 && tx_tids & (1 << first.key.tid) != 0;
+    let operational = crate::configuration::operational_tx_ba_tids();
+    let tid_enabled = first.key.tid < 8
+        && tx_tids & (1 << first.key.tid) != 0
+        && operational & (1 << first.key.tid) != 0;
     first_qos_data
         && second_qos_data
         && tid_enabled
@@ -2521,6 +2524,10 @@ mod tests {
         assert!(crate::configuration::retain_interface_mib(
             crate::wsm::MIB_ID_BLOCK_ACK_POLICY,
             &[0x3f, 0, 0x3f, 0],
+        ));
+        assert!(crate::configuration::retain_interface_mib(
+            crate::wsm::MIB_ID_PRIVATE_TX_BA_SESSION,
+            &[5, 1],
         ));
         let first = AmpduCandidate {
             key: AmpduGroupingKey { interface: 0, link: 2, tid: 5, rate: 19 },

@@ -48,6 +48,7 @@ struct ConfigurationStorage {
     block_ack_tx_tids: u8,
     block_ack_rx_tids: u8,
     mpdu_start_spacing: u8,
+    operational_tx_ba_tids: u8,
 }
 
 impl ConfigurationStorage {
@@ -87,6 +88,7 @@ impl ConfigurationStorage {
             block_ack_tx_tids: 0,
             block_ack_rx_tids: 0,
             mpdu_start_spacing: 0,
+            operational_tx_ba_tids: 0,
         }
     }
 }
@@ -189,6 +191,15 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
             storage.mpdu_start_spacing = *spacing;
             true
         }
+        (crate::wsm::MIB_ID_PRIVATE_TX_BA_SESSION, [tid, enabled]) if *tid < 8 => {
+            let bit = 1_u8 << *tid;
+            if *enabled == 0 {
+                storage.operational_tx_ba_tids &= !bit;
+            } else {
+                storage.operational_tx_ba_tids |= bit;
+            }
+            true
+        }
         // The cooperative joined RX path currently delivers a superset and
         // lets mac80211 apply these optional filters. Accepting the standard
         // CW1200 MIBs is therefore honest even before hardware offload exists.
@@ -216,6 +227,10 @@ pub(crate) fn block_ack_policy() -> (u8, u8) {
 
 pub(crate) fn mpdu_start_spacing() -> u8 {
     unsafe { (*XR819_CONFIGURATION.0.get()).mpdu_start_spacing }
+}
+
+pub(crate) fn operational_tx_ba_tids() -> u8 {
+    unsafe { (*XR819_CONFIGURATION.0.get()).operational_tx_ba_tids }
 }
 
 pub fn current_tx_power_tenths_dbm() -> Option<i32> {
@@ -548,6 +563,16 @@ mod tests {
             crate::wsm::MIB_ID_SET_ASSOCIATION_MODE,
             &[0x1f, 1, 0, 8, 7, 0, 0, 0],
         ));
+        assert!(retain_interface_mib(
+            crate::wsm::MIB_ID_PRIVATE_TX_BA_SESSION,
+            &[3, 1],
+        ));
+        assert_eq!(operational_tx_ba_tids(), 1 << 3);
+        assert!(retain_interface_mib(
+            crate::wsm::MIB_ID_PRIVATE_TX_BA_SESSION,
+            &[3, 0],
+        ));
+        assert_eq!(operational_tx_ba_tids(), 0);
 
         assert_eq!(
             tx_power_ranges(),

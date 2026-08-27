@@ -49,6 +49,7 @@ pub const MIB_ID_SET_ASSOCIATION_MODE: u16 = 0x1010;
 pub const MIB_ID_SET_UAPSD_INFORMATION: u16 = 0x1013;
 pub const MIB_ID_DISABLE_BSSID_FILTER: u16 = 0x1026;
 pub const MIB_ID_GROUP_ADDRESSES_TABLE: u16 = 0x0004;
+pub const MIB_ID_PRIVATE_TX_BA_SESSION: u16 = 0xff48;
 
 #[derive(Clone, Copy, Immutable, IntoBytes)]
 #[repr(C)]

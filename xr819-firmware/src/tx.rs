@@ -865,6 +865,7 @@ pub fn build_depth_two_ampdu_descriptor(input: DepthTwoAmpduInput) -> DepthTwoAm
     words[length] = 0x5000_0000 | (input.phy_control_word & 0x00ff_ffff);
     length += 1;
     let aggregate_length = (u32::from(input.first_frame_length).wrapping_add(0x0b) & !3)
+        .wrapping_add(u32::from(input.spacing_selector) * 4)
         .wrapping_add(u32::from(input.second_frame_length))
         .wrapping_add(8) as u16;
     words[length] = 0x5200_0000
@@ -10035,6 +10036,7 @@ mod tests {
             }
         });
         assert_eq!(spaced.length, 8);
+        assert_eq!(spaced.aggregate_length, 0x0bd0);
         assert_eq!(
             spaced.words[2],
             ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(2)),
