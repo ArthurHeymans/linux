@@ -1502,6 +1502,24 @@ pub(crate) struct MacPipeSlotAddress(DtcmAddress);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RxFifoStateAddress(DtcmAddress);
 
+/// Typed identity of the eight vendor aggregate-member queues.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MacAggregateSlotTablesAddress;
+
+impl MacAggregateSlotTablesAddress {
+    #[inline(never)]
+    pub(crate) fn member_unchecked(self, link: usize, member: usize) -> DtcmAddress {
+        let end = core::hint::black_box(MAC_PHY_COMMAND_STATE.get());
+        DtcmAddress::new(
+            end.wrapping_sub(core::mem::size_of::<MacAggregateSlotTables>())
+                .wrapping_add(core::mem::offset_of!(MacAggregateSlotTables, queues))
+                .wrapping_add(link.wrapping_mul(core::mem::size_of::<[SharedU32; 16]>()))
+                .wrapping_add(member.wrapping_mul(core::mem::size_of::<SharedU32>())),
+        )
+        .expect("aggregate member address remains inside DTCM")
+    }
+}
+
 impl RxFifoStateAddress {
     pub(crate) const fn release_cursor(self) -> DtcmAddress {
         DtcmAddress::from_offset_unchecked(self.0.offset() + core::mem::offset_of!(LowMacGlobalPrefix, rx_release_cursor))
@@ -2357,6 +2375,8 @@ pub(crate) const LOW_MAC_CONTROL_0A: DtcmAddress = DtcmAddress::from_offset(LOW_
 pub(crate) const LOW_MAC_CONTROL_0B: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, control_0b));
 pub(crate) const LOW_MAC_SELECTED_RATE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, selected_rate));
 pub(crate) const RX_FIFO_STATE: RxFifoStateAddress = RxFifoStateAddress(LOW_MAC_GLOBAL);
+pub(crate) const MAC_AGGREGATE_SLOT_TABLES: MacAggregateSlotTablesAddress =
+    MacAggregateSlotTablesAddress;
 pub(crate) const LOW_MAC_SLOT_TIME_BASE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_base));
 pub(crate) const LOW_MAC_SLOT_TIME_INITIAL: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_initial));
 pub(crate) const LOW_MAC_SLOT_TIME_X1: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_GLOBAL.offset() + core::mem::offset_of!(LowMacGlobalPrefix, slot_time_x1));
@@ -5374,6 +5394,14 @@ fn initialized_phy_gain_source_record_addresses_are_exact() { assert_eq!(INITIAL
             Some(2 * INTERNAL_TX_CONTEXT_SIZE)
         );
         assert!(internal_context_ptr(INTERNAL_TX_CONTEXT_COUNT).is_none());
+    }
+
+    #[test]
+    fn aggregate_member_queue_addresses_are_exact() {
+        assert_eq!(MAC_AGGREGATE_SLOT_TABLES.member_unchecked(0, 0).get(), 0x0400_1b10);
+        assert_eq!(MAC_AGGREGATE_SLOT_TABLES.member_unchecked(0, 15).get(), 0x0400_1b4c);
+        assert_eq!(MAC_AGGREGATE_SLOT_TABLES.member_unchecked(7, 0).get(), 0x0400_1cd0);
+        assert_eq!(MAC_AGGREGATE_SLOT_TABLES.member_unchecked(7, 15).get(), 0x0400_1d0c);
     }
 
     #[test]

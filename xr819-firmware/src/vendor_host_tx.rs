@@ -1182,6 +1182,14 @@ pub enum AmpduPublishError {
 
 /// Fold two reversible ordinary reservations into one kind-1 pipe slot and
 /// cross the hardware boundary only after the aggregate command is complete.
+#[cfg(feature = "experimental-depth-two-ampdu")]
+const fn depth_two_aggregate_members(first: u32, second: u32) -> [u32; 16] {
+    let mut members = [0; 16];
+    members[0] = first;
+    members[1] = second;
+    members
+}
+
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
 pub unsafe fn publish_depth_two_ampdu(
     guard: &mut crate::mac_domain::MacDomainGuard<'_>,
@@ -1295,6 +1303,19 @@ pub unsafe fn publish_depth_two_ampdu(
         let _ = unsafe { second_reservation.cancel(guard, second) };
         let _ = unsafe { first_reservation.cancel(guard, first) };
         return Err(AmpduPublishError::Descriptor(error));
+    }
+
+    let aggregate_members =
+        depth_two_aggregate_members(first.context.pas().raw(), second.context.pas().raw());
+    unsafe {
+        for (member, context) in aggregate_members.into_iter().enumerate() {
+            write_live_u32(
+                crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
+                    .member_unchecked(link, member)
+                    .get() as u32,
+                context,
+            );
+        }
     }
 
     if unsafe {
@@ -2298,6 +2319,15 @@ mod tests {
             });
             self.link_gate
         }
+    }
+
+    #[cfg(feature = "experimental-depth-two-ampdu")]
+    #[test]
+    fn depth_two_member_table_uses_vendor_sixteen_slot_shape() {
+        let members = depth_two_aggregate_members(0x0400_5a78, 0x0400_5b28);
+        assert_eq!(members[0], 0x0400_5a78);
+        assert_eq!(members[1], 0x0400_5b28);
+        assert!(members[2..].iter().all(|member| *member == 0));
     }
 
     #[test]

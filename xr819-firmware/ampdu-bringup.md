@@ -209,3 +209,17 @@ is therefore later than aggregate admission but earlier than normal packet-RAM
 visibility. A new target capture is required to compare the live RX slot stream
 at that boundary; the target became unreachable before the diagnostic image
 could be installed.
+
+The vendor aggregate-member ownership table is now translated independently of
+BA visibility. `MacAggregateSlotTablesAddress` derives the fixed eight-by-16
+slot bank at `0x04001b10..0x04001d10` without introducing an in-range linked
+literal. Depth-two publication writes the two PAS/frame-node identities to
+slots 0 and 1 and clears slots 2 through 15; the matching qualified fallback
+completion clears all 16 words. The drift gate permits only the typed accessor,
+publisher, and matching completion consumer.
+
+Hardware qualification of packed image `18e616a194f9e5dccdfd3cbe4d1c9b9d7f013344d5809bc425dd73b397a722f9`
+completed at 5.10 Mbit/s TCP with 4,602 aggregate confirmations, 20/20 ping,
+an alive BH, idle WSM, and zero used buffers. This does not prove partial-BA
+retirement, but it establishes the exact vendor member-tracking ownership that
+`bab_process_ba_bitmap()` will consume once the BA bitmap becomes visible.

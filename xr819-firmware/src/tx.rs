@@ -5103,6 +5103,16 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
 
         #[cfg(feature = "experimental-depth-two-ampdu")]
         if slot_kind == 1 && first_frame_node.context().host().is_some() {
+            if link < 8 {
+                for member in 0..16 {
+                    write_u32(
+                        crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
+                            .member_unchecked(usize::from(link), member)
+                            .get(),
+                        0,
+                    );
+                }
+            }
             write_u8(
                 crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
                 read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),

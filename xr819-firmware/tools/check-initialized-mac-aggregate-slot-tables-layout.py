@@ -5,8 +5,10 @@ Eight per-queue TX aggregate slot tables rooted at g_fw_ctx (0x04001680)
 + queue * 0x40 + 0x490: vendor txq_build_aggregate_lists appends frame
 records, tx_flush_all_queues clears all 8*16 slots under irq disable,
 txp_fn_4155/txp_fn_4425 clear one queue's 16 slots, bab_process_ba_bitmap
-reads slots. Slot words are raw record pointers; they are never dereferenced
-by Rust.
+reads slots. Slot words are raw PAS/frame-node pointers. The reviewed depth-two publisher
+owns slots 0 and 1 while a kind-1 aggregate is live, and its matching completion
+clears all 16 words. Rust stores and clears pointer identities but does not
+dereference them through this table.
 
 The linked aligned-literal and decoded PC-relative-xref multisets are pinned
 empty. Empty linked sets are drift evidence, not writer closure: computed,
@@ -35,7 +37,14 @@ SOURCE_EXTENSIONS = {
 SOURCE_FILENAMES = {"Makefile", "Kconfig"}
 OWNER_FILES = {
     "src/dtcm.rs",
+    "src/tx.rs",
+    "src/vendor_host_tx.rs",
     "tools/check-initialized-mac-aggregate-slot-tables-layout.py",
+}
+ALLOWED_CONSUMERS = {
+    "src/dtcm.rs": {"member_unchecked"},
+    "src/tx.rs": {"complete_tx_pipe_slot"},
+    "src/vendor_host_tx.rs": {"publish_depth_two_ampdu"},
 }
 ADJACENT_DECLARATIONS = {
     "tools/check-mac-wake-runtime-layout.py": "(0x04001AC0, 0x04001B08)",
@@ -50,6 +59,10 @@ REQUIRED = (
     STRUCT,
     "pre_mac_phy_command_state: OpaqueBytes<0x08>, mac_aggregate_slot_tables: MacAggregateSlotTables,",
     "mac_phy_command_state: MacPhyCommandState",
+    "pub(crate) struct MacAggregateSlotTablesAddress;",
+    "pub(crate) fn member_unchecked(self, link: usize, member: usize) -> DtcmAddress",
+    "pub(crate) const MAC_AGGREGATE_SLOT_TABLES: MacAggregateSlotTablesAddress",
+    "fn aggregate_member_queue_addresses_are_exact()",
     "assert_type_layout!(SharedU32, 0x04, 4)",
     "assert_type_layout!(MacAggregateSlotTables, 0x200, 4)",
     "offset_of!(MacAggregateSlotTables, queues) == 0",
@@ -332,7 +345,7 @@ def check_source() -> None:
     declaration = re.search(r"(?:#\[[^\n]*\]\s*)*#\[repr\(C, align\(4\)\)\]\s*struct\s+MacAggregateSlotTables\s*\{[^}]*\}", source)
     if declaration is None or normalized(declaration.group()) != normalized(STRUCT) or "derive" in declaration.group():
         failures.append("src/dtcm.rs: MacAggregateSlotTables must be the exact private non-derived inventory")
-    if source.count("struct MacAggregateSlotTables") != 1 or "pre_mac_phy_command_state: OpaqueBytes<0x208>" in source:
+    if len(re.findall(r"\bstruct\s+MacAggregateSlotTables\b", source)) != 1 or "pre_mac_phy_command_state: OpaqueBytes<0x208>" in source:
         failures.append("src/dtcm.rs: removed opaque split or duplicate MAC aggregate slot tables remain")
     for relative, exact in ADJACENT_DECLARATIONS.items():
         if exact not in (ROOT / relative).read_text():
@@ -345,20 +358,22 @@ def check_source() -> None:
     production = "\n".join(rust.values())
     views, declarations = family_aliases(production)
     for kind, name, _ in declarations:
-        if name in views:
+        if name in views and name != "MAC_AGGREGATE_SLOT_TABLES":
             failures.append(f"additional MAC aggregate slot table {kind} alias is forbidden: {name}")
     view_pattern = re.compile(rf"\b(?:{'|'.join(sorted(map(re.escape, views)))})\b")
-    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+[^\{]*MacAggregateSlotTables", production):
+    if re.search(r"\bimpl(?:\s*<[^>]*>)?\s+MacAggregateSlotTables\b", production):
         failures.append("production impl for MacAggregateSlotTables is forbidden")
     for match in re.finditer(r"\b(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)[^;]*;", production):
-        if view_pattern.search(match.group()):
+        if view_pattern.search(match.group()) and match.group(1) not in {"fn", "MAC_AGGREGATE_SLOT_TABLES"}:
             failures.append(f"direct MAC aggregate slot table const/static alias is forbidden: {match.group(1)}")
     for match in re.finditer(r"\b(?:unsafe\s+)?(?:const\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*aggregate_slot[A-Za-z0-9_]*)", production, re.I):
         failures.append(f"named MAC aggregate slot table production API is forbidden: {match.group(1)}")
     forbidden_operation = re.compile(r"\*(?:const|mut)|&(?:mut\s+)?|\b(?:read|write)(?:_volatile)?\s*\(|\b(?:value|init(?:ialize)?|reset|unchecked|generic_offset|slice|iter(?:ator)?)\b", re.I)
     for relative, code in rust.items():
+        allowed = ALLOWED_CONSUMERS.get(relative, set())
         for function in functions_consuming_family(code, views):
-            failures.append(f"{relative}: production function API over MAC aggregate slot storage is forbidden: {function}")
+            if function not in allowed:
+                failures.append(f"{relative}: production function API over MAC aggregate slot storage is forbidden: {function}")
         for line_number, line in enumerate(code.splitlines(), 1):
             if view_pattern.search(line) and forbidden_operation.search(line):
                 failures.append(f"{relative}:{line_number}: pointer/reference/read/write/value/init/offset/slice API is forbidden")
