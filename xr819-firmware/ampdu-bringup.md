@@ -191,3 +191,21 @@ out a merely stale `+0x40` value: the BA frame is absent from the firmware-visib
 normal RX stream before cursor policy can recover it. Keep the qualified
 all-members-success fallback until the earlier hardware admission/filter stage
 is identified.
+
+The first admission-register comparison also rejected the apparent packet-DMA
+control mismatch. Both images initialize `0x09c00600` to `0x01020418`, and
+previous same-state no-HT captures show both open and vendor firmware at
+`0x010e0419`. Vendor reaches `0x013e0419` only during active aggregate/retry
+operation, so bits `0x00300000` are runtime activity state rather than a static
+control-frame admission policy. Forcing them would copy status, not configure
+routing.
+
+The aggregate publication-side controls are likewise present: vendor sets the
+per-link state to 6 immediately before its kind-1 descriptor build; the open
+publisher does the same. Vendor's special-ACK duration descriptor passes mode
+1 and ORs `0x80 + 0x0c` into command word `+4`; the open builder emits the same
+`0x8c` flag and expected terminal status `0x0c`. The remaining missing contract
+is therefore later than aggregate admission but earlier than normal packet-RAM
+visibility. A new target capture is required to compare the live RX slot stream
+at that boundary; the target became unreachable before the diagnostic image
+could be installed.
