@@ -812,6 +812,25 @@ const fn ampdu_transfer_word(address: u32) -> u32 {
     0x6500_0000 | (address & 0x001f_fffc)
 }
 
+const AMPDU_SPACING_SELECTORS: [[u8; 8]; 8] = [
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 2],
+    [1, 1, 1, 1, 2, 2, 2, 3],
+    [1, 1, 2, 2, 3, 4, 4, 5],
+    [1, 2, 3, 4, 5, 7, 8, 9],
+    [2, 4, 5, 7, 10, 13, 15, 17],
+    [4, 7, 10, 13, 20, 26, 30, 33],
+];
+
+pub(crate) const fn ampdu_spacing_selector(density: u8, rate: u8) -> u8 {
+    if density < 8 && rate >= 14 && rate < 22 {
+        AMPDU_SPACING_SELECTORS[density as usize][(rate - 14) as usize]
+    } else {
+        0
+    }
+}
+
 fn ampdu_spacing_word(selector: u8) -> Option<u32> {
     if selector == 0 {
         None
@@ -9972,6 +9991,11 @@ mod tests {
 
     #[test]
     fn depth_two_ampdu_descriptor_matches_vendor_opcode_stream() {
+        assert_eq!(ampdu_spacing_selector(0, 19), 0);
+        assert_eq!(ampdu_spacing_selector(4, 19), 4);
+        assert_eq!(ampdu_spacing_selector(7, 21), 33);
+        assert_eq!(ampdu_spacing_selector(8, 19), 0);
+        assert_eq!(ampdu_spacing_selector(4, 13), 0);
         let descriptor = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
             first_frame_state: 0x0901_0000,
             second_frame_state: 0x0901_0400,

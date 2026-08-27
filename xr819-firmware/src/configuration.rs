@@ -47,6 +47,7 @@ struct ConfigurationStorage {
     current_tx_power_encoded: u32,
     block_ack_tx_tids: u8,
     block_ack_rx_tids: u8,
+    mpdu_start_spacing: u8,
 }
 
 impl ConfigurationStorage {
@@ -85,6 +86,7 @@ impl ConfigurationStorage {
             current_tx_power_encoded: 0,
             block_ack_tx_tids: 0,
             block_ack_rx_tids: 0,
+            mpdu_start_spacing: 0,
         }
     }
 }
@@ -181,6 +183,12 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
             storage.block_ack_rx_tids = *rx;
             true
         }
+        (crate::wsm::MIB_ID_SET_ASSOCIATION_MODE, [_, _, _, spacing, _, _, _, _])
+            if *spacing < 8 =>
+        {
+            storage.mpdu_start_spacing = *spacing;
+            true
+        }
         // The cooperative joined RX path currently delivers a superset and
         // lets mac80211 apply these optional filters. Accepting the standard
         // CW1200 MIBs is therefore honest even before hardware offload exists.
@@ -204,6 +212,10 @@ pub fn retain_interface_mib(mib_id: u16, data: &[u8]) -> bool {
 pub(crate) fn block_ack_policy() -> (u8, u8) {
     let storage = unsafe { &*XR819_CONFIGURATION.0.get() };
     (storage.block_ack_tx_tids, storage.block_ack_rx_tids)
+}
+
+pub(crate) fn mpdu_start_spacing() -> u8 {
+    unsafe { (*XR819_CONFIGURATION.0.get()).mpdu_start_spacing }
 }
 
 pub fn current_tx_power_tenths_dbm() -> Option<i32> {
@@ -526,6 +538,15 @@ mod tests {
         assert!(!retain_interface_mib(
             crate::wsm::MIB_ID_BLOCK_ACK_POLICY,
             &[0x3f, 1, 0x0f, 0],
+        ));
+        assert!(retain_interface_mib(
+            crate::wsm::MIB_ID_SET_ASSOCIATION_MODE,
+            &[0x1f, 1, 0, 4, 7, 0, 0, 0],
+        ));
+        assert_eq!(mpdu_start_spacing(), 4);
+        assert!(!retain_interface_mib(
+            crate::wsm::MIB_ID_SET_ASSOCIATION_MODE,
+            &[0x1f, 1, 0, 8, 7, 0, 0, 0],
         ));
 
         assert_eq!(
