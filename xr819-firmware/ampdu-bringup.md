@@ -104,3 +104,27 @@ This closes depth-two on-air publication and successful BlockAck retirement, but
 not the vendor performance gap. The code remains behind
 `experimental-depth-two-ampdu` while per-member partial-BA retry and larger
 aggregate depths are still untranslated.
+
+## Partial-BlockAck retry investigation
+
+The first per-member retry attempt exposed an important limitation in the
+qualified path: matching aggregate terminal status `0x0c` currently reaches
+`complete_tx_pipe_slot()` and confirms both members before software interprets
+the BlockAck bitmap. Deferring that status and waiting for the ordinary joined
+RX lane stalled the first aggregate, because that lane never observed subtype
+`0x94`.
+
+Static disassembly confirms vendor `rxfifo_find_frame_by_subtype(0x94)` scans
+packet RAM at `0x09400000` from the independent cursor at DTCM `0x040016c0`
+toward MAC producer register `0x09c00604`. Approximate scans from either the
+ordinary host-RX claim cursor or a separately captured TX-start producer did not
+find the BlockAck: diagnostic runs remained at match stage zero and wedged with
+7-11 host buffers owned. The captured TX-start cursor addressed a one-byte
+sentinel whose apparent frame control was `0x0080`, so walking it as an ordinary
+RX slot was not a faithful translation of vendor cursor/slot-validity semantics.
+
+Those experiments were removed. The next partial-BA slice must therefore
+translate `rxfifo_off_to_addr()`, `rxfifo_advance()`, `rxfifo_wrap_sub()`, and
+`rxfifo_slot_valid()` together with the ownership of cursor `0x040016c0`, then
+invoke bitmap processing from the matching `0x0c` completion path. Do not defer
+aggregate completion to the ordinary joined-RX consumer again.
