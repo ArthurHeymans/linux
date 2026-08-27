@@ -259,3 +259,26 @@ bitmap is therefore absent from both normal RX ownership and every translated
 kind-1 TX completion record. The next evidence source must be an untyped MAC
 sideband/event path or a receive-control capture mode that vendor enables
 outside these records.
+
+The MAC sideband path is not that source. Matching kind-1 status events are type
+`0x39`; direct reads of `0x0ab80c50` across 713 status-`0x0c` completions varied
+only within the low ten bits (last `0x290`, accumulated OR `0x2ff`). Vendor uses
+the same capture as measurement/trace metadata through DTCM `+0x1d14`; it
+cannot contain a 64-bit BA window or a pointer to one.
+
+A bounded forced-loss experiment then made the second aggregate transfer invoke
+the first member descriptor again, deliberately withholding the second member's
+sequence from the receiver. Traffic collapsed as expected (66.8 Kbit/s, no
+ping replies, 13 buffers retained), proving the current all-success fallback is
+unsafe under loss. Nevertheless, 15 matching aggregate completions exposed no
+subtype-`0x94` frame either immediately or through joined RX, and the sideband
+OR remained only `0x2bf`. The experiment was removed immediately and packed
+image `1958067d4e12c44c73bccc8c3b0409d42f2865e673cf258ad7cc3cfac2704e3a`
+restored.
+
+This leaves no observed per-member hardware result source. The next safe runtime
+slice is therefore vendor state-11 no-BA recovery: retain both members at
+status `0x0c`, perform a bounded retry of the whole depth-two aggregate when no
+bitmap is visible, and give up truthfully at the retry/session limit. Selective
+retry can replace that conservative fallback only after a bitmap source is
+found.
