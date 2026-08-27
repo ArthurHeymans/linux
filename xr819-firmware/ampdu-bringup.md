@@ -242,3 +242,20 @@ confirm; missing and outside-window members retry only while both policy and
 the BA session permit it. This remains unconnected to runtime ownership until
 a real bitmap is visible, but fixes the decision contract needed by the next
 per-member requeue slice.
+
+A read-only kind-1 completion probe then closed the remaining TX-record
+possibilities. At matching terminal status the packed slot header was
+`0x01030c0c` (kind 1, slot state 3, expected `0x0c`, delivered `0x0c`). The
+hardware ring retained its ordinary descriptor values (`+0x0c = 0x7080`,
+`+0x10 = 0x54`), completion word zero, and cursor/pending word `0x000f0f0f`;
+none encoded a per-member result. The auxiliary packet stream still contained
+the two MPDU transfers, negotiated-spacing transfer, and terminal
+`0xe4000000`. Words after that terminal were unowned scratch data, not a result
+record. The apparent extra transfer seen in the first probe was the legitimate
+spacing trampoline, not a hardware-written completion pointer.
+
+All completion probes were removed and the normal feature image restored. The
+bitmap is therefore absent from both normal RX ownership and every translated
+kind-1 TX completion record. The next evidence source must be an untyped MAC
+sideband/event path or a receive-control capture mode that vendor enables
+outside these records.
