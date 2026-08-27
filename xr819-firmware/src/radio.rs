@@ -700,7 +700,7 @@ pub unsafe fn fatal_command_snapshot() -> [u32; 11] {
 }
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]
-pub unsafe fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command: u32, ring: u32) {
+pub fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command: u32, ring: u32) {
     // Report-only mode. This validator halts the firmware the instant it sees a
     // TX command signature inside the RX producer delta, so every run so far has
     // stopped itself at the first corruption and we have never observed whether
@@ -1083,6 +1083,14 @@ unsafe fn poll_indication(
             diagnostics.last_channel = channel;
             diagnostics.last_active_channel = active_channel;
             diagnostics.last_trailer_word = (trailer as *const u32).read_volatile();
+        }
+
+        #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+        if !scan_only
+            && unsafe { crate::tx::consume_depth_two_block_ack(frame_address, frame_len) }
+        {
+            unsafe { release(ring, token) };
+            return None;
         }
 
         // The vendor drains old frames before retuning. Reject a management frame

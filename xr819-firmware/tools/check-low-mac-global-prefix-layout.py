@@ -45,7 +45,7 @@ FORBIDDEN_FORMS = (
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
     0x04001687: 1, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 6,
-    0x04001694: 6, 0x0400169C: 4, 0x040016B0: 2,
+    0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x0400169C): 1,

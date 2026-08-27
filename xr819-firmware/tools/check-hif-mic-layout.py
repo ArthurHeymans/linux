@@ -53,10 +53,12 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Two-frame scheduling changes rust_main register allocation so the retained HIF
-# root materializes at 0x0400980a; no HIF access was added.
+# Aggregate completion reporting adds the typed host-context `completion_flags`
+# halfword read immediately after `tx_rate` in `confirmation_fields()`. LLVM now
+# materializes the adjacent retained-HIF root at 0x0400980c; the access remains
+# confined to the typed owner and precedes the existing three rate-try reads.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x0400980A: 1}
+    {0x0400980C: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 

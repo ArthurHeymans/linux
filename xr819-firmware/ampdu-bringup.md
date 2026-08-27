@@ -66,7 +66,41 @@ The following corrections did not make the descriptor start:
 - reproducing the vendor special-ACK branch (`slot+0xd = 0x0c`, `slot+0xe = 1`,
   and the additional duration/flags).
 
-The failed hardware-publication code was removed rather than committed. Do not
-re-enable kind-1 publication until the remaining pre-GO slot/command state is
-compared against a live vendor aggregate. The stable production image keeps the
-negotiation and typed descriptor prerequisites only.
+The failed hardware-publication code was removed rather than committed. Static
+reconstruction later identified the decisive omission: vendor mode 1 resets its
+cursor after building the auxiliary MPDU stream and emits shared PHY opcodes
+`0x51`, `0x50`, and `0x52` at top-level command offsets `+0x0c..+0x14`, before
+the opcode-0 transfer at `+0x18`. The rejected builder had incorrectly appended
+those words to the auxiliary stream, leaving the MAC command entry zeroed.
+
+## Qualified depth-two transmission
+
+The corrected feature-gated path now keeps the two streams distinct:
+
+- the top-level pipe command contains duration words, the three shared PHY
+  words, and the transfer to the software record;
+- the software record contains the two MPDU transfers, delimiter, optional
+  negotiated-spacing trampoline, and terminal opcode;
+- a kind-1 retry event retains slot state 4 while the joined RX lane waits for a
+  matching compressed BlockAck;
+- the BlockAck starting sequence and 64-bit bitmap retire both members only
+  after both sequence bits are present;
+- repeated growing bitmaps remain low-MAC-owned, while the existing one-second
+  pipe watchdog provides a bounded give-up path if a member never appears; and
+- successful members carry `WSM_TX_STATUS_AGGREGATION` in their host confirms.
+
+Monitor capture showed on-air QoS A-MPDU traffic followed by compressed BlockAck
+frames addressed to the XR819 interface, including repeated growing bitmaps.
+The packed image
+`29a6fa103de333e319e210f55615ddac7537a5ef16e31efb42048a12176d5b14`
+then completed:
+
+- a 10-second TCP run at 5.00 Mbit/s, with 4,583 TX confirms, 4,436 aggregate
+  confirms, 20/20 ping, an alive BH, idle WSM, and zero used buffers; and
+- a 60-second TCP soak at 3.39 Mbit/s, with 17,844 TX confirms, 17,206 aggregate
+  confirms, 20/20 ping, an alive BH, idle WSM, and zero used buffers.
+
+This closes depth-two on-air publication and successful BlockAck retirement, but
+not the vendor performance gap. The code remains behind
+`experimental-depth-two-ampdu` while per-member partial-BA retry and larger
+aggregate depths are still untranslated.

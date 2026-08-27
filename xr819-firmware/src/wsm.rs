@@ -776,7 +776,15 @@ pub fn encode_xr819_tx_confirm_details(
     ack_failures: u8,
     output: &mut [u8],
 ) -> Result<usize, Error> {
-    encode_xr819_tx_confirm_retry_details(packet_id, status, tx_rate, ack_failures, [0; 3], output)
+    encode_xr819_tx_confirm_retry_details(
+        packet_id,
+        status,
+        tx_rate,
+        ack_failures,
+        0,
+        [0; 3],
+        output,
+    )
 }
 
 pub fn encode_xr819_tx_confirm_retry_details(
@@ -784,6 +792,7 @@ pub fn encode_xr819_tx_confirm_retry_details(
     status: u32,
     tx_rate: u8,
     ack_failures: u8,
+    flags: u16,
     rate_try: [u32; 3],
     output: &mut [u8],
 ) -> Result<usize, Error> {
@@ -802,6 +811,7 @@ pub fn encode_xr819_tx_confirm_retry_details(
     write_u32(output, HEADER_LEN + 4, status);
     output[HEADER_LEN + 8] = tx_rate;
     output[HEADER_LEN + 9] = ack_failures;
+    write_u16(output, HEADER_LEN + 10, flags);
     for (index, attempts) in rate_try.into_iter().enumerate() {
         write_u32(output, HEADER_LEN + 12 + index * 4, attempts);
     }
@@ -1193,12 +1203,21 @@ mod tests {
         let mut output = [0_u8; 36];
         let rate_try = [0x0000_0002, 0x3000_0000, 0x0000_0004];
         assert_eq!(
-            encode_xr819_tx_confirm_retry_details(0x1234_5678, 0, 21, 6, rate_try, &mut output,),
+            encode_xr819_tx_confirm_retry_details(
+                0x1234_5678,
+                0,
+                21,
+                6,
+                1,
+                rate_try,
+                &mut output,
+            ),
             Ok(36)
         );
         assert_eq!(&output[..4], &[36, 0, 4, 4]);
         assert_eq!(output[12], 21);
         assert_eq!(output[13], 6);
+        assert_eq!(&output[14..16], &1_u16.to_le_bytes());
         for (index, expected) in rate_try.into_iter().enumerate() {
             assert_eq!(
                 &output[16 + index * 4..20 + index * 4],

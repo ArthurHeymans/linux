@@ -13,6 +13,7 @@ pub const PAS_RING_CAPACITY: usize = 64;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HostConfirmationFields {
     pub(crate) tx_rate: u8,
+    pub(crate) flags: u16,
     pub(crate) rate_try: [u32; 3],
 }
 
@@ -24,6 +25,7 @@ pub(crate) unsafe fn confirmation_fields(context: HostContextAddress) -> HostCon
     unsafe {
         HostConfirmationFields {
             tx_rate: read_host_u8(context.tx_rate()),
+            flags: read_host_u16(context.completion_flags()),
             rate_try: [
                 read_host_u32(context.rate_try(0).unwrap()),
                 read_host_u32(context.rate_try(1).unwrap()),
@@ -99,6 +101,7 @@ pub(crate) fn can_form_ampdu_pair(first: AmpduCandidate, second: AmpduCandidate)
     first_qos_data
         && second_qos_data
         && tid_enabled
+        && first.key.link < 8
         && first.key.rate >= 14
         && first.key == second.key
 }
@@ -1123,6 +1126,25 @@ impl HostSchedulerReservation {
         Ok(())
     }
 
+    unsafe fn restore_slot_image(&self) {
+        unsafe {
+            let pipe = usize::from(self.pipe);
+            let slot = usize::from(self.slot);
+            write_live_u32(self.slot_record, self.original_slot_header);
+            write_live_u32(
+                crate::dtcm::mac_pipe_slot_frame_unchecked(pipe, slot).get() as u32,
+                self.original_slot_frame,
+            );
+            write_live_u32(
+                crate::dtcm::mac_pipe_slot_auxiliary_unchecked(pipe, slot).get() as u32,
+                self.original_slot_auxiliary,
+            );
+            for (index, word) in self.original_command.iter().copied().enumerate() {
+                write_live_u32(self.command + index as u32 * 4, word);
+            }
+        }
+    }
+
     /// Restore software ownership before any pipe producer or hardware trigger.
     ///
     /// # Safety
@@ -1136,21 +1158,8 @@ impl HostSchedulerReservation {
             return false;
         }
         unsafe {
-            let pipe = usize::from(self.pipe);
-            let slot = usize::from(self.slot);
             write_host_u32(self.context.control_bits(), self.original_control_bits);
-            write_live_u32(self.slot_record, self.original_slot_header);
-            write_live_u32(
-                crate::dtcm::mac_pipe_slot_frame_unchecked(pipe, slot).get() as u32,
-                self.original_slot_frame,
-            );
-            write_live_u32(
-                crate::dtcm::mac_pipe_slot_auxiliary_unchecked(pipe, slot).get() as u32,
-                self.original_slot_auxiliary,
-            );
-            for (index, word) in self.original_command.into_iter().enumerate() {
-                write_live_u32(self.command + index as u32 * 4, word);
-            }
+            self.restore_slot_image();
             write_live_u32(
                 crate::dtcm::host_pas_ring_slot_unchecked(usize::from(self.ring_slot)).get() as u32,
                 self.context.pas().raw(),
@@ -1160,6 +1169,117 @@ impl HostSchedulerReservation {
         retained.phase = HostTxPhase::PasQueued;
         true
     }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AmpduPublishError {
+    Ownership,
+    Grouping,
+    DescriptorUnavailable,
+    Descriptor(crate::tx::ProbeBuildError),
+}
+
+/// Fold two reversible ordinary reservations into one kind-1 pipe slot and
+/// cross the hardware boundary only after the aggregate command is complete.
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+pub unsafe fn publish_depth_two_ampdu(
+    guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    first: &mut RetainedHostTx,
+    second: &mut RetainedHostTx,
+    first_reservation: HostSchedulerReservation,
+    second_reservation: HostSchedulerReservation,
+) -> Result<(u8, u8), AmpduPublishError> {
+    if first.phase != HostTxPhase::SchedulerReserved
+        || second.phase != HostTxPhase::SchedulerReserved
+        || first.context != first_reservation.context
+        || second.context != second_reservation.context
+    {
+        return Err(AmpduPublishError::Ownership);
+    }
+    let first_candidate = unsafe { ampdu_candidate(first) };
+    let second_candidate = unsafe { ampdu_candidate(second) };
+    if !can_form_ampdu_pair(first_candidate, second_candidate)
+        || first_reservation.pipe != second_reservation.pipe
+        || second_reservation.slot != (first_reservation.slot.wrapping_add(1) & 3)
+    {
+        let _ = unsafe { second_reservation.cancel(guard, second) };
+        let _ = unsafe { first_reservation.cancel(guard, first) };
+        return Err(AmpduPublishError::Grouping);
+    }
+
+    let link = usize::from(first_candidate.key.link);
+    let link_state = crate::dtcm::ba_pipe_activity_unchecked(link).get() as u32;
+    let original_link_state = unsafe { read_live_u8(link_state) };
+    unsafe { write_live_u8(link_state, 6) };
+
+    let descriptor_head = crate::dtcm::MAC_SOFTWARE_RECORDS.get() as u32;
+    let descriptor_node = unsafe { read_live_u32(descriptor_head) };
+    if descriptor_node == 0 {
+        unsafe { write_live_u8(link_state, original_link_state) };
+        let _ = unsafe { second_reservation.cancel(guard, second) };
+        let _ = unsafe { first_reservation.cancel(guard, first) };
+        return Err(AmpduPublishError::DescriptorUnavailable);
+    }
+    let descriptor_next = unsafe { read_live_u32(descriptor_node) };
+    let packet_record = unsafe { read_live_u32(descriptor_node + 4) };
+    let first_next = unsafe { read_host_u32(first.context.next_in_ampdu()) };
+    let second_next = unsafe { read_host_u32(second.context.next_in_ampdu()) };
+    unsafe {
+        write_live_u32(descriptor_head, descriptor_next);
+        second_reservation.restore_slot_image();
+        // Aggregate construction uses PAS flags 0x20 on every member and
+        // marks only the head with 0x40. Ordinary scheduler batch bits 26/27
+        // are a different descriptor mode and must not survive the fold.
+        write_host_u32(
+            first.context.control_bits(),
+            (first_reservation.original_control_bits & !0x8000) | 0x60,
+        );
+        write_host_u32(
+            second.context.control_bits(),
+            (second_reservation.original_control_bits & !0x8000) | 0x20,
+        );
+    }
+
+    if let Err(error) = unsafe {
+        crate::tx::prepare_depth_two_host_ampdu(
+            first.context.raw(),
+            second.context.raw(),
+            first_reservation.pipe,
+            first_reservation.slot,
+            first_reservation.slot_record,
+            first_reservation.command,
+            descriptor_node,
+            packet_record,
+        )
+    } {
+        unsafe {
+            write_live_u8(link_state, original_link_state);
+            write_host_u32(first.context.next_in_ampdu(), first_next);
+            write_host_u32(second.context.next_in_ampdu(), second_next);
+            write_live_u32(descriptor_node, read_live_u32(descriptor_head));
+            write_live_u32(descriptor_head, descriptor_node);
+        }
+        let _ = unsafe { second_reservation.cancel(guard, second) };
+        let _ = unsafe { first_reservation.cancel(guard, first) };
+        return Err(AmpduPublishError::Descriptor(error));
+    }
+
+    if unsafe {
+        crate::tx::publish_depth_two_host_ampdu(
+            first.context.raw(),
+            second.context.raw(),
+            first_reservation.pipe,
+            first_reservation.slot,
+        )
+    }
+    .is_err()
+    {
+        crate::halt_always!();
+    }
+    first.phase = HostTxPhase::Scheduled;
+    second.phase = HostTxPhase::Scheduled;
+    Ok((first_reservation.pipe, first_reservation.slot))
 }
 
 /// Select one PAS-ring frame, reserve its mapped idle pipe slot, and emit the
@@ -1519,10 +1639,10 @@ impl HostContextWriter for VolatileContextWriter {
 /// Initialize vendor-written fields of a live host-pool context without
 /// clearing pool-owned or currently unidentified words.
 ///
-/// # Safety
-/// `address` must be an exclusively owned, aligned 0x170-byte host context.
+/// The caller must hold exclusive ownership of the aligned 0x170-byte host
+/// context for the duration of this initialization.
 #[cfg(target_arch = "arm")]
-pub unsafe fn initialize_host_context_at(context: HostContextAddress, metadata: HostTxMetadata) {
+pub fn initialize_host_context_at(context: HostContextAddress, metadata: HostTxMetadata) {
     write_host_context_fields(&mut VolatileContextWriter, context, metadata);
 }
 

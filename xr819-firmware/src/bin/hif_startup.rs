@@ -529,6 +529,7 @@ extern "C" fn rust_main() -> ! {
                 confirmation.status,
                 confirmation.tx_rate,
                 confirmation.ack_failures,
+                confirmation.flags,
                 confirmation.rate_try,
                 &mut *firmware.response_scratch,
             );

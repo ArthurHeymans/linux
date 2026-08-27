@@ -79,6 +79,7 @@ pub struct HostTxConfirmation {
     pub status: u32,
     pub tx_rate: u8,
     pub ack_failures: u8,
+    pub flags: u16,
     pub rate_try: [u32; 3],
 }
 
@@ -464,6 +465,54 @@ impl HostTxDriver {
 
         let first_frame_node = first.context().frame_node().raw();
         let second_frame_node = second.context().frame_node().raw();
+        #[cfg(feature = "experimental-depth-two-ampdu")]
+        if vendor_host_tx::can_form_ampdu_pair(first_ampdu, second_ampdu) {
+            match unsafe {
+                vendor_host_tx::publish_depth_two_ampdu(
+                    &mut guard,
+                    &mut first,
+                    &mut second,
+                    first_reservation,
+                    second_reservation,
+                )
+            } {
+                Ok((aggregate_pipe, aggregate_slot)) => {
+                    self.states[first_index] = Some(HostTxState::Owned {
+                        retained: first,
+                        wait_diagnostic: 3,
+                        hardware: Some(HardwareOwner {
+                            pipe: aggregate_pipe,
+                            slot: aggregate_slot,
+                            frame_node: first_frame_node,
+                        }),
+                    });
+                    self.states[second_index] = Some(HostTxState::Owned {
+                        retained: second,
+                        wait_diagnostic: 3,
+                        hardware: Some(HardwareOwner {
+                            pipe: aggregate_pipe,
+                            slot: aggregate_slot,
+                            frame_node: second_frame_node,
+                        }),
+                    });
+                    return;
+                }
+                Err(vendor_host_tx::AmpduPublishError::Ownership) => crate::halt_always!(),
+                Err(_) => {
+                    self.states[first_index] = Some(HostTxState::Owned {
+                        retained: first,
+                        wait_diagnostic: first_wait,
+                        hardware: None,
+                    });
+                    self.states[second_index] = Some(HostTxState::Owned {
+                        retained: second,
+                        wait_diagnostic: second_wait,
+                        hardware: None,
+                    });
+                    return;
+                }
+            }
+        }
         let first_result = unsafe {
             first_reservation.publish_in_batch(&mut guard, &mut first, tx::BatchPosition::First)
         };
@@ -772,6 +821,7 @@ impl HostTxDriver {
                 status,
                 tx_rate,
                 ack_failures,
+                flags: fields.flags,
                 rate_try: {
                     let reported = fields.rate_try;
                     if reported == [0; 3] {
@@ -886,6 +936,7 @@ impl HostTxDriver {
                 status: 1,
                 tx_rate,
                 ack_failures: 0,
+                flags: 0,
                 rate_try,
             },
             completion_order,

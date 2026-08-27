@@ -851,8 +851,27 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
             values[..snapshot.len()].copy_from_slice(&snapshot);
             #[cfg(feature = "vendor-host-tx-diagnostics")]
             unsafe {
-                values[19] = AMPDU_CANDIDATES.0.get().read_volatile();
-                values[20] = BATCH_PUBLICATIONS.0.get().read_volatile();
+                #[cfg(feature = "experimental-depth-two-ampdu")]
+                {
+                    let counters = LIFECYCLE_COUNTERS.0.get().cast::<u32>();
+                    values[14] = counters.add(counter::PUBLISHED).read_volatile();
+                    values[15] = counters.add(counter::TX_START).read_volatile();
+                    values[16] = counters.add(counter::STATUS).read_volatile();
+                    values[17] = counters.add(counter::COMPLETED).read_volatile();
+                    values[18] = (*LEGACY_SNAPSHOT.0.get()).descriptor_length;
+                }
+                #[cfg(feature = "experimental-depth-two-ampdu")]
+                {
+                    let (count, last, seen) = crate::tx::ineligible_tx_status_snapshot();
+                    values[19] = count;
+                    values[20] = last;
+                    values[21] = seen;
+                }
+                #[cfg(not(feature = "experimental-depth-two-ampdu"))]
+                {
+                    values[19] = AMPDU_CANDIDATES.0.get().read_volatile();
+                    values[20] = BATCH_PUBLICATIONS.0.get().read_volatile();
+                }
             }
             return;
         }

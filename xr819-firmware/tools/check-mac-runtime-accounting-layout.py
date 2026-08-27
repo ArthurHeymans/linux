@@ -42,10 +42,10 @@ FORBIDDEN_FORMS = (
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001F78: 6,
+    0x04001F78: 5,
     0x04001F84: 1,
     0x04001F90: 1,
-    0x04001FBC: 6,
+    0x04001FBC: 5,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_', 0x04001F84): 2,

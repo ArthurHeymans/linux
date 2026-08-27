@@ -803,8 +803,11 @@ pub struct DepthTwoAmpduInput {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthTwoAmpduDescriptor {
-    pub words: [u32; 9],
+    /// Auxiliary stream reached by the top-level opcode-0 transfer.
+    pub words: [u32; 6],
     pub length: u8,
+    /// Shared PHY words emitted at top-level command offsets `+0x0c..+0x14`.
+    pub phy_words: [u32; 3],
     pub aggregate_length: u16,
 }
 
@@ -846,7 +849,7 @@ fn ampdu_spacing_word(selector: u8) -> Option<u32> {
 /// subframe includes delimiter/alignment overhead while the last contributes
 /// its frame and FCS length directly.
 pub fn build_depth_two_ampdu_descriptor(input: DepthTwoAmpduInput) -> DepthTwoAmpduDescriptor {
-    let mut words = [0_u32; 9];
+    let mut words = [0_u32; 6];
     let mut length = 0_usize;
     words[length] = ampdu_transfer_word(input.first_frame_state.wrapping_add(8));
     length += 1;
@@ -860,19 +863,23 @@ pub fn build_depth_two_ampdu_descriptor(input: DepthTwoAmpduInput) -> DepthTwoAm
     length += 1;
     words[length] = 0xe400_0000;
     length += 1;
-    words[length] = 0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff);
-    length += 1;
-    words[length] = 0x5000_0000 | (input.phy_control_word & 0x00ff_ffff);
-    length += 1;
     let aggregate_length = (u32::from(input.first_frame_length).wrapping_add(0x0b) & !3)
         .wrapping_add(u32::from(input.spacing_selector) * 4)
         .wrapping_add(u32::from(input.second_frame_length))
         .wrapping_add(8) as u16;
-    words[length] = 0x5200_0000
-        | (u32::from(input.hardware_rate) << 16)
-        | u32::from(aggregate_length);
-    length += 1;
-    DepthTwoAmpduDescriptor { words, length: length as u8, aggregate_length }
+    let phy_words = [
+        0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff),
+        0x5000_0000 | (input.phy_control_word & 0x00ff_ffff),
+        0x5200_0000
+            | (u32::from(input.hardware_rate) << 16)
+            | u32::from(aggregate_length),
+    ];
+    DepthTwoAmpduDescriptor {
+        words,
+        length: length as u8,
+        phy_words,
+        aggregate_length,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2351,7 +2358,9 @@ pub enum SingleTxRetryDecision {
     /// rebuild the descriptor as needed, retain slot/context ownership, re-arm
     /// the MAC, and perform the matching acknowledgement before returning.
     Rearm,
-    /// Complete the one current non-aggregate frame with vendor status `0x0b`.
+    /// A kind-1 transmission is waiting for its received BlockAck bitmap.
+    AwaitBlockAck,
+    /// Complete the current frame or aggregate with vendor status `0x0b`.
     GiveUp,
 }
 
@@ -2361,6 +2370,7 @@ pub enum SingleTxRetryOutcome {
     SlotNotStarted,
     InactivePipeAcknowledged,
     Rearmed,
+    AwaitingBlockAck,
     GivenUp,
 }
 
@@ -2704,6 +2714,16 @@ where
         SingleTxRetryDecision::Rearm => {
             backend.rearm_and_ack(pipe, slot.raw(), frame_node, owned_mask);
             SingleTxRetryOutcome::Rearmed
+        }
+        SingleTxRetryDecision::AwaitBlockAck => {
+            // The aggregate remains owned in slot state 4 until the joined RX
+            // lane consumes the matching BlockAck. Acknowledge only this retry
+            // event; do not clear the hardware command or advance ring cursors.
+            mmio.write_u32(
+                PIPE_IRQ_PENDING,
+                0_u32.wrapping_sub(owned_mask.wrapping_add(0x10)),
+            );
+            SingleTxRetryOutcome::AwaitingBlockAck
         }
         SingleTxRetryDecision::GiveUp => {
             // The trigger precedes completion and the command completion word
@@ -3242,6 +3262,42 @@ impl SingleProbeMacBackend {
         });
     }
 
+    #[cfg(feature = "experimental-depth-two-ampdu")]
+    fn register_ampdu_publication(
+        &mut self,
+        first: ContextAddress,
+        second: ContextAddress,
+        pipe: u8,
+        slot: u8,
+    ) -> bool {
+        self.retry.reset();
+        self.mismatch[usize::from(pipe & 3)] = 0;
+        let first_index = usize::from(pipe & 3) * 4 + usize::from(slot & 3);
+        let Some(second_index) = self
+            .publications
+            .iter()
+            .enumerate()
+            .find_map(|(index, publication)| {
+                (index != first_index && publication.is_none()).then_some(index)
+            })
+        else {
+            return false;
+        };
+        self.publications[first_index] = Some(PublishedSlotIdentity {
+            context: first,
+            frame_node: first.frame_node(),
+            pipe: pipe & 3,
+            slot: slot & 3,
+        });
+        self.publications[second_index] = Some(PublishedSlotIdentity {
+            context: second,
+            frame_node: second.frame_node(),
+            pipe: pipe & 3,
+            slot: slot & 3,
+        });
+        true
+    }
+
     fn push_completion(&mut self, completion: HostClass0Completion) {
         let Some(entry) = self.completed.iter_mut().find(|entry| entry.is_none()) else {
             terminal_probe_backend_fault(completion.pipe)
@@ -3497,9 +3553,21 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
     fn decide_retry(
         &mut self,
         _pipe: u8,
-        _slot: u32,
+        slot: u32,
         frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
+        // A kind-1 retry event precedes software interpretation of the received
+        // BlockAck bitmap. Keep aggregate ownership intact until the RX lane
+        // matches that bitmap instead of entering the single-frame rearm path.
+        if unsafe {
+            read_u8(
+                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
+                    .kind()
+                    .get(),
+            ) == 1
+        } {
+            return SingleTxRetryDecision::AwaitBlockAck;
+        }
         let Some(context) = crate::dtcm::host_context_from_raw(
             frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET),
         ) else {
@@ -3925,6 +3993,215 @@ pub unsafe fn publish_host_class0_slot(
                 batch,
             },
         );
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+pub unsafe fn prepare_depth_two_host_ampdu(
+    first_context: u32,
+    second_context: u32,
+    pipe: u8,
+    slot: u8,
+    slot_record: u32,
+    command: u32,
+    descriptor_node: u32,
+    packet_record: u32,
+) -> Result<(), ProbeBuildError> {
+    let first_host = crate::dtcm::host_context_from_raw(first_context)
+        .ok_or(ProbeBuildError::InvalidContextPointer)?;
+    let second_host = crate::dtcm::host_context_from_raw(second_context)
+        .ok_or(ProbeBuildError::InvalidContextPointer)?;
+    if pipe >= 4 || slot >= 4 || packet_record == 0 {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
+    let first = ContextAddress::new(first_context);
+    let second = ContextAddress::new(second_context);
+    let rate = unsafe { read_u8(first.tx_rate_address()) };
+    if rate != unsafe { read_u8(second.tx_rate_address()) } {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
+    let tx_flags = unsafe { read_u32(first.control_bits_address()) };
+    let request_flag_rate_bits = unsafe { read_u8(first.request_flag_rate_bits_address()) };
+    let legacy_mode = unsafe { read_u8(crate::dtcm::LOW_MAC_LEGACY_MODE.get()) };
+    let rate_attribute = unsafe {
+        crate::dtcm::rate_encoding_unchecked(usize::from(rate))
+            .cast_mut::<u8>()
+            .read_volatile()
+    };
+    let hardware_rate = unsafe {
+        crate::dtcm::rate_attribute_unchecked(usize::from(rate))
+            .cast_mut::<u8>()
+            .read_volatile()
+    };
+    let phy = build_phy_rate_words(
+        rate,
+        legacy_mode,
+        tx_flags,
+        request_flag_rate_bits,
+        rate_attribute,
+    );
+    let first_length = unsafe { read_u16(first.frame_length_address()) };
+    let second_length = unsafe { read_u16(second.frame_length_address()) };
+    let first_frame_state = unsafe { read_u32(first.frame_state_address_address()) };
+    let second_frame_state = unsafe { read_u32(second.frame_state_address_address()) };
+    // Vendor prepares one ordinary descriptor per PAS at dwParentQ, then the
+    // aggregate stream invokes each descriptor from word 2 so the shared PHY
+    // prefix is skipped and the 0x07004600 return resumes the aggregate body.
+    unsafe { emit_host_frame_descriptor_at(first_context, first_frame_state)? };
+    unsafe { emit_host_frame_descriptor_at(second_context, second_frame_state)? };
+    let special_ack = tx_flags & 0x0030_0000 == 0
+        || unsafe { read_u32(second.control_bits_address()) } & 0x0030_0000 == 0;
+    let descriptor = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
+        first_frame_state,
+        second_frame_state,
+        first_frame_length: first_length,
+        second_frame_length: second_length,
+        phy_rate_word: phy.rate,
+        phy_control_word: finalize_phy_control(phy, rate, first_length),
+        hardware_rate,
+        spacing_selector: ampdu_spacing_selector(
+            crate::configuration::mpdu_start_spacing(),
+            rate,
+        ),
+    });
+
+    unsafe {
+        for index in 0..16_u32 {
+            write_u32(command as usize + index as usize * 4, 0);
+        }
+        build_single_frame_duration(
+            &mut VolatileMacPipeMmio,
+            command,
+            first.frame_node(),
+            special_ack,
+        );
+        if special_ack {
+            write_u32(command as usize + 4, read_u32(command as usize + 4) | 0x8c);
+        }
+        // Vendor resets the descriptor cursor to command +0x0c after building
+        // the auxiliary MPDU stream, then emits the shared PHY words before
+        // the opcode-0 transfer at +0x18. The first experiment incorrectly
+        // put these three words inside the auxiliary record, leaving the MAC's
+        // top-level command entry zeroed.
+        for (index, word) in descriptor.phy_words.into_iter().enumerate() {
+            write_u32(command as usize + 0x0c + index * 4, word);
+        }
+        write_u32(command as usize + 0x18, ampdu_transfer_word(packet_record));
+        for (index, word) in descriptor.words[..usize::from(descriptor.length)]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            write_u32(packet_record as usize + index * 4, word);
+        }
+        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_record);
+        write_u8(slot.kind().get(), 1);
+        write_u8(slot.retry_rate().get(), if special_ack { 0x0c } else { 0xff });
+        write_u8(slot.control_02().get(), u8::from(special_ack));
+        write_u8(slot.state().get(), 0);
+        write_u32(slot.frame().get(), first_host.pas().raw());
+        write_u32(slot.auxiliary().get(), descriptor_node);
+        let aggregate_airtime = u32::from(read_u16(first.payload_extended_address()))
+            .wrapping_add(0xb4)
+            .wrapping_add(0x20);
+        write_u32(
+            slot.duration().get(),
+            (u32::from(read_u16(first.payload_extended_address())) << 15)
+                + if special_ack { 0x20b4 } else { 0 },
+        );
+        // `txp_build_pipe_descriptor(..., 1)` publishes the aggregate airtime
+        // through PAS +0x48 before the common scheduler tail derives the pipe
+        // quantum. The first experiment omitted both this write and that tail.
+        write_u32(first.word_48_address(), aggregate_airtime);
+        write_u32(first.next_in_ampdu_address(), second_host.pas().raw());
+        write_u32(second.next_in_ampdu_address(), 0);
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+pub unsafe fn publish_depth_two_host_ampdu(
+    first_context: u32,
+    second_context: u32,
+    pipe: u8,
+    slot: u8,
+) -> Result<(), ProbeBuildError> {
+    let pipe_state = pipe_state_address(pipe);
+    let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
+    if hardware_ring == 0 {
+        return Err(ProbeBuildError::PipeStateUnavailable);
+    }
+    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    if !runtime.backend.register_ampdu_publication(
+        ContextAddress::new(first_context),
+        ContextAddress::new(second_context),
+        pipe,
+        slot,
+    ) {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
+    unsafe {
+        // Vendor `txq_build_aggregate_lists` enters PHY operation 1 before it
+        // selects and publishes any aggregate-capable PAS contexts.
+        if start_phy_operation_1() != 0 {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        let timestamp = read_u32(0x0ac0_0004);
+        for context in [ContextAddress::new(first_context), ContextAddress::new(second_context)] {
+            write_u32(
+                context.ownership_bits_address(),
+                read_u32(context.ownership_bits_address()) | 0x180,
+            );
+            write_u32(context.scheduler_timestamp_address(), timestamp);
+        }
+        let first = ContextAddress::new(first_context);
+        let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
+        write_u8(record.current_slot().get(), slot & 3);
+        write_u8(record.last_slot().get(), slot & 3);
+        let ring = TxHardwareRingAddress::new(hardware_ring);
+        write_u32(ring.go() as usize, 0);
+
+        // Common tail of vendor `txp_scheduler_run` after every descriptor
+        // shape: publish the interface EDCA timing and the selected pipe's
+        // duration quantum before the trigger/GO boundary.
+        let interface = usize::from(read_u8(first.interface_address()));
+        let pas = crate::dtcm::pas_stride_view_unchecked(interface);
+        let edca_slot_timing = read_u32(pas.packed_aifs().get());
+        if read_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get()) != edca_slot_timing {
+            write_u32(crate::platform::mac_register(0x0e64), edca_slot_timing);
+            write_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get(), edca_slot_timing);
+        }
+        let queue = usize::from(read_u8(
+            crate::dtcm::queue_to_access_category_unchecked(usize::from(pipe)).get(),
+        ));
+        let mut quantum = u32::from(read_u16(pas.txop_limit_unchecked(queue).get()));
+        let airtime = read_u32(first.word_48_address()) & 0xffff;
+        if quantum == 0 {
+            if (read_u32(first.control_bits_address()) & 0x0fff) >> 10 != 0 {
+                quantum = airtime;
+            }
+        } else if quantum <= airtime {
+            write_u16(
+                first.auxiliary_state_address(),
+                read_u16(first.auxiliary_state_address()) | 8,
+            );
+            quantum = airtime;
+        }
+        let quantum_destination = read_u32(
+            crate::dtcm::duration_quantum_pointer_unchecked(usize::from(pipe)).get(),
+        );
+        write_u32(quantum_destination as usize, quantum.wrapping_add(0x1f) >> 5);
+        finalize_staged_pipe(
+            &mut VolatileMacPipeMmio,
+            pipe,
+            pipe_state,
+            hardware_ring,
+            slot,
+            slot,
+        );
+        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
+        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
     }
     Ok(())
 }
@@ -4797,6 +5074,16 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 } else if status == 0x0b {
                     final_link_state = 0x0b;
                 }
+                #[cfg(feature = "experimental-depth-two-ampdu")]
+                if context.host().is_some() {
+                    write_u32(
+                        context.ownership_bits_address(),
+                        read_u32(context.ownership_bits_address()) | 0x800,
+                    );
+                    enqueue_completion_frame_node(frame_node, || {
+                        backend.special_completion_gate(frame_node)
+                    });
+                }
             } else {
                 write_u32(
                     context.ownership_bits_address(),
@@ -4812,6 +5099,15 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 break;
             }
             frame_node = FrameNodeAddress::new(next);
+        }
+
+        #[cfg(feature = "experimental-depth-two-ampdu")]
+        if slot_kind == 1 && first_frame_node.context().host().is_some() {
+            write_u8(
+                crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
+                read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
+            );
+            return;
         }
 
         if slot_kind == 1 {
@@ -4899,6 +5195,86 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
             crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
             read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
         );
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+/// Consume a received compressed BlockAck for the currently owned depth-two
+/// aggregate. Vendor `complete_tx_pipe_slot` copies the BA start sequence and
+/// bitmap into per-link state before `bab_process_ba_bitmap`; the bounded
+/// bring-up path performs the equivalent two-bit decision directly.
+///
+/// Returns true when the frame is a matching BA and therefore belongs to the
+/// low-MAC rather than the host RX indication path.
+///
+/// # Safety
+/// `frame` must address a live RX FIFO frame for `length` bytes, and callers
+/// must serialize this with TX publication/completion under the cooperative
+/// reactor's existing IRQ/FIQ exclusion.
+pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
+    unsafe {
+        if length < 0x1c || read_u16(frame) & 0x00fc != 0x0094 {
+            return false;
+        }
+
+        let tid = (read_u16(frame + 0x10) >> 12) as u8;
+        let runtime = &mut *PROBE_EXPERIMENT.0.get();
+        let candidate = runtime.backend.publications.iter().flatten().copied().find(|entry| {
+            let slot = pipe_record_address(entry.pipe).slot_unchecked(usize::from(entry.slot & 3));
+            if read_u8(slot.kind().get()) != 1
+                || read_u32(entry.context.next_in_ampdu_address()) == 0
+                || read_u8(entry.context.tid_address()) != tid
+            {
+                return false;
+            }
+            let interface = read_u8(entry.context.interface_address());
+            (0..3).all(|word| {
+                crate::vif::own_mac_word(interface, word)
+                    == Some(read_u16(frame + 4 + word * 2))
+            })
+        });
+        let Some(publication) = candidate else {
+            return false;
+        };
+
+        let second_node = FrameNodeAddress::new(read_u32(
+            publication.context.next_in_ampdu_address(),
+        ));
+        let start = read_u16(frame + 0x12) >> 4;
+        let bitmap = u64::from(read_u32(frame + 0x14))
+            | (u64::from(read_u32(frame + 0x18)) << 32);
+        let acknowledged = |context: ContextAddress| {
+            let sequence = read_u16(context.sequence_number_address()) & 0x0fff;
+            let delta = sequence.wrapping_sub(start) & 0x0fff;
+            delta < 64 && bitmap & (1_u64 << delta) != 0
+        };
+
+        // Compressed BA frames can arrive repeatedly while the receiver grows
+        // its bitmap. Keep ownership until both members are acknowledged; a
+        // bounded watchdog fallback will handle a genuinely missing member.
+        if !acknowledged(publication.context) || !acknowledged(second_node.context()) {
+            return true;
+        }
+
+        let pipe = publication.pipe & 3;
+        let record = pipe_record_address(pipe);
+        let slot = record.slot_unchecked(usize::from(publication.slot & 3));
+        if !matches!(read_u8(slot.state().get()), 3 | 4) {
+            return true;
+        }
+
+        write_u32(PIPE_IRQ_TRIGGER as usize, (1_u32 << pipe) << 25);
+        complete_tx_pipe_slot(publication.frame_node, slot.raw(), 0, &mut runtime.backend);
+        let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
+        write_u32(ring.completion_word() as usize, 1);
+        let next = publication.slot.wrapping_add(1) & 3;
+        write_u8(record.current_slot().get(), next);
+        write_u8(record.producer_slot().get(), next);
+        write_u8(record.state().get(), 0);
+        write_u8(record.control().get(), 0);
+        write_u8(record.watchdog().get(), 5);
+        write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
+        true
     }
 }
 
@@ -10008,18 +10384,14 @@ mod tests {
             spacing_selector: 0,
         });
         assert_eq!(descriptor.aggregate_length, 0x0bc8);
-        assert_eq!(descriptor.length, 7);
+        assert_eq!(descriptor.length, 4);
         assert_eq!(
             &descriptor.words[..usize::from(descriptor.length)],
-            &[
-                0x6501_0008,
-                0x6600_0000,
-                0x6501_0408,
-                0xe400_0000,
-                0x5103_1407,
-                0x5006_c006,
-                0x520c_0bc8,
-            ],
+            &[0x6501_0008, 0x6600_0000, 0x6501_0408, 0xe400_0000],
+        );
+        assert_eq!(
+            descriptor.phy_words,
+            [0x5103_1407, 0x5006_c006, 0x520c_0bc8],
         );
 
         let spaced = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
@@ -10035,8 +10407,9 @@ mod tests {
                 spacing_selector: 0,
             }
         });
-        assert_eq!(spaced.length, 8);
+        assert_eq!(spaced.length, 5);
         assert_eq!(spaced.aggregate_length, 0x0bd0);
+        assert_eq!(spaced.phy_words[2], 0x520c_0bd0);
         assert_eq!(
             spaced.words[2],
             ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(2)),
