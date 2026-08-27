@@ -123,8 +123,26 @@ find the BlockAck: diagnostic runs remained at match stage zero and wedged with
 sentinel whose apparent frame control was `0x0080`, so walking it as an ordinary
 RX slot was not a faithful translation of vendor cursor/slot-validity semantics.
 
-Those experiments were removed. The next partial-BA slice must therefore
-translate `rxfifo_off_to_addr()`, `rxfifo_advance()`, `rxfifo_wrap_sub()`, and
-`rxfifo_slot_valid()` together with the ownership of cursor `0x040016c0`, then
-invoke bitmap processing from the matching `0x0c` completion path. Do not defer
-aggregate completion to the ordinary joined-RX consumer again.
+Those experiments were removed. The four cursor helpers are now translated as
+read-only typed operations, but a diagnostic invocation at matching status
+`0x0c` observed cursor equal to producer and therefore no immediately queued BA
+frame. Deferring the aggregate and rescanning later also found no subtype
+`0x94`, so cursor arithmetic alone is not the missing completion contract.
+
+Further static reconstruction found two adjacent omissions:
+
+- Ghidra dropped the fourth argument to `txp_build_ba_desc()`. Vendor
+  `txp_build_resp_descs(3, 0)` passes selector `0x1c`, producing descriptor
+  words `0x69000004`, `0x68000004`, and `0x6000001c`; the Rust translation had
+  emitted zero selectors.
+- Vendor TX BlockAck link records retain peer MAC, interface, TID, starting
+  sequence, current sequence, and the active-link bitmap before state 6. The
+  depth-two publisher now initializes those typed fields from the live VIF and
+  PAS grouping key.
+
+The corrected metadata remains compatible with the qualified fallback path:
+a 10-second TCP run completed at 3.22 Mbit/s with 20/20 ping, an alive BH, idle
+WSM, and zero used buffers. Partial bitmap retirement still must be wired only
+after confirming that the corrected response descriptor and link record make
+BA frames visible at the vendor cursor; do not defer host ownership before that
+observation.

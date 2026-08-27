@@ -2176,9 +2176,15 @@ const fn ba_pipe_record_field_unchecked(pipe: usize, offset: usize) -> DtcmAddre
     DtcmAddress::from_offset_unchecked(ba_pipe_record_address_unchecked(pipe).offset() + offset)
 }
 pub(crate) const fn ba_pipe_activity_unchecked(pipe: usize) -> DtcmAddress { ba_pipe_record_field_unchecked(pipe, 0x10) }
+pub(crate) const fn ba_pipe_start_sequence_unchecked(pipe: usize) -> DtcmAddress { ba_pipe_record_field_unchecked(pipe, 0x12) }
 pub(crate) const fn ba_pipe_sequence_unchecked(pipe: usize) -> DtcmAddress { ba_pipe_record_field_unchecked(pipe, 0x16) }
 pub(crate) const fn ba_pipe_bitmap_low_unchecked(pipe: usize) -> DtcmAddress { ba_pipe_record_field_unchecked(pipe, 0x18) }
 pub(crate) const fn ba_pipe_bitmap_high_unchecked(pipe: usize) -> DtcmAddress { ba_pipe_record_field_unchecked(pipe, 0x1c) }
+pub(crate) const fn ba_pipe_peer_mac_byte_unchecked(pipe: usize, byte: usize) -> DtcmAddress {
+    ba_pipe_record_field_unchecked(pipe, 0x28 + byte)
+}
+pub(crate) const fn ba_pipe_tid_unchecked(pipe: usize) -> DtcmAddress { ba_pipe_record_field_unchecked(pipe, 0x2e) }
+pub(crate) const fn ba_pipe_interface_unchecked(pipe: usize) -> DtcmAddress { ba_pipe_record_field_unchecked(pipe, 0x2f) }
 pub const INITIALIZED_VENDOR_IMAGE: DtcmAddress = DtcmAddress::from_offset(0x0000);
 pub(crate) const fn mac_slot_timing_patch_pointer(index: usize) -> Option<DtcmAddress> { if index < 11 { Some(DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list) + core::mem::offset_of!(MacSlotTimingPatchList, entries) + index * core::mem::size_of::<MacSlotTimingPatchEntry>() + core::mem::offset_of!(MacSlotTimingPatchEntry, pointer))) } else { None } }
 pub(crate) const fn mac_slot_timing_patch_word(index: usize) -> Option<DtcmAddress> { if index < 11 { Some(DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, mac_slot_timing_patch_list) + core::mem::offset_of!(MacSlotTimingPatchList, entries) + index * core::mem::size_of::<MacSlotTimingPatchEntry>() + core::mem::offset_of!(MacSlotTimingPatchEntry, patch_word))) } else { None } }
@@ -2465,6 +2471,7 @@ pub(crate) const PRE_VIF_LINK_BITMAP: DtcmAddress = DtcmAddress::from_offset(
     core::mem::offset_of!(DtcmLayout, pre_vif_header)
         + core::mem::offset_of!(PreVifHeader, link_bitmap),
 );
+pub(crate) const fn pre_vif_link_bitmap() -> DtcmAddress { PRE_VIF_LINK_BITMAP }
 pub const VIF_RECORDS: DtcmAddress = DtcmAddress::from_offset(0x3e98);
 pub const VIF_RECORD_END: usize = VIF_RECORDS.get() + VIF_RECORD_COUNT * VIF_RECORD_SIZE;
 pub const HOST_TX_CONTEXTS: DtcmAddress = DtcmAddress::from_offset(0x5a24);
@@ -4225,9 +4232,14 @@ mod tests {
         assert!(ALTERNATE_PAS_ROOT.byte_19().offset() >= 0x3cb0);
         assert_eq!(ba_pipe_record_address(0).unwrap().offset(), 0x3cc0);
         assert_eq!(ba_pipe_activity_unchecked(0).offset(), 0x3cd0);
+        assert_eq!(ba_pipe_start_sequence_unchecked(0).offset(), 0x3cd2);
         assert_eq!(ba_pipe_sequence_unchecked(0).offset(), 0x3cd6);
         assert_eq!(ba_pipe_bitmap_low_unchecked(0).offset(), 0x3cd8);
         assert_eq!(ba_pipe_bitmap_high_unchecked(0).offset(), 0x3cdc);
+        assert_eq!(ba_pipe_peer_mac_byte_unchecked(0, 0).offset(), 0x3ce8);
+        assert_eq!(ba_pipe_peer_mac_byte_unchecked(0, 5).offset(), 0x3ced);
+        assert_eq!(ba_pipe_tid_unchecked(0).offset(), 0x3cee);
+        assert_eq!(ba_pipe_interface_unchecked(0).offset(), 0x3cef);
         assert_eq!(ba_pipe_record_address(7).unwrap().offset(), 0x3e48);
         assert!(ba_pipe_record_address(7).unwrap().get() + 0x38 > DTCM_STATE_BASE + 0x3e78);
     }

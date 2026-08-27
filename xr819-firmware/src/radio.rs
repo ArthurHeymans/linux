@@ -944,6 +944,66 @@ pub unsafe fn poll_joined_indication(if_id: u8, active_channel: u16) -> Option<P
     unsafe { poll_indication(if_id, active_channel, false) }
 }
 
+/// Exact cursor normalization shared by vendor `rxfifo_off_to_addr()` and
+/// `rxfifo_wrap_sub()` for the 0x7000-byte logical packet-RAM ring.
+pub const fn vendor_rx_offset(mut offset: u32) -> u32 {
+    offset &= FIFO_MASK;
+    if offset >= FIFO_SIZE {
+        offset -= FIFO_SIZE;
+    }
+    offset
+}
+
+/// Exact vendor `rxfifo_advance(offset, slot_length)` arithmetic.
+pub const fn vendor_rx_advance(offset: u32, slot_length: u16) -> u32 {
+    vendor_rx_offset(
+        offset
+            .wrapping_add(slot_length as u32)
+            .wrapping_add(0x2f),
+    )
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn vendor_rx_slot_valid(offset: u32) -> bool {
+    unsafe {
+        ((fifo_base() + vendor_rx_offset(offset) as usize) as *const u32).read_volatile()
+            == FIFO_MAGIC
+    }
+}
+
+/// Read-only translation of vendor `rxfifo_find_frame_by_subtype()` using its
+/// independent normal-frame cursor at DTCM `0x040016c0`.
+///
+/// # Safety
+/// The cooperative reactor must exclusively own low-MAC RX cursor inspection.
+#[cfg(target_arch = "arm")]
+pub unsafe fn find_low_mac_frame_by_subtype(subtype: u8) -> Option<(usize, usize)> {
+    unsafe {
+        let mut cursor = vendor_rx_offset(
+            crate::dtcm::shared_ptr::<u32>(crate::dtcm::LOW_MAC_TX_START_REGISTER_SNAPSHOT)
+                .read_volatile(),
+        );
+        let producer = vendor_rx_offset(DMA_PRODUCER.read_volatile());
+        let mut remaining = 768_u16;
+        while cursor != producer && remaining != 0 {
+            let slot = fifo_base() + cursor as usize;
+            let frame = slot + 0x20;
+            if ((frame as *const u16).read_volatile() & 0x00ff) == u16::from(subtype) {
+                let slot_length = ((slot + 0x18) as *const u16).read_volatile();
+                return (slot_length >= 4).then_some((frame, usize::from(slot_length) - 4));
+            }
+            let slot_length = ((slot + 0x18) as *const u16).read_volatile();
+            let next = vendor_rx_advance(cursor, slot_length);
+            if !vendor_rx_slot_valid(next) {
+                return None;
+            }
+            cursor = next;
+            remaining -= 1;
+        }
+        None
+    }
+}
+
 unsafe fn poll_indication(
     if_id: u8,
     active_channel: u16,
@@ -1175,7 +1235,11 @@ mod tests {
     fn vendor_fifo_advance_alignment_and_wrap() {
         assert_eq!(next_offset(0, 100), 0x90);
         assert_eq!(next_offset(0x6fc0, 64), 0x2c);
+        assert_eq!(vendor_rx_advance(0, 100), 0x90);
+        assert_eq!(vendor_rx_advance(0x6fc0, 64), 0x2c);
+        assert_eq!(vendor_rx_advance(0x100, 1), 0x130);
         assert_eq!(normalize_offset(0x7000), 0);
+        assert_eq!(vendor_rx_offset(0x7000), 0);
         assert_eq!(available_bytes(0x6ff0, 0x20), 0x30);
         assert!(slot_data_fits_packet_ram(0x6f00, 100));
         assert!(slot_data_fits_packet_ram(0x6fc0, 64));

@@ -1211,7 +1211,39 @@ pub unsafe fn publish_depth_two_ampdu(
     let link = usize::from(first_candidate.key.link);
     let link_state = crate::dtcm::ba_pipe_activity_unchecked(link).get() as u32;
     let original_link_state = unsafe { read_live_u8(link_state) };
-    unsafe { write_live_u8(link_state, 6) };
+    let peer = crate::vif::snapshot(first_candidate.key.interface)
+        .map(|snapshot| snapshot.bssid)
+        .unwrap_or([0; 6]);
+    unsafe {
+        for (index, byte) in peer.into_iter().enumerate() {
+            write_live_u8(
+                crate::dtcm::ba_pipe_peer_mac_byte_unchecked(link, index).get() as u32,
+                byte,
+            );
+        }
+        write_live_u8(
+            crate::dtcm::ba_pipe_tid_unchecked(link).get() as u32,
+            first_candidate.key.tid,
+        );
+        write_live_u8(
+            crate::dtcm::ba_pipe_interface_unchecked(link).get() as u32,
+            first_candidate.key.interface,
+        );
+        let sequence = read_host_u16(first.context.sequence_number());
+        write_live_u16(
+            crate::dtcm::ba_pipe_start_sequence_unchecked(link).get() as u32,
+            sequence,
+        );
+        write_live_u16(
+            crate::dtcm::ba_pipe_sequence_unchecked(link).get() as u32,
+            sequence,
+        );
+        write_live_u32(
+            crate::dtcm::pre_vif_link_bitmap().get() as u32,
+            read_live_u32(crate::dtcm::pre_vif_link_bitmap().get() as u32) | (1_u32 << link),
+        );
+        write_live_u8(link_state, 6);
+    }
 
     let descriptor_head = crate::dtcm::MAC_SOFTWARE_RECORDS.get() as u32;
     let descriptor_node = unsafe { read_live_u32(descriptor_head) };
