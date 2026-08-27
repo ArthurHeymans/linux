@@ -142,7 +142,21 @@ Further static reconstruction found two adjacent omissions:
 
 The corrected metadata remains compatible with the qualified fallback path:
 a 10-second TCP run completed at 3.22 Mbit/s with 20/20 ping, an alive BH, idle
-WSM, and zero used buffers. Partial bitmap retirement still must be wired only
-after confirming that the corrected response descriptor and link record make
-BA frames visible at the vendor cursor; do not defer host ownership before that
-observation.
+WSM, and zero used buffers.
+
+Follow-up visibility probes closed the remaining timing ambiguity:
+
+- 1,006 matching aggregate completions searched the vendor cursor immediately;
+  none found subtype `0x94`;
+- a bounded 256-pass delayed scan also found none;
+- the ordinary joined-RX path observed zero matching BA frames while monitor
+  capture continued to show the AP transmitting compressed BlockAck frames;
+- the per-link hardware bitmap words remained zero at terminal status.
+
+Therefore state 11 cannot yet be translated as a software timing/retry loop:
+the XR819 is not publishing the received BA control frame or bitmap to the
+firmware-visible structures used by vendor `bab_process_ba_bitmap()`. The next
+slice is hardware response-pipe/session setup—specifically the configuration
+that routes subtype `0x94` into packet RAM or the per-link bitmap—not another
+cursor or scheduler approximation. Keep the qualified all-members-success
+fallback until that visibility contract is demonstrated.
