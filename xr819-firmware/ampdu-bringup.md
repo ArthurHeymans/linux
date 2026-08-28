@@ -446,6 +446,21 @@ terminal completion.
 
 The production image then completed two consecutive 60-second MCS1 TCP soaks at
 5.26 and 5.31 Mbit/s. Both completed 20/20 ping, kept the BH alive and WSM idle,
-and drained to zero used buffers. Natural first-member loss and selective retry
-exhaustion/outside-window handling still require independent qualification
-before depth two can leave its experimental feature gate.
+and drained to zero used buffers.
+
+Selective exhaustion used the same descriptor-preserving retry injection while
+setting only the missing member's retry count beyond its active policy. A
+20-second run reached 5.18 Mbit/s, reported 513 failed members across 8,501
+aggregates, completed 20/20 ping, and drained to zero. This qualifies exactly-
+once give-up after `prepare_selective_member_retry()` reaches policy exhaustion.
+
+Outside-window classification initially reused the active-session retry action.
+Forcing one member outside the 64-frame BA window proved that unsafe: throughput
+collapsed to 122 Kbit/s, ping loss reached 100%, and four buffers remained when
+the BH failed. An outside-window result cannot establish a retryable missing
+member, so it now always maps to `GiveUp`. The corrected forced run reached 5.07
+Mbit/s, reported 571 failed members across 8,149 aggregates, completed 20/20
+ping, and drained to zero. The final production image then completed a
+60-second MCS1 TCP soak at 5.35 Mbit/s with 20/20 ping and zero used buffers.
+Natural first-member loss still requires independent qualification before depth
+two can leave its experimental feature gate.

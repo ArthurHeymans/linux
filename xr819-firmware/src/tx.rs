@@ -839,9 +839,7 @@ pub fn plan_depth_two_block_ack_actions(
 ) -> [BlockAckMemberAction; 2] {
     core::array::from_fn(|index| match members[index] {
         BlockAckMemberState::Acknowledged => BlockAckMemberAction::Confirm,
-        BlockAckMemberState::Missing | BlockAckMemberState::OutsideWindow
-            if session_active && retry_allowed[index] =>
-        {
+        BlockAckMemberState::Missing if session_active && retry_allowed[index] => {
             BlockAckMemberAction::Retry
         }
         BlockAckMemberState::Missing | BlockAckMemberState::OutsideWindow => {
@@ -10988,7 +10986,7 @@ mod tests {
         );
         assert_eq!(
             plan_depth_two_block_ack_actions(outside, [true, true], true),
-            [BlockAckMemberAction::Confirm, BlockAckMemberAction::Retry],
+            [BlockAckMemberAction::Confirm, BlockAckMemberAction::GiveUp],
         );
         assert_eq!(
             plan_depth_two_block_ack_actions(outside, [true, true], false),
