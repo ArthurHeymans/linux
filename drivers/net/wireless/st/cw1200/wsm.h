@@ -453,6 +453,7 @@ struct cw1200_common;
 
 /* 4.21 BlockAckPolicy */
 #define WSM_MIB_ID_BLOCK_ACK_POLICY		0x100E
+#define WSM_MIB_ID_PRIVATE_TX_BA_SESSION	0xFF48
 
 /* 4.22 OverrideInternalTxRate */
 #define WSM_MIB_ID_OVERRIDE_INTERNAL_TX_RATE	0x100F

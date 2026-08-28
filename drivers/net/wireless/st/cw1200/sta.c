@@ -2221,14 +2221,34 @@ int cw1200_ampdu_action(struct ieee80211_hw *hw,
 			struct ieee80211_vif *vif,
 			struct ieee80211_ampdu_params *params)
 {
-	/* Aggregation is implemented fully in firmware,
-	 * including block ack negotiation. Do not allow
-	 * mac80211 stack to do anything: it interferes with
-	 * the firmware.
-	 */
+	struct cw1200_common *priv = hw->priv;
+	struct ieee80211_sta *sta = params->sta;
+	u16 tid = params->tid;
+	u8 session[2] = { tid, 0 };
 
-	/* Note that we still need this function stubbed. */
-	return -ENOTSUPP;
+	switch (params->action) {
+	case IEEE80211_AMPDU_TX_START:
+		return IEEE80211_AMPDU_TX_START_IMMEDIATE;
+	case IEEE80211_AMPDU_TX_OPERATIONAL:
+		session[1] = 1;
+		return wsm_write_mib(priv, WSM_MIB_ID_PRIVATE_TX_BA_SESSION,
+				     session, sizeof(session));
+	case IEEE80211_AMPDU_RX_START:
+	case IEEE80211_AMPDU_RX_STOP:
+		return 0;
+	case IEEE80211_AMPDU_TX_STOP_CONT:
+		wsm_write_mib(priv, WSM_MIB_ID_PRIVATE_TX_BA_SESSION,
+			      session, sizeof(session));
+		ieee80211_stop_tx_ba_cb_irqsafe(vif, sta->addr, tid);
+		return 0;
+	case IEEE80211_AMPDU_TX_STOP_FLUSH:
+	case IEEE80211_AMPDU_TX_STOP_FLUSH_CONT:
+		wsm_write_mib(priv, WSM_MIB_ID_PRIVATE_TX_BA_SESSION,
+			      session, sizeof(session));
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 /* ******************************************************************** */

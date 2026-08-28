@@ -610,6 +610,11 @@ static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 	priv = dev->priv;
 	priv->is_xr819 = is_xr819;
 	if (is_xr819) {
+		/* XR819 consumes the negotiated session state but delegates ADDBA
+		 * exchange and session lifetime to mac80211.
+		 */
+		clear_bit(IEEE80211_HW_TX_AMPDU_SETUP_IN_HW, dev->flags);
+
 		/* Match the aggregation limits used by the XR819 firmware. */
 		priv->ba_tx_tid_mask = 0x3f;
 		priv->ba_rx_tid_mask = 0x3f;
