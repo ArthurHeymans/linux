@@ -424,11 +424,24 @@ enqueued acknowledged-success and missing-give-up directly left one scheduled
 host context; the host eventually reported 12 outstanding frames and killed the
 BH. Draining the completion ring reentrantly from the retry callback stalled
 earlier. Reusing the established kind-0 completion path for the missing member
-improved the forced test to 285 Kbit/s and 10/10 ping, but still retained one
-buffer and later triggered the host watchdog. All three terminal-split
-experiments were removed. The qualified runtime therefore keeps selective
-requeue only for `Confirm + Retry`; stopped sessions and exhausted members fall
-back to the conservative aggregate give-up path until the final host-confirm
-ownership handoff is translated. Natural first-member loss and terminal partial
-BA still require independent qualification before depth two can leave its
-experimental feature gate.
+improved the duplicate-member forced test to 285 Kbit/s and 10/10 ping, but
+still retained one buffer and later triggered the host watchdog.
+
+A later descriptor-preserving injector converted an otherwise successful kind-1
+status into retry ownership, cleared only the first member's software-visible BA
+bit, and marked the BA session stopped. Both original descriptors and the
+on-air aggregate were unchanged. The kind-0 terminal split then sustained 2.27
+Mbit/s for 20 seconds, completed 20/20 ping, and drained to zero buffers. A
+normal 60-second image reached 5.04 Mbit/s, but one rare natural event left one
+frame outstanding in the kernel even though all firmware `HostTxDriver` states
+were empty; interface teardown consequently killed the BH for that one frame.
+This narrows the remaining fault from low-MAC/ring ownership to final HIF
+confirmation identity or host queue accounting. The terminal-split code and all
+injectors were removed.
+
+The qualified runtime therefore keeps selective requeue only for `Confirm +
+Retry`; stopped sessions and exhausted members fall back to the conservative
+aggregate give-up path until the final host-confirm ownership handoff is
+translated. Natural first-member loss and terminal partial BA still require
+independent qualification before depth two can leave its experimental feature
+gate.
