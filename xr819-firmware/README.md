@@ -503,8 +503,12 @@ recover ordinary failures by asserting embedded CPU reset and restoring direct
 access mode. Embedded CPU reset does not reset XR819's retained HIF engine or
 descriptor ownership, so the SDIO probe now calls `mmc_hw_reset()` before every
 XR819 firmware load. This power-cycles and reinitializes the single-function
-SDIO card without rebooting the board, making ordinary function-level
-`mmc1:0001:1` unbind/bind cycles equivalent to cold HIF startup.
+SDIO card without rebooting the board, making quiesced function-level
+`mmc1:0001:1` unbind/bind cycles equivalent to cold HIF startup. Stop
+`wpa_supplicant` and remove the interface from active association before
+unbinding: forcing driver removal while mac80211 is still issuing teardown WSM
+commands can leave the remove path in uninterruptible sleep and still requires a
+board power cycle.
 
 After copying new firmware to the target, reprobe with:
 

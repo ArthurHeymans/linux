@@ -1711,8 +1711,11 @@ Work from the vendor order, not by accumulating isolated writes:
 ## Operational warnings
 
 - XR819 SDIO probe now calls `mmc_hw_reset()` before firmware load. Three
-  consecutive `mmc1:0001:1` function unbind/bind cycles completed successfully,
-  followed by association, TCP, ping, and zero-buffer-drain qualification.
+  consecutive quiesced `mmc1:0001:1` function unbind/bind cycles completed
+  successfully, followed by association, TCP, ping, and zero-buffer-drain
+  qualification. Stop association userspace before unbinding; an active-link
+  removal can block while mac80211 teardown commands wait on the disappearing
+  firmware and may still require a board power cycle.
 - Partial `0x09c0xxxx`, MMC-host, postmortem-halt, or persistent CP15
   experiments can still require a physical XR819 power cycle.
 - The target runs `6.18.0-xr819-test+`.
