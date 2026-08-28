@@ -1502,6 +1502,26 @@ pub(crate) struct MacPipeSlotAddress(DtcmAddress);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RxFifoStateAddress(DtcmAddress);
 
+/// Typed view of a vendor BA pipe object returned by the MAC-address lookup.
+/// Only the state byte at `+0x06` is currently translated; the object's full
+/// extent and ownership remain unresolved.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BaPipeObjectAddress(DtcmAddress);
+
+impl BaPipeObjectAddress {
+    pub(crate) const fn new(address: u32) -> Option<Self> {
+        match DtcmAddress::new(address as usize) {
+            Some(base) if DtcmAddress::new(address as usize + 6).is_some() => Some(Self(base)),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn state(self) -> DtcmAddress {
+        DtcmAddress::from_offset_unchecked(self.0.offset() + 6)
+    }
+}
+
 /// Typed identity of the eight vendor aggregate-member queues.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MacAggregateSlotTablesAddress;
@@ -4176,6 +4196,14 @@ mod tests {
         );
         assert!(DtcmAddress::new(DTCM_STATE_BASE - 1).is_none());
         assert!(DtcmAddress::new(DTCM_STATE_END).is_none());
+    }
+
+    #[test]
+    fn ba_pipe_object_types_only_its_known_state_byte() {
+        let pipe = BaPipeObjectAddress::new(DTCM_STATE_BASE as u32).unwrap();
+        assert_eq!(pipe.state().get(), DTCM_STATE_BASE + 6);
+        assert!(BaPipeObjectAddress::new((DTCM_STATE_END - 6) as u32).is_none());
+        assert!(BaPipeObjectAddress::new((DTCM_STATE_BASE - 1) as u32).is_none());
     }
 
     #[cfg(feature = "dtcm-contract-diagnostics")]

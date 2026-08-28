@@ -3519,7 +3519,10 @@ impl MessageCompletionEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 impl BaCompletionEffects for SingleProbeMacBackend {
-    fn find_pipe_by_mac_upper(&mut self, _mac_upper: u32) -> Option<u32> {
+    fn find_pipe_by_mac_upper(
+        &mut self,
+        _mac_upper: u32,
+    ) -> Option<crate::dtcm::BaPipeObjectAddress> {
         None
     }
 }
@@ -5104,7 +5107,10 @@ pub trait MessageCompletionEffects {
 }
 
 pub trait BaCompletionEffects {
-    fn find_pipe_by_mac_upper(&mut self, mac_upper: u32) -> Option<u32>;
+    fn find_pipe_by_mac_upper(
+        &mut self,
+        mac_upper: u32,
+    ) -> Option<crate::dtcm::BaPipeObjectAddress>;
 }
 
 #[cfg(test)] fn lmc_message_address(index: u8) -> u32 {
@@ -5150,19 +5156,19 @@ where
 /// vendor records.
 pub unsafe fn mark_ba_session_state_5<F>(context: ContextAddress, find_pipe: F)
 where
-    F: FnOnce(u32) -> Option<u32>,
+    F: FnOnce(u32) -> Option<crate::dtcm::BaPipeObjectAddress>,
 {
     unsafe {
         if read_u16(crate::dtcm::LOW_MAC_OPTIONAL_PIPE_OBJECT_WORD.get()) == 0 {
             return;
         }
-        let header = read_u32(context.raw() as usize + 0x54);
+        let header = read_u32(context.frame_address_address());
         let Some(pipe) = find_pipe(header.wrapping_add(4)) else {
             return;
         };
-        let state = read_u8(pipe as usize + 6);
+        let state = read_u8(pipe.state().get());
         if state & 4 == 0 {
-            write_u8(pipe as usize + 6, 5);
+            write_u8(pipe.state().get(), 5);
         }
     }
 }

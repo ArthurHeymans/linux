@@ -325,6 +325,16 @@ aggregation stopped at 44, ordinary TX advanced by 1,171 frames, aggregation
 resumed after restart, 10/10 ping completed, and all buffers drained. The host
 control and forced descriptor were removed after qualification.
 
+The aggregation-adjacent raw accesses in `mark_ba_session_state_5()` are now
+bounded by typed views. Context `+0x54` uses the existing frame-address/PAS
+accessor, while `BaPipeObjectAddress` validates the returned DTCM identity and
+owns only its translated state byte at `+0x06`; the rest of that object remains
+opaque. The production backend still returns no object, so this is confinement
+rather than new runtime policy. Packed image
+`cf8fe039bfde580d9630ac94cb405effdfc2f9c01a088cea5c7f8ff3b69aebf8`
+reached 5.12 Mbit/s over ten seconds with 4,508 aggregate confirmations, 20/20
+ping, and zero used buffers.
+
 In a forced silence test, the second member was withheld and the retry path
 acknowledged its event without re-triggering hardware. Watchdog expiry recovered
 at 411 Kbit/s, 5/5 ping, BH alive, WSM idle, and zero used buffers. The corrected
