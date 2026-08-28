@@ -435,9 +435,15 @@ Mbit/s for 20 seconds, completed 20/20 ping, and drained to zero buffers. A
 normal 60-second image reached 5.04 Mbit/s, but one rare natural event left one
 frame outstanding in the kernel even though all firmware `HostTxDriver` states
 were empty; interface teardown consequently killed the BH for that one frame.
-This narrows the remaining fault from low-MAC/ring ownership to final HIF
-confirmation identity or host queue accounting. The terminal-split code and all
-injectors were removed.
+Temporary kernel tracing then proved that every delivered confirmation packet ID
+matched a live queue item: no duplicate, stale, or unknown confirmation reached
+`cw1200_tx_confirm_cb()`. The residual was instead one queue-2 packet ID that had
+been submitted but never received any confirmation. The same-duration qualified
+`c42f3c4d` image drained that queue to zero under the same diagnostic kernel.
+Thus the terminal split does not merely encode the wrong identity; it can lose
+the final firmware-to-host confirmation or its retained request handoff after a
+partial terminal event. The terminal-split code, injectors, and kernel tracing
+were removed.
 
 The qualified runtime therefore keeps selective requeue only for `Confirm +
 Retry`; stopped sessions and exhausted members fall back to the conservative
