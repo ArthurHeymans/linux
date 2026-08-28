@@ -510,20 +510,23 @@ unbinding: forcing driver removal while mac80211 is still issuing teardown WSM
 commands can leave the remove path in uninterruptible sleep and still requires a
 board power cycle.
 
-After copying new firmware to the target, reprobe with:
+Use `tools/reload-target.sh BOOT_IMAGE MAIN_IMAGE` for routine replacement. It
+stops association owners, finds and lowers the XR819 interface even when its PHY
+was moved into a network namespace, and only then performs the SDIO unbind/bind.
+For an already-unbound failed probe, a direct retry remains:
 
 ```sh
 echo mmc1:0001:1 > /sys/bus/sdio/drivers/cw1200_wlan_sdio/bind
 ```
 
-The write returns the probe error when experimental firmware times out, but the
+The bind write returns the probe error when experimental firmware times out, but the
 new image was still downloaded and executed. Replace the firmware and repeat.
 This fast path is intended for firmware-only iterations after a failed probe.
 A reboot remains required after experiments that alter persistent CP15/cache
 state or initialize the packet-DMA/platform engines, and is recommended after
 replacing kernel modules or a fatal BH/IRQ state.
 
-Warm rebind qualification completed three consecutive function-level
+Warm rebind qualification completed three consecutive quiesced function-level
 unbind/bind cycles, followed by WPA2 association, a 20-second 4.86 Mbit/s TCP
 run, 20/20 ping, and zero used buffers. Postmortem halts and experiments that
 change MMC host or persistent CP15 state may still require a board power cycle;
