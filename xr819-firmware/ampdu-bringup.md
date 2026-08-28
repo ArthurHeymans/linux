@@ -473,3 +473,19 @@ direction counters remained zero. MCS7 failed before aggregation became
 operational and is not a valid loss regime. Natural first-member qualification
 therefore still needs a descriptor-preserving physical-loss mechanism or a much
 longer naturally lossy soak.
+
+The descriptor ISA audit did not find a safe software first-member-loss control.
+Vendor `txp_desc_emit()` case 0 emits exactly `0x65000000 | (address &
+0x001ffffc)` with no spare per-transfer flag bits; case 1 emits the fixed
+`0x66000000` inter-member delimiter command and case 2 emits the fixed
+`0xe4000000` terminal command. Setting an ignored low delimiter bit
+(`0x66000001`) preserved ordinary operation. Changing the delimiter opcode to
+`0x67000000` produced only second-member loss (52 selective second retries and
+eight second terminals in five seconds), confirming that it controls the
+boundary before member two. Changing only the first transfer opcode to
+`0x64000000` prevented aggregation from becoming operational and left eight
+buffers when the BH failed. These images were removed. The available command
+stream can invalidate member two or the whole aggregate, but cannot invalidate
+member one while preserving both transfer operands, member order, and the
+qualified aggregate shape; first-member proof now requires controlled RF loss
+or external attenuation/interference.
