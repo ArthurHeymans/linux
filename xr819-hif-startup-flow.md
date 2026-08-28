@@ -1713,8 +1713,12 @@ Work from the vendor order, not by accumulating isolated writes:
 - XR819 SDIO probe now calls `mmc_hw_reset()` before firmware load. Three
   consecutive quiesced `mmc1:0001:1` function unbind/bind cycles completed
   successfully, followed by association, TCP, ping, and zero-buffer-drain
-  qualification. Stop association userspace before unbinding; an active-link
-  removal can block while mac80211 teardown commands wait on the disappearing
+  qualification. `tools/reload-target.sh` was additionally qualified from an
+  active WPA2 association with the PHY in a network namespace: it stopped
+  association userspace and lowered the interface before removal, then returned
+  with fresh `wlan0`/`phy3` registration and no stuck unbind task. A subsequent
+  ten-second WPA2 run reached 5.67 Mbit/s, completed 10/10 ping, and drained to
+  zero used buffers. Bypassing that quiesce can block while mac80211 teardown commands wait on disappearing
   firmware and may still require a board power cycle.
 - Partial `0x09c0xxxx`, MMC-host, postmortem-halt, or persistent CP15
   experiments can still require a physical XR819 power cycle.

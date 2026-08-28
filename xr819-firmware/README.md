@@ -528,6 +528,11 @@ replacing kernel modules or a fatal BH/IRQ state.
 
 Warm rebind qualification completed three consecutive quiesced function-level
 unbind/bind cycles, followed by WPA2 association, a 20-second 4.86 Mbit/s TCP
-run, 20/20 ping, and zero used buffers. Postmortem halts and experiments that
+run, 20/20 ping, and zero used buffers. The reload helper was then qualified
+both from an idle interface and from an active WPA2 association whose PHY had
+been moved into a network namespace; it stopped association userspace, lowered
+the interface, and returned with fresh `wlan0`/`phy3` registration without a
+stuck remove task. Post-reload WPA2 traffic reached 5.67 Mbit/s over ten seconds,
+completed 10/10 ping, and drained to zero used buffers. Postmortem halts and experiments that
 change MMC host or persistent CP15 state may still require a board power cycle;
 avoid debugfs halt during active bring-up.
