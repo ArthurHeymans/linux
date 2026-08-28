@@ -470,9 +470,14 @@ completed 60 seconds at 4.02 Mbit/s with 19,784 aggregates and 163 failed
 packets; MCS5 completed 30 seconds at 1.63 Mbit/s with 3,368 aggregates. None
 produced a usable per-member BA action in either direction: all four selective
 direction counters remained zero. MCS7 failed before aggregation became
-operational and is not a valid loss regime. Natural first-member qualification
-therefore still needs a descriptor-preserving physical-loss mechanism or a much
-longer naturally lossy soak.
+operational and is not a valid loss regime. A subsequent 600-second MCS4 TCP
+soak broadened the natural search to 241,594 aggregates. It averaged 4.97
+Mbit/s, completed 20/20 ping, kept the BH alive, and drained to zero buffers,
+but first-member retry, second-member retry, and other non-unanimous BA-plan
+counters all remained zero. The diagnostic image was removed and production
+image `00887f499e35976d441cc164db75520b8b9828ba7a4315f0f20eaed41fd1f39f`
+restored. Natural first-member qualification therefore still needs controlled
+RF attenuation or interference rather than another ordinary fixed-rate soak.
 
 The descriptor ISA audit did not find a safe software first-member-loss control.
 Vendor `txp_desc_emit()` case 0 emits exactly `0x65000000 | (address &
