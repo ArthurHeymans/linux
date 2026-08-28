@@ -308,6 +308,14 @@ reached 4.55 Mbit/s in a five-second smoke test and 5.21 Mbit/s over 60 seconds.
 The long run completed 26,442 aggregate confirmations and 20/20 follow-up pings
 with the BH alive, WSM idle, and zero used buffers.
 
+The generic pipe watchdog already covered event silence, but its expiry path
+called `complete_tx_pipe_slot()` directly and therefore bypassed the aggregate
+command-mask and busy-owner release above. Watchdog retirement now invokes the
+same kind-1 command-mask release before completing both members. In a forced
+silence test, the second member was withheld and the retry path acknowledged its
+event without re-triggering hardware. Watchdog expiry recovered at 319 Kbit/s,
+5/5 ping, BH alive, WSM idle, and zero used buffers.
+
 Warm SDIO unbind/rebind remains a separate pre-existing failure: firmware
 download completes, but startup times out with HIF `0x0ab00100 = 0x00013f4c`,
 `0x0ab00104 = 0x000000a9`, and `0x0ab00000 = 0x0000800c`. A cold reboot restores

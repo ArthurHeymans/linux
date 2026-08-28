@@ -44,16 +44,17 @@ FORBIDDEN_FORMS = (
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
-    0x04001687: 1, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 6,
-    0x04001694: 4, 0x0400169C: 4, 0x040016B0: 2,
+    0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 6,
+    0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RINvNtCsiHlLB2CErfM_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x0400169C): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx26enter_mac_fatal_quiescence', 0x04001687): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04001685): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx31prepare_single_frame_pas_timing', 0x04001682): 2,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001687): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 7,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 17,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 16,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac19build_control_frame', 0x040016B0): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac19program_rate_tables', 0x04001682): 2,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac20program_slot_timings', 0x0400169C): 1,

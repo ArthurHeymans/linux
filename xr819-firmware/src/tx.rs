@@ -2081,6 +2081,30 @@ pub(crate) fn ineligible_tx_status_snapshot() -> (u32, u32, u32) {
     }
 }
 
+/// Release the current hardware command-mask owner for a kind-1 slot.
+///
+/// # Safety
+/// The pipe and slot must identify the same exclusively owned live record.
+#[cfg(target_arch = "arm")]
+unsafe fn release_aggregate_retry_command_mask(
+    pipe: u8,
+    slot: crate::dtcm::MacPipeSlotAddress,
+) -> bool {
+    unsafe {
+        if read_u8(slot.kind().get()) != 1 {
+            return false;
+        }
+        let record = pipe_record_address(pipe & 3);
+        let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
+        let current = read_u8(record.current_slot().get()) & 3;
+        write_u32(
+            ring.cursor_and_pending_mask() as usize,
+            read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
+        );
+        true
+    }
+}
+
 /// Completes one slot the hardware has already left behind, using the vendor
 /// give-up status `0x0b` so the host receives a truthful TX failure instead of
 /// silently losing the frame.
@@ -2090,6 +2114,7 @@ pub(crate) fn ineligible_tx_status_snapshot() -> (u32, u32, u32) {
 /// own the pipe records and completion state.
 #[cfg(target_arch = "arm")]
 unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
+    pipe: u8,
     record: crate::dtcm::MacPipeRecordAddress,
     slot: crate::dtcm::MacPipeSlotAddress,
     cursor: OrdinaryTxPipeCursorPlan,
@@ -2097,11 +2122,15 @@ unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
 ) {
     unsafe {
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RETIRED);
+        let aggregate = release_aggregate_retry_command_mask(pipe, slot);
         let frame_node = read_u32(slot.frame().get());
         if frame_node != 0 {
             complete_tx_pipe_slot(FrameNodeAddress::new(frame_node), slot.raw(), 0x0b, backend);
         } else {
             write_u32(slot.frame().get(), 0);
+        }
+        if aggregate {
+            write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
         }
         match cursor {
             OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current } => {
@@ -2216,7 +2245,7 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                     crate::host_tx_diagnostics::bump(
                         crate::host_tx_diagnostics::counter::WATCHDOG_RECOVERED,
                     );
-                    retire_unmatched_tx_slot(record, slot, cursor, backend);
+                    retire_unmatched_tx_slot(pipe, record, slot, cursor, backend);
                     // Vendor `txp_fn_4155` clears the programmed/abort bits and
                     // reloads the counter after a recovery pass.
                     write_u8(record.control().get(), read_u8(record.control().get()) & 0xf6);
@@ -3885,24 +3914,11 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
     fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16) {
         unsafe { crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP) };
         let aggregate = unsafe {
-            read_u8(
-                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
-                    .kind()
-                    .get(),
-            ) == 1
+            release_aggregate_retry_command_mask(
+                read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3,
+                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot),
+            )
         };
-        if aggregate {
-            unsafe {
-                let pipe = read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3;
-                let record = pipe_record_address(pipe);
-                let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
-                let current = read_u8(record.current_slot().get()) & 3;
-                write_u32(
-                    ring.cursor_and_pending_mask() as usize,
-                    read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
-                );
-            }
-        }
         unsafe { complete_tx_pipe_slot(frame_node, slot, status, self) };
         if aggregate {
             unsafe { write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0) };

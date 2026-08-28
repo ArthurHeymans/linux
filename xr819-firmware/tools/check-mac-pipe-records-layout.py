@@ -47,8 +47,9 @@ FORBIDDEN_FORMS = (
 # the reviewed descriptor-before-trigger and slot-before-GO operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001720: 5,
+    0x04001722: 1,
     0x04001723: 2,
-    0x04001738: 2,
+    0x04001738: 1,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
@@ -58,7 +59,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation6cancel', 0x04001738): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001723): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001738): 1,
+    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx36release_aggregate_retry_command_mask', 0x04001722): 1,
     ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac18rebuild_pipe_state', 0x04001720): 2,
 })
 
