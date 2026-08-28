@@ -311,10 +311,16 @@ with the BH alive, WSM idle, and zero used buffers.
 The generic pipe watchdog already covered event silence, but its expiry path
 called `complete_tx_pipe_slot()` directly and therefore bypassed the aggregate
 command-mask and busy-owner release above. Watchdog retirement now invokes the
-same kind-1 command-mask release before completing both members. In a forced
-silence test, the second member was withheld and the retry path acknowledged its
-event without re-triggering hardware. Watchdog expiry recovered at 319 Kbit/s,
-5/5 ping, BH alive, WSM idle, and zero used buffers.
+same kind-1 command-mask release before completing both members. The first
+version released every kind-1 watchdog slot, including normally started slots,
+and reproducibly reduced a 60-second TCP run from 5.21 to 3.44 Mbit/s. The
+release gate now requires exact retry ownership: kind 1 and slot state 4.
+
+In a forced silence test, the second member was withheld and the retry path
+acknowledged its event without re-triggering hardware. Watchdog expiry recovered
+at 411 Kbit/s, 5/5 ping, BH alive, WSM idle, and zero used buffers. The corrected
+normal image restored 5.16 Mbit/s over 60 seconds with 26,228 aggregate
+confirmations, 20/20 ping, and zero used buffers.
 
 Warm SDIO unbind/rebind remains a separate pre-existing failure: firmware
 download completes, but startup times out with HIF `0x0ab00100 = 0x00013f4c`,

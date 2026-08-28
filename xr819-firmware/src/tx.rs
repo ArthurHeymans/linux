@@ -2081,7 +2081,11 @@ pub(crate) fn ineligible_tx_status_snapshot() -> (u32, u32, u32) {
     }
 }
 
-/// Release the current hardware command-mask owner for a kind-1 slot.
+const fn aggregate_retry_command_owned(slot_kind: u8, slot_state: u8) -> bool {
+    slot_kind == 1 && slot_state == 4
+}
+
+/// Release the current hardware command-mask owner for a retry-owned kind-1 slot.
 ///
 /// # Safety
 /// The pipe and slot must identify the same exclusively owned live record.
@@ -2091,7 +2095,10 @@ unsafe fn release_aggregate_retry_command_mask(
     slot: crate::dtcm::MacPipeSlotAddress,
 ) -> bool {
     unsafe {
-        if read_u8(slot.kind().get()) != 1 {
+        if !aggregate_retry_command_owned(
+            read_u8(slot.kind().get()),
+            read_u8(slot.state().get()),
+        ) {
             return false;
         }
         let record = pipe_record_address(pipe & 3);
@@ -10684,6 +10691,9 @@ mod tests {
         assert!(!depth_two_whole_retry_allowed([true, false], true, [19; 2]));
         assert!(!depth_two_whole_retry_allowed([true; 2], false, [19; 2]));
         assert!(!depth_two_whole_retry_allowed([true; 2], true, [19, 18]));
+        assert!(aggregate_retry_command_owned(1, 4));
+        assert!(!aggregate_retry_command_owned(1, 3));
+        assert!(!aggregate_retry_command_owned(0, 4));
     }
 
     #[test]
