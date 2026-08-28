@@ -442,8 +442,19 @@ been submitted but never received any confirmation. The same-duration qualified
 `c42f3c4d` image drained that queue to zero under the same diagnostic kernel.
 Thus the terminal split does not merely encode the wrong identity; it can lose
 the final firmware-to-host confirmation or its retained request handoff after a
-partial terminal event. The terminal-split code, injectors, and kernel tracing
-were removed.
+partial terminal event.
+
+A packet-ID lifecycle bitmap refined this further. During a stalled run the
+firmware recorded 2,166 class-0 submissions but only 2,163 MAC completions and
+2,163 confirmation attempts. Outstanding packet-ID bits 1, 7, and 10 matched
+the three-frame queue buildup, showing that the failure can stop before
+completion publication rather than solely while emitting the last HIF response.
+An attempted fix that returned failed-admission release tokens to the command
+lane for in-place failure confirmation made the regression worse, reaching 13
+pending buffers, so it was rejected. The next diagnostic must snapshot each
+outstanding context's `HostTxPhase`, hardware owner, request-credit cursor, and
+output-queue cursor together instead of inferring one boundary from aggregate
+counts. The terminal-split code, injectors, and kernel tracing were removed.
 
 The qualified runtime therefore keeps selective requeue only for `Confirm +
 Retry`; stopped sessions and exhausted members fall back to the conservative
