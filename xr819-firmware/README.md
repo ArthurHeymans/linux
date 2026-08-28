@@ -500,9 +500,11 @@ type-register format, so use it only before a planned power cycle.
 
 A failed experimental startup leaves XR819 in queue mode. The driver can
 recover ordinary failures by asserting embedded CPU reset and restoring direct
-access mode. For a cleaner XR819 reset, unbind and rebind the `1c10000.mmc`
-platform device; partial packet-DMA initialization can still require a physical
-power cycle.
+access mode. Embedded CPU reset does not reset XR819's retained HIF engine or
+descriptor ownership, so the SDIO probe now calls `mmc_hw_reset()` before every
+XR819 firmware load. This power-cycles and reinitializes the single-function
+SDIO card without rebooting the board, making ordinary function-level
+`mmc1:0001:1` unbind/bind cycles equivalent to cold HIF startup.
 
 After copying new firmware to the target, reprobe with:
 
@@ -517,6 +519,8 @@ A reboot remains required after experiments that alter persistent CP15/cache
 state or initialize the packet-DMA/platform engines, and is recommended after
 replacing kernel modules or a fatal BH/IRQ state.
 
-A postmortem halt followed by MMC unbind once left the target in uninterruptible
-sleep and required a physical power cycle. The corrected ordered downloader is
-now deployed and stable on `phy1`; avoid debugfs halt during active bring-up.
+Warm rebind qualification completed three consecutive function-level
+unbind/bind cycles, followed by WPA2 association, a 20-second 4.86 Mbit/s TCP
+run, 20/20 ping, and zero used buffers. Postmortem halts and experiments that
+change MMC host or persistent CP15 state may still require a board power cycle;
+avoid debugfs halt during active bring-up.

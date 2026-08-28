@@ -11,6 +11,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/mmc/host.h>
+#include <linux/mmc/core.h>
 #include <linux/mmc/sdio_func.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/sdio.h>
@@ -387,6 +388,17 @@ static int cw1200_sdio_probe(struct sdio_func *func,
 		}
 	}
 	self->func = func;
+	if (self->is_xr819) {
+		/* CPU reset leaves XR819's HIF engine and descriptor ownership live.
+		 * Power-cycle the single-function SDIO card before every firmware load
+		 * so a sysfs unbind/bind starts from the same state as cold probe.
+		 */
+		sdio_claim_host(func);
+		status = mmc_hw_reset(func->card);
+		sdio_release_host(func);
+		if (status)
+			goto free_self;
+	}
 	sdio_set_drvdata(func, self);
 	sdio_claim_host(func);
 	status = sdio_enable_func(func);
