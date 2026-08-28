@@ -407,6 +407,28 @@ The reverse diagnostic that substituted the second descriptor for the first
 stalled after eight aggregates and is not accepted as a valid first-member-loss
 injection: it changes the first transfer's descriptor identity as well as its
 sequence and does not preserve the qualified aggregate shape. That image was
-removed. Natural/valid first-member loss, stopped-session partial BA, and retry
-exhaustion still require independent qualification before depth two can leave
-its experimental feature gate.
+removed.
+
+A safer synthetic first-member-action test retained the qualified duplicate-
+first loss injection, which produces a real retry event, but reversed only the
+software-visible action bitmap: the first member was classified missing and the
+second acknowledged. This exercised the opposite ownership split without
+changing the first hardware descriptor. It sustained 342 Kbit/s, completed
+20/20 ping, converted 299 aggregates into ordinary retries, and drained to zero
+used buffers. Clearing the first bit during normal all-ack traffic alone did not
+exercise this path because the bitmap classifier is intentionally entered only
+for a hardware retry event.
+
+Stopped-session partial termination remains unresolved. An initial split that
+enqueued acknowledged-success and missing-give-up directly left one scheduled
+host context; the host eventually reported 12 outstanding frames and killed the
+BH. Draining the completion ring reentrantly from the retry callback stalled
+earlier. Reusing the established kind-0 completion path for the missing member
+improved the forced test to 285 Kbit/s and 10/10 ping, but still retained one
+buffer and later triggered the host watchdog. All three terminal-split
+experiments were removed. The qualified runtime therefore keeps selective
+requeue only for `Confirm + Retry`; stopped sessions and exhausted members fall
+back to the conservative aggregate give-up path until the final host-confirm
+ownership handoff is translated. Natural first-member loss and terminal partial
+BA still require independent qualification before depth two can leave its
+experimental feature gate.
