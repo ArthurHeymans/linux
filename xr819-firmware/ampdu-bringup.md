@@ -316,6 +316,15 @@ version released every kind-1 watchdog slot, including normally started slots,
 and reproducibly reduced a 60-second TCP run from 5.21 to 3.44 Mbit/s. The
 release gate now requires exact retry ownership: kind 1 and slot state 4.
 
+A temporary host debug control sent the real private MIB `0xff48` while TCP was
+active. Clearing TID 0 stopped new aggregation immediately: the aggregate count
+moved only from 1,246 to 1,248 while ordinary TX advanced by 1,029 frames over
+five seconds. Re-enabling the same MIB resumed aggregation without reassociation.
+The same stop/restart was repeated with the second member permanently withheld;
+aggregation stopped at 44, ordinary TX advanced by 1,171 frames, aggregation
+resumed after restart, 10/10 ping completed, and all buffers drained. The host
+control and forced descriptor were removed after qualification.
+
 In a forced silence test, the second member was withheld and the retry path
 acknowledged its event without re-triggering hardware. Watchdog expiry recovered
 at 411 Kbit/s, 5/5 ping, BH alive, WSM idle, and zero used buffers. The corrected
