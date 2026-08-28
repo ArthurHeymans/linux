@@ -355,6 +355,27 @@ impl HostTxDriver {
             vendor_host_tx::reserve_non_aggregate_scheduler(&mut guard, &mut first)
         } {
             Ok(reservation) => reservation,
+            Err(vendor_host_tx::SchedulerReserveError::Expired) => {
+                if unsafe { vendor_host_tx::reject_unscheduled_pas(&mut guard, &mut first) }
+                    .is_ok()
+                {
+                    let _ = first.transition(vendor_host_tx::HostTxPhase::Completing);
+                    let completion_order = self.allocate_confirmation_order();
+                    self.states[first_index] = Some(Self::confirmation_state(
+                        first,
+                        tx::wsm_status_from_internal(10),
+                        0,
+                        completion_order,
+                    ));
+                } else {
+                    self.states[first_index] = Some(HostTxState::Owned {
+                        retained: first,
+                        wait_diagnostic: first_wait,
+                        hardware: None,
+                    });
+                }
+                return;
+            }
             Err(_) => {
                 self.states[first_index] = Some(HostTxState::Owned {
                     retained: first,

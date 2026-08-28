@@ -336,12 +336,26 @@ reached 5.12 Mbit/s over ten seconds with 4,508 aggregate confirmations, 20/20
 ping, and zero used buffers.
 
 A 60-second WPA2 UDP soak offered 5.24 Mbit/s and delivered 5.15 Mbit/s. The
-receiver reported 497 lost of 26,752 datagrams (1.86%), while the driver recorded
-25,368 aggregate confirmations, one MAC retry, 22 failed TX packets, 20/20
-follow-up ping, and zero used buffers. The BH remained alive and WSM idle. The
-WPA3-SAE/PMF AP was not visible during this qualification attempt; the client
-remained in `SCANNING`, so security-path aggregation still requires a later run
-when that BSSID is available.
+receiver reported 497 lost of 26,752 datagrams (1.86%). Follow-up rate-controlled
+runs showed that this was saturation rather than silent aggregate corruption:
+the link had fallen to MCS 0 and sustained about 3.94 Mbit/s, so a 4.19 Mbit/s
+offer lost about 6%; at 3.15 Mbit/s it delivered 3.13 Mbit/s with 61 of 16,052
+datagrams lost (0.38%).
+
+Those lower-rate tests did expose a real teardown defect. Under sustained MCS-0
+UDP, exactly five host buffers remained owned after traffic stopped. Diagnostics
+showed five contexts in `PasQueued`, all MAC pipes idle, no retry/receive gate,
+and a healthy PAS ring containing those contexts. Their admission timestamps
+had exceeded the scheduler lifetime while waiting behind the saturated pipe.
+`service_index()` already completed this `Expired` result, but
+`publish_ready_batch()` restored it to `PasQueued` forever. The batch publisher
+now rejects the expired PAS and emits the same truthful failure confirmation.
+A 30-second forced-MCS-0 regression run then drained immediately and after ten
+idle seconds, with 20/20 ping, BH alive, WSM idle, and zero used buffers.
+
+The WPA3-SAE/PMF AP was not visible during this qualification attempt; the
+client remained in `SCANNING`, so security-path aggregation still requires a
+later run when that BSSID is available.
 
 In a forced silence test, the second member was withheld and the retry path
 acknowledged its event without re-triggering hardware. Watchdog expiry recovered
