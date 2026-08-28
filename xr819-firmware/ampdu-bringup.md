@@ -463,4 +463,13 @@ Mbit/s, reported 571 failed members across 8,149 aggregates, completed 20/20
 ping, and drained to zero. The final production image then completed a
 60-second MCS1 TCP soak at 5.35 Mbit/s with 20/20 ping and zero used buffers.
 Natural first-member loss still requires independent qualification before depth
-two can leave its experimental feature gate.
+two can leave its experimental feature gate. A direction-counter image explored
+higher fixed rates without altering descriptors or BA parsing. MCS3 completed a
+60-second run at 6.77 Mbit/s with 34,618 aggregates and 22 failed packets; MCS4
+completed 60 seconds at 4.02 Mbit/s with 19,784 aggregates and 163 failed
+packets; MCS5 completed 30 seconds at 1.63 Mbit/s with 3,368 aggregates. None
+produced a usable per-member BA action in either direction: all four selective
+direction counters remained zero. MCS7 failed before aggregation became
+operational and is not a valid loss regime. Natural first-member qualification
+therefore still needs a descriptor-preserving physical-loss mechanism or a much
+longer naturally lossy soak.
