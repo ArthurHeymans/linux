@@ -98,13 +98,7 @@ impl HostTxDriver {
     /// do not block management; a scheduler reservation or scheduled class-0
     /// frame does.
     pub fn management_runtime_available(&self) -> bool {
-        !self.states.iter().any(|state| match state {
-            Some(HostTxState::Reserved { .. }) => true,
-            Some(HostTxState::Owned { retained, .. }) => {
-                retained.phase() == vendor_host_tx::HostTxPhase::Scheduled
-            }
-            Some(HostTxState::Confirming { .. }) | None => false,
-        })
+        self.states.iter().all(Option::is_none)
     }
 
     /// Admit, classify, encrypt, and insert one ordinary host request into the

@@ -419,46 +419,33 @@ used buffers. Clearing the first bit during normal all-ack traffic alone did not
 exercise this path because the bitmap classifier is intentionally entered only
 for a hardware retry event.
 
-Stopped-session partial termination remains unresolved. An initial split that
-enqueued acknowledged-success and missing-give-up directly left one scheduled
-host context; the host eventually reported 12 outstanding frames and killed the
-BH. Draining the completion ring reentrantly from the retry callback stalled
-earlier. Reusing the established kind-0 completion path for the missing member
-improved the duplicate-member forced test to 285 Kbit/s and 10/10 ping, but
-still retained one buffer and later triggered the host watchdog.
+Stopped-session partial termination initially exposed a second shared-executor
+race. Direct dual completion, reentrant completion draining, and an early
+kind-0 terminal split all retained host buffers or stalled the BH. Kernel
+tracing showed no stale or unknown confirmation IDs, while packet-ID lifecycle
+accounting showed submissions stopping before MAC completion.
 
-A later descriptor-preserving injector converted an otherwise successful kind-1
-status into retry ownership, cleared only the first member's software-visible BA
-bit, and marked the BA session stopped. Both original descriptors and the
-on-air aggregate were unchanged. The kind-0 terminal split then sustained 2.27
-Mbit/s for 20 seconds, completed 20/20 ping, and drained to zero buffers. A
-normal 60-second image reached 5.04 Mbit/s, but one rare natural event left one
-frame outstanding in the kernel even though all firmware `HostTxDriver` states
-were empty; interface teardown consequently killed the BH for that one frame.
-Temporary kernel tracing then proved that every delivered confirmation packet ID
-matched a live queue item: no duplicate, stale, or unknown confirmation reached
-`cw1200_tx_confirm_cb()`. The residual was instead one queue-2 packet ID that had
-been submitted but never received any confirmation. The same-duration qualified
-`c42f3c4d` image drained that queue to zero under the same diagnostic kernel.
-Thus the terminal split does not merely encode the wrong identity; it can lose
-the final firmware-to-host confirmation or its retained request handoff after a
-partial terminal event.
+An atomic stalled-state snapshot identified the actual gate: all 13 retained
+class-0 contexts were `PasQueued`, none owned hardware, the HIF output queue was
+fully reclaimed, and the host-input ring still had 16 live credits. Management
+publication was nevertheless considered available while class-0 contexts were
+still owned. Serializing the shared management executor until every
+`HostTxDriver` state is empty removes that interleaving; allowing management
+while only confirmations remained reduced the regression but still retained one
+buffer, so the all-empty gate is intentional.
 
-A packet-ID lifecycle bitmap refined this further. During a stalled run the
-firmware recorded 2,166 class-0 submissions but only 2,163 MAC completions and
-2,163 confirmation attempts. Outstanding packet-ID bits 1, 7, and 10 matched
-the three-frame queue buildup, showing that the failure can stop before
-completion publication rather than solely while emitting the last HIF response.
-An attempted fix that returned failed-admission release tokens to the command
-lane for in-place failure confirmation made the regression worse, reaching 13
-pending buffers, so it was rejected. The next diagnostic must snapshot each
-outstanding context's `HostTxPhase`, hardware owner, request-credit cursor, and
-output-queue cursor together instead of inferring one boundary from aggregate
-counts. The terminal-split code, injectors, and kernel tracing were removed.
+The descriptor-preserving stopped-session injector converts an otherwise
+successful kind-1 status into retry ownership, clears only the first member's
+software-visible BA bit, and marks the BA session stopped. Both original
+descriptors and the on-air aggregate remain unchanged. With the corrected gate,
+a 20-second forced run reached 4.93 Mbit/s, reported 491 failed members across
+8,027 aggregate transmissions, completed 20/20 ping, and drained to zero used
+buffers. This qualifies the `Confirm + GiveUp` ownership split: the acknowledged
+member completes successfully and the missing member reuses ordinary kind-0
+terminal completion.
 
-The qualified runtime therefore keeps selective requeue only for `Confirm +
-Retry`; stopped sessions and exhausted members fall back to the conservative
-aggregate give-up path until the final host-confirm ownership handoff is
-translated. Natural first-member loss and terminal partial BA still require
-independent qualification before depth two can leave its experimental feature
-gate.
+The production image then completed two consecutive 60-second MCS1 TCP soaks at
+5.26 and 5.31 Mbit/s. Both completed 20/20 ping, kept the BH alive and WSM idle,
+and drained to zero used buffers. Natural first-member loss and selective retry
+exhaustion/outside-window handling still require independent qualification
+before depth two can leave its experimental feature gate.

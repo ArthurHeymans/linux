@@ -53,13 +53,14 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Aggregate completion reporting and selective retry use typed host-context
-# completion/rate-try fields. LLVM materializes adjacent retained-HIF byte and
-# rate-try addresses; both accesses remain confined to typed owners. The latter
-# is the missing member's per-rate retry nibble, advanced before ordinary
-# single-frame rearm.
+# Aggregate completion reporting, selective retry, and partial terminal
+# completion use typed host-context fields. Reviewing the candidate disassembly
+# confirms that LLVM's two adjacent retained-HIF byte literals moved with the
+# new Confirm+GiveUp branch; no decoded literal load or raw-address owner was
+# introduced. Retry nibble advancement remains confined to the typed selective
+# retry helper, while partial give-up reuses ordinary kind-0 completion.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04009809: 1, 0x0400985B: 1}
+    {0x0400980B: 1, 0x04009859: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 

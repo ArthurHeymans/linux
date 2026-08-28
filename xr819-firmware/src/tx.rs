@@ -3350,6 +3350,7 @@ pub struct SingleProbeMacBackend {
     retry: BoundedSingleTxRetry,
     mismatch: [u8; 4],
     selective_retry: [Option<FrameNodeAddress>; 4],
+    partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 4],
     publications: [Option<PublishedSlotIdentity>; 16],
     completed: [Option<HostClass0Completion>; 4],
 }
@@ -3361,6 +3362,7 @@ impl SingleProbeMacBackend {
             retry: BoundedSingleTxRetry::new(max_retries),
             mismatch: [0; 4],
             selective_retry: [None; 4],
+            partial_give_up: [None; 4],
             publications: [None; 16],
             completed: [None; 4],
         }
@@ -3377,6 +3379,7 @@ impl SingleProbeMacBackend {
             self.retry.reset();
             self.mismatch = [0; 4];
             self.selective_retry = [None; 4];
+            self.partial_give_up = [None; 4];
             self.publications = [None; 16];
         } else if batch == BatchPosition::First {
             self.retry.reset();
@@ -3402,6 +3405,7 @@ impl SingleProbeMacBackend {
         self.retry.reset();
         self.mismatch[usize::from(pipe & 3)] = 0;
         self.selective_retry[usize::from(pipe & 3)] = None;
+        self.partial_give_up[usize::from(pipe & 3)] = None;
         let first_index = usize::from(pipe & 3) * 4 + usize::from(slot & 3);
         let Some(second_index) = self
             .publications
@@ -3996,6 +4000,9 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     let confirm_index = actions
                         .iter()
                         .position(|action| *action == BlockAckMemberAction::Confirm);
+                    let give_up_index = actions
+                        .iter()
+                        .position(|action| *action == BlockAckMemberAction::GiveUp);
                     if let (Some(retry_index), Some(confirm_index)) = (retry_index, confirm_index)
                         && actions.iter().all(|action| {
                             matches!(
@@ -4003,15 +4010,32 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                                 BlockAckMemberAction::Retry | BlockAckMemberAction::Confirm
                             )
                         })
-                        && unsafe { prepare_selective_member_retry(members[retry_index]) }
                     {
-                        unsafe {
-                            write_u32(members[confirm_index].context().next_in_ampdu_address(), 0);
-                            enqueue_acknowledged_aggregate_member(members[confirm_index]);
+                        if unsafe { prepare_selective_member_retry(members[retry_index]) } {
+                            unsafe {
+                                write_u32(members[confirm_index].context().next_in_ampdu_address(), 0);
+                                enqueue_acknowledged_aggregate_member(members[confirm_index]);
+                            }
+                            self.selective_retry[usize::from(pipe & 3)] = Some(members[retry_index]);
+                            self.retry.record_rearm();
+                            return SingleTxRetryDecision::Rearm;
                         }
-                        self.selective_retry[usize::from(pipe & 3)] = Some(members[retry_index]);
-                        self.retry.record_rearm();
-                        return SingleTxRetryDecision::Rearm;
+                        self.partial_give_up[usize::from(pipe & 3)] =
+                            Some((members[confirm_index], members[retry_index]));
+                        return SingleTxRetryDecision::CompleteSuccess;
+                    }
+                    if let (Some(give_up_index), Some(confirm_index)) =
+                        (give_up_index, confirm_index)
+                        && actions.iter().all(|action| {
+                            matches!(
+                                action,
+                                BlockAckMemberAction::GiveUp | BlockAckMemberAction::Confirm
+                            )
+                        })
+                    {
+                        self.partial_give_up[usize::from(pipe & 3)] =
+                            Some((members[confirm_index], members[give_up_index]));
+                        return SingleTxRetryDecision::CompleteSuccess;
                     }
                 }
                 // A missing or unusable bitmap retains the already-qualified
@@ -4137,13 +4161,30 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
     }
 
     fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32) {
+        let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3 };
         let aggregate = unsafe {
             release_aggregate_retry_command_mask(
-                read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3,
+                pipe,
                 crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot),
             )
         };
-        unsafe { complete_tx_pipe_slot(frame_node, slot, 0, self) };
+        #[cfg(feature = "experimental-depth-two-ampdu")]
+        if let Some((acknowledged, missing)) = self.partial_give_up[usize::from(pipe)].take() {
+            unsafe {
+                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP);
+                write_u32(acknowledged.context().next_in_ampdu_address(), 0);
+                enqueue_acknowledged_aggregate_member(acknowledged);
+                let link = read_u8(missing.context().link_id_address());
+                convert_depth_two_slot_to_selective_retry(link, slot, missing);
+                complete_tx_pipe_slot(missing, slot, 0x0b, self);
+            }
+        } else {
+            unsafe { complete_tx_pipe_slot(frame_node, slot, 0, self) };
+        }
+        #[cfg(not(feature = "experimental-depth-two-ampdu"))]
+        unsafe {
+            complete_tx_pipe_slot(frame_node, slot, 0, self);
+        }
         if aggregate {
             unsafe { write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0) };
         }
