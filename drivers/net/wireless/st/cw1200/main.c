@@ -610,6 +610,8 @@ static int __cw1200_core_probe(const struct hwbus_ops *hwbus_ops,
 	priv = dev->priv;
 	priv->is_xr819 = is_xr819;
 	if (is_xr819) {
+		ieee80211_hw_set(dev, MFP_CAPABLE);
+
 		/* XR819 consumes the negotiated session state but delegates ADDBA
 		 * exchange and session lifetime to mac80211.
 		 */
