@@ -473,7 +473,7 @@ extern "C" fn rust_main() -> ! {
 
         let management_runtime_available = firmware.host_tx_driver.management_runtime_available();
 
-        if management_runtime_available
+        if (management_runtime_available || unsafe { tx::host_management_runtime_active() })
             && firmware.pending_tx_confirmation.is_none()
             && let tx::HostManagementTxReport::Completed {
                 packet_id,

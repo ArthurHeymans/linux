@@ -55,12 +55,12 @@ FORBIDDEN_FORMS = (
 # Regenerated only after reviewing the candidate disassembly and operation order.
 # Aggregate completion reporting, selective retry, and partial terminal
 # completion use typed host-context fields. Reviewing the candidate disassembly
-# confirms that LLVM's two adjacent retained-HIF byte literals moved with the
-# new Confirm+GiveUp branch; no decoded literal load or raw-address owner was
+# confirms that LLVM's adjacent retained-HIF byte literals move with reviewed
+# control-flow changes; no decoded literal load or raw-address owner was
 # introduced. Retry nibble advancement remains confined to the typed selective
 # retry helper, while partial give-up reuses ordinary kind-0 completion.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x0400980B: 1, 0x04009859: 1}
+    {0x0400980C: 1, 0x04009810: 1, 0x0400985A: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 

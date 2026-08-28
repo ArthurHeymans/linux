@@ -480,16 +480,28 @@ packet and 13 data packets pending. A bounded diagnostic captured the management
 packet as FC `0x40d0`, length 49, request flags `0x0a`, HT parameters `1`, and
 plaintext prefix `03 01 01 00`: a BlockAck DELBA action. Direction counters
 remained zero, so no selective first-member, second-member, or other
-non-unanimous BA action precedes the stop. A management-publication watchdog
-also found no published class-6 owner to retire, which means the queued DELBA is
-a concurrent symptom rather than proven root cause; ownership is lost before or
-at the shared management/class-0 handoff. An unprotected DELBA experiment was
-rejected because PMF did not accept it and the stop occurred earlier. All
-temporary capture, firmware-side software-CCMP, watchdog, and unprotected-frame
-code was removed. Production firmware image
-`00887f499e35976d441cc164db75520b8b9828ba7a4315f0f20eaed41fd1f39f` is
-restored; the shared-executor handoff at BA teardown remains the WPA3 aggregation
-blocker.
+non-unanimous BA action precedes the stop. An atomic ownership snapshot then
+found 12 software-owned `PasQueued` contexts, one class-0 hardware owner, and an
+active management runtime at the same instant. The loop admitted management
+requests without consulting the all-empty class-0 gate, but serviced an already
+published management owner only while that same gate was true. This created a
+closed cycle: management blocked class-0 publication while retained class-0
+state blocked management completion.
+
+New management requests now fail cleanly while any class-0 owner remains, and
+an already active management owner is serviced regardless of later queued
+class-0 software state. A 60-second WPA3 UDP run no longer stopped: it sent 34.6
+MiB at 4.83 Mbit/s, completed the following 20/20 ping, kept the BH alive, and
+continued through 18,716 TX confirmations. A subsequent 30-second TCP run held
+2.69 Mbit/s. The 5 Mbit/s offered-load run left one ordinary data buffer while
+receiver loss was high, so it is not the drain qualification point. Two
+separate 30-second 3 Mbit/s UDP bursts each delivered 3.15 Mbit/s with zero
+reported datagram loss and zero used buffers. Aggregation reached 388 frames in
+the first burst; after the idle boundary mac80211 restarted the BA session and
+the second burst raised the count to 678. This qualifies WPA3 BA teardown,
+zero-buffer drain, and live restart at sustainable offered load. All temporary
+ownership snapshots, direction counters, firmware-side software-CCMP, watchdog,
+and unprotected-frame code were removed.
 
 Natural first-member loss still requires independent qualification before depth
 two can leave its experimental feature gate. A direction-counter image explored

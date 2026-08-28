@@ -377,6 +377,8 @@ pub unsafe fn service_one(
                         }
                         encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
                     }
+                } else if !host_tx_driver.management_runtime_available() {
+                    encode_xr819_tx_confirm(tx_request.packet_id, STATUS_FAILURE, output)
                 } else {
                     unsafe {
                         service_management_request(

@@ -46,8 +46,8 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x040011E4: 1,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware8platform35register_post_activation_interrupts', 0x040011E4): 1,
-    ('rust_main', 0x040011D0): 3,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware8platform35register_post_activation_interrupts', 0x040011E4): 1,
+    ('rust_main', 0x040011D0): 4,
 })
 
 

@@ -51,17 +51,17 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x0400143C: 13,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x0400143C): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x0400143C): 2,
-    ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x0400143C): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx21start_scheduler_timer', 0x0400143C): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan14complete_probe', 0x0400143C): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan23publish_scan_completion', 0x0400143C): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan5begin', 0x0400143C): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service', 0x0400143C): 11,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto25decrypt_rx_frame_hardware', 0x0400143C): 18,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto25encrypt_tx_frame_hardware', 0x0400143C): 18,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware6crypto26run_hardware_ccmp_selftest', 0x0400143C): 8,
+    ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x0400143C): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x0400143C): 2,
+    ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x0400143C): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_scheduler_timer', 0x0400143C): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan14complete_probe', 0x0400143C): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan23publish_scan_completion', 0x0400143C): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan5begin', 0x0400143C): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x0400143C): 11,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25decrypt_rx_frame_hardware', 0x0400143C): 18,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25encrypt_tx_frame_hardware', 0x0400143C): 18,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto26run_hardware_ccmp_selftest', 0x0400143C): 8,
     ('rust_main', 0x04001428): 5,
 })
 

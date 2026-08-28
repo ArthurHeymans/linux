@@ -63,12 +63,12 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy24begin_channel_transition', 0x040099D0): 6,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy29initialize_mac_software_state', 0x040099CE): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy29initialize_mac_software_state', 0x040099D8): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy32channel_tx_power_from_rate_table', 0x040099D8): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x040099C4): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service', 0x040099CE): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x040099D0): 6,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy29initialize_mac_software_state', 0x040099CE): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy29initialize_mac_software_state', 0x040099D8): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy32channel_tx_power_from_rate_table', 0x040099D8): 2,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x040099C4): 2,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x040099CE): 1,
         ('rust_main', 0x040099C4): 1,
     }
 )

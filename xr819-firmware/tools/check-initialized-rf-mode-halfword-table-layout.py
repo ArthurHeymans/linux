@@ -55,7 +55,7 @@ SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
 # of the current build; no additional production operation was added.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04000DE8: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ("_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration", 0x04000DE8): 1,
+    ("_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration", 0x04000DE8): 1,
 })
 STRUCT = "#[repr(C, align(2))] struct RfModeHalfwordTable { entries: [SharedU16; 36] }"
 REQUIRED = (

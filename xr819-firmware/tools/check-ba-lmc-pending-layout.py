@@ -63,13 +63,13 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvMs_NtCsiHlLB2CErfM_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04008AD8): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx22remove_pending_context', 0x04008AD8): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04008AE3): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04008B95): 4,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3vif12activate_sta', 0x04008B20): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3vif8teardown', 0x04008B20): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4join12activate_sta', 0x04008AE0): 1,
+        ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04008AD8): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22remove_pending_context', 0x04008AD8): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04008AE3): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04008B95): 4,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3vif12activate_sta', 0x04008B20): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3vif8teardown', 0x04008B20): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware4join12activate_sta', 0x04008AE0): 1,
     }
 )
 

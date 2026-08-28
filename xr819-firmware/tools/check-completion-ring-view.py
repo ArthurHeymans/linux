@@ -63,9 +63,10 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Selective retry enqueues the acknowledged member independently, so LLVM
-# materializes one byte inside the typed native completion-ring view.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04009023: 1})
+# Selective retry still enqueues acknowledged members through the typed native
+# completion-ring view; the reviewed candidate no longer materializes an
+# address-shaped literal word for that access.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 

@@ -65,7 +65,7 @@ TEST_ITEMS = (
 )
 TYPED_WRITER_LINKED_LITERALS = collections.Counter({0x04001572: 1})
 TYPED_WRITER_DECODED_XREFS = collections.Counter({
-    ("_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service", 0x04001572): 1,
+    ("_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service", 0x04001572): 1,
 })
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()

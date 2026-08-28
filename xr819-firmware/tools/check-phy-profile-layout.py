@@ -62,18 +62,18 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvMs1_NtCsiHlLB2CErfM_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start', 0x0400994F): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware7command20retain_configuration', 0x0400996C): 3,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy22prepare_rf_mode0_stage', 0x04009960): 2,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy23run_iq_calibration_core', 0x0400995C): 8,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy24begin_channel_transition', 0x0400994E): 10,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25finish_channel_transition', 0x0400995F): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25program_all_tx_gain_slots', 0x0400994E): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy29initialize_mac_software_state', 0x0400994C): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy33prepare_channel_calibration_cache', 0x0400994E): 1,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x0400994E): 4,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x0400996C): 3,
-        ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service', 0x0400994F): 1,
+        ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start', 0x0400994F): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware7command20retain_configuration', 0x0400996C): 3,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy22prepare_rf_mode0_stage', 0x04009960): 2,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy23run_iq_calibration_core', 0x0400995C): 8,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x0400994E): 10,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x0400995F): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25program_all_tx_gain_slots', 0x0400994E): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy29initialize_mac_software_state', 0x0400994C): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy33prepare_channel_calibration_cache', 0x0400994E): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x0400994E): 5,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x0400996C): 3,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x0400994F): 1,
         ('rust_main', 0x04009959): 1,
     }
 )

@@ -94,9 +94,9 @@ impl HostTxDriver {
         }
     }
 
-    /// Management and class-0 share one MAC executor. Pending software owners
-    /// do not block management; a scheduler reservation or scheduled class-0
-    /// frame does.
+    /// Management and class-0 share one MAC executor. Every retained class-0
+    /// owner blocks admission of a new management publication; an already
+    /// active management owner is serviced separately until it completes.
     pub fn management_runtime_available(&self) -> bool {
         self.states.iter().all(Option::is_none)
     }

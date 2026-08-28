@@ -67,7 +67,7 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
     {0x04002730: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
-    {('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy22prepare_rf_mode0_stage', 0x04002730): 1}
+    {('_RNvNtCsbx17WDetRei_14xr819_firmware3phy22prepare_rf_mode0_stage', 0x04002730): 1}
 )
 
 

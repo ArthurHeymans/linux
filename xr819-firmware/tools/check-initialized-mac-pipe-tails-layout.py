@@ -81,7 +81,7 @@ SANCTIONED_READER_PATTERNS = {
 # word into this literal inside the inlined reinitialize_after_wake.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001D9C: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ("_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reinitialize_after_wake", 0x04001D9C): 1,
+    ("_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake", 0x04001D9C): 1,
 })
 STRUCT = (
     "#[repr(C, align(4))] struct MacPipeTail { setup_word_6dc: SharedU16, setup_word_6de: SharedU16, "

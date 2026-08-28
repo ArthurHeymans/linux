@@ -44,7 +44,7 @@ FORBIDDEN_FORMS = (
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x0400147A: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25program_all_tx_gain_slots', 0x0400147A): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25program_all_tx_gain_slots', 0x0400147A): 1,
 })
 
 

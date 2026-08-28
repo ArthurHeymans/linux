@@ -47,14 +47,14 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001AB4: 4,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001AA8): 9,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac23reinitialize_after_wake', 0x04001AB4): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac27program_joined_station_mode', 0x04001AB4): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac28install_response_descriptors', 0x04001A88): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001AA8): 2,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware3phy25finish_channel_transition', 0x04001AB4): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4join5reset', 0x04001AB4): 1,
-    ('_RNvNtCsiHlLB2CErfM_14xr819_firmware4scan7service', 0x04001AB0): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001AA8): 9,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04001AB4): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac27program_joined_station_mode', 0x04001AB4): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac28install_response_descriptors', 0x04001A88): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001AA8): 2,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001AB4): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware4join5reset', 0x04001AB4): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x04001AB0): 1,
 })
 
 

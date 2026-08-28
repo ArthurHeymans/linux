@@ -52,7 +52,7 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
         (
-            '_RNvNtCsiHlLB2CErfM_14xr819_firmware14vendor_host_tx21program_pipe_eligible',
+            '_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx21program_pipe_eligible',
             0x040087CE,
         ): 1,
     }
