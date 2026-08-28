@@ -462,6 +462,35 @@ member, so it now always maps to `GiveUp`. The corrected forced run reached 5.07
 Mbit/s, reported 571 failed members across 8,149 aggregates, completed 20/20
 ping, and drained to zero. The final production image then completed a
 60-second MCS1 TCP soak at 5.35 Mbit/s with 20/20 ping and zero used buffers.
+
+WPA3-SAE/PMF+HT qualification found the SAE BSSID
+`a2:41:74:2c:f3:9f` for the same SSID. Association completed with SAE, required
+PMF, CCMP PTK/GTK, and BIP software fallback. The first HT data attempt exposed
+that protected unicast management still used the legacy class-6 path without a
+qualified management-CCMP implementation: the first protected ADDBA request
+remained pending and blocked 13 data buffers. XR819 CCMP keys now request
+mac80211's `SW_MGMT_TX` and `RX_MGMT` paths, leaving ordinary data CCMP on the
+qualified firmware/hardware engine while protected management uses mac80211's
+standard CCMP implementation. This allowed ping traffic to drain normally and
+made depth-two aggregation operational.
+
+The security path is improved but not yet fully qualified under sustained load.
+High-rate traffic stops after roughly five to ten seconds with one management
+packet and 13 data packets pending. A bounded diagnostic captured the management
+packet as FC `0x40d0`, length 49, request flags `0x0a`, HT parameters `1`, and
+plaintext prefix `03 01 01 00`: a BlockAck DELBA action. Direction counters
+remained zero, so no selective first-member, second-member, or other
+non-unanimous BA action precedes the stop. A management-publication watchdog
+also found no published class-6 owner to retire, which means the queued DELBA is
+a concurrent symptom rather than proven root cause; ownership is lost before or
+at the shared management/class-0 handoff. An unprotected DELBA experiment was
+rejected because PMF did not accept it and the stop occurred earlier. All
+temporary capture, firmware-side software-CCMP, watchdog, and unprotected-frame
+code was removed. Production firmware image
+`00887f499e35976d441cc164db75520b8b9828ba7a4315f0f20eaed41fd1f39f` is
+restored; the shared-executor handoff at BA teardown remains the WPA3 aggregation
+blocker.
+
 Natural first-member loss still requires independent qualification before depth
 two can leave its experimental feature gate. A direction-counter image explored
 higher fixed rates without altering descriptors or BA parsing. MCS3 completed a

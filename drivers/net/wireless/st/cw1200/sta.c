@@ -794,6 +794,9 @@ int cw1200_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 			}
 			break;
 		case WLAN_CIPHER_SUITE_CCMP:
+			if (priv->is_xr819)
+				key->flags |= IEEE80211_KEY_FLAG_SW_MGMT_TX |
+					      IEEE80211_KEY_FLAG_RX_MGMT;
 			ieee80211_get_key_rx_seq(key, 0, &seq);
 			if (pairwise) {
 				wsm_key->type = WSM_KEY_TYPE_AES_PAIRWISE;
