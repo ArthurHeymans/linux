@@ -533,7 +533,7 @@ pub unsafe fn program_scan_station_mode() {
     }
 }
 
-/// Exact STA-mode register tail from vendor `mac_program_mode_sta` (`0x10b80`).
+/// Active joined-mode register word derived from the vendor VIF records.
 ///
 /// # Safety
 /// MAC mode registers must be exclusively owned during JOIN activation.
@@ -566,10 +566,14 @@ pub unsafe fn program_joined_station_mode() {
     unsafe {
         let mode = active_station_mode_word();
         write_u32(crate::dtcm::MAC_WAKE_MODE.get(), mode);
-        write_u32(crate::dtcm::MAC_BEACON_SELECTOR.get(), 0x0018_0180);
-        write_u32(crate::platform::mac_register(0x0a04), 0x0018_0180);
+        // The live joined record selects vendor `mac_program_mode_regs`, not
+        // the synthetic-scan `mac_program_mode_sta` tail. The latter's
+        // 0x00198000 filter excludes received compressed BlockAck frames from
+        // packet DMA even though the AP transmits them and TX status completes.
+        write_u32(crate::dtcm::MAC_BEACON_SELECTOR.get(), 0x0018_0783);
+        write_u32(crate::platform::mac_register(0x0a04), 0x0018_0783);
         write_u32(crate::platform::mac_register(0x0a1c), 0x827b_ffdf);
-        write_u32(crate::platform::mac_register(0x0204), 0x0019_8000);
+        write_u32(crate::platform::mac_register(0x0204), 0x0279_fe00);
         write_u32(crate::platform::mac_register(0x0200), mode);
         write_u32(crate::platform::mac_register(0x0310), 0x7800_0000);
     }

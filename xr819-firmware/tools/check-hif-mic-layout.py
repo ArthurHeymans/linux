@@ -53,12 +53,13 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# Aggregate completion reporting adds the typed host-context `completion_flags`
-# halfword read immediately after `tx_rate` in `confirmation_fields()`. LLVM
-# materializes an adjacent retained-HIF halfword address; the access remains
-# confined to the typed owner and precedes the existing three rate-try reads.
+# Aggregate completion reporting and selective retry use typed host-context
+# completion/rate-try fields. LLVM materializes adjacent retained-HIF byte and
+# rate-try addresses; both accesses remain confined to typed owners. The latter
+# is the missing member's per-rate retry nibble, advanced before ordinary
+# single-frame rearm.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x0400980A: 1}
+    {0x04009809: 1, 0x0400985B: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 

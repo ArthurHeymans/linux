@@ -2456,6 +2456,8 @@ pub enum SingleTxRetryDecision {
     /// rebuild the descriptor as needed, retain slot/context ownership, re-arm
     /// the MAC, and perform the matching acknowledgement before returning.
     Rearm,
+    /// The received BlockAck confirms every tracked aggregate member.
+    CompleteSuccess,
     /// A kind-1 transmission is waiting for its received BlockAck bitmap.
     AwaitBlockAck,
     /// Complete the current frame or aggregate with vendor status `0x0b`.
@@ -2468,6 +2470,7 @@ pub enum SingleTxRetryOutcome {
     SlotNotStarted,
     InactivePipeAcknowledged,
     Rearmed,
+    Completed,
     AwaitingBlockAck,
     GivenUp,
 }
@@ -2528,6 +2531,8 @@ pub trait SingleTxRetryBackend {
         frame_node: FrameNodeAddress,
         pending_mask: u32,
     );
+
+    fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32);
 
     fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16);
 
@@ -2812,6 +2817,29 @@ where
         SingleTxRetryDecision::Rearm => {
             backend.rearm_and_ack(pipe, slot.raw(), frame_node, owned_mask);
             SingleTxRetryOutcome::Rearmed
+        }
+        SingleTxRetryDecision::CompleteSuccess => {
+            mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
+            let current = mmio.read_u8(record.current_slot().get() as u32);
+            let last = mmio.read_u8(record.last_slot().get() as u32);
+            backend.complete_success(frame_node, slot.raw());
+            let ring = TxHardwareRingAddress::new(
+                mmio.read_u32(record.hardware_ring().get() as u32),
+            );
+            mmio.write_u32(ring.completion_word(), 1);
+            let next = current.wrapping_add(1) & 3;
+            mmio.write_u8(record.current_slot().get() as u32, next);
+            mmio.write_u8(record.producer_slot().get() as u32, next);
+            if current == last {
+                mmio.write_u8(record.state().get() as u32, 0);
+                mmio.write_u8(record.control().get() as u32, 0);
+                mmio.write_u8(record.watchdog().get() as u32, 5);
+            }
+            mmio.write_u32(
+                PIPE_IRQ_PENDING,
+                0_u32.wrapping_sub(owned_mask.wrapping_add(0x10)),
+            );
+            SingleTxRetryOutcome::Completed
         }
         SingleTxRetryDecision::AwaitBlockAck => {
             // The aggregate remains owned in slot state 4 until the joined RX
@@ -3321,6 +3349,7 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
 pub struct SingleProbeMacBackend {
     retry: BoundedSingleTxRetry,
     mismatch: [u8; 4],
+    selective_retry: [Option<FrameNodeAddress>; 4],
     publications: [Option<PublishedSlotIdentity>; 16],
     completed: [Option<HostClass0Completion>; 4],
 }
@@ -3331,6 +3360,7 @@ impl SingleProbeMacBackend {
         Self {
             retry: BoundedSingleTxRetry::new(max_retries),
             mismatch: [0; 4],
+            selective_retry: [None; 4],
             publications: [None; 16],
             completed: [None; 4],
         }
@@ -3346,6 +3376,7 @@ impl SingleProbeMacBackend {
         if batch == BatchPosition::Only {
             self.retry.reset();
             self.mismatch = [0; 4];
+            self.selective_retry = [None; 4];
             self.publications = [None; 16];
         } else if batch == BatchPosition::First {
             self.retry.reset();
@@ -3370,6 +3401,7 @@ impl SingleProbeMacBackend {
     ) -> bool {
         self.retry.reset();
         self.mismatch[usize::from(pipe & 3)] = 0;
+        self.selective_retry[usize::from(pipe & 3)] = None;
         let first_index = usize::from(pipe & 3) * 4 + usize::from(slot & 3);
         let Some(second_index) = self
             .publications
@@ -3792,19 +3824,157 @@ unsafe fn rearm_depth_two_whole_ampdu(
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+unsafe fn depth_two_block_ack_actions_for(
+    first_frame_node: FrameNodeAddress,
+) -> Option<([BlockAckMemberAction; 2], [FrameNodeAddress; 2])> {
+    unsafe {
+        let first = first_frame_node.context();
+        let second_raw = read_u32(first.next_in_ampdu_address());
+        if second_raw == 0 {
+            return None;
+        }
+        let second_frame_node = FrameNodeAddress::new(second_raw);
+        let second = second_frame_node.context();
+        let (frame, length) = crate::radio::find_low_mac_frame_by_subtype(0x94)?;
+        if length < 0x1c || read_u16(frame) & 0x00fc != 0x0094 {
+            return None;
+        }
+        let interface = read_u8(first.interface_address());
+        if !(0..3).all(|word| {
+            crate::vif::own_mac_word(interface, word)
+                == Some(read_u16(frame + 4 + word * 2))
+        }) {
+            return None;
+        }
+        let tid = read_u8(first.tid_address());
+        if (read_u16(frame + 0x10) >> 12) as u8 != tid {
+            return None;
+        }
+        let start = read_u16(frame + 0x12) >> 4;
+        let bitmap = u64::from(read_u32(frame + 0x14))
+            | (u64::from(read_u32(frame + 0x18)) << 32);
+        let members = classify_depth_two_block_ack(
+            start,
+            bitmap,
+            [
+                read_u16(first.sequence_number_address()),
+                read_u16(second.sequence_number_address()),
+            ],
+        );
+        let session_active = tid < 8
+            && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
+        Some((
+            plan_depth_two_block_ack_actions(members, [true; 2], session_active),
+            [first_frame_node, second_frame_node],
+        ))
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+unsafe fn prepare_selective_member_retry(frame_node: FrameNodeAddress) -> bool {
+    unsafe {
+        let context = frame_node.context();
+        let Some(host) = context.host() else { return false };
+        let rate = read_u8(context.tx_rate_address());
+        let Some(status_field) = host.rate_try(usize::from(rate >> 3)) else { return false };
+        let Some(policy) = crate::rate_policy::get(read_u8(context.retry_policy_address())) else {
+            return false;
+        };
+        let try_count = read_u16(context.try_count_address());
+        let flags = read_u32(context.control_bits_address());
+        let long_frame = (flags & 0x7ff) >> 9 != 0;
+        let crate::rate_policy::RetryStep::Rearm { rate: next_rate } =
+            crate::rate_policy::retry_step(policy, rate, try_count, long_frame)
+        else {
+            return false;
+        };
+        let shift = u32::from((rate & 7) * 4);
+        let status = read_u32(status_field.get());
+        let attempts = (status >> shift) & 0x0f;
+        if attempts < 0x0f {
+            write_u32(
+                status_field.get(),
+                (status & !(0x0f << shift)) | ((attempts + 1) << shift),
+            );
+        }
+        let rate_changed = next_rate != rate && (flags & 0x20 == 0 || next_rate > 13);
+        write_u8(context.tx_rate_address(), if rate_changed { next_rate } else { rate });
+        write_u32(
+            context.control_bits_address(),
+            flags
+                | 0x10
+                | 0x0008_0000
+                | if rate_changed && rate > 3 && next_rate < 4 {
+                    0x0004_0000
+                } else {
+                    0
+                },
+        );
+        write_u16(context.try_count_address(), try_count.wrapping_add(1));
+        true
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+unsafe fn enqueue_acknowledged_aggregate_member(frame_node: FrameNodeAddress) {
+    unsafe {
+        let context = frame_node.context();
+        write_u32(
+            context.ownership_bits_address(),
+            read_u32(context.ownership_bits_address()) | 0x0c00,
+        );
+        let class_bits = ((read_u32(context.control_bits_address()) >> 18) & 0x0c) as u16;
+        write_u16(
+            context.auxiliary_state_address(),
+            read_u16(context.auxiliary_state_address()) | 1 | class_bits,
+        );
+        write_u16(context.terminal_status_address(), 0);
+        write_u32(context.completion_timestamp_address(), read_u32(0x0ac0_0004));
+        enqueue_completion_frame_node(frame_node, || false);
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+unsafe fn convert_depth_two_slot_to_selective_retry(
+    link: u8,
+    slot_raw: u32,
+    missing: FrameNodeAddress,
+) {
+    unsafe {
+        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
+        let descriptor = read_u32(slot.auxiliary().get());
+        if descriptor != 0 {
+            write_u32(descriptor as usize, read_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()));
+            write_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get(), descriptor);
+        }
+        write_u8(slot.kind().get(), 0);
+        write_u8(slot.retry_rate().get(), read_u8(missing.context().retry_rate_address()));
+        write_u8(slot.control_02().get(), 0);
+        write_u32(slot.frame().get(), missing.raw());
+        write_u32(slot.auxiliary().get(), 0);
+        write_u32(missing.context().next_in_ampdu_address(), 0);
+        if link < 8 {
+            for member in 0..16 {
+                write_u32(
+                    crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
+                        .member_unchecked(usize::from(link), member)
+                        .get(),
+                    0,
+                );
+            }
+        }
+    }
+}
+
 #[cfg(target_arch = "arm")]
 impl SingleTxRetryBackend for SingleProbeMacBackend {
     fn decide_retry(
         &mut self,
-        _pipe: u8,
+        pipe: u8,
         slot: u32,
         frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
-        // A kind-1 retry event means the hardware did not close the aggregate
-        // through its ordinary status path. No firmware-visible BA bitmap has
-        // been found, so conservatively retry both members together. This
-        // preserves both sequence numbers and only gives up when either member
-        // exhausts its ordinary rate policy or the TX BA session has stopped.
         if unsafe {
             read_u8(
                 crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
@@ -3813,12 +3983,46 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             ) == 1
         } {
             #[cfg(feature = "experimental-depth-two-ampdu")]
-            return if unsafe { prepare_depth_two_whole_retry(frame_node) }.is_some() {
-                self.retry.record_rearm();
-                SingleTxRetryDecision::Rearm
-            } else {
-                SingleTxRetryDecision::GiveUp
-            };
+            {
+                if let Some((actions, members)) = unsafe {
+                    depth_two_block_ack_actions_for(frame_node)
+                } {
+                    if actions == [BlockAckMemberAction::Confirm; 2] {
+                        return SingleTxRetryDecision::CompleteSuccess;
+                    }
+                    let retry_index = actions
+                        .iter()
+                        .position(|action| *action == BlockAckMemberAction::Retry);
+                    let confirm_index = actions
+                        .iter()
+                        .position(|action| *action == BlockAckMemberAction::Confirm);
+                    if let (Some(retry_index), Some(confirm_index)) = (retry_index, confirm_index)
+                        && actions.iter().all(|action| {
+                            matches!(
+                                action,
+                                BlockAckMemberAction::Retry | BlockAckMemberAction::Confirm
+                            )
+                        })
+                        && unsafe { prepare_selective_member_retry(members[retry_index]) }
+                    {
+                        unsafe {
+                            write_u32(members[confirm_index].context().next_in_ampdu_address(), 0);
+                            enqueue_acknowledged_aggregate_member(members[confirm_index]);
+                        }
+                        self.selective_retry[usize::from(pipe & 3)] = Some(members[retry_index]);
+                        self.retry.record_rearm();
+                        return SingleTxRetryDecision::Rearm;
+                    }
+                }
+                // A missing or unusable bitmap retains the already-qualified
+                // conservative whole-aggregate retry path.
+                return if unsafe { prepare_depth_two_whole_retry(frame_node) }.is_some() {
+                    self.retry.record_rearm();
+                    SingleTxRetryDecision::Rearm
+                } else {
+                    SingleTxRetryDecision::GiveUp
+                };
+            }
             #[cfg(not(feature = "experimental-depth-two-ampdu"))]
             return SingleTxRetryDecision::AwaitBlockAck;
         }
@@ -3902,7 +4106,18 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     .get(),
             ) == 1
         } {
-            if unsafe {
+            if let Some(missing) = self.selective_retry[usize::from(pipe & 3)].take() {
+                let link = unsafe { read_u8(missing.context().link_id_address()) };
+                unsafe { convert_depth_two_slot_to_selective_retry(link, slot, missing) };
+                execute_fixed_rate_single_frame_rearm(
+                    &mut VolatileMacPipeMmio,
+                    pipe,
+                    slot,
+                    missing,
+                    pending_mask,
+                    self,
+                );
+            } else if unsafe {
                 rearm_depth_two_whole_ampdu(pipe, slot, frame_node, pending_mask)
             }
             .is_err()
@@ -3919,6 +4134,19 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             pending_mask,
             self,
         );
+    }
+
+    fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32) {
+        let aggregate = unsafe {
+            release_aggregate_retry_command_mask(
+                read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3,
+                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot),
+            )
+        };
+        unsafe { complete_tx_pipe_slot(frame_node, slot, 0, self) };
+        if aggregate {
+            unsafe { write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0) };
+        }
     }
 
     fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16) {
@@ -8911,6 +9139,10 @@ mod tests {
             self.rearmed = Some((pipe, slot, frame_node, pending_mask));
         }
 
+        fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32) {
+            self.completed = Some((frame_node, slot, 0));
+        }
+
         fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16) {
             self.completed = Some((frame_node, slot, status));
         }
@@ -9309,6 +9541,42 @@ mod tests {
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
         assert_eq!(mmio.get(0x901c), 1);
         assert_eq!(mmio.get(pipe_state), 1);
+        assert_eq!(mmio.get(pipe_state + 2), 1);
+        assert_eq!(mmio.get(pipe_state + 3), 0);
+        assert_eq!(mmio.get(pipe_state + 4), 0);
+        assert_eq!(mmio.get(pipe_state + 5), 5);
+        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_fef0);
+    }
+
+    #[test]
+    fn block_ack_success_completes_before_command_and_ack() {
+        let mut mmio = MockPipeMmio::new();
+        mmio.set(crate::dtcm::MAC_CURRENT_PIPE.get() as u32, 0);
+        let pipe_state = pipe_state_address(0);
+        mmio.set(pipe_state + 1, 0);
+        mmio.set(pipe_state + 2, 0);
+        mmio.set(pipe_state + 3, 1);
+        mmio.set(pipe_state + 5, 0);
+        mmio.set(pipe_state + 8, 0x9000);
+        let slot = current_slot_address(&mut mmio, 0);
+        mmio.set(slot + 1, 4);
+        mmio.set(slot + 3, 3);
+        mmio.set(slot + 0x0c, 0x0400_90d8);
+        let mut backend = MockRetryBackend::new(SingleTxRetryDecision::CompleteSuccess);
+
+        let outcome = execute_single_outstanding_tx_retry(
+            &mut mmio,
+            SchedulerWord::new(0x0100),
+            &mut backend,
+        );
+
+        assert_eq!(outcome, SingleTxRetryOutcome::Completed);
+        assert_eq!(
+            backend.completed,
+            Some((FrameNodeAddress::new(0x0400_90d8), slot, 0))
+        );
+        assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
+        assert_eq!(mmio.get(0x901c), 1);
         assert_eq!(mmio.get(pipe_state + 2), 1);
         assert_eq!(mmio.get(pipe_state + 3), 0);
         assert_eq!(mmio.get(pipe_state + 4), 0);

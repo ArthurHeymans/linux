@@ -367,5 +367,46 @@ Warm SDIO unbind/rebind remains a separate pre-existing failure: firmware
 download completes, but startup times out with HIF `0x0ab00100 = 0x00013f4c`,
 `0x0ab00104 = 0x000000a9`, and `0x0ab00000 = 0x0000800c`. A cold reboot restores
 normal operation. The retry/session-stop changes neither fix nor worsen that
-post-download startup contract. Selective retry can replace this conservative
-fallback only after a bitmap source is found.
+post-download startup contract.
+
+The missing bitmap source is now identified. A live vendor/open register
+comparison found that the joined open path left MAC receive-mode register
+`0x09c00204` at the synthetic station value `0x00198000`, while the vendor
+joined runtime selected the generic active-VIF value `0x0279fe00`. The open
+mode word at `0x09c00200` was already the generic joined value, so the two
+registers described inconsistent modes. Publishing the generic selector
+`0x00180783` and filter `0x0279fe00` made the received compressed BlockAck
+visible in the normal packet-DMA FIFO without changing packet-DMA status bits.
+
+A raw boundary probe captured cursor `0x32e8`, producer `0x3334`, frame control
+`0x0094`, BA control/start word `0x12e00004`, and bitmap
+`0xffffffffffffffff`. This is the exact vendor source consumed by
+`rxfifo_find_frame_by_subtype(0x94)` and `bab_process_ba_bitmap()`: normal RX
+packet RAM, previously excluded by the wrong joined receive mode.
+
+Kind-1 retry handling now validates receiver address and TID, reads the 12-bit
+starting sequence plus 64-bit compressed bitmap, and feeds the existing
+classifier/action planner. An all-ack retry event completes normally. When one
+member is acknowledged and the other is retryable, the acknowledged context is
+completed once, the missing context advances only its own retry/rate-policy
+state, and the kind-1 slot is converted in place to an ordinary single-frame
+retry. Aggregate descriptor and member-table ownership are released during that
+conversion; the remaining context keeps the existing slot/command owner until
+its ordinary completion.
+
+A forced permanent second-member omission exercised this split: the aggregate
+sent the first descriptor twice, the receiver acknowledged only the first
+sequence, and the missing second member was republished as an ordinary frame.
+The run sustained 350 Kbit/s, completed 20/20 ping, and drained to zero used
+buffers; 300 aggregate attempts were followed by ordinary TX rather than whole-
+aggregate rearm. A normal 60-second MCS-1 TCP run then reached 4.99 Mbit/s with
+25,296 aggregate confirmations, 20/20 ping, BH alive, WSM idle, and zero used
+buffers.
+
+The reverse diagnostic that substituted the second descriptor for the first
+stalled after eight aggregates and is not accepted as a valid first-member-loss
+injection: it changes the first transfer's descriptor identity as well as its
+sequence and does not preserve the qualified aggregate shape. That image was
+removed. Natural/valid first-member loss, stopped-session partial BA, and retry
+exhaustion still require independent qualification before depth two can leave
+its experimental feature gate.
