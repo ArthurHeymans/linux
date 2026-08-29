@@ -27,18 +27,18 @@ SOURCE_EXTENSIONS = {".rs", ".py", ".sh", ".c", ".h", ".S", ".s", ".asm", ".inc"
 OWNER_FILES = {"src/dtcm.rs", "tools/check-initialized-pre-host-pas-radio-stop-word-layout.py"}
 STRUCT = "#[repr(C, align(4))] struct PreHostPasRingObserved { opaque_00: OpaqueBytes<0x06>, radio_stop_word_02: SharedU16, opaque_08: OpaqueBytes<0x04> }"
 IMAGE = "pre_host_pas_ring: PreHostPasRingObserved,"
-ADDRESS = "pub(crate) const RADIO_STOP_WORD_02: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02));"
+ADDRESS = "pub(crate) const RADIO_STOP_WORD_02: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02));"
 ASSERTIONS = (
     "assert_type_layout!(SharedU16, 0x02, 2);",
     "assert_type_layout!(PreHostPasRingObserved, 0x0c, 4);",
     "assert!(core::mem::offset_of!(PreHostPasRingObserved, opaque_00) == 0x00);",
     "assert!(core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02) == 0x06);",
     "assert!(core::mem::offset_of!(PreHostPasRingObserved, opaque_08) == 0x08);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) == 0x156c);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02) == 0x0400_1572);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02) + core::mem::size_of::<SharedU16>() == 0x0400_1574);",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, host_pas_ring) == 0x1578);",
-    "assert_type_layout!(InitializedVendorImage, 0x2078, 4);",
+    "assert!(core::mem::offset_of!(InitializedDtcmPrefix, pre_host_pas_ring) == 0x156c);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedDtcmPrefix, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02) == 0x0400_1572);",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedDtcmPrefix, pre_host_pas_ring) + core::mem::offset_of!(PreHostPasRingObserved, radio_stop_word_02) + core::mem::size_of::<SharedU16>() == 0x0400_1574);",
+    "assert!(core::mem::offset_of!(InitializedDtcmPrefix, host_pas_ring) == 0x1578);",
+    "assert_type_layout!(InitializedDtcmPrefix, 0x2078, 4);",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4);",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4);",
 )
@@ -56,8 +56,8 @@ TEST_ITEMS = (
     "suffix, 0x0400_1574",
     "suffix + core::mem::size_of::<OpaqueBytes<0x04>>(), 0x0400_1578",
     "HOST_PAS_RING.get(), 0x0400_1578",
-    "size_of::<InitializedVendorImage>(), 0x2078",
-    "align_of::<InitializedVendorImage>(), 4",
+    "size_of::<InitializedDtcmPrefix>(), 0x2078",
+    "align_of::<InitializedDtcmPrefix>(), 4",
     "size_of::<DtcmLayout>(), DTCM_STATE_SIZE",
     "align_of::<DtcmLayout>(), 4",
     "size_of::<SharedDtcmState>(), DTCM_STATE_SIZE",

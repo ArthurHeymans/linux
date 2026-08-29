@@ -50,7 +50,7 @@ OWNER_FILES = {
     "tools/check-duration-quantum-pointers-layout.py",
 }
 ADJACENT_DECLARATIONS = {
-    "tools/check-measurement-workspace-layout.py": "offset_of!(InitializedVendorImage, ps_wake_guard_words) == 0x10e4",
+    "tools/check-measurement-workspace-layout.py": "offset_of!(InitializedDtcmPrefix, ps_wake_guard_words) == 0x10e4",
 }
 SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
 SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
@@ -79,8 +79,8 @@ REQUIRED = (
     "offset_of!(PsWakeGuardWords, word_10ec) == 0x08",
     "offset_of!(PsWakeGuardWords, word_10f0) == 0x0c",
     "offset_of!(PsWakeGuardWords, opaque_10) == 0x10",
-    "offset_of!(InitializedVendorImage, ps_wake_guard_words) == 0x10e4",
-    "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
+    "offset_of!(InitializedDtcmPrefix, ps_wake_guard_words) == 0x10e4",
+    "assert_type_layout!(InitializedDtcmPrefix, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
     "fn ps_wake_guard_words_are_exact()",
@@ -95,8 +95,8 @@ REQUIRED = (
     "size_of::<PsWakeGuardWords>(), 0x0400_10f8",
     "DURATION_QUANTUM_POINTERS.get() + 0x10, 0x0400_10e4",
     "MEASUREMENT_WORKSPACE.get(), 0x0400_10f8",
-    "size_of::<InitializedVendorImage>(), 0x2078",
-    "align_of::<InitializedVendorImage>(), 4",
+    "size_of::<InitializedDtcmPrefix>(), 0x2078",
+    "align_of::<InitializedDtcmPrefix>(), 4",
     "size_of::<DtcmLayout>(), DTCM_STATE_SIZE",
     "align_of::<DtcmLayout>(), 4",
     "size_of::<SharedDtcmState>(), DTCM_STATE_SIZE",
@@ -104,7 +104,7 @@ REQUIRED = (
 )
 PHYSICAL = (0x040010E4, 0x040010EC, 0x040010F0, 0x040010F8)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    "assert!(core::mem::offset_of!(InitializedVendorImage, ps_wake_guard_words) == 0x10e4);",
+    "assert!(core::mem::offset_of!(InitializedDtcmPrefix, ps_wake_guard_words) == 0x10e4);",
     "assert_type_layout!(PsWakeGuardWords, 0x14, 4);",
     "assert!(core::mem::offset_of!(PsWakeGuardWords, word_10e4) == 0);",
     "assert!(core::mem::size_of::<OpaqueBytes<0x04>>() == 0x04);",
@@ -114,7 +114,7 @@ COMPILE_TIME_PHYSICAL_INVENTORY = (
 )
 FOCUSED_TEST_INVENTORY = (
     'let image = DTCM_STATE_BASE;',
-    'let record = image + core::mem::offset_of!(InitializedVendorImage, ps_wake_guard_words);',
+    'let record = image + core::mem::offset_of!(InitializedDtcmPrefix, ps_wake_guard_words);',
     'assert_eq!(core::mem::size_of::<PsWakeGuardWords>(), 0x14);',
     'assert_eq!(core::mem::align_of::<PsWakeGuardWords>(), 4);',
     'assert_eq!([core::mem::offset_of!(PsWakeGuardWords, word_10e4), core::mem::offset_of!(PsWakeGuardWords, word_10ec), core::mem::offset_of!(PsWakeGuardWords, word_10f0), core::mem::offset_of!(PsWakeGuardWords, opaque_10)], [0x00, 0x08, 0x0c, 0x10]);',
@@ -124,8 +124,8 @@ FOCUSED_TEST_INVENTORY = (
     'assert_eq!(record + core::mem::size_of::<PsWakeGuardWords>(), 0x0400_10f8);',
     'assert_eq!(DURATION_QUANTUM_POINTERS.get() + 0x10, 0x0400_10e4);',
     'assert_eq!(MEASUREMENT_WORKSPACE.get(), 0x0400_10f8);',
-    'assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078);',
-    'assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4);',
+    'assert_eq!(core::mem::size_of::<InitializedDtcmPrefix>(), 0x2078);',
+    'assert_eq!(core::mem::align_of::<InitializedDtcmPrefix>(), 4);',
     'assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE);',
     'assert_eq!(core::mem::align_of::<DtcmLayout>(), 4);',
     'assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE);',

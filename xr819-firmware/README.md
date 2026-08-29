@@ -432,13 +432,13 @@ and runtime suffix of the combined `.dtcm.bss` allocation through
 linker-exported boundaries in the qualified ascending volatile-word order, then
 reconstructs every initialized value it consumes. There is no remaining vendor
 COPY dependency and no DTCM `PT_LOAD`, COPY, or FILL record. Every top-level
-field of `InitializedVendorImage` is represented by an ordered `.dtcm.bss.initialized.*`
+field of `InitializedDtcmPrefix` is represented by an ordered `.dtcm.bss.initialized.*`
 input object, every top-level runtime family is its own `.dtcm.bss` input object,
 and the final
 956-byte research margin has an explicit typed `.dtcm.noinit` retention object.
 There is no remaining catch-all target byte allocation. Individual family types
 still contain deliberate `OpaqueBytes` fields where semantics or ownership
-remain unknown. The complete `InitializedVendorImage` and `DtcmLayout` remain
+remain unknown. The complete `InitializedDtcmPrefix` and `DtcmLayout` remain
 host layout oracles rather than target allocations.
 
 The linker concatenates runtime, scheduler, configuration, PAS, VIF, host-TX,

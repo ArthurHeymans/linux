@@ -62,30 +62,30 @@ REQUIRED = (
     "debug_console_strings: DebugConsoleStrings",
     "aes_transfer_classes: AesTransferClassTable",
     "assert_type_layout!(SharedU32, 0x04, 4)",
-    "assert!(core::mem::offset_of!(InitializedVendorImage, debug_console_strings) == 0x07a4);",
+    "assert!(core::mem::offset_of!(InitializedDtcmPrefix, debug_console_strings) == 0x07a4);",
     "assert_type_layout!(DebugConsoleStrings, 0x60, 4);",
     "assert!(core::mem::offset_of!(DebugConsoleStrings, console_help_text) == 0x00);",
     "assert!(core::mem::size_of::<OpaqueBytes<0x50>>() == 0x50);",
     "assert!(core::mem::offset_of!(DebugConsoleStrings, hex_digits) == 0x50);",
-    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, debug_console_strings) + core::mem::size_of::<DebugConsoleStrings>() == 0x0400_0804);",
-    "offset_of!(InitializedVendorImage, aes_transfer_classes) == 0x0804",
+    "assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedDtcmPrefix, debug_console_strings) + core::mem::size_of::<DebugConsoleStrings>() == 0x0400_0804);",
+    "offset_of!(InitializedDtcmPrefix, aes_transfer_classes) == 0x0804",
     "initialized_prefix_tables_are_exact",
 )
 PHYSICAL = (0x040007a4, 0x040007f4, 0x04000804)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    'assert!(core::mem::offset_of!(InitializedVendorImage, debug_console_strings) == 0x07a4);',
+    'assert!(core::mem::offset_of!(InitializedDtcmPrefix, debug_console_strings) == 0x07a4);',
     'assert_type_layout!(DebugConsoleStrings, 0x60, 4);',
     'assert!(core::mem::offset_of!(DebugConsoleStrings, console_help_text) == 0x00);',
     'assert!(core::mem::size_of::<OpaqueBytes<0x50>>() == 0x50);',
     'assert!(core::mem::offset_of!(DebugConsoleStrings, hex_digits) == 0x50);',
-    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedVendorImage, debug_console_strings) + core::mem::size_of::<DebugConsoleStrings>() == 0x0400_0804);',
+    'assert!(DTCM_STATE_BASE + core::mem::offset_of!(InitializedDtcmPrefix, debug_console_strings) + core::mem::size_of::<DebugConsoleStrings>() == 0x0400_0804);',
 )
 
 # The ring-cursor-map asserts are interleaved with the visible_completion_words
 # asserts owned by the adjacent interval, so they form a second contiguous block.
 FOCUSED_TEST_INVENTORY = (
     'let image = DTCM_STATE_BASE;',
-    'let banner = image + core::mem::offset_of!(InitializedVendorImage, vendor_debug_encoded_banner);',
+    'let banner = image + core::mem::offset_of!(InitializedDtcmPrefix, vendor_debug_encoded_banner);',
     'assert_eq!(banner, 0x0400_09de);',
     'assert_eq!(core::mem::size_of::<VendorDebugEncodedBanner>(), 0x14a);',
     'let names = banner + core::mem::size_of::<VendorDebugEncodedBanner>();',
@@ -97,13 +97,13 @@ FOCUSED_TEST_INVENTORY = (
     'assert_eq!(tables + core::mem::offset_of!(HwTimerDebugTables, channel_config_words), 0x0400_0b58);',
     'assert_eq!([core::mem::offset_of!(HwTimerDebugTables, divisor_table), core::mem::offset_of!(HwTimerDebugTables, channel_config_words)], [0x00, 0x1c]);',
     'assert_eq!(tables + core::mem::size_of::<HwTimerDebugTables>(), 0x0400_0b60);',
-    'let strings = image + core::mem::offset_of!(InitializedVendorImage, debug_console_strings);',
+    'let strings = image + core::mem::offset_of!(InitializedDtcmPrefix, debug_console_strings);',
     'assert_eq!(strings, 0x0400_07a4);',
     'assert_eq!(core::mem::size_of::<DebugConsoleStrings>(), 0x60);',
     'assert_eq!([core::mem::offset_of!(DebugConsoleStrings, console_help_text), core::mem::offset_of!(DebugConsoleStrings, hex_digits)], [0x00, 0x50]);',
     'assert_eq!(strings + core::mem::size_of::<OpaqueBytes<0x50>>(), 0x0400_07f4);',
     'assert_eq!(strings + core::mem::size_of::<DebugConsoleStrings>(), 0x0400_0804);',
-    'assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078);',
+    'assert_eq!(core::mem::size_of::<InitializedDtcmPrefix>(), 0x2078);',
 )
 
 

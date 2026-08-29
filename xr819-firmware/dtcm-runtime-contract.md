@@ -15,7 +15,7 @@ exclusive Rust ownership or permit address movement.
   routed through local integer aliases; consumers use owner-derived fields.
 - `.dtcm.*` section construction outside `src/dtcm.rs`: **zero**.
 - The main Rust image has no DTCM `PT_LOAD`, COPY, or FILL payload.
-- `InitializedVendorImage` remains exactly `0x2078` bytes at
+- `InitializedDtcmPrefix` remains exactly `0x2078` bytes at
   `0x04000000..0x04002078`; its numbered target input objects now occupy the
   prefix of the combined `.dtcm.bss` output section.
 - The linker enforces two contiguous `NOLOAD` sections: `.dtcm.bss`
@@ -32,7 +32,7 @@ startup order remains explicit. `.dtcm.noinit` is never cleared. The packer
 rejects partial, duplicate, relocated, loadable, or additional DTCM sections
 and the linker asserts every boundary.
 
-`InitializedVendorImage` and `DtcmLayout` remain complete host-side layout
+`InitializedDtcmPrefix` and `DtcmLayout` remain complete host-side layout
 oracles. On ARM, every complete top-level initialized-data field and every
 complete top-level runtime field is now a separate link-placed Rust allocation.
 The linker sorts the numbered `.dtcm.bss.initialized.*` inputs and explicitly orders the

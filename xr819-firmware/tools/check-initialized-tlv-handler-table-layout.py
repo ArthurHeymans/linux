@@ -76,9 +76,9 @@ REQUIRED = (
     "size_of::<[TlvDispatchHandlerEntry; 4]>() == 0x20",
     "offset_of!(TlvDispatchHandlerTable, terminator_key) == 0x20",
     "offset_of!(TlvDispatchHandlerTable, terminator_handler) == 0x24",
-    "offset_of!(InitializedVendorImage, tlv_dispatch_handler_table) == 0x0da8",
-    "offset_of!(InitializedVendorImage, rf_mode_halfword_table) == 0x0dd0",
-    "assert_type_layout!(InitializedVendorImage, 0x2078, 4)",
+    "offset_of!(InitializedDtcmPrefix, tlv_dispatch_handler_table) == 0x0da8",
+    "offset_of!(InitializedDtcmPrefix, rf_mode_halfword_table) == 0x0dd0",
+    "assert_type_layout!(InitializedDtcmPrefix, 0x2078, 4)",
     "assert_type_layout!(DtcmLayout, DTCM_STATE_SIZE, 4)",
     "assert_type_layout!(SharedDtcmState, DTCM_STATE_SIZE, 4)",
     "fn tlv_dispatch_handler_table_is_exact()",
@@ -89,7 +89,7 @@ REQUIRED = (
 )
 PHYSICAL = (0x04000DA8, 0x04000DC8, 0x04000DD0)
 COMPILE_TIME_PHYSICAL_INVENTORY = (
-    "assert!(core::mem::offset_of!(InitializedVendorImage, tlv_dispatch_handler_table) == 0x0da8);",
+    "assert!(core::mem::offset_of!(InitializedDtcmPrefix, tlv_dispatch_handler_table) == 0x0da8);",
     "assert_type_layout!(TlvDispatchHandlerTable, 0x28, 4);",
     "assert!(core::mem::offset_of!(TlvDispatchHandlerTable, entries) == 0);",
     "assert!(core::mem::size_of::<[TlvDispatchHandlerEntry; 4]>() == 0x20);",
@@ -98,7 +98,7 @@ COMPILE_TIME_PHYSICAL_INVENTORY = (
 )
 FOCUSED_TEST_INVENTORY = (
     'let image = DTCM_STATE_BASE;',
-    'let tlv = image + core::mem::offset_of!(InitializedVendorImage, tlv_dispatch_handler_table);',
+    'let tlv = image + core::mem::offset_of!(InitializedDtcmPrefix, tlv_dispatch_handler_table);',
     'assert_eq!(core::mem::size_of::<TlvDispatchHandlerTable>(), 0x28);',
     'assert_eq!(core::mem::align_of::<TlvDispatchHandlerTable>(), 4);',
     'assert_eq!(core::mem::offset_of!(TlvDispatchHandlerTable, entries), 0);',
@@ -109,8 +109,8 @@ FOCUSED_TEST_INVENTORY = (
     'assert_eq!(tlv + core::mem::size_of::<TlvDispatchHandlerTable>(), 0x0400_0dd0);',
     'assert_eq!(RF_MODE_HALFWORD_TABLE.get(), 0x0400_0dd0);',
     'assert_eq!(INITIALIZED_IQ_CALIBRATION_GAIN_INDICES.get(), 0x0400_0e18);',
-    'assert_eq!(core::mem::size_of::<InitializedVendorImage>(), 0x2078);',
-    'assert_eq!(core::mem::align_of::<InitializedVendorImage>(), 4);',
+    'assert_eq!(core::mem::size_of::<InitializedDtcmPrefix>(), 0x2078);',
+    'assert_eq!(core::mem::align_of::<InitializedDtcmPrefix>(), 4);',
     'assert_eq!(core::mem::size_of::<DtcmLayout>(), DTCM_STATE_SIZE);',
     'assert_eq!(core::mem::align_of::<DtcmLayout>(), 4);',
     'assert_eq!(core::mem::size_of::<SharedDtcmState>(), DTCM_STATE_SIZE);',
