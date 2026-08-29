@@ -1793,39 +1793,13 @@ unsafe extern "C" {
     static mut __dtcm_context_pool_start: InternalContextPoolState;
 }
 
-/// Replace a selected retained initialized-image range with zero for dependency
-/// qualification. The default range is the complete `0x0000..0x2078` image;
-/// build-time decimal offsets support bounded bisection.
+/// Zero the complete link-placed initialized DTCM region in ascending word
+/// order. Translated startup reconstructs every value it consumes.
 ///
 /// # Safety
-/// This experimental operation must run during single-threaded startup before
-/// platform initialization or any IRQ/FIQ path can observe initialized DTCM.
-#[cfg(feature = "experimental-zero-initialized-dtcm")]
-const fn parse_experimental_data_offset(value: Option<&str>, default: usize) -> usize {
-    let Some(value) = value else { return default };
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    let mut result = 0usize;
-    while index < bytes.len() {
-        let digit = bytes[index].wrapping_sub(b'0');
-        assert!(digit < 10, "experimental DTCM zero offsets must be decimal");
-        result = result * 10 + digit as usize;
-        index += 1;
-    }
-    result
-}
-
-#[cfg(feature = "experimental-zero-initialized-dtcm")]
-const EXPERIMENTAL_DATA_ZERO_START: usize =
-    parse_experimental_data_offset(option_env!("XR819_DTCM_ZERO_START"), 0);
-#[cfg(feature = "experimental-zero-initialized-dtcm")]
-const EXPERIMENTAL_DATA_ZERO_END: usize = parse_experimental_data_offset(
-    option_env!("XR819_DTCM_ZERO_END"),
-    DTCM_INITIALIZED_DATA_SIZE,
-);
-
-#[cfg(feature = "experimental-zero-initialized-dtcm")]
-pub unsafe fn zero_initialized_image_for_experiment() {
+/// This must run exactly once during single-threaded startup before platform
+/// initialization, retained callbacks, or any IRQ/FIQ path can observe DTCM.
+pub unsafe fn zero_initialized_data() {
     #[cfg(target_arch = "arm")]
     let (start, end) = (
         addr_of_mut!(__dtcm_data_start),
@@ -1837,12 +1811,8 @@ pub unsafe fn zero_initialized_image_for_experiment() {
         (start, start.add(DTCM_INITIALIZED_DATA_SIZE))
     };
 
-    assert!(EXPERIMENTAL_DATA_ZERO_START <= EXPERIMENTAL_DATA_ZERO_END);
-    assert!(EXPERIMENTAL_DATA_ZERO_END <= DTCM_INITIALIZED_DATA_SIZE);
-    assert!(EXPERIMENTAL_DATA_ZERO_START.is_multiple_of(4));
-    assert!(EXPERIMENTAL_DATA_ZERO_END.is_multiple_of(4));
-    let mut cursor = unsafe { start.add(EXPERIMENTAL_DATA_ZERO_START) }.cast::<u32>();
-    let end = unsafe { start.add(EXPERIMENTAL_DATA_ZERO_END) }.cast::<u32>();
+    let mut cursor = start.cast::<u32>();
+    let end = end.cast::<u32>();
     while cursor < end {
         unsafe { cursor.write_volatile(0) };
         cursor = unsafe { cursor.add(1) };

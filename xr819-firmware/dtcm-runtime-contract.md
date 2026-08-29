@@ -23,12 +23,14 @@ exclusive Rust ownership or permit address movement.
 
 ## Link-placement migration boundary
 
-The section split is structural, not an initialization behavior change.
-`.dtcm.data` continues to receive its bytes from the preceding vendor/loader
-COPY phase; `.dtcm.bss` is cleared by walking the linker-exported start/end
-symbols in ascending volatile words; `.dtcm.noinit` is never cleared. The packer rejects partial, duplicate,
-relocated, loadable, or additional DTCM sections and the linker asserts every
-boundary.
+The section split preserves the physical ABI while startup ownership is now
+translated. Both `.dtcm.data` and `.dtcm.bss` are cleared by walking their
+linker-exported start/end symbols in ascending volatile words; `.dtcm.data` is
+cleared first and then selected values are reconstructed, while `.dtcm.bss` is
+cleared from platform initialization. `.dtcm.noinit` is never cleared. The
+packer rejects partial, duplicate, relocated, loadable, or additional DTCM
+sections and the linker asserts every boundary. The `.dtcm.data` output name is
+a transitional physical-layout label, not a remaining vendor COPY dependency.
 
 `InitializedVendorImage` and `DtcmLayout` remain complete host-side layout
 oracles. On ARM, every complete top-level initialized-data field and every
@@ -53,14 +55,13 @@ image therefore must not be promoted wholesale into a Rust load initializer.
 Converting `.dtcm.data` from `NOLOAD` requires per-family canonical source or
 explicit reconstruction, not one cold-looking snapshot.
 
-The `experimental-zero-initialized-dtcm` dependency probe clears a bounded,
-word-aligned initialized-image range before platform initialization. Before
-completion-class reconstruction, clearing ranges containing
+The former `experimental-zero-initialized-dtcm` dependency probe cleared a
+bounded, word-aligned initialized-image range before platform initialization.
+Before completion-class reconstruction, clearing ranges containing
 `0x04000260..0x04000288` allowed startup indication but killed scanning and the
 BH on a stuck command. The field-aligned `0x1088..0x2078` tail remained
-independently safe. Decimal `XR819_DTCM_ZERO_START` and
-`XR819_DTCM_ZERO_END` build variables support bounded hardware bisection; the
-feature remains disabled in production.
+independently safe. The temporary feature and build offsets were removed after
+whole-image closure.
 
 Bisection isolated the first live retained dependency to the ten words at
 `0x04000260..0x04000288`. Retained firmware stored callback pointers there,
@@ -79,11 +80,12 @@ classified as transient RF/AP behavior rather than a retained-data gate.
 
 The whole-image probe also passed 20/20 ping and a 31.7-second TCP receive run:
 9.92 MiB at 2.62 Mbit/s, with station counters increasing by about 11.1 MiB RX
-and 340 KiB TX before returning to alive/idle runtime state. The probe now
-defaults to the complete image, but remains feature-gated until production TX,
-BA stop/restart, and cold-power qualification are repeated with this startup
-contract. `.dtcm.data` therefore remains `NOLOAD` for now even though its
-retained entry contents are no longer a demonstrated runtime dependency.
+and 340 KiB TX before returning to alive/idle runtime state. It then passed a
+host reboot, another WPA2 association, a 30-second 3.15 Mbit/s offered UDP TX
+run, legacy-rate BA stop, MCS1 BA restart, and another 20/20 ping. Production
+startup now performs this whole-image reset unconditionally. `.dtcm.data`
+remains `NOLOAD`: there is no DTCM load payload, COPY record, or retained entry
+content dependency.
 
 The symbol-initialized data/BSS image
 `415a7c062688b01bb463ec9aeda536888aa1e5c460aba30161f33eb02a99e91c`
@@ -94,13 +96,13 @@ run at 3.15 Mbit/s offered and 3.14 Mbit/s received, followed by 20/20 ping and
 another zero-buffer drain.
 
 The initialized-image transition contract is qualified on target for both cold
-startup and warm SDIO rebind. The custom Rust image begins with the bytes left
-by the preceding loader/vendor phase. Startup then reconstructs selected mutable
-records. Retained bytes, zeroed bytes, and explicitly rebuilt bytes are different
-contracts and must not be conflated. Rows still marked open remain family-level
-closure requirements before those records can be relocated or claimed as
-exclusively Rust-owned; they do not invalidate the qualified fixed-layout startup
-contract.
+startup and warm SDIO rebind. Rust startup discards bytes left by the preceding
+loader/vendor phase, then reconstructs selected mutable records before their
+first reader. Zeroed bytes, explicitly rebuilt bytes, and `.dtcm.noinit`
+retention are different contracts and must not be conflated. Rows still marked
+open remain family-level closure requirements before those records can be
+relocated or claimed as exclusively Rust-owned; they do not invalidate the
+qualified fixed-layout startup contract.
 
 ## Initialized-image startup writer matrix
 

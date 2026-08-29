@@ -277,17 +277,16 @@ pub extern "C" fn _start() -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_main() -> ! {
-    unsafe { clear_rust_bss() };
+    unsafe {
+        clear_rust_bss();
+        xr819_firmware::dtcm::zero_initialized_data();
+    }
     #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
     unsafe {
         xr819_firmware::dtcm::capture_initialized_image_snapshot(
             xr819_firmware::dtcm::SnapshotStage::Entry,
         )
     };
-    #[cfg(feature = "experimental-zero-initialized-dtcm")]
-    unsafe {
-        xr819_firmware::dtcm::zero_initialized_image_for_experiment();
-    }
     initialize_runtime_state();
     #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
     unsafe {

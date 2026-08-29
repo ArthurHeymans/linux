@@ -421,16 +421,18 @@ ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 `link-main-low.x` now divides observed DTCM ownership explicitly:
 
 ```text
-0x04000000..0x04002078  .dtcm.data   retained vendor COPY image
+0x04000000..0x04002078  .dtcm.data   explicitly zeroed and reconstructed state
 0x04002078..0x04009c44  .dtcm.bss    explicitly zeroed runtime state
 0x04009c44..0x0400a000  .dtcm.noinit retained research quarantine
 0x0400a000..0x0400a500  five 256-byte exception-mode stacks
 0x0400a500..0x0400c000  6,912-byte system stack
 ```
 
-All three DTCM sections remain `NOLOAD`: this first link-placement step changes
-neither the vendor COPY source nor the existing startup zero-fill order and
-introduces no DTCM `PT_LOAD`, COPY, or FILL record. Every top-level field of
+All three DTCM sections remain `NOLOAD`. Rust startup now clears `.dtcm.data`
+and `.dtcm.bss` through linker-exported boundaries in the qualified ascending
+volatile-word order, then reconstructs every initialized value it consumes.
+There is no remaining vendor COPY dependency and no DTCM `PT_LOAD`, COPY, or
+FILL record. Every top-level field of
 `InitializedVendorImage` is now its own ordered `.dtcm.data` input object, every
 top-level runtime family is its own `.dtcm.bss` input object, and the final
 956-byte research margin has an explicit typed `.dtcm.noinit` retention object.

@@ -84,11 +84,15 @@ SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
 # word VALUE lands inside this interval while every store targets the
 # duration-quantum-pointers interval below. No byte of this record is
 # written through it.
-# No linked literals fall inside this interval: the handler-table root is
-# consumed only by tlv_dispatch_default (vendor side), and no retained Rust
-# code touches these bytes.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
+# Production rust_main now materializes 0x04000000 once to clear the complete
+# initialized region in ascending volatile words. No family-specific consumer
+# is introduced by that root xref.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
+    0x04000000: 1,
+})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
+    ('rust_main', 0x04000000): 1,
+})
 STRUCT = '#[repr(C, align(4))] struct MacSlotTimingPatchEntry { pointer: SharedU32, patch_word: SharedU32 } #[repr(C, align(4))] struct MacSlotTimingPatchList { entries: [MacSlotTimingPatchEntry; 11] } #[repr(C, align(4))] struct PacDurationQuanta { quanta: [SharedU32; 8] }'
 REQUIRED = (
     STRUCT,
