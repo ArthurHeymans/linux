@@ -35,7 +35,7 @@ and the linker asserts every boundary.
 `InitializedVendorImage` and `DtcmLayout` remain complete host-side layout
 oracles. On ARM, every complete top-level initialized-data field and every
 complete top-level runtime field is now a separate link-placed Rust allocation.
-The linker sorts the numbered `.dtcm.data.*` inputs and explicitly orders the
+The linker sorts the numbered `.dtcm.bss.initialized.*` inputs and explicitly orders the
 `.dtcm.bss.*` inputs inside one contiguous BSS output allocation. There is no remaining
 top-level catch-all target allocation; unresolved bytes remain explicit
 `OpaqueBytes` members inside the smallest reviewed family or quarantine type.

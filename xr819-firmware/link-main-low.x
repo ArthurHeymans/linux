@@ -93,7 +93,7 @@ SECTIONS
     .dtcm.bss (NOLOAD) : ALIGN(4)
     {
         __dtcm_data_start = .;
-        KEEP(*(SORT_BY_NAME(.dtcm.data.*)))
+        KEEP(*(SORT_BY_NAME(.dtcm.bss.initialized.*)))
         __dtcm_data_end = .;
         __dtcm_bss_start = .;
         KEEP(*(.dtcm.bss.runtime_prefix))

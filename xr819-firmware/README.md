@@ -432,7 +432,7 @@ and runtime suffix of the combined `.dtcm.bss` allocation through
 linker-exported boundaries in the qualified ascending volatile-word order, then
 reconstructs every initialized value it consumes. There is no remaining vendor
 COPY dependency and no DTCM `PT_LOAD`, COPY, or FILL record. Every top-level
-field of `InitializedVendorImage` is represented by an ordered `.dtcm.data.*`
+field of `InitializedVendorImage` is represented by an ordered `.dtcm.bss.initialized.*`
 input object, every top-level runtime family is its own `.dtcm.bss` input object,
 and the final
 956-byte research margin has an explicit typed `.dtcm.noinit` retention object.
