@@ -18,6 +18,9 @@ use core::ptr::addr_of_mut;
 pub const DTCM_STATE_BASE: usize = 0x0400_0000;
 pub const DTCM_STATE_SIZE: usize = 0x0000_a000;
 pub const DTCM_STATE_END: usize = DTCM_STATE_BASE + DTCM_STATE_SIZE;
+pub const DTCM_INITIALIZED_DATA_SIZE: usize = 0x2078;
+pub const DTCM_BSS_SIZE: usize = 0x9c44 - DTCM_INITIALIZED_DATA_SIZE;
+pub const DTCM_NOINIT_SIZE: usize = DTCM_STATE_SIZE - 0x9c44;
 
 pub const INTERNAL_TX_CONTEXT_SIZE: usize = 0x170;
 pub const INTERNAL_TX_CONTEXT_COUNT: usize = 3;
@@ -151,7 +154,7 @@ static INITIALIZED_IMAGE_SNAPSHOTS: InitializedImageSnapshots =
 #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
 pub unsafe fn capture_initialized_image_snapshot(stage: SnapshotStage) {
     unsafe {
-        let source = DTCM_STATE.0.get().cast::<u8>();
+        let source = addr_of_mut!(__dtcm_data_start);
         let destination = INITIALIZED_IMAGE_SNAPSHOTS
             .0
             .get()
@@ -1393,24 +1396,47 @@ struct DtcmLayout {
     research_margin: ResearchMargin,                  // 0x9c44
 }
 
-/// The only lower-DTCM allocation. The linker places this NOBITS object at
-/// `DTCM_STATE_BASE`; loader COPY data below `+0x2078` and explicit runtime
-/// zeroing from `+0x2078` retain their existing behavior.
+/// Host-side complete backing used for layout and access-order tests.
 #[repr(transparent)]
 struct SharedDtcmState(UnsafeCell<MaybeUninit<DtcmLayout>>);
 
 unsafe impl Sync for SharedDtcmState {}
 
-#[unsafe(no_mangle)]
-#[used]
-#[unsafe(link_section = ".dtcm.state")]
-#[cfg(target_arch = "arm")]
-static DTCM_STATE: SharedDtcmState = SharedDtcmState(UnsafeCell::new(MaybeUninit::uninit()));
-
 // Host tests must never manufacture pointers into target DTCM. The complete
 // process-local backing also makes offset and access-order tests deterministic.
 #[cfg(not(target_arch = "arm"))]
 static DTCM_STATE: SharedDtcmState = SharedDtcmState(UnsafeCell::new(MaybeUninit::zeroed()));
+
+/// Link-placed target regions follow the three distinct startup contracts.
+/// The first is populated by the retained vendor COPY image, the second is
+/// explicitly zeroed on cold startup, and the final research quarantine is
+/// retained without initialization. Keeping separate Rust allocations makes
+/// later typed migration possible without changing any physical address.
+#[repr(transparent)]
+struct SharedDtcmRegion<T>(UnsafeCell<MaybeUninit<T>>);
+
+unsafe impl<T> Sync for SharedDtcmRegion<T> {}
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.data")]
+#[cfg(target_arch = "arm")]
+static DTCM_INITIALIZED_DATA: SharedDtcmRegion<InitializedVendorImage> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss")]
+#[cfg(target_arch = "arm")]
+static DTCM_BSS: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_SIZE>> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.noinit")]
+#[cfg(target_arch = "arm")]
+static DTCM_NOINIT: SharedDtcmRegion<ResearchMargin> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[cfg(any(test, not(target_arch = "arm")))]
 #[inline(always)]
@@ -1420,6 +1446,7 @@ fn layout_ptr() -> *mut DtcmLayout {
 
 #[cfg(target_arch = "arm")]
 unsafe extern "C" {
+    static mut __dtcm_data_start: u8;
     static mut __dtcm_context_pool_start: InternalContextPoolState;
 }
 
@@ -4178,6 +4205,10 @@ const _: () = {
     assert!(core::mem::offset_of!(DtcmLayout, phy_core) == 0x993c);
     assert!(core::mem::offset_of!(DtcmLayout, phy_tail) == 0x9a0c);
     assert!(core::mem::offset_of!(DtcmLayout, research_margin) == 0x9c44);
+    assert!(core::mem::size_of::<InitializedVendorImage>() == DTCM_INITIALIZED_DATA_SIZE);
+    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_SIZE>>() == DTCM_BSS_SIZE);
+    assert!(core::mem::size_of::<ResearchMargin>() == DTCM_NOINIT_SIZE);
+    assert!(DTCM_INITIALIZED_DATA_SIZE + DTCM_BSS_SIZE + DTCM_NOINIT_SIZE == DTCM_STATE_SIZE);
 };
 
 #[cfg(test)]

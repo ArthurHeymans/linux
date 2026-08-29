@@ -29,7 +29,11 @@ PF_W = 2
 PF_R = 4
 MAX_U32 = 0xFFFF_FFFF
 DTCM_ALIAS_RANGE = (0x0400_0000, 0x0401_0000)
-APPROVED_DTCM_SECTION = (".dtcm.state", 0x0400_0000, 0xA000)
+APPROVED_DTCM_SECTIONS = (
+    (".dtcm.data", DTCM_ALIAS_RANGE[0], 0x2078),
+    (".dtcm.bss", DTCM_ALIAS_RANGE[0] + 0x2078, 0x7BCC),
+    (".dtcm.noinit", DTCM_ALIAS_RANGE[0] + 0x9C44, 0x03BC),
+)
 
 
 @dataclass(frozen=True)
@@ -218,14 +222,14 @@ def intersects(start: int, end: int, region: tuple[int, int]) -> bool:
 def validate_dtcm_sections(data: bytes, segments: list[LoadSegment]) -> list[Section]:
     sections = parse_sections(data)
     named = [section for section in sections if section.name.startswith(".dtcm.")]
-    approved = [section for section in named if section.name == APPROVED_DTCM_SECTION[0]]
-    if len(approved) > 1:
-        raise ValueError("ELF contains more than one .dtcm.state section")
-
-    for section in named:
-        identity = (section.name, section.address, section.size)
-        if identity != APPROVED_DTCM_SECTION:
+    approved_identities = set(APPROVED_DTCM_SECTIONS)
+    identities = [(section.name, section.address, section.size) for section in named]
+    for identity in identities:
+        if identity not in approved_identities:
             raise ValueError(f"unapproved DTCM section {identity!r}")
+    if named and (len(identities) != len(set(identities)) or set(identities) != approved_identities):
+        raise ValueError(f"incomplete or duplicate DTCM section set {identities!r}")
+    approved = named
 
     for section in sections:
         end = section.address + section.size
@@ -234,7 +238,7 @@ def validate_dtcm_sections(data: bytes, segments: list[LoadSegment]) -> list[Sec
             section.size
             and section.flags & SHF_ALLOC
             and intersects(section.address, end, DTCM_ALIAS_RANGE)
-            and (section.name, section.address, section.size) != APPROVED_DTCM_SECTION
+            and (section.name, section.address, section.size) not in approved_identities
         ):
             raise ValueError(
                 f"allocatable section {section.name!r} [{section.address:#x}, {end:#x}) "

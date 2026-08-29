@@ -89,12 +89,34 @@ SECTIONS
         KEEP(*(.packet_ram.rx_fifo_backing))
     } > PACKET_RX_FIFO :NONE
 
-    .dtcm.state (NOLOAD) : ALIGN(4)
+    /*
+     * Lower DTCM is link-placed by startup contract rather than represented as
+     * one monolithic opaque allocation. These remain NOLOAD while the existing
+     * vendor COPY and explicit zero-fill paths own initialization.
+     */
+    .dtcm.data (NOLOAD) : ALIGN(4)
     {
-        __dtcm_state_start = .;
-        KEEP(*(.dtcm.state))
-        __dtcm_state_end = .;
+        __dtcm_data_start = .;
+        KEEP(*(.dtcm.data))
+        __dtcm_data_end = .;
     } > DTCM_STATE :NONE
+
+    .dtcm.bss (NOLOAD) : ALIGN(4)
+    {
+        __dtcm_bss_start = .;
+        KEEP(*(.dtcm.bss))
+        __dtcm_bss_end = .;
+    } > DTCM_STATE :NONE
+
+    .dtcm.noinit (NOLOAD) : ALIGN(4)
+    {
+        __dtcm_noinit_start = .;
+        KEEP(*(.dtcm.noinit))
+        __dtcm_noinit_end = .;
+    } > DTCM_STATE :NONE
+
+    __dtcm_state_start = __dtcm_data_start;
+    __dtcm_state_end = __dtcm_noinit_end;
 
     __itcm_image_end = ADDR(.noinit.exception) + SIZEOF(.noinit.exception);
     __itcm_observed_limit = ORIGIN(ITCM_OBSERVED) + LENGTH(ITCM_OBSERVED);
@@ -102,10 +124,10 @@ SECTIONS
      * Export raw member-view symbols from the actual Rust object. Code can
      * materialize these addresses directly without creating separate sections.
      */
-    __dtcm_state_object_start = DTCM_STATE;
-    __dtcm_state_object_end = DTCM_STATE + SIZEOF(.dtcm.state);
-    __dtcm_context_pool_start = DTCM_STATE + 0x9080;
-    __dtcm_context_pool_contexts = DTCM_STATE + 0x9084;
+    __dtcm_state_object_start = ORIGIN(DTCM_STATE);
+    __dtcm_state_object_end = __dtcm_state_end;
+    __dtcm_context_pool_start = ORIGIN(DTCM_STATE) + 0x9080;
+    __dtcm_context_pool_contexts = ORIGIN(DTCM_STATE) + 0x9084;
     __dtcm_context_pool_end = __dtcm_context_pool_contexts + 3 * 0x170;
     __dtcm_stack_floor = ORIGIN(DTCM_STACKS);
     __dtcm_stack_top = ORIGIN(DTCM_STACKS) + LENGTH(DTCM_STACKS);
@@ -114,16 +136,32 @@ SECTIONS
            "XR819 image exceeds the conservative vendor ITCM envelope")
     ASSERT(__bss_end <= __itcm_observed_limit,
            "XR819 ITCM-backed BSS exceeds the observed envelope")
-    ASSERT(DTCM_STATE == __dtcm_state_start,
-           "XR819 Rust DTCM object is not the complete state section")
+    ASSERT(ORIGIN(DTCM_STATE) == __dtcm_state_start,
+           "XR819 Rust DTCM regions do not start at the state base")
     ASSERT(__dtcm_state_object_start == 0x04000000,
            "XR819 DTCM state object base moved")
+    ASSERT(__dtcm_data_start == ORIGIN(DTCM_STATE),
+           "XR819 DTCM initialized-data base moved")
+    ASSERT(__dtcm_data_end == ORIGIN(DTCM_STATE) + 0x2078,
+           "XR819 DTCM initialized-data extent changed")
+    ASSERT(SIZEOF(.dtcm.data) == 0x2078,
+           "XR819 DTCM initialized-data size changed")
+    ASSERT(__dtcm_bss_start == ORIGIN(DTCM_STATE) + 0x2078,
+           "XR819 DTCM BSS base moved")
+    ASSERT(__dtcm_bss_end == ORIGIN(DTCM_STATE) + 0x9c44,
+           "XR819 DTCM BSS extent changed")
+    ASSERT(SIZEOF(.dtcm.bss) == 0x7bcc,
+           "XR819 DTCM BSS size changed")
+    ASSERT(__dtcm_noinit_start == ORIGIN(DTCM_STATE) + 0x9c44,
+           "XR819 DTCM no-init base moved")
+    ASSERT(__dtcm_noinit_end == ORIGIN(DTCM_STATE) + LENGTH(DTCM_STATE),
+           "XR819 DTCM no-init extent changed")
+    ASSERT(SIZEOF(.dtcm.noinit) == 0x3bc,
+           "XR819 DTCM no-init size changed")
     ASSERT(__dtcm_state_object_end == 0x0400a000,
            "XR819 DTCM state object size changed")
     ASSERT(__dtcm_state_end == __dtcm_state_object_end,
-           "XR819 DTCM state section and object differ")
-    ASSERT(SIZEOF(.dtcm.state) == 0xa000,
-           "XR819 Rust DTCM layout no longer fills its region")
+           "XR819 DTCM regions do not fill the state object")
     ASSERT(ORIGIN(DTCM_STACKS) == ORIGIN(DTCM_STATE) + LENGTH(DTCM_STATE),
            "XR819 DTCM state and stacks are not contiguous")
     ASSERT(__dtcm_context_pool_start == 0x04009080,

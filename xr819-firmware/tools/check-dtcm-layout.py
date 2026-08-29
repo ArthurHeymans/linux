@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the single linker-owned XR819 DTCM quarantine section and packing."""
+"""Verify the link-placed XR819 DTCM startup-contract sections and packing."""
 
 from __future__ import annotations
 
@@ -13,13 +13,25 @@ DTCM_STATE = (0x04000000, 0x0400A000)
 DTCM_STACKS = (0x0400A000, 0x0400C000)
 DTCM_ALIAS_RANGE = (0x04000000, 0x04010000)
 PACKET_WINDOW = (0x09000000, 0x0A000000)
-EXPECTED_SECTION = (".dtcm.state", 0x04000000, 0xA000)
+EXPECTED_SECTIONS = [
+    (".dtcm.data", DTCM_STATE[0], 0x2078),
+    (".dtcm.bss", DTCM_STATE[0] + 0x2078, 0x7BCC),
+    (".dtcm.noinit", DTCM_STATE[0] + 0x9C44, 0x03BC),
+]
 EXPECTED_SYMBOLS = {
-    "DTCM_STATE": 0x04000000,
-    "__dtcm_state_start": 0x04000000,
-    "__dtcm_state_end": 0x0400A000,
-    "__dtcm_state_object_start": 0x04000000,
-    "__dtcm_state_object_end": 0x0400A000,
+    "DTCM_INITIALIZED_DATA": DTCM_STATE[0],
+    "DTCM_BSS": DTCM_STATE[0] + 0x2078,
+    "DTCM_NOINIT": DTCM_STATE[0] + 0x9C44,
+    "__dtcm_data_start": DTCM_STATE[0],
+    "__dtcm_data_end": DTCM_STATE[0] + 0x2078,
+    "__dtcm_bss_start": DTCM_STATE[0] + 0x2078,
+    "__dtcm_bss_end": DTCM_STATE[0] + 0x9C44,
+    "__dtcm_noinit_start": DTCM_STATE[0] + 0x9C44,
+    "__dtcm_noinit_end": DTCM_STATE[1],
+    "__dtcm_state_start": DTCM_STATE[0],
+    "__dtcm_state_end": DTCM_STATE[1],
+    "__dtcm_state_object_start": DTCM_STATE[0],
+    "__dtcm_state_object_end": DTCM_STATE[1],
     "__dtcm_context_pool_start": 0x04009080,
     "__dtcm_context_pool_contexts": 0x04009084,
     "__dtcm_context_pool_end": 0x040094D4,
@@ -78,40 +90,42 @@ def check_elf(path: Path) -> None:
     _entry, segments = packer.parse_elf32_arm(data)
     sections = packer.parse_sections(data)
     dtcm_sections = [section for section in sections if section.name.startswith(".dtcm.")]
-    if [(section.name, section.address, section.size) for section in dtcm_sections] != [EXPECTED_SECTION]:
+    actual_sections = [(section.name, section.address, section.size) for section in dtcm_sections]
+    if actual_sections != EXPECTED_SECTIONS:
         raise SystemExit(
             "DTCM section set mismatch: "
-            f"expected={[EXPECTED_SECTION]!r} "
-            f"actual={[(s.name, s.address, s.size) for s in dtcm_sections]!r}"
+            f"expected={EXPECTED_SECTIONS!r} actual={actual_sections!r}"
         )
 
+    approved = set(EXPECTED_SECTIONS)
     for candidate in sections:
         end = candidate.address + candidate.size
         if (
             candidate.size
             and candidate.flags & packer.SHF_ALLOC
             and intersects(candidate.address, end, DTCM_ALIAS_RANGE)
-            and (candidate.name, candidate.address, candidate.size) != EXPECTED_SECTION
+            and (candidate.name, candidate.address, candidate.size) not in approved
         ):
             raise SystemExit(
                 f"allocatable section {candidate.name!r} "
                 f"[{candidate.address:#x}, {end:#x}) intersects DTCM or its alias range"
             )
 
-    section = dtcm_sections[0]
-    expected_name, expected_address, expected_size = EXPECTED_SECTION
-    if section.section_type != packer.SHT_NOBITS:
-        raise SystemExit(f"{expected_name} is not SHT_NOBITS")
-    if section.flags & packer.SHF_ALLOC == 0:
-        raise SystemExit(f"{expected_name} is not SHF_ALLOC")
-    if (section.address, section.size) != (expected_address, expected_size):
-        raise SystemExit(
-            f"{expected_name} layout mismatch: expected={(expected_address, expected_size)!r} "
-            f"actual={(section.address, section.size)!r}"
-        )
-    if section.address + section.size != DTCM_STACKS[0]:
-        raise SystemExit("DTCM state does not end exactly at the stack floor")
-    if intersects(section.address, section.address + section.size, PACKET_WINDOW):
+    for section, (expected_name, expected_address, expected_size) in zip(
+        dtcm_sections, EXPECTED_SECTIONS, strict=True
+    ):
+        if section.section_type != packer.SHT_NOBITS:
+            raise SystemExit(f"{expected_name} is not SHT_NOBITS")
+        if section.flags & packer.SHF_ALLOC == 0:
+            raise SystemExit(f"{expected_name} is not SHF_ALLOC")
+        if (section.address, section.size) != (expected_address, expected_size):
+            raise SystemExit(
+                f"{expected_name} layout mismatch: expected={(expected_address, expected_size)!r} "
+                f"actual={(section.address, section.size)!r}"
+            )
+    if dtcm_sections[-1].address + dtcm_sections[-1].size != DTCM_STACKS[0]:
+        raise SystemExit("DTCM sections do not end exactly at the stack floor")
+    if intersects(dtcm_sections[0].address, DTCM_STACKS[0], PACKET_WINDOW):
         raise SystemExit("DTCM state overlaps packet RAM/MMIO")
 
     for segment in segments:
@@ -126,10 +140,11 @@ def check_elf(path: Path) -> None:
             f"DTCM linker symbols changed: expected={EXPECTED_SYMBOLS!r} actual={actual_symbols!r}"
         )
 
-    print(
-        f"{expected_name} address={section.address:#010x} size={section.size:#x} "
-        "NOBITS ALLOC no-PT_LOAD"
-    )
+    for section in dtcm_sections:
+        print(
+            f"{section.name} address={section.address:#010x} size={section.size:#x} "
+            "NOBITS ALLOC no-PT_LOAD"
+        )
     print(
         "internal contexts "
         f"head={symbols['__dtcm_context_pool_start']:#010x} "

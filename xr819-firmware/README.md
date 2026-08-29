@@ -421,18 +421,23 @@ ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 `link-main-low.x` now divides observed DTCM ownership explicitly:
 
 ```text
-0x04000000..0x0400a000  .dtcm.state shared quarantine ABI view
+0x04000000..0x04002078  .dtcm.data   retained vendor COPY image
+0x04002078..0x04009c44  .dtcm.bss    explicitly zeroed runtime state
+0x04009c44..0x0400a000  .dtcm.noinit retained research quarantine
 0x0400a000..0x0400a500  five 256-byte exception-mode stacks
 0x0400a500..0x0400c000  6,912-byte system stack
 ```
 
-The vendor image initializes through `0x04009c44`; rounding the quarantine to
-`0x0400a000` preserves a 956-byte research margin. The monolithic NOLOAD object
-is a private structural view of vendor-shared bytes, not exclusive/native Rust
-ownership. Its fields expose no safe complete-record references. The internal
-TX context pool remains physically inside this object and is addressed through
-linker-exported member symbols at `0x04009080..0x040094d4`; there is no
-standalone `.dtcm.context_pool` section.
+All three DTCM sections remain `NOLOAD`: this first link-placement step changes
+neither the vendor COPY source nor the existing startup zero-fill order and
+introduces no DTCM `PT_LOAD`, COPY, or FILL record. `InitializedVendorImage` is
+now the typed `.dtcm.data` allocation; the runtime range remains opaque pending
+family ownership closure, and the final 956-byte research margin has an explicit
+`.dtcm.noinit` retention contract. The complete `DtcmLayout` remains the host
+layout oracle rather than the target allocation. The internal TX context pool
+stays physically inside `.dtcm.bss` and is addressed through linker-exported
+member symbols at `0x04009080..0x040094d4`; there is no standalone
+`.dtcm.context_pool` section.
 
 CP15 `c0,c0,2` reports `0x001c0200`, whose standard fields describe 128 KiB
 ITCM and 64 KiB DTCM. That physical-size report does not provide another
@@ -442,11 +447,14 @@ the address aliases live legacy DTCM. The stack top therefore remains the hard
 usable-DTCM boundary; linker or loader sections must not target
 `0x0400c000..0x04010000`.
 
-Rust-owned CPU state now uses ordinary writable ITCM `.data` and `.bss`. This
+Rust-owned CPU state now uses ordinary writable ITCM `.data` and `.bss`. The
+new DTCM section names describe fixed external startup contracts, not permission
+to move ordinary CPU-only state back into DTCM. This
 includes HIF queue/ring ownership, `Transport`, response scratch, HIF sequence
 state, the completed-frame FIFO, probe-context sequence, PAS accounting,
 internal-context count, retry PRNG state, channel PLL cache, and channel power
-limits. There is no native `.dtcm.bss` section or main-image DTCM fill record.
+limits. The native `.dtcm.bss` section deliberately remains `NOLOAD` and uses the
+qualified explicit zeroing path; there is still no main-image DTCM fill record.
 Hardware descriptors, packet buffers, and MMIO identities remain in shared
 packet RAM or MMIO rather than TCM. The internal TX context pool is an exact
 typed member view of the shared quarantine object, not a standalone allocation

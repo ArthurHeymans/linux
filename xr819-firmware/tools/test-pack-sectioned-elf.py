@@ -205,13 +205,13 @@ class PackerTests(unittest.TestCase):
 
     def test_dtcm_noload_section_cannot_intersect_load_segment(self) -> None:
         data = elf_fixture(
-            destination=0x04002000,
+            destination=PACKER.DTCM_ALIAS_RANGE[0] + 0x2000,
             file_size=0,
             memory_size=0x20,
             sections=[
-                FixtureSection(
-                    ".dtcm.state", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, 0x04002000, 0x20
-                )
+                FixtureSection(".dtcm.data", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0], 0x2078),
+                FixtureSection(".dtcm.bss", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x2078, 0x7BCC),
+                FixtureSection(".dtcm.noinit", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x9C44, 0x03BC),
             ],
         )
         with self.assertRaisesRegex(ValueError, "DTCM or its alias"):
@@ -237,15 +237,15 @@ class PackerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "allocatable section.*DTCM or its alias"):
             PACKER.pack_elf(data)
 
-    def test_exact_dtcm_state_policy_is_accepted(self) -> None:
+    def test_exact_dtcm_section_policy_is_accepted(self) -> None:
         data = elf_fixture(
             destination=0x1000,
             file_size=4,
             memory_size=4,
             sections=[
-                FixtureSection(
-                    ".dtcm.state", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, 0x04000000, 0xA000
-                )
+                FixtureSection(".dtcm.data", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0], 0x2078),
+                FixtureSection(".dtcm.bss", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x2078, 0x7BCC),
+                FixtureSection(".dtcm.noinit", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x9C44, 0x03BC),
             ],
         )
         packed, _entry, _segments = PACKER.pack_elf(data)

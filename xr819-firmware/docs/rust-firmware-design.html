@@ -172,26 +172,28 @@ domains.</li>
 </ul>
 
 <h3>3.4 DTCM is a quarantine ABI, not the desired state store</h3>
-<p>The implemented <code>DtcmLayout</code> is one fixed <code>0xa000</code>-byte object. Its value is
-structural: it prevents accidental hole allocation, preserves overlays, and lets checkers verify
-boundaries. It does not prove exclusive Rust ownership and it is not movable. The accurate claim
-is that DTCM is <strong>structurally decoded and quarantined</strong>, not that its usage is fully
+<p>The implemented <code>DtcmLayout</code> remains the complete <code>0xa000</code>-byte host layout
+oracle. ARM allocation is now partitioned by startup contract into exact contiguous
+<code>.dtcm.data</code>, <code>.dtcm.bss</code>, and <code>.dtcm.noinit</code> sections. This prevents
+accidental hole allocation, preserves overlays, and lets checkers verify boundaries. It does not
+prove exclusive Rust ownership and it is not movable. The accurate claim is that DTCM is
+<strong>structurally decoded, link placed, and quarantined</strong>, not that its usage is fully
 translated.</p>
-<div class="note"><strong>Current contract gap:</strong> <code>.dtcm.state</code> is NOLOAD and
-the packed-image checker rejects DTCM COPY/FILL records. Direct production DTCM literals are now
-eliminated outside <code>src/dtcm.rs</code>, and direct arithmetic on a
-<code>dtcm::...get()</code> expression is blocked. Older family-local aliases and record-internal
-arithmetic still require audit, while startup reconstructs only selected words rather than the complete
-<code>0x04000000..0x04002078</code> image. The boot/retention source and cold/warm snapshot behavior
-of every live initialized word must be closed before ordinary source decomposition can be called
-safe. A diagnostic-only image now captures the entry, post-platform, and post-startup images for
-paginated host retrieval; real cold/warm target evidence is still required. The active writer matrix
-and capture procedure are maintained in <code>dtcm-runtime-contract.md</code>.</div>
+<div class="note"><strong>Current contract gap:</strong> all three DTCM sections remain NOLOAD and
+the packed-image checker rejects DTCM COPY/FILL records. <code>.dtcm.data</code> still receives the
+qualified vendor COPY image, <code>.dtcm.bss</code> still uses explicit startup zeroing, and
+<code>.dtcm.noinit</code> retains the research margin. Direct production DTCM literals are eliminated
+outside <code>src/dtcm.rs</code>, and direct arithmetic on a <code>dtcm::...get()</code> expression is
+blocked. Older family-local aliases and record-internal arithmetic still require audit. The
+boot/retention source and cold/warm snapshot behavior of every live initialized word must be closed
+before ordinary source decomposition can be called safe. The active writer matrix and capture
+procedure are maintained in <code>dtcm-runtime-contract.md</code>.</div>
 <ul>
 <li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
 Do not move it back into DTCM for visual symmetry.</li>
-<li>Source files may be split, but the physical DTCM object stays monolithic until final retirement.
-Do not create independently linked DTCM family statics that can overlap or split authority.</li>
+<li>The exact three-section partition is the allocation authority. New typed family statics replace
+reviewed subranges within that partition; they must not overlap, create holes, or silently split
+ownership before family closure.</li>
 <li>Address movement is allowed only after every reader, writer, callback, IRQ/FIQ path, computed
 root, and high-TCM consumer for the family is retired.</li>
 <li>The final relocation/removal is atomic. The failed TALA move proves that exact struct shape and
@@ -442,6 +444,6 @@ diagnostic code.</li>
 <footer>Prepared in <code>/tmp/xr819-link-state</code> from the current source tree and local
 reverse-engineering documents. No XR819 web research was used. This revision corrects the hosted
 plan against the active hardware AES backend, existing MAC-domain capability, implemented HIF
-queue, qualified traffic path, and the fixed-monolithic DTCM quarantine decision.</footer>
+queue, qualified traffic path, and the fixed link-placed DTCM quarantine decision.</footer>
 </body>
 </html>

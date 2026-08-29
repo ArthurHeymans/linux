@@ -16,7 +16,33 @@ exclusive Rust ownership or permit address movement.
 - `.dtcm.*` section construction outside `src/dtcm.rs`: **zero**.
 - The main Rust image has no DTCM `PT_LOAD`, COPY, or FILL payload.
 - `InitializedVendorImage` remains exactly `0x2078` bytes at
-  `0x04000000..0x04002078`.
+  `0x04000000..0x04002078` and is now the target's typed `.dtcm.data` object.
+- The linker enforces three contiguous `NOLOAD` startup-contract sections:
+  `.dtcm.data` (`0x2078` bytes), `.dtcm.bss` (`0x7bcc` bytes), and
+  `.dtcm.noinit` (`0x3bc` bytes). Their union remains exactly `0xa000` bytes.
+
+## Link-placement migration boundary
+
+The section split is structural, not an initialization behavior change.
+`.dtcm.data` continues to receive its bytes from the preceding vendor/loader
+COPY phase; `.dtcm.bss` continues to be cleared by the reviewed explicit startup
+writer; `.dtcm.noinit` is never cleared. The packer rejects partial, duplicate,
+relocated, loadable, or additional DTCM sections and the linker asserts every
+boundary.
+
+`DtcmLayout` remains the complete host-side layout oracle. On ARM,
+`InitializedVendorImage` is a typed link-placed allocation, while the runtime
+BSS remains one opaque allocation until individual families have reader/writer,
+IRQ/FIQ, callback, and warm-reload closure. New family statics may replace
+subranges only by preserving the section partition and exact address assertions;
+the section names do not grant exclusive Rust ownership.
+
+The split-section image
+`853a8480a2ff05776f0632b0e2b1c2830b9a610715459829e3e8156e1fedefdc`
+is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.42 Mbit/s, followed by
+20/20 ping, BH alive, WSM idle, and zero buffers. An association-safe warm SDIO
+reload then completed a 30-second 3 Mbit/s UDP run at 3.15 Mbit/s offered and
+3.14 Mbit/s received, followed by 20/20 ping and another zero-buffer drain.
 
 The initialized-image transition contract is qualified on target for both cold
 startup and warm SDIO rebind. The custom Rust image begins with the bytes left
