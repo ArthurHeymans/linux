@@ -62,7 +62,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25decrypt_rx_frame_hardware', 0x0400143C): 18,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25encrypt_tx_frame_hardware', 0x0400143C): 18,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto26run_hardware_ccmp_selftest', 0x0400143C): 8,
-    ('rust_main', 0x04001428): 5,
+    ('rust_main', 0x04001428): 6,
 })
 
 

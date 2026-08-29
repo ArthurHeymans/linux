@@ -64,6 +64,14 @@ writers and shared volatile semantics unchanged. Decimal
 `XR819_DTCM_ZERO_START` and `XR819_DTCM_ZERO_END` build variables exist only for
 bounded hardware bisection; the feature remains disabled in production.
 
+Bisection isolated the first live retained dependency to the ten words at
+`0x04000260..0x04000288`. Retained firmware stored callback pointers there,
+but translated completion dispatch only used nonzero values as class-presence
+gates before invoking Rust closures. Platform startup now publishes ten
+ascending volatile `1` words explicitly. Zeroing the complete family before
+that publication then survived WPA2 association and 20/20 ping, closing its
+vendor-pointer dependency without changing callback ordering or ownership.
+
 The symbol-initialized data/BSS image
 `415a7c062688b01bb463ec9aeda536888aa1e5c460aba30161f33eb02a99e91c`
 is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.49 Mbit/s and finished with

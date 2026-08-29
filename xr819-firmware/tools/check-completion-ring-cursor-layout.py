@@ -56,11 +56,15 @@ ADJACENT_DECLARATIONS = {
 }
 SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
 SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
-# Vendor-only tables: no retained Rust code references any address inside
-# [0x0400014c, 0x04000194), so both multisets start pinned empty and any
-# appearance of an in-interval literal or decoded xref fails the gate.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
+# The callback-prefix and ring-cursor tables remain unreferenced. The adjacent
+# completion-word family is now explicitly published from rust_main as ten
+# ascending presence gates; its owner checker pins the same two root xrefs.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
+    0x04000260: 2,
+})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
+    ('rust_main', 0x04000260): 2,
+})
 STRUCT = '#[repr(C, align(4))] struct CompletionCallbackPrefix { completion_prefix_suffix: OpaqueBytes<0x30>, p2p_action_offsets: [SharedU8; 8] } #[repr(C, align(4))] struct RingCursorMapTables { beacon_mask_words: [SharedU32; 8], mib_defaults_template: OpaqueBytes<0x30> }'
 REQUIRED = (
     "completion_callback_prefix: CompletionCallbackPrefix",

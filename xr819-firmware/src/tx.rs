@@ -6516,6 +6516,19 @@ pub enum CompletedContextDispatch {
 /// # Safety
 /// The context and all referenced per-interface/accounting records must be
 /// valid. Completion callback and free-list state must be exclusively owned.
+/// Publish the translated completion callback classes before any context can
+/// complete. The retained words were vendor function pointers; translated
+/// dispatch uses them only as class-presence gates and invokes Rust closures.
+pub(crate) unsafe fn initialize_completion_callback_presence() {
+    for class in 0..10 {
+        unsafe {
+            crate::dtcm::visible_completion_word_unchecked(class)
+                .cast_mut::<u32>()
+                .write_volatile(1);
+        }
+    }
+}
+
 pub unsafe fn dispatch_completed_context<F, G>(
     context: ContextAddress,
     completion_status: u16,

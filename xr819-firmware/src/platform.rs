@@ -270,6 +270,7 @@ pub fn initialize_runtime_state() {
         // segment, so reproduce its loader effect before entering startup.
         (crate::dtcm::initialized_tsf_resync_state().get() as *mut u32).write_volatile(0);
         crate::tx::initialize_retry_random_state();
+        crate::tx::initialize_completion_callback_presence();
         (crate::dtcm::initialized_tsf_accumulator_low().get() as *mut u32).write_volatile(0);
     }
 }
