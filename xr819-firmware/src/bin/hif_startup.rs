@@ -284,6 +284,10 @@ extern "C" fn rust_main() -> ! {
             xr819_firmware::dtcm::SnapshotStage::Entry,
         )
     };
+    #[cfg(feature = "experimental-zero-initialized-dtcm")]
+    unsafe {
+        xr819_firmware::dtcm::zero_initialized_image_for_experiment();
+    }
     initialize_runtime_state();
     #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
     unsafe {

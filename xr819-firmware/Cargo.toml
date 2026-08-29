@@ -17,6 +17,9 @@ experimental-depth-two-ampdu = []
 # Captures the initialized DTCM image at three startup checkpoints and exposes
 # it through private paginated read-MIB diagnostics.
 dtcm-contract-diagnostics = []
+# Hardware-only proof that translated startup no longer depends on selected
+# retained initialized-image ranges. Never enabled in normal firmware.
+experimental-zero-initialized-dtcm = []
 
 [[bin]]
 name = "mailbox"

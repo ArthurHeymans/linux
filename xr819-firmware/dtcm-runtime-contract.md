@@ -53,6 +53,17 @@ image therefore must not be promoted wholesale into a Rust load initializer.
 Converting `.dtcm.data` from `NOLOAD` requires per-family canonical source or
 explicit reconstruction, not one cold-looking snapshot.
 
+The `experimental-zero-initialized-dtcm` dependency probe clears a bounded,
+word-aligned initialized-image range before platform initialization. Clearing
+the complete `0x0000..0x2078` image, or only `0x0000..0x103c`, allowed startup
+indication but killed scanning and the BH on a stuck command. Clearing the
+field-aligned `0x1088..0x2078` tail instead survived warm reload, WPA2
+association, 20/20 ping, an alive BH, and idle WSM. This qualifies that tail as
+independent of retained entry contents, while leaving its ordinary startup
+writers and shared volatile semantics unchanged. Decimal
+`XR819_DTCM_ZERO_START` and `XR819_DTCM_ZERO_END` build variables exist only for
+bounded hardware bisection; the feature remains disabled in production.
+
 The symbol-initialized data/BSS image
 `415a7c062688b01bb463ec9aeda536888aa1e5c460aba30161f33eb02a99e91c`
 is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.49 Mbit/s and finished with
