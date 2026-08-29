@@ -531,6 +531,29 @@ image `00887f499e35976d441cc164db75520b8b9828ba7a4315f0f20eaed41fd1f39f`
 restored. Natural first-member qualification therefore still needs controlled
 RF attenuation or interference rather than another ordinary fixed-rate soak.
 
+A follow-up used the existing output-power MIB at channel gain programming as a
+controlled RF attenuation mechanism, without changing descriptor identity,
+aggregate shape, sequence numbers, or member order. At 0 dBm, a 60-second MCS1
+run produced only 80 aggregates and no non-unanimous BA action. At 10 dBm, a
+120-second MCS4 run produced 2,546 aggregates and no action. At 15 dBm, a
+180-second MCS6 run produced 3,768 aggregates and again no action. Fixed-rate
+MCS5--7 runs at the ordinary power setting also crossed regimes ranging from
+near-clean delivery to more than 85% UDP loss without producing a selective
+member action.
+
+To bias physical loss toward member one, a valid traffic-shaping run alternated
+a 1,470-byte first datagram with a 64-byte second datagram while preserving both
+original packet descriptors. At 15 dBm and MCS7 it added roughly 68,000
+aggregates; at 10 dBm and MCS7 it produced 10,262 aggregates. Both direction
+counters remained zero. The severe 10 dBm/MCS7 endpoint eventually left nine
+queue-2 buffers locked after traffic stopped, with BH alive and WSM idle; a
+quiesced reload recovered it. The diagnostic attenuation and counters were
+removed and clean image
+`6963474b44dbe0165fafc4b881a99eb25e590bce1c4ad8304288fa37a46b9a6c`
+was restored. Software-controlled power and frame-length bias therefore do not
+close the first-member gate; the next valid attempt needs an external RF
+attenuator or independent in-channel interferer.
+
 The descriptor ISA audit did not find a safe software first-member-loss control.
 Vendor `txp_desc_emit()` case 0 emits exactly `0x65000000 | (address &
 0x001ffffc)` with no spare per-transfer flag bits; case 1 emits the fixed
