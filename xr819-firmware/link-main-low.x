@@ -109,6 +109,7 @@ SECTIONS
         KEEP(*(.dtcm.bss.middle_prefix))
         KEEP(*(.dtcm.bss.host_context_accounting))
         KEEP(*(.dtcm.bss.host_context_free_list))
+        KEEP(*(.dtcm.bss.link_and_sequence))
         KEEP(*(.dtcm.bss.middle_suffix))
         KEEP(*(.dtcm.bss.internal_context_pool))
         KEEP(*(.dtcm.bss.suffix))
@@ -169,7 +170,9 @@ SECTIONS
            "XR819 typed host-context accounting moved")
     ASSERT(DTCM_HOST_CONTEXT_FREE_LIST == DTCM_HOST_CONTEXT_ACCOUNTING + 0x18,
            "XR819 typed host-context free list moved")
-    ASSERT(DTCM_BSS_MIDDLE_SUFFIX == DTCM_HOST_CONTEXT_FREE_LIST + 0x8,
+    ASSERT(DTCM_LINK_AND_SEQUENCE == DTCM_HOST_CONTEXT_FREE_LIST + 0x8,
+           "XR819 typed link/sequence state moved")
+    ASSERT(DTCM_BSS_MIDDLE_SUFFIX == DTCM_LINK_AND_SEQUENCE + 0x220,
            "XR819 DTCM BSS middle suffix moved")
     ASSERT(DTCM_INTERNAL_CONTEXT_POOL == ORIGIN(DTCM_STATE) + 0x9080,
            "XR819 typed internal-context pool moved")

@@ -438,12 +438,13 @@ layout oracle rather than the target allocation. The internal TX context pool
 was the first typed object split out of the opaque runtime allocation. The
 30-record `HostTxContexts` array is now the second and much larger typed object.
 Linker input sections place the opaque prefix, host contexts, opaque middle
-prefix, `HostContextAccounting`, `HostContextFreeList`, opaque middle suffix,
-`InternalContextPoolState`, and opaque suffix contiguously inside the single
+prefix, `HostContextAccounting`, `HostContextFreeList`, `LinkAndSequenceState`,
+opaque middle suffix, `InternalContextPoolState`, and opaque suffix contiguously inside the single
 `.dtcm.bss` output section. Host contexts remain exactly
 `0x04005a24..0x04008544`; the internal pool remains
 `0x04009080..0x040094d4`. The host accounting and free-list roots remain
-`0x04008798..0x040087b8`. Existing pool linker-exported member symbols derive
+`0x04008798..0x040087b8`; link mapping, sequence allocation, and aggregate-member
+state remain `0x040087b8..0x040089d8`. Existing pool linker-exported member symbols derive
 from the typed object itself. None of these families creates a standalone
 output section.
 

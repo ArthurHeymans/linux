@@ -23,7 +23,7 @@ pub const DTCM_BSS_SIZE: usize = 0x9c44 - DTCM_INITIALIZED_DATA_SIZE;
 pub const DTCM_NOINIT_SIZE: usize = DTCM_STATE_SIZE - 0x9c44;
 const DTCM_BSS_PREFIX_SIZE: usize = 0x5a24 - DTCM_INITIALIZED_DATA_SIZE;
 const DTCM_BSS_MIDDLE_PREFIX_SIZE: usize = 0x254;
-const DTCM_BSS_MIDDLE_SUFFIX_SIZE: usize = 0x9080 - 0x87b8;
+const DTCM_BSS_MIDDLE_SUFFIX_SIZE: usize = 0x9080 - 0x89d8;
 const DTCM_BSS_SUFFIX_SIZE: usize = 0x9c44 - 0x94d4;
 
 pub const INTERNAL_TX_CONTEXT_SIZE: usize = 0x170;
@@ -1461,6 +1461,13 @@ static DTCM_HOST_CONTEXT_ACCOUNTING: SharedDtcmRegion<HostContextAccounting> =
 #[unsafe(link_section = ".dtcm.bss.host_context_free_list")]
 #[cfg(target_arch = "arm")]
 static DTCM_HOST_CONTEXT_FREE_LIST: SharedDtcmRegion<HostContextFreeList> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.link_and_sequence")]
+#[cfg(target_arch = "arm")]
+static DTCM_LINK_AND_SEQUENCE: SharedDtcmRegion<LinkAndSequenceState> =
     SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[unsafe(no_mangle)]
@@ -4264,10 +4271,11 @@ const _: () = {
     assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_MIDDLE_PREFIX_SIZE>>() == DTCM_BSS_MIDDLE_PREFIX_SIZE);
     assert!(core::mem::size_of::<HostContextAccounting>() == 0x18);
     assert!(core::mem::size_of::<HostContextFreeList>() == 0x08);
+    assert!(core::mem::size_of::<LinkAndSequenceState>() == 0x220);
     assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_SIZE>>() == DTCM_BSS_MIDDLE_SUFFIX_SIZE);
     assert!(core::mem::size_of::<InternalContextPoolState>() == 0x454);
     assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_SUFFIX_SIZE>>() == DTCM_BSS_SUFFIX_SIZE);
-    assert!(DTCM_BSS_PREFIX_SIZE + core::mem::size_of::<HostTxContexts>() + DTCM_BSS_MIDDLE_PREFIX_SIZE + core::mem::size_of::<HostContextAccounting>() + core::mem::size_of::<HostContextFreeList>() + DTCM_BSS_MIDDLE_SUFFIX_SIZE + core::mem::size_of::<InternalContextPoolState>() + DTCM_BSS_SUFFIX_SIZE == DTCM_BSS_SIZE);
+    assert!(DTCM_BSS_PREFIX_SIZE + core::mem::size_of::<HostTxContexts>() + DTCM_BSS_MIDDLE_PREFIX_SIZE + core::mem::size_of::<HostContextAccounting>() + core::mem::size_of::<HostContextFreeList>() + core::mem::size_of::<LinkAndSequenceState>() + DTCM_BSS_MIDDLE_SUFFIX_SIZE + core::mem::size_of::<InternalContextPoolState>() + DTCM_BSS_SUFFIX_SIZE == DTCM_BSS_SIZE);
     assert!(core::mem::size_of::<ResearchMargin>() == DTCM_NOINIT_SIZE);
     assert!(DTCM_INITIALIZED_DATA_SIZE + DTCM_BSS_SIZE + DTCM_NOINIT_SIZE == DTCM_STATE_SIZE);
 };
