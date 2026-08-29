@@ -44,6 +44,15 @@ IRQ/FIQ, hardware, and translated Rust sharing remains represented by
 preserve the section partition and exact address assertions; typed allocation
 does not grant exclusive Rust ownership or permit relocation.
 
+Two consecutive diagnostic reloads produced different entry-image hashes
+(`344c1bd98b3cb1a0d5125681cabb9053c8628d71fea2637f1241adfd87266187`
+and `3c334fa3a77974158cd2479e08036bbe8393ad65a587855d20a9bd9cef45cfd4`).
+The first image passed the reviewed COPY-to-platform and platform-to-startup
+transitions; the second inherited broad warm mutable state. A captured entry
+image therefore must not be promoted wholesale into a Rust load initializer.
+Converting `.dtcm.data` from `NOLOAD` requires per-family canonical source or
+explicit reconstruction, not one cold-looking snapshot.
+
 The symbol-initialized data/BSS image
 `415a7c062688b01bb463ec9aeda536888aa1e5c460aba30161f33eb02a99e91c`
 is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.49 Mbit/s and finished with
