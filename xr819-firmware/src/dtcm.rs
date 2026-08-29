@@ -1787,7 +1787,31 @@ fn layout_ptr() -> *mut DtcmLayout {
 #[cfg(target_arch = "arm")]
 unsafe extern "C" {
     static mut __dtcm_data_start: u8;
+    static mut __dtcm_bss_start: u8;
+    static mut __dtcm_bss_end: u8;
     static mut __dtcm_context_pool_start: InternalContextPoolState;
+}
+
+/// Zero the complete link-placed DTCM BSS in ascending word order.
+///
+/// # Safety
+/// This must run exactly once during single-threaded cold startup, before any
+/// retained callback, IRQ/FIQ path, or translated runtime can observe BSS.
+pub unsafe fn zero_runtime_bss() {
+    #[cfg(target_arch = "arm")]
+    let (start, end) = (addr_of_mut!(__dtcm_bss_start), addr_of_mut!(__dtcm_bss_end));
+    #[cfg(not(target_arch = "arm"))]
+    let (start, end) = unsafe {
+        let start = layout_ptr().cast::<u8>().add(DTCM_INITIALIZED_DATA_SIZE);
+        (start, start.add(DTCM_BSS_SIZE))
+    };
+
+    let mut cursor = start.cast::<u32>();
+    let end = end.cast::<u32>();
+    while cursor < end {
+        unsafe { cursor.write_volatile(0) };
+        cursor = unsafe { cursor.add(1) };
+    }
 }
 
 /// Raw pointer to the internal-context pool. ARM code addresses the
@@ -3172,13 +3196,6 @@ pub(crate) const fn phy_iq_calibration_slot_unchecked(page: usize, slot: usize) 
 pub(crate) const fn phy_iq_calibration_result(index: usize) -> Option<DtcmAddress> { if index < 9 { Some(DtcmAddress::from_offset(PHY_IQ_CALIBRATION_STATE.offset() + core::mem::offset_of!(PhyTail, results) + core::mem::offset_of!(PhyIqCalibrationResults, values) + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub const VENDOR_BSS_START: DtcmAddress = DtcmAddress::from_offset(0x2078);
 pub const VENDOR_BSS_END: DtcmAddress = DtcmAddress::from_offset(0x9c44);
-pub(crate) const VENDOR_BSS_WORD_COUNT: usize =
-    (VENDOR_BSS_END.offset() - VENDOR_BSS_START.offset()) / core::mem::size_of::<SharedU32>();
-pub(crate) const fn vendor_bss_word_unchecked(index: usize) -> DtcmAddress {
-    DtcmAddress::from_offset_unchecked(
-        VENDOR_BSS_START.offset() + index * core::mem::size_of::<SharedU32>(),
-    )
-}
 
 /// Field-derived address of one physical VIF record. This carries no reference
 /// and therefore makes no exclusive ownership claim over vendor-shared bytes.
@@ -5162,10 +5179,8 @@ mod tests {
     fn vendor_bss_word_addresses_are_exact() {
         assert_eq!(VENDOR_BSS_START.get(), 0x0400_2078);
         assert_eq!(VENDOR_BSS_END.get(), 0x0400_9c44);
-        assert_eq!(VENDOR_BSS_WORD_COUNT, 0x1ef3);
-        assert_eq!(vendor_bss_word_unchecked(0).get(), VENDOR_BSS_START.get());
-        assert_eq!(vendor_bss_word_unchecked(VENDOR_BSS_WORD_COUNT - 1).get(), 0x0400_9c40);
-        assert_eq!(vendor_bss_word_unchecked(VENDOR_BSS_WORD_COUNT - 1).get() + 4, VENDOR_BSS_END.get());
+        assert_eq!(DTCM_BSS_SIZE / core::mem::size_of::<SharedU32>(), 0x1ef3);
+        assert_eq!(VENDOR_BSS_START.get() + DTCM_BSS_SIZE, VENDOR_BSS_END.get());
     }
 
     #[test]

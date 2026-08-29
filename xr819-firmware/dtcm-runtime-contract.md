@@ -25,8 +25,8 @@ exclusive Rust ownership or permit address movement.
 
 The section split is structural, not an initialization behavior change.
 `.dtcm.data` continues to receive its bytes from the preceding vendor/loader
-COPY phase; `.dtcm.bss` continues to be cleared by the reviewed explicit startup
-writer; `.dtcm.noinit` is never cleared. The packer rejects partial, duplicate,
+COPY phase; `.dtcm.bss` is cleared by walking the linker-exported start/end
+symbols in ascending volatile words; `.dtcm.noinit` is never cleared. The packer rejects partial, duplicate,
 relocated, loadable, or additional DTCM sections and the linker asserts every
 boundary.
 
@@ -44,12 +44,10 @@ IRQ/FIQ, hardware, and translated Rust sharing remains represented by
 preserve the section partition and exact address assertions; typed allocation
 does not grant exclusive Rust ownership or permit relocation.
 
-The fully link-placed data/BSS image
-`c1104cc63fb789c5d68eb47232dc03b78f5dff74f9dbe103ac97538c3bc38c5c`
-is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.27 Mbit/s. Aggregation then
-held at 26,762 completions during a 20-second legacy-rate BA stop and reached
-26,890 after restoring MCS1; the restart burst delivered 3.15 Mbit/s.
-It finished with 20/20 ping, BH alive, WSM idle, and zero buffers. An
+The symbol-initialized data/BSS image
+`415a7c062688b01bb463ec9aeda536888aa1e5c460aba30161f33eb02a99e91c`
+is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.49 Mbit/s and finished with
+20/20 ping, BH alive, WSM idle, and zero buffers. An
 association-safe warm SDIO reload then completed another 30-second 3 Mbit/s UDP
 run at 3.15 Mbit/s offered and 3.14 Mbit/s received, followed by 20/20 ping and
 another zero-buffer drain.

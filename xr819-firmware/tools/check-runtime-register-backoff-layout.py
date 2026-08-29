@@ -62,10 +62,11 @@ FORBIDDEN_FORMS = (
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04002078: 1, 0x04002088: 1}
+    {0x04002078: 2, 0x04002088: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
+        ('rust_main', 0x04002078): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reprogram_after_channel', 0x04002078): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3vif17reset_pas_backoff', 0x04002088): 1,
     }

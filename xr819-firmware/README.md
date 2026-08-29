@@ -460,8 +460,10 @@ to move ordinary CPU-only state back into DTCM. This
 includes HIF queue/ring ownership, `Transport`, response scratch, HIF sequence
 state, the completed-frame FIFO, probe-context sequence, PAS accounting,
 internal-context count, retry PRNG state, channel PLL cache, and channel power
-limits. The native `.dtcm.bss` section deliberately remains `NOLOAD` and uses the
-qualified explicit zeroing path; there is still no main-image DTCM fill record.
+limits. The native `.dtcm.bss` section deliberately remains `NOLOAD`; its qualified
+explicit zeroing path now walks `__dtcm_bss_start..__dtcm_bss_end` directly in
+ascending volatile words rather than reconstructing the range from integer
+addresses. There is still no main-image DTCM fill record.
 Hardware descriptors, packet buffers, and MMIO identities remain in shared
 packet RAM or MMIO rather than TCM. The internal TX context pool is an exact
 typed member view of the shared quarantine object, not a standalone allocation
