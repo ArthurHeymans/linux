@@ -72,6 +72,15 @@ ascending volatile `1` words explicitly. Zeroing the complete family before
 that publication then survived WPA2 association and 20/20 ping, closing its
 vendor-pointer dependency without changing callback ordering or ownership.
 
+After that reconstruction, clearing the complete `0x0000..0x2078` image could
+associate and pass 20/20 ping when loaded after the production image. Reloading
+the same zero-image firmware again reached authentication but repeatedly timed
+out association while BH and WSM remained alive and idle. This is not warm
+qualification: another retained or hardware-coupled input still distinguishes
+the first transition from a same-image rebind. The complete image therefore
+remains `NOLOAD`; only independently cold-and-warm-qualified families may move
+to canonical Rust initialization.
+
 The symbol-initialized data/BSS image
 `415a7c062688b01bb463ec9aeda536888aa1e5c460aba30161f33eb02a99e91c`
 is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.49 Mbit/s and finished with
