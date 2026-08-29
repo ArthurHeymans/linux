@@ -503,6 +503,17 @@ zero-buffer drain, and live restart at sustainable offered load. All temporary
 ownership snapshots, direction counters, firmware-side software-CCMP, watchdog,
 and unprotected-frame code were removed.
 
+The final shared-executor image also passed WPA2 regression qualification.
+A 60-second MCS1 TCP run reached 5.47 Mbit/s and a 60-second UDP run delivered
+5.24 Mbit/s offered and 5.21 Mbit/s received, followed in both cases by 20/20
+ping, BH alive, WSM idle, and zero used buffers. Forcing a legacy-only rate held
+the aggregate count effectively flat (four already-in-flight completions across
+a 20-second burst); restoring MCS1 and starting a new 30-second burst increased
+the count by 290. The restart burst delivered 3.15 Mbit/s with zero reported
+datagram loss and zero buffers. Clean image
+`6963474b44dbe0165fafc4b881a99eb25e590bce1c4ad8304288fa37a46b9a6c`
+is deployed.
+
 Natural first-member loss still requires independent qualification before depth
 two can leave its experimental feature gate. A direction-counter image explored
 higher fixed rates without altering descriptors or BA parsing. MCS3 completed a
