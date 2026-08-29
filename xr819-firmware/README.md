@@ -430,14 +430,14 @@ ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 
 All three DTCM sections remain `NOLOAD`: this first link-placement step changes
 neither the vendor COPY source nor the existing startup zero-fill order and
-introduces no DTCM `PT_LOAD`, COPY, or FILL record. `InitializedVendorImage` is
-now the typed `.dtcm.data` allocation, and the final 956-byte research margin
-has an explicit typed `.dtcm.noinit` retention object. Every top-level family in
-`.dtcm.bss` is now a separate link-placed Rust allocation in physical-layout
-order; there is no remaining catch-all BSS byte allocation. Individual family
-types still contain deliberate `OpaqueBytes` fields where semantics or ownership
-remain unknown. The complete `DtcmLayout` remains the host layout oracle rather
-than the target allocation.
+introduces no DTCM `PT_LOAD`, COPY, or FILL record. Every top-level field of
+`InitializedVendorImage` is now its own ordered `.dtcm.data` input object, every
+top-level runtime family is its own `.dtcm.bss` input object, and the final
+956-byte research margin has an explicit typed `.dtcm.noinit` retention object.
+There is no remaining catch-all target byte allocation. Individual family types
+still contain deliberate `OpaqueBytes` fields where semantics or ownership
+remain unknown. The complete `InitializedVendorImage` and `DtcmLayout` remain
+host layout oracles rather than target allocations.
 
 The linker concatenates runtime, scheduler, configuration, PAS, VIF, host-TX,
 command, LMC, BA, completion, internal-context, power-save, HIF, MIC, and PHY

@@ -188,14 +188,15 @@ blocked. Older family-local aliases and record-internal arithmetic still require
 boot/retention source and cold/warm snapshot behavior of every live initialized word must be closed
 before ordinary source decomposition can be called safe. The active writer matrix and capture
 procedure are maintained in <code>dtcm-runtime-contract.md</code>.</div>
-<p>Every complete top-level runtime family is now a separate ARM Rust allocation.
-The linker concatenates runtime, scheduler, configuration, PAS, VIF, TX,
-command, LMC, BA, completion, internal-context, power-save, HIF, MIC, and PHY
-objects into the unchanged <code>.dtcm.bss</code> output section. There is no
-remaining catch-all BSS byte allocation. Unknown semantics remain represented
-by deliberate <code>OpaqueBytes</code> members inside the smallest reviewed
-family or quarantine type. Allocation identity is therefore regular Rust while
-physical addresses and shared volatile ownership remain unchanged.</p>
+<p>Every complete top-level initialized-data field and runtime family is now a
+separate ARM Rust allocation. The linker sorts numbered initialized objects into
+<code>.dtcm.data</code> and concatenates runtime, scheduler, configuration, PAS,
+VIF, TX, command, LMC, BA, completion, internal-context, power-save, HIF, MIC,
+and PHY objects into <code>.dtcm.bss</code>. There is no remaining catch-all
+target byte allocation. Unknown semantics remain represented by deliberate
+<code>OpaqueBytes</code> members inside the smallest reviewed family or
+quarantine type. Allocation identity is therefore regular Rust while physical
+addresses and shared volatile ownership remain unchanged.</p>
 <ul>
 <li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
 Do not move it back into DTCM for visual symmetry.</li>

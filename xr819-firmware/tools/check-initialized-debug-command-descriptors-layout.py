@@ -109,7 +109,7 @@ RELEVANT_API_IDENTIFIERS = {
 EXPECTED_IDENTIFIER_COUNTS = {
     "DEBUG_COMMAND_DESCRIPTORS": 8,
     "DebugCommandDescriptor": 19,
-    "InitializedDebugCommandDescriptors": 13,
+    "InitializedDebugCommandDescriptors": 14,
     "debug_command_descriptor": 8,
     "debug_command_descriptors": 3,
     "debug_command_handler": 8,

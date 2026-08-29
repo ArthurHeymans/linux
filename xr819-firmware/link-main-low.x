@@ -97,7 +97,7 @@ SECTIONS
     .dtcm.data (NOLOAD) : ALIGN(4)
     {
         __dtcm_data_start = .;
-        KEEP(*(.dtcm.data))
+        KEEP(*(SORT_BY_NAME(.dtcm.data.*)))
         __dtcm_data_end = .;
     } > DTCM_STATE :NONE
 
@@ -183,6 +183,10 @@ SECTIONS
            "XR819 DTCM initialized-data extent changed")
     ASSERT(SIZEOF(.dtcm.data) == 0x2078,
            "XR819 DTCM initialized-data size changed")
+    ASSERT(DTCM_DATA_MAC_SLOT_TIMING_PATCH_LIST == __dtcm_data_start,
+           "XR819 first initialized-data object moved")
+    ASSERT(DTCM_DATA_INITIALIZED_TAIL + 0x60 == __dtcm_data_end,
+           "XR819 last initialized-data object moved")
     ASSERT(__dtcm_bss_start == ORIGIN(DTCM_STATE) + 0x2078,
            "XR819 DTCM BSS base moved")
     ASSERT(__dtcm_bss_end == ORIGIN(DTCM_STATE) + 0x9c44,

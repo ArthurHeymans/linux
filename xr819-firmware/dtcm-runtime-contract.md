@@ -30,12 +30,13 @@ writer; `.dtcm.noinit` is never cleared. The packer rejects partial, duplicate,
 relocated, loadable, or additional DTCM sections and the linker asserts every
 boundary.
 
-`DtcmLayout` remains the complete host-side layout oracle. On ARM, every
-complete top-level field of that layout is now a separate link-placed Rust
-allocation. The linker concatenates those objects in exact field order to form
-the unchanged `.dtcm.bss` range. There is no remaining top-level opaque BSS
-allocation; unresolved bytes remain explicit `OpaqueBytes` members inside the
-smallest reviewed family or quarantine type.
+`InitializedVendorImage` and `DtcmLayout` remain complete host-side layout
+oracles. On ARM, every complete top-level initialized-data field and every
+complete top-level runtime field is now a separate link-placed Rust allocation.
+The linker sorts the numbered `.dtcm.data.*` inputs and explicitly orders the
+`.dtcm.bss.*` inputs to form the unchanged output ranges. There is no remaining
+top-level catch-all target allocation; unresolved bytes remain explicit
+`OpaqueBytes` members inside the smallest reviewed family or quarantine type.
 
 This changes allocation identity, not ownership or access semantics. Vendor,
 IRQ/FIQ, hardware, and translated Rust sharing remains represented by
@@ -43,11 +44,11 @@ IRQ/FIQ, hardware, and translated Rust sharing remains represented by
 preserve the section partition and exact address assertions; typed allocation
 does not grant exclusive Rust ownership or permit relocation.
 
-The fully link-placed BSS image
-`fd2f15ffb0520c1e395feeac39a4580a662d5091c655d649b8ba61e31cfa2244`
-is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.62 Mbit/s. Aggregation then
-held at 28,584 completions during a 20-second legacy-rate BA stop and reached
-28,654 after restoring MCS1; the restart burst delivered 3.15 Mbit/s.
+The fully link-placed data/BSS image
+`c1104cc63fb789c5d68eb47232dc03b78f5dff74f9dbe103ac97538c3bc38c5c`
+is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.27 Mbit/s. Aggregation then
+held at 26,762 completions during a 20-second legacy-rate BA stop and reached
+26,890 after restoring MCS1; the restart burst delivered 3.15 Mbit/s.
 It finished with 20/20 ping, BH alive, WSM idle, and zero buffers. An
 association-safe warm SDIO reload then completed another 30-second 3 Mbit/s UDP
 run at 3.15 Mbit/s offered and 3.14 Mbit/s received, followed by 20/20 ping and
