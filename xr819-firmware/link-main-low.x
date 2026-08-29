@@ -110,7 +110,11 @@ SECTIONS
         KEEP(*(.dtcm.bss.host_context_accounting))
         KEEP(*(.dtcm.bss.host_context_free_list))
         KEEP(*(.dtcm.bss.link_and_sequence))
-        KEEP(*(.dtcm.bss.middle_suffix_prefix))
+        KEEP(*(.dtcm.bss.join_scan_control))
+        KEEP(*(.dtcm.bss.wsm_response_scratch))
+        KEEP(*(.dtcm.bss.ba_lmc_header))
+        KEEP(*(.dtcm.bss.pending_ba_lmc))
+        KEEP(*(.dtcm.bss.lmc_messages))
         KEEP(*(.dtcm.bss.ba_sessions))
         KEEP(*(.dtcm.bss.ba_link_event_state))
         KEEP(*(.dtcm.bss.tala))
@@ -177,9 +181,17 @@ SECTIONS
            "XR819 typed host-context free list moved")
     ASSERT(DTCM_LINK_AND_SEQUENCE == DTCM_HOST_CONTEXT_FREE_LIST + 0x8,
            "XR819 typed link/sequence state moved")
-    ASSERT(DTCM_BSS_MIDDLE_SUFFIX_PREFIX == DTCM_LINK_AND_SEQUENCE + 0x220,
-           "XR819 DTCM BSS middle suffix prefix moved")
-    ASSERT(DTCM_BA_SESSIONS == DTCM_BSS_MIDDLE_SUFFIX_PREFIX + 0x4a0,
+    ASSERT(DTCM_JOIN_SCAN_CONTROL == DTCM_LINK_AND_SEQUENCE + 0x220,
+           "XR819 typed join/scan control moved")
+    ASSERT(DTCM_WSM_RESPONSE_SCRATCH == DTCM_JOIN_SCAN_CONTROL + 0x40,
+           "XR819 typed WSM response scratch moved")
+    ASSERT(DTCM_BA_LMC_HEADER == DTCM_WSM_RESPONSE_SCRATCH + 0xa0,
+           "XR819 typed BA/LMC header moved")
+    ASSERT(DTCM_PENDING_BA_LMC == DTCM_BA_LMC_HEADER + 0x20,
+           "XR819 typed pending BA/LMC state moved")
+    ASSERT(DTCM_LMC_MESSAGES == DTCM_PENDING_BA_LMC + 0xe0,
+           "XR819 typed LMC messages moved")
+    ASSERT(DTCM_BA_SESSIONS == DTCM_LMC_MESSAGES + 0x2c0,
            "XR819 typed BA sessions moved")
     ASSERT(DTCM_BA_LINK_EVENT_STATE == DTCM_BA_SESSIONS + 0xa0,
            "XR819 typed BA link/event state moved")

@@ -33,25 +33,27 @@ boundary.
 `DtcmLayout` remains the complete host-side layout oracle. On ARM,
 `InitializedVendorImage` is a typed link-placed allocation. The runtime BSS is
 split into an opaque prefix, typed `HostTxContexts`, opaque middle prefix, typed
-`HostContextAccounting`, `HostContextFreeList`, and `LinkAndSequenceState`,
-opaque BA prefix, typed `BaSessions`, `BaLinkEventState`, `TalaAccounting`, and
+`HostContextAccounting`, `HostContextFreeList`, `LinkAndSequenceState`,
+`JoinScanControl`, `WsmResponseScratch`, `BaLmcHeader`, `PendingBaLmcState`,
+`LmcMessages`, `BaSessions`, `BaLinkEventState`, `TalaAccounting`, and
 `ContextCompletionPrefix`, opaque tail, typed `InternalContextPoolState`, and
 opaque suffix inside the same `.dtcm.bss` output section. The 30 host contexts remain exactly
 `0x04005a24..0x04008544`; the accounting/free-list roots remain
 `0x04008798..0x040087b8`; link mapping, sequence, and aggregate-member state
-remain `0x040087b8..0x040089d8`; BA sessions, link/event state, TALA accounting,
-and completion state remain `0x04008e78..0x04008f80`; and the pool remains
+remain `0x040087b8..0x040089d8`; join/scan, WSM response, and BA/LMC state fill
+`0x040089d8..0x04008e78`; BA sessions, link/event state, TALA accounting, and
+completion state remain `0x04008e78..0x04008f80`; and the pool remains
 `0x04009080..0x040094d4`. These retain the qualified startup, allocation,
 publication, retry, completion, teardown, and warm-reload behavior. New family
 statics may replace further subranges only by preserving the section
 partition and exact address assertions; the section names do not grant
 exclusive Rust ownership.
 
-The typed-BA/TALA image
-`2759c85712716893be2d50516e97ffcd4eb60be4ae899dbce0b70527fe935a69`
-is hardware-qualified. A cold WPA2 run held aggregation at 362 completions
-through a 20-second legacy-rate BA stop, then reached 688 after restoring MCS1;
-both 30-second HT bursts delivered 3.15 Mbit/s with one lost datagram each.
+The typed-BA/LMC image
+`3b4d9c06b7c9f90180120ee65c5af923dea86deef01294b1551682039bb45ff6`
+is hardware-qualified. A cold WPA2 run moved from 308 to 310 aggregate
+completions during a 20-second legacy-rate BA stop, then reached 720 after
+restoring MCS1; both 30-second HT bursts delivered 3.15 Mbit/s.
 It finished with 20/20 ping, BH alive, WSM idle, and zero buffers. An
 association-safe warm SDIO reload then completed another 30-second 3 Mbit/s UDP
 run at 3.15 Mbit/s offered and 3.14 Mbit/s received, followed by 20/20 ping and
