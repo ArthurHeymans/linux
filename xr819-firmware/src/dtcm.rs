@@ -23,7 +23,8 @@ pub const DTCM_BSS_SIZE: usize = 0x9c44 - DTCM_INITIALIZED_DATA_SIZE;
 pub const DTCM_NOINIT_SIZE: usize = DTCM_STATE_SIZE - 0x9c44;
 const DTCM_BSS_PREFIX_SIZE: usize = 0x5a24 - DTCM_INITIALIZED_DATA_SIZE;
 const DTCM_BSS_MIDDLE_PREFIX_SIZE: usize = 0x254;
-const DTCM_BSS_MIDDLE_SUFFIX_SIZE: usize = 0x9080 - 0x89d8;
+const DTCM_BSS_MIDDLE_SUFFIX_PREFIX_SIZE: usize = 0x8e78 - 0x89d8;
+const DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE: usize = 0x9080 - 0x8f80;
 const DTCM_BSS_SUFFIX_SIZE: usize = 0x9c44 - 0x94d4;
 
 pub const INTERNAL_TX_CONTEXT_SIZE: usize = 0x170;
@@ -1472,9 +1473,44 @@ static DTCM_LINK_AND_SEQUENCE: SharedDtcmRegion<LinkAndSequenceState> =
 
 #[unsafe(no_mangle)]
 #[used]
-#[unsafe(link_section = ".dtcm.bss.middle_suffix")]
+#[unsafe(link_section = ".dtcm.bss.middle_suffix_prefix")]
 #[cfg(target_arch = "arm")]
-static DTCM_BSS_MIDDLE_SUFFIX: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_SIZE>> =
+static DTCM_BSS_MIDDLE_SUFFIX_PREFIX: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_PREFIX_SIZE>> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.ba_sessions")]
+#[cfg(target_arch = "arm")]
+static DTCM_BA_SESSIONS: SharedDtcmRegion<BaSessions> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.ba_link_event_state")]
+#[cfg(target_arch = "arm")]
+static DTCM_BA_LINK_EVENT_STATE: SharedDtcmRegion<BaLinkEventState> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.tala")]
+#[cfg(target_arch = "arm")]
+static DTCM_TALA: SharedDtcmRegion<TalaAccounting> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.context_completion_prefix")]
+#[cfg(target_arch = "arm")]
+static DTCM_CONTEXT_COMPLETION_PREFIX: SharedDtcmRegion<ContextCompletionPrefix> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.middle_suffix_tail")]
+#[cfg(target_arch = "arm")]
+static DTCM_BSS_MIDDLE_SUFFIX_TAIL: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE>> =
     SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[unsafe(no_mangle)]
@@ -4272,10 +4308,15 @@ const _: () = {
     assert!(core::mem::size_of::<HostContextAccounting>() == 0x18);
     assert!(core::mem::size_of::<HostContextFreeList>() == 0x08);
     assert!(core::mem::size_of::<LinkAndSequenceState>() == 0x220);
-    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_SIZE>>() == DTCM_BSS_MIDDLE_SUFFIX_SIZE);
+    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_PREFIX_SIZE>>() == DTCM_BSS_MIDDLE_SUFFIX_PREFIX_SIZE);
+    assert!(core::mem::size_of::<BaSessions>() == 0xa0);
+    assert!(core::mem::size_of::<BaLinkEventState>() == 0x30);
+    assert!(core::mem::size_of::<TalaAccounting>() == 0x24);
+    assert!(core::mem::size_of::<ContextCompletionPrefix>() == 0x14);
+    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE>>() == DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE);
     assert!(core::mem::size_of::<InternalContextPoolState>() == 0x454);
     assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_SUFFIX_SIZE>>() == DTCM_BSS_SUFFIX_SIZE);
-    assert!(DTCM_BSS_PREFIX_SIZE + core::mem::size_of::<HostTxContexts>() + DTCM_BSS_MIDDLE_PREFIX_SIZE + core::mem::size_of::<HostContextAccounting>() + core::mem::size_of::<HostContextFreeList>() + core::mem::size_of::<LinkAndSequenceState>() + DTCM_BSS_MIDDLE_SUFFIX_SIZE + core::mem::size_of::<InternalContextPoolState>() + DTCM_BSS_SUFFIX_SIZE == DTCM_BSS_SIZE);
+    assert!(DTCM_BSS_PREFIX_SIZE + core::mem::size_of::<HostTxContexts>() + DTCM_BSS_MIDDLE_PREFIX_SIZE + core::mem::size_of::<HostContextAccounting>() + core::mem::size_of::<HostContextFreeList>() + core::mem::size_of::<LinkAndSequenceState>() + DTCM_BSS_MIDDLE_SUFFIX_PREFIX_SIZE + core::mem::size_of::<BaSessions>() + core::mem::size_of::<BaLinkEventState>() + core::mem::size_of::<TalaAccounting>() + core::mem::size_of::<ContextCompletionPrefix>() + DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE + core::mem::size_of::<InternalContextPoolState>() + DTCM_BSS_SUFFIX_SIZE == DTCM_BSS_SIZE);
     assert!(core::mem::size_of::<ResearchMargin>() == DTCM_NOINIT_SIZE);
     assert!(DTCM_INITIALIZED_DATA_SIZE + DTCM_BSS_SIZE + DTCM_NOINIT_SIZE == DTCM_STATE_SIZE);
 };

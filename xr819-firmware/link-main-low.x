@@ -110,7 +110,12 @@ SECTIONS
         KEEP(*(.dtcm.bss.host_context_accounting))
         KEEP(*(.dtcm.bss.host_context_free_list))
         KEEP(*(.dtcm.bss.link_and_sequence))
-        KEEP(*(.dtcm.bss.middle_suffix))
+        KEEP(*(.dtcm.bss.middle_suffix_prefix))
+        KEEP(*(.dtcm.bss.ba_sessions))
+        KEEP(*(.dtcm.bss.ba_link_event_state))
+        KEEP(*(.dtcm.bss.tala))
+        KEEP(*(.dtcm.bss.context_completion_prefix))
+        KEEP(*(.dtcm.bss.middle_suffix_tail))
         KEEP(*(.dtcm.bss.internal_context_pool))
         KEEP(*(.dtcm.bss.suffix))
         __dtcm_bss_end = .;
@@ -172,8 +177,18 @@ SECTIONS
            "XR819 typed host-context free list moved")
     ASSERT(DTCM_LINK_AND_SEQUENCE == DTCM_HOST_CONTEXT_FREE_LIST + 0x8,
            "XR819 typed link/sequence state moved")
-    ASSERT(DTCM_BSS_MIDDLE_SUFFIX == DTCM_LINK_AND_SEQUENCE + 0x220,
-           "XR819 DTCM BSS middle suffix moved")
+    ASSERT(DTCM_BSS_MIDDLE_SUFFIX_PREFIX == DTCM_LINK_AND_SEQUENCE + 0x220,
+           "XR819 DTCM BSS middle suffix prefix moved")
+    ASSERT(DTCM_BA_SESSIONS == DTCM_BSS_MIDDLE_SUFFIX_PREFIX + 0x4a0,
+           "XR819 typed BA sessions moved")
+    ASSERT(DTCM_BA_LINK_EVENT_STATE == DTCM_BA_SESSIONS + 0xa0,
+           "XR819 typed BA link/event state moved")
+    ASSERT(DTCM_TALA == DTCM_BA_LINK_EVENT_STATE + 0x30,
+           "XR819 typed TALA accounting moved")
+    ASSERT(DTCM_CONTEXT_COMPLETION_PREFIX == DTCM_TALA + 0x24,
+           "XR819 typed context-completion prefix moved")
+    ASSERT(DTCM_BSS_MIDDLE_SUFFIX_TAIL == DTCM_CONTEXT_COMPLETION_PREFIX + 0x14,
+           "XR819 DTCM BSS middle suffix tail moved")
     ASSERT(DTCM_INTERNAL_CONTEXT_POOL == ORIGIN(DTCM_STATE) + 0x9080,
            "XR819 typed internal-context pool moved")
     ASSERT(DTCM_BSS_SUFFIX == ORIGIN(DTCM_STATE) + 0x94d4,

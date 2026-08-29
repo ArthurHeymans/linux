@@ -34,23 +34,28 @@ boundary.
 `InitializedVendorImage` is a typed link-placed allocation. The runtime BSS is
 split into an opaque prefix, typed `HostTxContexts`, opaque middle prefix, typed
 `HostContextAccounting`, `HostContextFreeList`, and `LinkAndSequenceState`,
-opaque middle suffix, typed `InternalContextPoolState`, and opaque suffix inside
-the same `.dtcm.bss` output section. The 30 host contexts remain exactly
+opaque BA prefix, typed `BaSessions`, `BaLinkEventState`, `TalaAccounting`, and
+`ContextCompletionPrefix`, opaque tail, typed `InternalContextPoolState`, and
+opaque suffix inside the same `.dtcm.bss` output section. The 30 host contexts remain exactly
 `0x04005a24..0x04008544`; the accounting/free-list roots remain
 `0x04008798..0x040087b8`; link mapping, sequence, and aggregate-member state
-remain `0x040087b8..0x040089d8`; and the pool remains
+remain `0x040087b8..0x040089d8`; BA sessions, link/event state, TALA accounting,
+and completion state remain `0x04008e78..0x04008f80`; and the pool remains
 `0x04009080..0x040094d4`. These retain the qualified startup, allocation,
 publication, retry, completion, teardown, and warm-reload behavior. New family
 statics may replace further subranges only by preserving the section
 partition and exact address assertions; the section names do not grant
 exclusive Rust ownership.
 
-The typed-link/sequence image
-`d4f4680734bf0e4de11e124a693e753eef7c9ccb96554e777d5fa72e6d158d68`
-is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.52 Mbit/s, followed by
-20/20 ping, BH alive, WSM idle, and zero buffers. An association-safe warm SDIO
-reload then completed a 30-second 3 Mbit/s UDP run at 3.15 Mbit/s offered and
-3.14 Mbit/s received, followed by 20/20 ping and another zero-buffer drain.
+The typed-BA/TALA image
+`2759c85712716893be2d50516e97ffcd4eb60be4ae899dbce0b70527fe935a69`
+is hardware-qualified. A cold WPA2 run held aggregation at 362 completions
+through a 20-second legacy-rate BA stop, then reached 688 after restoring MCS1;
+both 30-second HT bursts delivered 3.15 Mbit/s with one lost datagram each.
+It finished with 20/20 ping, BH alive, WSM idle, and zero buffers. An
+association-safe warm SDIO reload then completed another 30-second 3 Mbit/s UDP
+run at 3.15 Mbit/s offered and 3.14 Mbit/s received, followed by 20/20 ping and
+another zero-buffer drain.
 
 The initialized-image transition contract is qualified on target for both cold
 startup and warm SDIO rebind. The custom Rust image begins with the bytes left
