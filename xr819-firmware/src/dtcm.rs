@@ -21,10 +21,6 @@ pub const DTCM_STATE_END: usize = DTCM_STATE_BASE + DTCM_STATE_SIZE;
 pub const DTCM_INITIALIZED_DATA_SIZE: usize = 0x2078;
 pub const DTCM_BSS_SIZE: usize = 0x9c44 - DTCM_INITIALIZED_DATA_SIZE;
 pub const DTCM_NOINIT_SIZE: usize = DTCM_STATE_SIZE - 0x9c44;
-const DTCM_BSS_PREFIX_SIZE: usize = 0x5a24 - DTCM_INITIALIZED_DATA_SIZE;
-const DTCM_BSS_MIDDLE_PREFIX_SIZE: usize = 0x254;
-const DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE: usize = 0x9080 - 0x8f80;
-const DTCM_BSS_SUFFIX_SIZE: usize = 0x9c44 - 0x94d4;
 
 pub const INTERNAL_TX_CONTEXT_SIZE: usize = 0x170;
 pub const INTERNAL_TX_CONTEXT_COUNT: usize = 3;
@@ -1430,9 +1426,86 @@ static DTCM_INITIALIZED_DATA: SharedDtcmRegion<InitializedVendorImage> =
 
 #[unsafe(no_mangle)]
 #[used]
-#[unsafe(link_section = ".dtcm.bss.prefix")]
+#[unsafe(link_section = ".dtcm.bss.runtime_prefix")]
 #[cfg(target_arch = "arm")]
-static DTCM_BSS_PREFIX: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_PREFIX_SIZE>> =
+static DTCM_RUNTIME_PREFIX: SharedDtcmRegion<RuntimePrefix> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.clock_parameters")]
+#[cfg(target_arch = "arm")]
+static DTCM_CLOCK_PARAMETERS: SharedDtcmRegion<ClockParameterIsland> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.scheduler_handlers")]
+#[cfg(target_arch = "arm")]
+static DTCM_SCHEDULER_HANDLERS: SharedDtcmRegion<SchedulerHandlerTable> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.pre_configuration_tables")]
+#[cfg(target_arch = "arm")]
+static DTCM_PRE_CONFIGURATION_TABLES: SharedDtcmRegion<PreConfigurationTables> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.sdd_configuration_tables")]
+#[cfg(target_arch = "arm")]
+static DTCM_SDD_CONFIGURATION_TABLES: SharedDtcmRegion<SddConfigurationTables> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.wake_context_state")]
+#[cfg(target_arch = "arm")]
+static DTCM_WAKE_CONTEXT_STATE: SharedDtcmRegion<WakeContextState> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.duration_sources")]
+#[cfg(target_arch = "arm")]
+static DTCM_DURATION_SOURCES: SharedDtcmRegion<DurationSources> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.pre_low_mac_word")]
+#[cfg(target_arch = "arm")]
+static DTCM_PRE_LOW_MAC_WORD: SharedDtcmRegion<PreLowMacWord> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.low_mac_pas")]
+#[cfg(target_arch = "arm")]
+static DTCM_LOW_MAC_PAS: SharedDtcmRegion<LowMacPasFamily> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.pre_vif_header")]
+#[cfg(target_arch = "arm")]
+static DTCM_PRE_VIF_HEADER: SharedDtcmRegion<PreVifHeader> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.vifs")]
+#[cfg(target_arch = "arm")]
+static DTCM_VIFS: SharedDtcmRegion<VifRecords> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.post_vif_quarantine")]
+#[cfg(target_arch = "arm")]
+static DTCM_POST_VIF_QUARANTINE: SharedDtcmRegion<PostVifQuarantine> =
     SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[unsafe(no_mangle)]
@@ -1444,9 +1517,23 @@ static DTCM_HOST_TX_CONTEXTS: SharedDtcmRegion<HostTxContexts> =
 
 #[unsafe(no_mangle)]
 #[used]
-#[unsafe(link_section = ".dtcm.bss.middle_prefix")]
+#[unsafe(link_section = ".dtcm.bss.pre_command_quarantine")]
 #[cfg(target_arch = "arm")]
-static DTCM_BSS_MIDDLE_PREFIX: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_MIDDLE_PREFIX_SIZE>> =
+static DTCM_PRE_COMMAND_QUARANTINE: SharedDtcmRegion<PreCommandQuarantine> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.command_channel_switch")]
+#[cfg(target_arch = "arm")]
+static DTCM_COMMAND_CHANNEL_SWITCH: SharedDtcmRegion<CommandChannelSwitchOverlay> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.lmc_control_roots")]
+#[cfg(target_arch = "arm")]
+static DTCM_LMC_CONTROL_ROOTS: SharedDtcmRegion<LmcControlRoots> =
     SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[unsafe(no_mangle)]
@@ -1535,9 +1622,16 @@ static DTCM_CONTEXT_COMPLETION_PREFIX: SharedDtcmRegion<ContextCompletionPrefix>
 
 #[unsafe(no_mangle)]
 #[used]
-#[unsafe(link_section = ".dtcm.bss.middle_suffix_tail")]
+#[unsafe(link_section = ".dtcm.bss.pre_internal_context_quarantine")]
 #[cfg(target_arch = "arm")]
-static DTCM_BSS_MIDDLE_SUFFIX_TAIL: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE>> =
+static DTCM_PRE_INTERNAL_CONTEXT_QUARANTINE: SharedDtcmRegion<PreInternalContextQuarantine> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.internal_context_prefix")]
+#[cfg(target_arch = "arm")]
+static DTCM_INTERNAL_CONTEXT_PREFIX: SharedDtcmRegion<InternalContextPrefix> =
     SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[unsafe(no_mangle)]
@@ -1549,9 +1643,51 @@ static DTCM_INTERNAL_CONTEXT_POOL: SharedDtcmRegion<InternalContextPoolState> =
 
 #[unsafe(no_mangle)]
 #[used]
-#[unsafe(link_section = ".dtcm.bss.suffix")]
+#[unsafe(link_section = ".dtcm.bss.power_save")]
 #[cfg(target_arch = "arm")]
-static DTCM_BSS_SUFFIX: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_SUFFIX_SIZE>> =
+static DTCM_POWER_SAVE: SharedDtcmRegion<PowerSaveFamily> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.power_save_hif_boundary")]
+#[cfg(target_arch = "arm")]
+static DTCM_POWER_SAVE_HIF_BOUNDARY: SharedDtcmRegion<PowerSaveHifBoundary> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.hif_buffer_state")]
+#[cfg(target_arch = "arm")]
+static DTCM_HIF_BUFFER_STATE: SharedDtcmRegion<HifBufferState> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.legacy_hif_software_state")]
+#[cfg(target_arch = "arm")]
+static DTCM_LEGACY_HIF_SOFTWARE_STATE: SharedDtcmRegion<LegacyHifSoftwareState> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.mic_completion_state")]
+#[cfg(target_arch = "arm")]
+static DTCM_MIC_COMPLETION_STATE: SharedDtcmRegion<MicCompletionState> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.phy_core")]
+#[cfg(target_arch = "arm")]
+static DTCM_PHY_CORE: SharedDtcmRegion<PhyCoreState> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.phy_tail")]
+#[cfg(target_arch = "arm")]
+static DTCM_PHY_TAIL: SharedDtcmRegion<PhyTail> =
     SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[unsafe(no_mangle)]
@@ -4329,9 +4465,22 @@ const _: () = {
     assert!(core::mem::offset_of!(DtcmLayout, phy_tail) == 0x9a0c);
     assert!(core::mem::offset_of!(DtcmLayout, research_margin) == 0x9c44);
     assert!(core::mem::size_of::<InitializedVendorImage>() == DTCM_INITIALIZED_DATA_SIZE);
-    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_PREFIX_SIZE>>() == DTCM_BSS_PREFIX_SIZE);
+    assert!(core::mem::size_of::<RuntimePrefix>() == 0x114);
+    assert!(core::mem::size_of::<ClockParameterIsland>() == 0x28);
+    assert!(core::mem::size_of::<SchedulerHandlerTable>() == 0x80);
+    assert!(core::mem::size_of::<PreConfigurationTables>() == 0x127c);
+    assert!(core::mem::size_of::<SddConfigurationTables>() == 0x130);
+    assert!(core::mem::size_of::<WakeContextState>() == 0x90);
+    assert!(core::mem::size_of::<DurationSources>() == 0x04);
+    assert!(core::mem::size_of::<PreLowMacWord>() == 0x04);
+    assert!(core::mem::size_of::<LowMacPasFamily>() == 0x800);
+    assert!(core::mem::size_of::<PreVifHeader>() == 0x20);
+    assert!(core::mem::size_of::<VifRecords>() == 0xb10);
+    assert!(core::mem::size_of::<PostVifQuarantine>() == 0x107c);
     assert!(core::mem::size_of::<HostTxContexts>() == 30 * HOST_TX_CONTEXT_SIZE);
-    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_MIDDLE_PREFIX_SIZE>>() == DTCM_BSS_MIDDLE_PREFIX_SIZE);
+    assert!(core::mem::size_of::<PreCommandQuarantine>() == 0x50);
+    assert!(core::mem::size_of::<CommandChannelSwitchOverlay>() == 0x84);
+    assert!(core::mem::size_of::<LmcControlRoots>() == 0x180);
     assert!(core::mem::size_of::<HostContextAccounting>() == 0x18);
     assert!(core::mem::size_of::<HostContextFreeList>() == 0x08);
     assert!(core::mem::size_of::<LinkAndSequenceState>() == 0x220);
@@ -4344,10 +4493,17 @@ const _: () = {
     assert!(core::mem::size_of::<BaLinkEventState>() == 0x30);
     assert!(core::mem::size_of::<TalaAccounting>() == 0x24);
     assert!(core::mem::size_of::<ContextCompletionPrefix>() == 0x14);
-    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE>>() == DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE);
+    assert!(core::mem::size_of::<PreInternalContextQuarantine>() == 0xec);
+    assert!(core::mem::size_of::<InternalContextPrefix>() == 0x14);
     assert!(core::mem::size_of::<InternalContextPoolState>() == 0x454);
-    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_SUFFIX_SIZE>>() == DTCM_BSS_SUFFIX_SIZE);
-    assert!(DTCM_BSS_PREFIX_SIZE + core::mem::size_of::<HostTxContexts>() + DTCM_BSS_MIDDLE_PREFIX_SIZE + core::mem::size_of::<HostContextAccounting>() + core::mem::size_of::<HostContextFreeList>() + core::mem::size_of::<LinkAndSequenceState>() + core::mem::size_of::<JoinScanControl>() + core::mem::size_of::<WsmResponseScratch>() + core::mem::size_of::<BaLmcHeader>() + core::mem::size_of::<PendingBaLmcState>() + core::mem::size_of::<LmcMessages>() + core::mem::size_of::<BaSessions>() + core::mem::size_of::<BaLinkEventState>() + core::mem::size_of::<TalaAccounting>() + core::mem::size_of::<ContextCompletionPrefix>() + DTCM_BSS_MIDDLE_SUFFIX_TAIL_SIZE + core::mem::size_of::<InternalContextPoolState>() + DTCM_BSS_SUFFIX_SIZE == DTCM_BSS_SIZE);
+    assert!(core::mem::size_of::<PowerSaveFamily>() == 0x208);
+    assert!(core::mem::size_of::<PowerSaveHifBoundary>() == 0x44);
+    assert!(core::mem::size_of::<HifBufferState>() == 0x34);
+    assert!(core::mem::size_of::<LegacyHifSoftwareState>() == 0x1d4);
+    assert!(core::mem::size_of::<MicCompletionState>() == 0x14);
+    assert!(core::mem::size_of::<PhyCoreState>() == 0xd0);
+    assert!(core::mem::size_of::<PhyTail>() == 0x238);
+    assert!(core::mem::size_of::<RuntimePrefix>() + core::mem::size_of::<ClockParameterIsland>() + core::mem::size_of::<SchedulerHandlerTable>() + core::mem::size_of::<PreConfigurationTables>() + core::mem::size_of::<SddConfigurationTables>() + core::mem::size_of::<WakeContextState>() + core::mem::size_of::<DurationSources>() + core::mem::size_of::<PreLowMacWord>() + core::mem::size_of::<LowMacPasFamily>() + core::mem::size_of::<PreVifHeader>() + core::mem::size_of::<VifRecords>() + core::mem::size_of::<PostVifQuarantine>() + core::mem::size_of::<HostTxContexts>() + core::mem::size_of::<PreCommandQuarantine>() + core::mem::size_of::<CommandChannelSwitchOverlay>() + core::mem::size_of::<LmcControlRoots>() + core::mem::size_of::<HostContextAccounting>() + core::mem::size_of::<HostContextFreeList>() + core::mem::size_of::<LinkAndSequenceState>() + core::mem::size_of::<JoinScanControl>() + core::mem::size_of::<WsmResponseScratch>() + core::mem::size_of::<BaLmcHeader>() + core::mem::size_of::<PendingBaLmcState>() + core::mem::size_of::<LmcMessages>() + core::mem::size_of::<BaSessions>() + core::mem::size_of::<BaLinkEventState>() + core::mem::size_of::<TalaAccounting>() + core::mem::size_of::<ContextCompletionPrefix>() + core::mem::size_of::<PreInternalContextQuarantine>() + core::mem::size_of::<InternalContextPrefix>() + core::mem::size_of::<InternalContextPoolState>() + core::mem::size_of::<PowerSaveFamily>() + core::mem::size_of::<PowerSaveHifBoundary>() + core::mem::size_of::<HifBufferState>() + core::mem::size_of::<LegacyHifSoftwareState>() + core::mem::size_of::<MicCompletionState>() + core::mem::size_of::<PhyCoreState>() + core::mem::size_of::<PhyTail>() == DTCM_BSS_SIZE);
     assert!(core::mem::size_of::<ResearchMargin>() == DTCM_NOINIT_SIZE);
     assert!(DTCM_INITIALIZED_DATA_SIZE + DTCM_BSS_SIZE + DTCM_NOINIT_SIZE == DTCM_STATE_SIZE);
 };

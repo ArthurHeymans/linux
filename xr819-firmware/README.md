@@ -431,26 +431,20 @@ ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 All three DTCM sections remain `NOLOAD`: this first link-placement step changes
 neither the vendor COPY source nor the existing startup zero-fill order and
 introduces no DTCM `PT_LOAD`, COPY, or FILL record. `InitializedVendorImage` is
-now the typed `.dtcm.data` allocation; the runtime range remains opaque pending
-family ownership closure, and the final 956-byte research margin has an explicit
-`.dtcm.noinit` retention contract. The complete `DtcmLayout` remains the host
-layout oracle rather than the target allocation. The internal TX context pool
-was the first typed object split out of the opaque runtime allocation. The
-30-record `HostTxContexts` array is now the second and much larger typed object.
-Linker input sections place the opaque prefix, host contexts, opaque middle
-prefix, `HostContextAccounting`, `HostContextFreeList`, `LinkAndSequenceState`,
-`JoinScanControl`, `WsmResponseScratch`, `BaLmcHeader`, `PendingBaLmcState`,
-`LmcMessages`, `BaSessions`, `BaLinkEventState`, `TalaAccounting`,
-`ContextCompletionPrefix`, opaque tail, `InternalContextPoolState`, and opaque
-suffix contiguously inside the single `.dtcm.bss` output section. Host contexts remain exactly
-`0x04005a24..0x04008544`; the internal pool remains
-`0x04009080..0x040094d4`. The host accounting and free-list roots remain
-`0x04008798..0x040087b8`; link mapping, sequence allocation, and aggregate-member
-state remain `0x040087b8..0x040089d8`. Join/scan, WSM response, and BA/LMC
-state now fill `0x040089d8..0x04008e78`; BA sessions, BA link/event state, TALA
-accounting, and the completion prefix occupy `0x04008e78..0x04008f80`.
-Existing pool linker-exported member symbols derive from the typed object itself. None of these families creates a standalone
-output section.
+now the typed `.dtcm.data` allocation, and the final 956-byte research margin
+has an explicit typed `.dtcm.noinit` retention object. Every top-level family in
+`.dtcm.bss` is now a separate link-placed Rust allocation in physical-layout
+order; there is no remaining catch-all BSS byte allocation. Individual family
+types still contain deliberate `OpaqueBytes` fields where semantics or ownership
+remain unknown. The complete `DtcmLayout` remains the host layout oracle rather
+than the target allocation.
+
+The linker concatenates runtime, scheduler, configuration, PAS, VIF, host-TX,
+command, LMC, BA, completion, internal-context, power-save, HIF, MIC, and PHY
+objects into the single exact `.dtcm.bss` output section. This creates ordinary
+Rust allocation identities without changing any external address or implying
+exclusive ownership. Existing internal-pool linker symbols derive from the typed
+`InternalContextPoolState`; no family creates a standalone output section.
 
 CP15 `c0,c0,2` reports `0x001c0200`, whose standard fields describe 128 KiB
 ITCM and 64 KiB DTCM. That physical-size report does not provide another

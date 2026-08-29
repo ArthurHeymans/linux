@@ -104,9 +104,22 @@ SECTIONS
     .dtcm.bss (NOLOAD) : ALIGN(4)
     {
         __dtcm_bss_start = .;
-        KEEP(*(.dtcm.bss.prefix))
+        KEEP(*(.dtcm.bss.runtime_prefix))
+        KEEP(*(.dtcm.bss.clock_parameters))
+        KEEP(*(.dtcm.bss.scheduler_handlers))
+        KEEP(*(.dtcm.bss.pre_configuration_tables))
+        KEEP(*(.dtcm.bss.sdd_configuration_tables))
+        KEEP(*(.dtcm.bss.wake_context_state))
+        KEEP(*(.dtcm.bss.duration_sources))
+        KEEP(*(.dtcm.bss.pre_low_mac_word))
+        KEEP(*(.dtcm.bss.low_mac_pas))
+        KEEP(*(.dtcm.bss.pre_vif_header))
+        KEEP(*(.dtcm.bss.vifs))
+        KEEP(*(.dtcm.bss.post_vif_quarantine))
         KEEP(*(.dtcm.bss.host_tx_contexts))
-        KEEP(*(.dtcm.bss.middle_prefix))
+        KEEP(*(.dtcm.bss.pre_command_quarantine))
+        KEEP(*(.dtcm.bss.command_channel_switch))
+        KEEP(*(.dtcm.bss.lmc_control_roots))
         KEEP(*(.dtcm.bss.host_context_accounting))
         KEEP(*(.dtcm.bss.host_context_free_list))
         KEEP(*(.dtcm.bss.link_and_sequence))
@@ -119,9 +132,16 @@ SECTIONS
         KEEP(*(.dtcm.bss.ba_link_event_state))
         KEEP(*(.dtcm.bss.tala))
         KEEP(*(.dtcm.bss.context_completion_prefix))
-        KEEP(*(.dtcm.bss.middle_suffix_tail))
+        KEEP(*(.dtcm.bss.pre_internal_context_quarantine))
+        KEEP(*(.dtcm.bss.internal_context_prefix))
         KEEP(*(.dtcm.bss.internal_context_pool))
-        KEEP(*(.dtcm.bss.suffix))
+        KEEP(*(.dtcm.bss.power_save))
+        KEEP(*(.dtcm.bss.power_save_hif_boundary))
+        KEEP(*(.dtcm.bss.hif_buffer_state))
+        KEEP(*(.dtcm.bss.legacy_hif_software_state))
+        KEEP(*(.dtcm.bss.mic_completion_state))
+        KEEP(*(.dtcm.bss.phy_core))
+        KEEP(*(.dtcm.bss.phy_tail))
         __dtcm_bss_end = .;
     } > DTCM_STATE :NONE
 
@@ -169,13 +189,39 @@ SECTIONS
            "XR819 DTCM BSS extent changed")
     ASSERT(SIZEOF(.dtcm.bss) == 0x7bcc,
            "XR819 DTCM BSS size changed")
-    ASSERT(DTCM_BSS_PREFIX == __dtcm_bss_start,
-           "XR819 DTCM BSS prefix moved")
-    ASSERT(DTCM_HOST_TX_CONTEXTS == __dtcm_bss_start + 0x39ac,
+    ASSERT(DTCM_RUNTIME_PREFIX == __dtcm_bss_start,
+           "XR819 typed runtime prefix moved")
+    ASSERT(DTCM_CLOCK_PARAMETERS == DTCM_RUNTIME_PREFIX + 0x114,
+           "XR819 typed clock parameters moved")
+    ASSERT(DTCM_SCHEDULER_HANDLERS == DTCM_CLOCK_PARAMETERS + 0x28,
+           "XR819 typed scheduler handlers moved")
+    ASSERT(DTCM_PRE_CONFIGURATION_TABLES == DTCM_SCHEDULER_HANDLERS + 0x80,
+           "XR819 typed pre-configuration tables moved")
+    ASSERT(DTCM_SDD_CONFIGURATION_TABLES == DTCM_PRE_CONFIGURATION_TABLES + 0x127c,
+           "XR819 typed SDD configuration tables moved")
+    ASSERT(DTCM_WAKE_CONTEXT_STATE == DTCM_SDD_CONFIGURATION_TABLES + 0x130,
+           "XR819 typed wake context moved")
+    ASSERT(DTCM_DURATION_SOURCES == DTCM_WAKE_CONTEXT_STATE + 0x90,
+           "XR819 typed duration sources moved")
+    ASSERT(DTCM_PRE_LOW_MAC_WORD == DTCM_DURATION_SOURCES + 0x4,
+           "XR819 typed pre-low-MAC word moved")
+    ASSERT(DTCM_LOW_MAC_PAS == DTCM_PRE_LOW_MAC_WORD + 0x4,
+           "XR819 typed low-MAC PAS state moved")
+    ASSERT(DTCM_PRE_VIF_HEADER == DTCM_LOW_MAC_PAS + 0x800,
+           "XR819 typed pre-VIF header moved")
+    ASSERT(DTCM_VIFS == DTCM_PRE_VIF_HEADER + 0x20,
+           "XR819 typed VIF records moved")
+    ASSERT(DTCM_POST_VIF_QUARANTINE == DTCM_VIFS + 0xb10,
+           "XR819 typed post-VIF quarantine moved")
+    ASSERT(DTCM_HOST_TX_CONTEXTS == DTCM_POST_VIF_QUARANTINE + 0x107c,
            "XR819 typed host-TX contexts moved")
-    ASSERT(DTCM_BSS_MIDDLE_PREFIX == DTCM_HOST_TX_CONTEXTS + 30 * 0x170,
-           "XR819 DTCM BSS middle prefix moved")
-    ASSERT(DTCM_HOST_CONTEXT_ACCOUNTING == DTCM_BSS_MIDDLE_PREFIX + 0x254,
+    ASSERT(DTCM_PRE_COMMAND_QUARANTINE == DTCM_HOST_TX_CONTEXTS + 30 * 0x170,
+           "XR819 typed pre-command quarantine moved")
+    ASSERT(DTCM_COMMAND_CHANNEL_SWITCH == DTCM_PRE_COMMAND_QUARANTINE + 0x50,
+           "XR819 typed command/channel overlay moved")
+    ASSERT(DTCM_LMC_CONTROL_ROOTS == DTCM_COMMAND_CHANNEL_SWITCH + 0x84,
+           "XR819 typed LMC control roots moved")
+    ASSERT(DTCM_HOST_CONTEXT_ACCOUNTING == DTCM_LMC_CONTROL_ROOTS + 0x180,
            "XR819 typed host-context accounting moved")
     ASSERT(DTCM_HOST_CONTEXT_FREE_LIST == DTCM_HOST_CONTEXT_ACCOUNTING + 0x18,
            "XR819 typed host-context free list moved")
@@ -199,12 +245,28 @@ SECTIONS
            "XR819 typed TALA accounting moved")
     ASSERT(DTCM_CONTEXT_COMPLETION_PREFIX == DTCM_TALA + 0x24,
            "XR819 typed context-completion prefix moved")
-    ASSERT(DTCM_BSS_MIDDLE_SUFFIX_TAIL == DTCM_CONTEXT_COMPLETION_PREFIX + 0x14,
-           "XR819 DTCM BSS middle suffix tail moved")
-    ASSERT(DTCM_INTERNAL_CONTEXT_POOL == ORIGIN(DTCM_STATE) + 0x9080,
+    ASSERT(DTCM_PRE_INTERNAL_CONTEXT_QUARANTINE == DTCM_CONTEXT_COMPLETION_PREFIX + 0x14,
+           "XR819 typed pre-internal-context quarantine moved")
+    ASSERT(DTCM_INTERNAL_CONTEXT_PREFIX == DTCM_PRE_INTERNAL_CONTEXT_QUARANTINE + 0xec,
+           "XR819 typed internal-context prefix moved")
+    ASSERT(DTCM_INTERNAL_CONTEXT_POOL == DTCM_INTERNAL_CONTEXT_PREFIX + 0x14,
            "XR819 typed internal-context pool moved")
-    ASSERT(DTCM_BSS_SUFFIX == ORIGIN(DTCM_STATE) + 0x94d4,
-           "XR819 DTCM BSS suffix moved")
+    ASSERT(DTCM_POWER_SAVE == DTCM_INTERNAL_CONTEXT_POOL + 0x454,
+           "XR819 typed power-save state moved")
+    ASSERT(DTCM_POWER_SAVE_HIF_BOUNDARY == DTCM_POWER_SAVE + 0x208,
+           "XR819 typed power-save/HIF boundary moved")
+    ASSERT(DTCM_HIF_BUFFER_STATE == DTCM_POWER_SAVE_HIF_BOUNDARY + 0x44,
+           "XR819 typed HIF buffer state moved")
+    ASSERT(DTCM_LEGACY_HIF_SOFTWARE_STATE == DTCM_HIF_BUFFER_STATE + 0x34,
+           "XR819 typed legacy HIF state moved")
+    ASSERT(DTCM_MIC_COMPLETION_STATE == DTCM_LEGACY_HIF_SOFTWARE_STATE + 0x1d4,
+           "XR819 typed MIC completion state moved")
+    ASSERT(DTCM_PHY_CORE == DTCM_MIC_COMPLETION_STATE + 0x14,
+           "XR819 typed PHY core state moved")
+    ASSERT(DTCM_PHY_TAIL == DTCM_PHY_CORE + 0xd0,
+           "XR819 typed PHY tail moved")
+    ASSERT(__dtcm_noinit_start == DTCM_PHY_TAIL + 0x238,
+           "XR819 DTCM no-init boundary does not follow PHY tail")
     ASSERT(__dtcm_noinit_start == ORIGIN(DTCM_STATE) + 0x9c44,
            "XR819 DTCM no-init base moved")
     ASSERT(__dtcm_noinit_end == ORIGIN(DTCM_STATE) + LENGTH(DTCM_STATE),

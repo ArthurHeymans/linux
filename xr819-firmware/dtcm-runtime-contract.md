@@ -30,30 +30,24 @@ writer; `.dtcm.noinit` is never cleared. The packer rejects partial, duplicate,
 relocated, loadable, or additional DTCM sections and the linker asserts every
 boundary.
 
-`DtcmLayout` remains the complete host-side layout oracle. On ARM,
-`InitializedVendorImage` is a typed link-placed allocation. The runtime BSS is
-split into an opaque prefix, typed `HostTxContexts`, opaque middle prefix, typed
-`HostContextAccounting`, `HostContextFreeList`, `LinkAndSequenceState`,
-`JoinScanControl`, `WsmResponseScratch`, `BaLmcHeader`, `PendingBaLmcState`,
-`LmcMessages`, `BaSessions`, `BaLinkEventState`, `TalaAccounting`, and
-`ContextCompletionPrefix`, opaque tail, typed `InternalContextPoolState`, and
-opaque suffix inside the same `.dtcm.bss` output section. The 30 host contexts remain exactly
-`0x04005a24..0x04008544`; the accounting/free-list roots remain
-`0x04008798..0x040087b8`; link mapping, sequence, and aggregate-member state
-remain `0x040087b8..0x040089d8`; join/scan, WSM response, and BA/LMC state fill
-`0x040089d8..0x04008e78`; BA sessions, link/event state, TALA accounting, and
-completion state remain `0x04008e78..0x04008f80`; and the pool remains
-`0x04009080..0x040094d4`. These retain the qualified startup, allocation,
-publication, retry, completion, teardown, and warm-reload behavior. New family
-statics may replace further subranges only by preserving the section
-partition and exact address assertions; the section names do not grant
-exclusive Rust ownership.
+`DtcmLayout` remains the complete host-side layout oracle. On ARM, every
+complete top-level field of that layout is now a separate link-placed Rust
+allocation. The linker concatenates those objects in exact field order to form
+the unchanged `.dtcm.bss` range. There is no remaining top-level opaque BSS
+allocation; unresolved bytes remain explicit `OpaqueBytes` members inside the
+smallest reviewed family or quarantine type.
 
-The typed-BA/LMC image
-`3b4d9c06b7c9f90180120ee65c5af923dea86deef01294b1551682039bb45ff6`
-is hardware-qualified. A cold WPA2 run moved from 308 to 310 aggregate
-completions during a 20-second legacy-rate BA stop, then reached 720 after
-restoring MCS1; both 30-second HT bursts delivered 3.15 Mbit/s.
+This changes allocation identity, not ownership or access semantics. Vendor,
+IRQ/FIQ, hardware, and translated Rust sharing remains represented by
+`UnsafeCell<MaybeUninit<_>>` and volatile field APIs. New decomposition must
+preserve the section partition and exact address assertions; typed allocation
+does not grant exclusive Rust ownership or permit relocation.
+
+The fully link-placed BSS image
+`fd2f15ffb0520c1e395feeac39a4580a662d5091c655d649b8ba61e31cfa2244`
+is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.62 Mbit/s. Aggregation then
+held at 28,584 completions during a 20-second legacy-rate BA stop and reached
+28,654 after restoring MCS1; the restart burst delivered 3.15 Mbit/s.
 It finished with 20/20 ping, BH alive, WSM idle, and zero buffers. An
 association-safe warm SDIO reload then completed another 30-second 3 Mbit/s UDP
 run at 3.15 Mbit/s offered and 3.14 Mbit/s received, followed by 20/20 ping and

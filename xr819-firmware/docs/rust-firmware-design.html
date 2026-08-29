@@ -188,19 +188,14 @@ blocked. Older family-local aliases and record-internal arithmetic still require
 boot/retention source and cold/warm snapshot behavior of every live initialized word must be closed
 before ordinary source decomposition can be called safe. The active writer matrix and capture
 procedure are maintained in <code>dtcm-runtime-contract.md</code>.</div>
-<p>The internal TX context pool, 30-record host TX context array, host-context
-accounting/free-list roots, link/sequence state, join/scan and WSM response
-state, BA/LMC/session/link state, TALA accounting, and completion prefix are the
-first runtime families migrated from
-the opaque BSS allocation. Opaque and typed input objects are linked contiguously
-into the same <code>.dtcm.bss</code> output section. The host contexts have a
-regular Rust allocation identity at <code>0x04005a24..0x04008544</code>, their
-accounting/free-list roots occupy <code>0x04008798..0x040087b8</code>, link,
-sequence, and aggregate-member state occupies <code>0x040087b8..0x040089d8</code>,
-join/scan, WSM response, and BA/LMC state fills <code>0x040089d8..0x04008e78</code>,
-BA/TALA/completion state occupies <code>0x04008e78..0x04008f80</code>, and the
-internal pool retains its exact <code>0x04009080..0x040094d4</code> hardware
-ABI.</p>
+<p>Every complete top-level runtime family is now a separate ARM Rust allocation.
+The linker concatenates runtime, scheduler, configuration, PAS, VIF, TX,
+command, LMC, BA, completion, internal-context, power-save, HIF, MIC, and PHY
+objects into the unchanged <code>.dtcm.bss</code> output section. There is no
+remaining catch-all BSS byte allocation. Unknown semantics remain represented
+by deliberate <code>OpaqueBytes</code> members inside the smallest reviewed
+family or quarantine type. Allocation identity is therefore regular Rust while
+physical addresses and shared volatile ownership remain unchanged.</p>
 <ul>
 <li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
 Do not move it back into DTCM for visual symmetry.</li>
