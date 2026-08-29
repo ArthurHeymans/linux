@@ -54,15 +54,13 @@ Converting `.dtcm.data` from `NOLOAD` requires per-family canonical source or
 explicit reconstruction, not one cold-looking snapshot.
 
 The `experimental-zero-initialized-dtcm` dependency probe clears a bounded,
-word-aligned initialized-image range before platform initialization. Clearing
-the complete `0x0000..0x2078` image, or only `0x0000..0x103c`, allowed startup
-indication but killed scanning and the BH on a stuck command. Clearing the
-field-aligned `0x1088..0x2078` tail instead survived warm reload, WPA2
-association, 20/20 ping, an alive BH, and idle WSM. This qualifies that tail as
-independent of retained entry contents, while leaving its ordinary startup
-writers and shared volatile semantics unchanged. Decimal
-`XR819_DTCM_ZERO_START` and `XR819_DTCM_ZERO_END` build variables exist only for
-bounded hardware bisection; the feature remains disabled in production.
+word-aligned initialized-image range before platform initialization. Before
+completion-class reconstruction, clearing ranges containing
+`0x04000260..0x04000288` allowed startup indication but killed scanning and the
+BH on a stuck command. The field-aligned `0x1088..0x2078` tail remained
+independently safe. Decimal `XR819_DTCM_ZERO_START` and
+`XR819_DTCM_ZERO_END` build variables support bounded hardware bisection; the
+feature remains disabled in production.
 
 Bisection isolated the first live retained dependency to the ten words at
 `0x04000260..0x04000288`. Retained firmware stored callback pointers there,
@@ -72,14 +70,20 @@ ascending volatile `1` words explicitly. Zeroing the complete family before
 that publication then survived WPA2 association and 20/20 ping, closing its
 vendor-pointer dependency without changing callback ordering or ownership.
 
-After that reconstruction, clearing the complete `0x0000..0x2078` image could
-associate and pass 20/20 ping when loaded after the production image. Reloading
-the same zero-image firmware again reached authentication but repeatedly timed
-out association while BH and WSM remained alive and idle. This is not warm
-qualification: another retained or hardware-coupled input still distinguishes
-the first transition from a same-image rebind. The complete image therefore
-remains `NOLOAD`; only independently cold-and-warm-qualified families may move
-to canonical Rust initialization.
+After that reconstruction, the complete `0x0000..0x2078` image can start from
+zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
+same-image reloads, followed by two further consecutive whole-image reloads.
+Each associated with WPA2 while BH remained alive and WSM idle. One earlier
+association timeout was not reproducible under the bounded reruns and is
+classified as transient RF/AP behavior rather than a retained-data gate.
+
+The whole-image probe also passed 20/20 ping and a 31.7-second TCP receive run:
+9.92 MiB at 2.62 Mbit/s, with station counters increasing by about 11.1 MiB RX
+and 340 KiB TX before returning to alive/idle runtime state. The probe now
+defaults to the complete image, but remains feature-gated until production TX,
+BA stop/restart, and cold-power qualification are repeated with this startup
+contract. `.dtcm.data` therefore remains `NOLOAD` for now even though its
+retained entry contents are no longer a demonstrated runtime dependency.
 
 The symbol-initialized data/BSS image
 `415a7c062688b01bb463ec9aeda536888aa1e5c460aba30161f33eb02a99e91c`

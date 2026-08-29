@@ -1794,8 +1794,8 @@ unsafe extern "C" {
 }
 
 /// Replace a selected retained initialized-image range with zero for dependency
-/// qualification. The default range is the field-aligned tail
-/// `0x1088..0x2078`; build-time decimal offsets support bounded bisection.
+/// qualification. The default range is the complete `0x0000..0x2078` image;
+/// build-time decimal offsets support bounded bisection.
 ///
 /// # Safety
 /// This experimental operation must run during single-threaded startup before
@@ -1817,7 +1817,7 @@ const fn parse_experimental_data_offset(value: Option<&str>, default: usize) -> 
 
 #[cfg(feature = "experimental-zero-initialized-dtcm")]
 const EXPERIMENTAL_DATA_ZERO_START: usize =
-    parse_experimental_data_offset(option_env!("XR819_DTCM_ZERO_START"), 0x1088);
+    parse_experimental_data_offset(option_env!("XR819_DTCM_ZERO_START"), 0);
 #[cfg(feature = "experimental-zero-initialized-dtcm")]
 const EXPERIMENTAL_DATA_ZERO_END: usize = parse_experimental_data_offset(
     option_env!("XR819_DTCM_ZERO_END"),
