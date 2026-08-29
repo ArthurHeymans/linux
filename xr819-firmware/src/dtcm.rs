@@ -21,6 +21,8 @@ pub const DTCM_STATE_END: usize = DTCM_STATE_BASE + DTCM_STATE_SIZE;
 pub const DTCM_INITIALIZED_DATA_SIZE: usize = 0x2078;
 pub const DTCM_BSS_SIZE: usize = 0x9c44 - DTCM_INITIALIZED_DATA_SIZE;
 pub const DTCM_NOINIT_SIZE: usize = DTCM_STATE_SIZE - 0x9c44;
+const DTCM_BSS_PREFIX_SIZE: usize = 0x9080 - DTCM_INITIALIZED_DATA_SIZE;
+const DTCM_BSS_SUFFIX_SIZE: usize = 0x9c44 - 0x94d4;
 
 pub const INTERNAL_TX_CONTEXT_SIZE: usize = 0x170;
 pub const INTERNAL_TX_CONTEXT_COUNT: usize = 3;
@@ -1426,9 +1428,23 @@ static DTCM_INITIALIZED_DATA: SharedDtcmRegion<InitializedVendorImage> =
 
 #[unsafe(no_mangle)]
 #[used]
-#[unsafe(link_section = ".dtcm.bss")]
+#[unsafe(link_section = ".dtcm.bss.prefix")]
 #[cfg(target_arch = "arm")]
-static DTCM_BSS: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_SIZE>> =
+static DTCM_BSS_PREFIX: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_PREFIX_SIZE>> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.internal_context_pool")]
+#[cfg(target_arch = "arm")]
+static DTCM_INTERNAL_CONTEXT_POOL: SharedDtcmRegion<InternalContextPoolState> =
+    SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
+
+#[unsafe(no_mangle)]
+#[used]
+#[unsafe(link_section = ".dtcm.bss.suffix")]
+#[cfg(target_arch = "arm")]
+static DTCM_BSS_SUFFIX: SharedDtcmRegion<OpaqueBytes<DTCM_BSS_SUFFIX_SIZE>> =
     SharedDtcmRegion(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[unsafe(no_mangle)]
@@ -4206,7 +4222,10 @@ const _: () = {
     assert!(core::mem::offset_of!(DtcmLayout, phy_tail) == 0x9a0c);
     assert!(core::mem::offset_of!(DtcmLayout, research_margin) == 0x9c44);
     assert!(core::mem::size_of::<InitializedVendorImage>() == DTCM_INITIALIZED_DATA_SIZE);
-    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_SIZE>>() == DTCM_BSS_SIZE);
+    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_PREFIX_SIZE>>() == DTCM_BSS_PREFIX_SIZE);
+    assert!(core::mem::size_of::<InternalContextPoolState>() == 0x454);
+    assert!(core::mem::size_of::<OpaqueBytes<DTCM_BSS_SUFFIX_SIZE>>() == DTCM_BSS_SUFFIX_SIZE);
+    assert!(DTCM_BSS_PREFIX_SIZE + core::mem::size_of::<InternalContextPoolState>() + DTCM_BSS_SUFFIX_SIZE == DTCM_BSS_SIZE);
     assert!(core::mem::size_of::<ResearchMargin>() == DTCM_NOINIT_SIZE);
     assert!(DTCM_INITIALIZED_DATA_SIZE + DTCM_BSS_SIZE + DTCM_NOINIT_SIZE == DTCM_STATE_SIZE);
 };

@@ -104,7 +104,9 @@ SECTIONS
     .dtcm.bss (NOLOAD) : ALIGN(4)
     {
         __dtcm_bss_start = .;
-        KEEP(*(.dtcm.bss))
+        KEEP(*(.dtcm.bss.prefix))
+        KEEP(*(.dtcm.bss.internal_context_pool))
+        KEEP(*(.dtcm.bss.suffix))
         __dtcm_bss_end = .;
     } > DTCM_STATE :NONE
 
@@ -126,8 +128,8 @@ SECTIONS
      */
     __dtcm_state_object_start = ORIGIN(DTCM_STATE);
     __dtcm_state_object_end = __dtcm_state_end;
-    __dtcm_context_pool_start = ORIGIN(DTCM_STATE) + 0x9080;
-    __dtcm_context_pool_contexts = ORIGIN(DTCM_STATE) + 0x9084;
+    __dtcm_context_pool_start = DTCM_INTERNAL_CONTEXT_POOL;
+    __dtcm_context_pool_contexts = DTCM_INTERNAL_CONTEXT_POOL + 0x4;
     __dtcm_context_pool_end = __dtcm_context_pool_contexts + 3 * 0x170;
     __dtcm_stack_floor = ORIGIN(DTCM_STACKS);
     __dtcm_stack_top = ORIGIN(DTCM_STACKS) + LENGTH(DTCM_STACKS);
@@ -152,6 +154,12 @@ SECTIONS
            "XR819 DTCM BSS extent changed")
     ASSERT(SIZEOF(.dtcm.bss) == 0x7bcc,
            "XR819 DTCM BSS size changed")
+    ASSERT(DTCM_BSS_PREFIX == __dtcm_bss_start,
+           "XR819 DTCM BSS prefix moved")
+    ASSERT(DTCM_INTERNAL_CONTEXT_POOL == ORIGIN(DTCM_STATE) + 0x9080,
+           "XR819 typed internal-context pool moved")
+    ASSERT(DTCM_BSS_SUFFIX == ORIGIN(DTCM_STATE) + 0x94d4,
+           "XR819 DTCM BSS suffix moved")
     ASSERT(__dtcm_noinit_start == ORIGIN(DTCM_STATE) + 0x9c44,
            "XR819 DTCM no-init base moved")
     ASSERT(__dtcm_noinit_end == ORIGIN(DTCM_STATE) + LENGTH(DTCM_STATE),

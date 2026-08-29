@@ -31,15 +31,18 @@ relocated, loadable, or additional DTCM sections and the linker asserts every
 boundary.
 
 `DtcmLayout` remains the complete host-side layout oracle. On ARM,
-`InitializedVendorImage` is a typed link-placed allocation, while the runtime
-BSS remains one opaque allocation until individual families have reader/writer,
-IRQ/FIQ, callback, and warm-reload closure. New family statics may replace
-subranges only by preserving the section partition and exact address assertions;
-the section names do not grant exclusive Rust ownership.
+`InitializedVendorImage` is a typed link-placed allocation. The runtime BSS is
+split into an opaque prefix, typed `InternalContextPoolState`, and opaque suffix
+inside the same `.dtcm.bss` output section. The pool remains exactly
+`0x04009080..0x040094d4`; its free head and three `0x170`-byte contexts keep the
+qualified startup, allocation, completion, teardown, and warm-reload behavior.
+New family statics may replace further subranges only by preserving the section
+partition and exact address assertions; the section names do not grant
+exclusive Rust ownership.
 
-The split-section image
-`853a8480a2ff05776f0632b0e2b1c2830b9a610715459829e3e8156e1fedefdc`
-is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.42 Mbit/s, followed by
+The typed-pool image
+`b4fe133e7f3a6f29638418f26d2156c0dcfccccb8f609204c12d36628a5a3df7`
+is hardware-qualified. Cold WPA2 MCS1 TCP reached 4.71 Mbit/s, followed by
 20/20 ping, BH alive, WSM idle, and zero buffers. An association-safe warm SDIO
 reload then completed a 30-second 3 Mbit/s UDP run at 3.15 Mbit/s offered and
 3.14 Mbit/s received, followed by 20/20 ping and another zero-buffer drain.
