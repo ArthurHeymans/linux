@@ -49,8 +49,8 @@ does not grant exclusive Rust ownership or permit relocation.
 Two consecutive diagnostic reloads produced different entry-image hashes
 (`344c1bd98b3cb1a0d5125681cabb9053c8628d71fea2637f1241adfd87266187`
 and `3c334fa3a77974158cd2479e08036bbe8393ad65a587855d20a9bd9cef45cfd4`).
-The first image passed the reviewed COPY-to-platform and platform-to-startup
-transitions; the second inherited broad warm mutable state. A captured entry
+The first historical image passed the then-reviewed loader-to-platform and
+platform-to-startup transitions; the second inherited broad warm mutable state. A captured entry
 image therefore must not be promoted wholesale into a Rust load initializer.
 The historical snapshots remain evidence against embedding a captured load
 image; production instead uses an explicit zero baseline plus reconstruction.
@@ -172,7 +172,7 @@ proved from startup source live in
 
 ```sh
 python3 tools/compare-dtcm-initialized-snapshots.py \
-  before.bin after.bin --transition copy-to-platform
+  before.bin after.bin --transition zero-to-platform
 python3 tools/compare-dtcm-initialized-snapshots.py \
   before.bin after.bin --transition platform-to-startup
 python3 tools/compare-dtcm-initialized-snapshots.py \
@@ -202,44 +202,44 @@ assemble and compare them with:
 python3 tools/assemble-dtcm-initialized-snapshots.py responses/*.bin \
   --output-dir snapshots
 python3 tools/compare-dtcm-initialized-snapshots.py \
-  snapshots/entry.bin snapshots/platform.bin --transition copy-to-platform
+  snapshots/entry.bin snapshots/platform.bin --transition zero-to-platform
 python3 tools/compare-dtcm-initialized-snapshots.py \
   snapshots/platform.bin snapshots/startup.bin --transition platform-to-startup
 ```
 
 On a warm firmware reload, use that run's `entry.bin` and `startup.bin` with the
-`warm-entry-to-startup` transition. Because the target's pre-existing rebind
-failure can stall the first post-startup WSM command, the diagnostic firmware
-also compares the warm entry image internally before reconstruction and places a
-bounded result in the ordinary startup indication label. `u` is the count of
+`warm-entry-to-startup` transition. The diagnostic firmware also compares the
+zeroed entry image internally before reconstruction and places a bounded result
+in the ordinary startup indication label. `u` is the count of
 changed bytes outside reviewed writer ranges, `f` lists their first offsets, `c`
 is the count of canonical startup-value mismatches, and `e` lists their first
 offsets. This path requires no extra WSM command or MMIO read.
 
-Qualified target evidence:
+Qualified zero-baseline target evidence from diagnostic image
+`e113a4bfc0aa0c382ecf9e43b85d83e217c968ff0e54cd9035b98d39a3659992`:
 
-- cold COPY-to-platform: 43 changed bytes, all in reviewed writer ranges;
-- cold platform-to-startup: 398 changed bytes, all in reviewed writer ranges;
-- cold startup label: `XR819 DTCM u=0000 f=none c=0000 e=none`;
-- warm SDIO unbind/rebind startup label:
-  `XR819 DTCM u=0000 f=none c=0000 e=none`.
+- entry hash: `a58cc74cb48135a098c0794ce80991b131047b1bd0a4d1921863dcb270378245`;
+- platform hash: `b97c961c49fa69eaf0a262deb2a3926299753786b4503af052b17bea3ee00871`;
+- startup hash: `6624e0e6da22d5de867c56b779ec414f8da85b52b34a63d87346c0a1cfe91840`;
+- zero-to-platform: 17 changed bytes, all in reviewed writer ranges;
+- platform-to-startup: 215 changed bytes, all in reviewed writer ranges;
+- two consecutive SDIO reloads report
+  `XR819 DTCM u=0000 f=none c=0000 e=none`, with BH alive, WSM idle, and zero
+  used buffers.
 
-The warm run subsequently reproduced the known command-channel failure
-(`0x0006` timeout followed by BH termination). The zero warm report classifies
-that failure outside initialized DTCM reconstruction: all warm-entry differences
-were writer-owned and all selected startup fields reached their canonical values.
 The normal software gate builds the ARM diagnostic image, verifies its stack and
 linker envelope, checks that the generated firmware contract matches the reviewed
 JSON, and runs synthetic capture/assembly/comparison regressions.
 
-- COPY-stable table ranges must match the qualified reference bytes;
+- zero-stable ranges must remain zero until their named initializer runs;
 - rebuilt fields must eventually gain canonical startup values rather than only
   an allowed-change range;
 - callback words must eventually resolve to expected current-image targets;
 - inactive intrusive records must eventually gain explicit list-invariant checks;
-- retained mutable ranges must have an explicit preservation or reset rule;
+- mutable ranges must have an explicit reset or reconstruction rule;
 - every changed byte must belong to a named writer in the matrix.
 
-A diagnostic prefill test must restore COPY-stable tables before execution and
-prefill only ranges declared reconstructible. It must never overwrite live
-stacks or use `0x0400c000..0x04010000`, which aliases lower DTCM.
+A diagnostic prefill test may alter only ranges declared reconstructible and
+must still be overwritten by the production zero baseline before use. It must
+never overwrite live stacks or use `0x0400c000..0x04010000`, which aliases
+lower DTCM.

@@ -145,12 +145,12 @@ def self_test(contract: dict) -> None:
                 f"snapshot comparator rejected its canonical {transition} fixture"
             )
     corrupt = bytearray(zero)
-    for item in expanded_transition(contract, "copy-to-platform")[1]:
+    for item in expanded_transition(contract, "zero-to-platform")[1]:
         offset = number(item["offset"])
         value = bytes.fromhex(item["bytes"])
         corrupt[offset : offset + len(value)] = value
     corrupt[0x1000] ^= 1
-    if not compare(contract, "copy-to-platform", zero, bytes(corrupt)):
+    if not compare(contract, "zero-to-platform", zero, bytes(corrupt)):
         raise SystemExit("snapshot comparator accepted an unowned initialized-image change")
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "short.bin"
@@ -167,7 +167,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("before", type=Path, nargs="?")
     parser.add_argument("after", type=Path, nargs="?")
-    parser.add_argument("--transition", choices=("copy-to-platform", "platform-to-startup", "warm-entry-to-startup"))
+    parser.add_argument("--transition", choices=("zero-to-platform", "platform-to-startup", "warm-entry-to-startup"))
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 

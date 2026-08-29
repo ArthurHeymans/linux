@@ -3,15 +3,17 @@
   "base": "0x04000000",
   "size": "0x2078",
   "transitions": {
-    "copy-to-platform": {
-      "description": "Qualified vendor COPY image to return from platform::initialize_runtime_state.",
+    "zero-to-platform": {
+      "description": "Rust zero baseline to return from platform::initialize_runtime_state.",
       "allowed_changes": [
+        { "start": "0x0260", "end": "0x0288", "owner": "completion-class-presence" },
         { "start": "0x1428", "end": "0x142c", "owner": "platform-tsf-resync" },
         { "start": "0x1430", "end": "0x1434", "owner": "platform-tsf-accumulator" },
         { "start": "0x1fcc", "end": "0x1fd4", "owner": "scheduler-exclusion" },
         { "start": "0x1fd8", "end": "0x1ff4", "owner": "platform-boot-parameter-block" }
       ],
       "expected_after": [
+        { "offset": "0x0260", "bytes": "01000000010000000100000001000000010000000100000001000000010000000100000001000000", "field": "visible_completion_words" },
         { "offset": "0x1428", "bytes": "00000000", "field": "control_words.tsf_resync_state" },
         { "offset": "0x1430", "bytes": "00000000", "field": "control_words.tsf_accumulator_low" },
         { "offset": "0x1fcc", "bytes": "00000000", "field": "scheduler_exclusion_state.exclusion_mask" },
@@ -60,10 +62,11 @@
       ]
     },
     "warm-entry-to-startup": {
-      "description": "Warm Rust entry to completion of all deterministic startup reconstruction.",
+      "description": "Warm Rust zero baseline to completion of all deterministic startup reconstruction.",
       "allowed_changes": [
         { "start": "0x0138", "end": "0x014c", "owner": "tx-duration-timing" },
         { "start": "0x0194", "end": "0x01c0", "owner": "rate-encoding-attributes" },
+        { "start": "0x0260", "end": "0x0288", "owner": "completion-class-presence" },
         { "start": "0x02d8", "end": "0x02e4", "owner": "queue-pipe-mappings" },
         { "start": "0x10d4", "end": "0x10e4", "owner": "duration-quantum-pointers" },
         { "start": "0x11bc", "end": "0x123c", "owner": "irq-callback-publication" },
@@ -81,6 +84,7 @@
         { "start": "0x1fd8", "end": "0x2018", "owner": "scheduler-event-startup-reconstruction" }
       ],
       "expected_after": [
+        { "offset": "0x0260", "bytes": "01000000010000000100000001000000010000000100000001000000010000000100000001000000", "field": "visible_completion_words" },
         { "offset": "0x1428", "bytes": "00000000", "field": "control_words.tsf_resync_state" },
         { "offset": "0x1430", "bytes": "00000000", "field": "control_words.tsf_accumulator_low" },
         { "offset": "0x1fcc", "bytes": "00000000", "field": "scheduler_exclusion_state.exclusion_mask" },
