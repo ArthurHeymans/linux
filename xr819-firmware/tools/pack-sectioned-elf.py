@@ -30,8 +30,7 @@ PF_R = 4
 MAX_U32 = 0xFFFF_FFFF
 DTCM_ALIAS_RANGE = (0x0400_0000, 0x0401_0000)
 APPROVED_DTCM_SECTIONS = (
-    (".dtcm.data", DTCM_ALIAS_RANGE[0], 0x2078),
-    (".dtcm.bss", DTCM_ALIAS_RANGE[0] + 0x2078, 0x7BCC),
+    (".dtcm.bss", DTCM_ALIAS_RANGE[0], 0x9C44),
     (".dtcm.noinit", DTCM_ALIAS_RANGE[0] + 0x9C44, 0x03BC),
 )
 

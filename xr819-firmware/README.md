@@ -421,20 +421,20 @@ ends at the file/address split `0x1b3dc`, rounded up to the next 4 KiB boundary.
 `link-main-low.x` now divides observed DTCM ownership explicitly:
 
 ```text
-0x04000000..0x04002078  .dtcm.data   explicitly zeroed and reconstructed state
-0x04002078..0x04009c44  .dtcm.bss    explicitly zeroed runtime state
+0x04000000..0x04009c44  .dtcm.bss    explicitly zeroed shared state
 0x04009c44..0x0400a000  .dtcm.noinit retained research quarantine
 0x0400a000..0x0400a500  five 256-byte exception-mode stacks
 0x0400a500..0x0400c000  6,912-byte system stack
 ```
 
-All three DTCM sections remain `NOLOAD`. Rust startup now clears `.dtcm.data`
-and `.dtcm.bss` through linker-exported boundaries in the qualified ascending
-volatile-word order, then reconstructs every initialized value it consumes.
-There is no remaining vendor COPY dependency and no DTCM `PT_LOAD`, COPY, or
-FILL record. Every top-level field of
-`InitializedVendorImage` is now its own ordered `.dtcm.data` input object, every
-top-level runtime family is its own `.dtcm.bss` input object, and the final
+Both DTCM sections remain `NOLOAD`. Rust startup clears the initialized prefix
+and runtime suffix of the combined `.dtcm.bss` allocation through
+linker-exported boundaries in the qualified ascending volatile-word order, then
+reconstructs every initialized value it consumes. There is no remaining vendor
+COPY dependency and no DTCM `PT_LOAD`, COPY, or FILL record. Every top-level
+field of `InitializedVendorImage` is represented by an ordered `.dtcm.data.*`
+input object, every top-level runtime family is its own `.dtcm.bss` input object,
+and the final
 956-byte research margin has an explicit typed `.dtcm.noinit` retention object.
 There is no remaining catch-all target byte allocation. Individual family types
 still contain deliberate `OpaqueBytes` fields where semantics or ownership
@@ -463,9 +463,10 @@ includes HIF queue/ring ownership, `Transport`, response scratch, HIF sequence
 state, the completed-frame FIFO, probe-context sequence, PAS accounting,
 internal-context count, retry PRNG state, channel PLL cache, and channel power
 limits. The native `.dtcm.bss` section deliberately remains `NOLOAD`; its qualified
-explicit zeroing path now walks `__dtcm_bss_start..__dtcm_bss_end` directly in
-ascending volatile words rather than reconstructing the range from integer
-addresses. There is still no main-image DTCM fill record.
+explicit zeroing paths walk `__dtcm_data_start..__dtcm_data_end` and
+`__dtcm_bss_start..__dtcm_bss_end` directly in ascending volatile words rather
+than reconstructing either subrange from integer addresses. There is still no
+main-image DTCM fill record.
 Hardware descriptors, packet buffers, and MMIO identities remain in shared
 packet RAM or MMIO rather than TCM. The internal TX context pool is an exact
 typed member view of the shared quarantine object, not a standalone allocation
@@ -489,11 +490,10 @@ recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md). The optional
 post-startup copies of the initialized `0x2078` bytes and publishes them through
 paginated private read-MIB responses. It also reports the firmware-internal warm
 contract comparison through the ordinary startup indication, avoiding MMIO and
-post-startup WSM diagnostics. Target cold snapshots and one warm SDIO rebind
-both pass the reviewed writer-range and canonical-value contract; the known
-post-rebind WSM timeout therefore occurs outside initialized DTCM
-reconstruction. Feature-free firmware has no snapshot storage, diagnostic MIB
-path, or startup-label report.
+post-startup WSM diagnostics. The entry snapshot is now taken after Rust zeroes the initialized prefix, so
+diagnostic transitions validate reconstruction from the production baseline
+rather than preserving loader bytes. Feature-free firmware has no snapshot
+storage, diagnostic MIB path, or startup-label report.
 
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state

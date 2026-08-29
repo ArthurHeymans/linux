@@ -209,8 +209,7 @@ class PackerTests(unittest.TestCase):
             file_size=0,
             memory_size=0x20,
             sections=[
-                FixtureSection(".dtcm.data", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0], 0x2078),
-                FixtureSection(".dtcm.bss", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x2078, 0x7BCC),
+                FixtureSection(".dtcm.bss", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0], 0x9C44),
                 FixtureSection(".dtcm.noinit", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x9C44, 0x03BC),
             ],
         )
@@ -243,8 +242,7 @@ class PackerTests(unittest.TestCase):
             file_size=4,
             memory_size=4,
             sections=[
-                FixtureSection(".dtcm.data", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0], 0x2078),
-                FixtureSection(".dtcm.bss", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x2078, 0x7BCC),
+                FixtureSection(".dtcm.bss", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0], 0x9C44),
                 FixtureSection(".dtcm.noinit", PACKER.SHT_NOBITS, PACKER.SHF_ALLOC, PACKER.DTCM_ALIAS_RANGE[0] + 0x9C44, 0x03BC),
             ],
         )

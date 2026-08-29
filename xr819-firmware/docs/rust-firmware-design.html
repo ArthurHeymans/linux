@@ -174,26 +174,25 @@ domains.</li>
 <h3>3.4 DTCM is a quarantine ABI, not the desired state store</h3>
 <p>The implemented <code>DtcmLayout</code> remains the complete <code>0xa000</code>-byte host layout
 oracle. ARM allocation is now partitioned by startup contract into exact contiguous
-<code>.dtcm.data</code>, <code>.dtcm.bss</code>, and <code>.dtcm.noinit</code> sections. This prevents
+<code>.dtcm.bss</code> and <code>.dtcm.noinit</code> sections. This prevents
 accidental hole allocation, preserves overlays, and lets checkers verify boundaries. It does not
 prove exclusive Rust ownership and it is not movable. The accurate claim is that DTCM is
 <strong>structurally decoded, link placed, and quarantined</strong>, not that its usage is fully
 translated.</p>
-<div class="note"><strong>Current contract gap:</strong> all three DTCM sections remain NOLOAD and
-the packed-image checker rejects DTCM COPY/FILL records. Rust startup explicitly clears both
-<code>.dtcm.data</code> and <code>.dtcm.bss</code>, reconstructs consumed initialized values, and leaves
-only <code>.dtcm.noinit</code> retained. The <code>.dtcm.data</code> name is now a transitional physical
-layout label rather than a vendor COPY dependency. Direct production DTCM literals are eliminated
-outside <code>src/dtcm.rs</code>, and direct arithmetic on a <code>dtcm::...get()</code> expression is
-blocked. Older family-local aliases and record-internal arithmetic still require audit. Remaining
-work is to merge or rename the zeroed output contracts and close shared ownership before relocation.
-The active writer matrix and capture procedure are maintained in
+<div class="note"><strong>Current contract gap:</strong> both DTCM sections remain NOLOAD and
+the packed-image checker rejects DTCM COPY/FILL records. Rust startup explicitly clears the
+initialized prefix and runtime suffix of one combined <code>.dtcm.bss</code> allocation,
+reconstructs consumed initialized values, and leaves only <code>.dtcm.noinit</code> retained.
+Direct production DTCM literals are eliminated outside <code>src/dtcm.rs</code>, and direct
+arithmetic on a <code>dtcm::...get()</code> expression is blocked. Older family-local aliases and
+record-internal arithmetic still require audit. Remaining work is to close shared ownership before
+relocation. The active writer matrix and capture procedure are maintained in
 <code>dtcm-runtime-contract.md</code>.</div>
 <p>Every complete top-level initialized-data field and runtime family is now a
-separate ARM Rust allocation. The linker sorts numbered initialized objects into
-<code>.dtcm.data</code> and concatenates runtime, scheduler, configuration, PAS,
-VIF, TX, command, LMC, BA, completion, internal-context, power-save, HIF, MIC,
-and PHY objects into <code>.dtcm.bss</code>. There is no remaining catch-all
+separate ARM Rust allocation. The linker sorts numbered initialized input
+objects and concatenates runtime, scheduler, configuration, PAS, VIF, TX,
+command, LMC, BA, completion, internal-context, power-save, HIF, MIC, and PHY
+objects into one <code>.dtcm.bss</code> output allocation. There is no remaining catch-all
 target byte allocation. Unknown semantics remain represented by deliberate
 <code>OpaqueBytes</code> members inside the smallest reviewed family or
 quarantine type. Allocation identity is therefore regular Rust while physical

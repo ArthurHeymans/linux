@@ -89,20 +89,12 @@ SECTIONS
         KEEP(*(.packet_ram.rx_fifo_backing))
     } > PACKET_RX_FIFO :NONE
 
-    /*
-     * Lower DTCM is link-placed by startup contract rather than represented as
-     * one monolithic opaque allocation. These remain NOLOAD while the existing
-     * vendor COPY and explicit zero-fill paths own initialization.
-     */
-    .dtcm.data (NOLOAD) : ALIGN(4)
+    /* All non-retained DTCM is one regular NOLOAD BSS output allocation. */
+    .dtcm.bss (NOLOAD) : ALIGN(4)
     {
         __dtcm_data_start = .;
         KEEP(*(SORT_BY_NAME(.dtcm.data.*)))
         __dtcm_data_end = .;
-    } > DTCM_STATE :NONE
-
-    .dtcm.bss (NOLOAD) : ALIGN(4)
-    {
         __dtcm_bss_start = .;
         KEEP(*(.dtcm.bss.runtime_prefix))
         KEEP(*(.dtcm.bss.clock_parameters))
@@ -181,8 +173,8 @@ SECTIONS
            "XR819 DTCM initialized-data base moved")
     ASSERT(__dtcm_data_end == ORIGIN(DTCM_STATE) + 0x2078,
            "XR819 DTCM initialized-data extent changed")
-    ASSERT(SIZEOF(.dtcm.data) == 0x2078,
-           "XR819 DTCM initialized-data size changed")
+    ASSERT(__dtcm_data_end - __dtcm_data_start == 0x2078,
+           "XR819 DTCM initialized-data subrange changed")
     ASSERT(DTCM_DATA_MAC_SLOT_TIMING_PATCH_LIST == __dtcm_data_start,
            "XR819 first initialized-data object moved")
     ASSERT(DTCM_DATA_INITIALIZED_TAIL + 0x60 == __dtcm_data_end,
@@ -191,8 +183,8 @@ SECTIONS
            "XR819 DTCM BSS base moved")
     ASSERT(__dtcm_bss_end == ORIGIN(DTCM_STATE) + 0x9c44,
            "XR819 DTCM BSS extent changed")
-    ASSERT(SIZEOF(.dtcm.bss) == 0x7bcc,
-           "XR819 DTCM BSS size changed")
+    ASSERT(SIZEOF(.dtcm.bss) == 0x9c44,
+           "XR819 combined DTCM BSS size changed")
     ASSERT(DTCM_RUNTIME_PREFIX == __dtcm_bss_start,
            "XR819 typed runtime prefix moved")
     ASSERT(DTCM_CLOCK_PARAMETERS == DTCM_RUNTIME_PREFIX + 0x114,
