@@ -67,9 +67,13 @@ Bisection isolated the first live retained dependency to the ten words at
 `0x04000260..0x04000288`. Retained firmware stored callback pointers there,
 but translated completion dispatch only used nonzero values as class-presence
 gates before invoking Rust closures. Platform startup now publishes ten
-ascending volatile `1` words explicitly. Zeroing the complete family before
-that publication then survived WPA2 association and 20/20 ping, closing its
-vendor-pointer dependency without changing callback ordering or ownership.
+ascending volatile `1` words explicitly. Publication and completion dispatch
+now derive their raw pointer from the link-placed family symbol rather than
+reconstructing its numeric DTCM root; host tests retain the layout-oracle
+fallback. Zeroing the complete family before publication survives WPA2,
+sustained 3.15 Mbit/s offered UDP TX, 20/20 ping, and warm rebind without
+changing callback ordering or ownership. Qualified image:
+`6988ad72e2eba3b04297882e1f80da7aa9ca4343d6e3d239ba19e8772ed11609`.
 
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive

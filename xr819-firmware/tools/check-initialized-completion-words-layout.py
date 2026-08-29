@@ -43,13 +43,14 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-# rust_main materializes the typed family root and publishes ten ascending
-# volatile presence words before completion dispatch can run.
+# rust_main publishes ten ascending volatile presence words through the typed
+# family root; the completion path reads the same root before invoking Rust.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04000260: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('rust_main', 0x04000260): 2,
+    ('rust_main', 0x04000260): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04000260): 1,
 })
 
 

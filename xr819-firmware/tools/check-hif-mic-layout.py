@@ -59,11 +59,11 @@ FORBIDDEN_FORMS = (
 # control-flow changes; no decoded literal load or raw-address owner was
 # introduced. Explicit completion-class publication changes rust_main inlining
 # and leaves the surviving byte literals in complete_tx_pipe_slot and prepared
-# descriptor emission at 0x04009805, 0x0400980a, and 0x04009810. Retry nibble
+# descriptor emission at 0x04009806, 0x0400980b, and 0x04009810. Retry nibble
 # advancement remains confined to the typed selective retry helper, while
 # partial give-up reuses ordinary kind-0 completion.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04009805: 1, 0x0400980A: 1, 0x04009810: 1}
+    {0x04009806: 1, 0x0400980B: 1, 0x04009810: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 

@@ -6520,12 +6520,9 @@ pub enum CompletedContextDispatch {
 /// complete. The retained words were vendor function pointers; translated
 /// dispatch uses them only as class-presence gates and invokes Rust closures.
 pub(crate) unsafe fn initialize_completion_callback_presence() {
+    let words = crate::dtcm::visible_completion_words_ptr();
     for class in 0..10 {
-        unsafe {
-            crate::dtcm::visible_completion_word_unchecked(class)
-                .cast_mut::<u32>()
-                .write_volatile(1);
-        }
+        unsafe { words.add(class).write_volatile(1) };
     }
 }
 
@@ -6595,10 +6592,8 @@ where
         }
 
         let completion_class = (context.completion_class_address() as *const u8).read_volatile();
-        let callback_address = crate::dtcm::visible_completion_word_unchecked(usize::from(
-            completion_class,
-        ))
-        .cast_mut::<u32>() as *const u32;
+        let callback_address = crate::dtcm::visible_completion_words_ptr()
+            .add(usize::from(completion_class)) as *const u32;
         if callback_address.read_volatile() == 0 {
             return CompletedContextDispatch::NoCallback;
         }

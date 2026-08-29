@@ -43,14 +43,17 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
+# rust_main derives the preceding completion-presence symbol through a
+# 0x040002e0 anchor with negative offsets; its stores remain in 0x0260..0x0288.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x040002D8: 1,
     0x040002DC: 7,
-    0x040002E0: 2,
+    0x040002E0: 3,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x040002DC): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x040002E0): 1,
+    ('rust_main', 0x040002E0): 1,
     ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040002DC): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21prepare_probe_context', 0x040002DC): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx26service_host_management_tx', 0x040002DC): 2,

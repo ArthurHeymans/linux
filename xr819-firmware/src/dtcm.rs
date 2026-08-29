@@ -1,4 +1,4 @@
-//! Linker-owned view of the retained XR819 DTCM software-state ABI.
+//! Linker-owned view of the XR819 DTCM software-state ABI.
 //!
 //! This module describes the complete `0x0400_0000..0x0400_a000` quarantine
 //! as one Rust layout without claiming exclusive Rust ownership. Vendor code,
@@ -1407,11 +1407,9 @@ unsafe impl Sync for SharedDtcmState {}
 #[cfg(not(target_arch = "arm"))]
 static DTCM_STATE: SharedDtcmState = SharedDtcmState(UnsafeCell::new(MaybeUninit::zeroed()));
 
-/// Link-placed target regions follow the three distinct startup contracts.
-/// The first is populated by the retained vendor COPY image, the second is
-/// explicitly zeroed on cold startup, and the final research quarantine is
-/// retained without initialization. Keeping separate Rust allocations makes
-/// later typed migration possible without changing any physical address.
+/// Link-placed target regions follow the zeroed-BSS and retained-noinit startup
+/// contracts. Separate family allocations preserve exact physical identities
+/// without claiming exclusive ownership.
 #[repr(transparent)]
 struct SharedDtcmRegion<T>(UnsafeCell<MaybeUninit<T>>);
 
@@ -2863,6 +2861,21 @@ pub(crate) const fn irq_callback_unchecked(index: usize) -> DtcmAddress { DtcmAd
 pub(crate) const VISIBLE_COMPLETION_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, visible_completion_words));
 pub(crate) const fn visible_completion_word(index: usize) -> Option<DtcmAddress> { if index < 10 { Some(visible_completion_word_unchecked(index)) } else { None } }
 pub(crate) const fn visible_completion_word_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(VISIBLE_COMPLETION_WORDS.offset() + index * core::mem::size_of::<SharedU32>()) }
+
+/// Raw root for the link-placed completion-class presence family.
+#[inline(always)]
+pub(crate) fn visible_completion_words_ptr() -> *mut u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_VISIBLE_COMPLETION_WORDS)
+            .cast_mut()
+            .cast::<u32>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.visible_completion_words).cast::<u32>()
+    }
+}
 pub(crate) const TX_DURATION_TIMING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, tx_duration_timing));
 pub(crate) const RATE_ENCODING_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, rate_encoding));
 pub(crate) const RATE_ATTRIBUTE_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, rate_attributes));
