@@ -188,11 +188,12 @@ blocked. Older family-local aliases and record-internal arithmetic still require
 boot/retention source and cold/warm snapshot behavior of every live initialized word must be closed
 before ordinary source decomposition can be called safe. The active writer matrix and capture
 procedure are maintained in <code>dtcm-runtime-contract.md</code>.</div>
-<p>The internal TX context pool is the first runtime family migrated from the
-opaque BSS allocation. An opaque prefix, typed <code>InternalContextPoolState</code>,
-and opaque suffix are linked contiguously into the same <code>.dtcm.bss</code>
-output section. The pool therefore has a regular Rust allocation identity while
-retaining its exact <code>0x04009080..0x040094d4</code> hardware ABI.</p>
+<p>The internal TX context pool and the 30-record host TX context array are the
+first runtime families migrated from the opaque BSS allocation. Opaque and typed
+input objects are linked contiguously into the same <code>.dtcm.bss</code> output
+section. The host contexts therefore have a regular Rust allocation identity at
+<code>0x04005a24..0x04008544</code>, while the internal pool retains its exact
+<code>0x04009080..0x040094d4</code> hardware ABI.</p>
 <ul>
 <li>Ordinary translated CPU-only state already belongs in ITCM <code>.data</code>/<code>.bss</code>.
 Do not move it back into DTCM for visual symmetry.</li>

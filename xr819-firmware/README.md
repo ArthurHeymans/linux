@@ -435,12 +435,15 @@ now the typed `.dtcm.data` allocation; the runtime range remains opaque pending
 family ownership closure, and the final 956-byte research margin has an explicit
 `.dtcm.noinit` retention contract. The complete `DtcmLayout` remains the host
 layout oracle rather than the target allocation. The internal TX context pool
-is the first typed object split out of the opaque runtime allocation: linker
-input sections place the opaque prefix, `InternalContextPoolState`, and opaque
-suffix contiguously inside the single `.dtcm.bss` output section. Its physical
-range remains `0x04009080..0x040094d4`, and existing linker-exported member
-symbols now derive from the typed object itself; there is still no standalone
-`.dtcm.context_pool` output section.
+was the first typed object split out of the opaque runtime allocation. The
+30-record `HostTxContexts` array is now the second and much larger typed object.
+Linker input sections place the opaque prefix, host contexts, opaque middle,
+`InternalContextPoolState`, and opaque suffix contiguously inside the single
+`.dtcm.bss` output section. Host contexts remain exactly
+`0x04005a24..0x04008544`; the internal pool remains
+`0x04009080..0x040094d4`, and its existing linker-exported member symbols derive
+from the typed object itself. Neither family creates a standalone output
+section.
 
 CP15 `c0,c0,2` reports `0x001c0200`, whose standard fields describe 128 KiB
 ITCM and 64 KiB DTCM. That physical-size report does not provide another
