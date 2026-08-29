@@ -106,7 +106,10 @@ SECTIONS
         __dtcm_bss_start = .;
         KEEP(*(.dtcm.bss.prefix))
         KEEP(*(.dtcm.bss.host_tx_contexts))
-        KEEP(*(.dtcm.bss.middle))
+        KEEP(*(.dtcm.bss.middle_prefix))
+        KEEP(*(.dtcm.bss.host_context_accounting))
+        KEEP(*(.dtcm.bss.host_context_free_list))
+        KEEP(*(.dtcm.bss.middle_suffix))
         KEEP(*(.dtcm.bss.internal_context_pool))
         KEEP(*(.dtcm.bss.suffix))
         __dtcm_bss_end = .;
@@ -160,8 +163,14 @@ SECTIONS
            "XR819 DTCM BSS prefix moved")
     ASSERT(DTCM_HOST_TX_CONTEXTS == __dtcm_bss_start + 0x39ac,
            "XR819 typed host-TX contexts moved")
-    ASSERT(DTCM_BSS_MIDDLE == DTCM_HOST_TX_CONTEXTS + 30 * 0x170,
-           "XR819 DTCM BSS middle moved")
+    ASSERT(DTCM_BSS_MIDDLE_PREFIX == DTCM_HOST_TX_CONTEXTS + 30 * 0x170,
+           "XR819 DTCM BSS middle prefix moved")
+    ASSERT(DTCM_HOST_CONTEXT_ACCOUNTING == DTCM_BSS_MIDDLE_PREFIX + 0x254,
+           "XR819 typed host-context accounting moved")
+    ASSERT(DTCM_HOST_CONTEXT_FREE_LIST == DTCM_HOST_CONTEXT_ACCOUNTING + 0x18,
+           "XR819 typed host-context free list moved")
+    ASSERT(DTCM_BSS_MIDDLE_SUFFIX == DTCM_HOST_CONTEXT_FREE_LIST + 0x8,
+           "XR819 DTCM BSS middle suffix moved")
     ASSERT(DTCM_INTERNAL_CONTEXT_POOL == ORIGIN(DTCM_STATE) + 0x9080,
            "XR819 typed internal-context pool moved")
     ASSERT(DTCM_BSS_SUFFIX == ORIGIN(DTCM_STATE) + 0x94d4,

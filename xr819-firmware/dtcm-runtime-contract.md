@@ -32,18 +32,20 @@ boundary.
 
 `DtcmLayout` remains the complete host-side layout oracle. On ARM,
 `InitializedVendorImage` is a typed link-placed allocation. The runtime BSS is
-split into an opaque prefix, typed `HostTxContexts`, opaque middle, typed
+split into an opaque prefix, typed `HostTxContexts`, opaque middle prefix, typed
+`HostContextAccounting` and `HostContextFreeList`, opaque middle suffix, typed
 `InternalContextPoolState`, and opaque suffix inside the same `.dtcm.bss` output
-section. The 30 host contexts remain exactly `0x04005a24..0x04008544`; the pool
-remains `0x04009080..0x040094d4`. Both retain the qualified startup, allocation,
+section. The 30 host contexts remain exactly `0x04005a24..0x04008544`; the
+accounting/free-list roots remain `0x04008798..0x040087b8`; and the pool remains
+`0x04009080..0x040094d4`. These retain the qualified startup, allocation,
 publication, retry, completion, teardown, and warm-reload behavior. New family
 statics may replace further subranges only by preserving the section
 partition and exact address assertions; the section names do not grant
 exclusive Rust ownership.
 
-The typed-host-context image
-`b6c119647696051d9ce1b80a0ac13405d09786f84a4456410a25ac4537039487`
-is hardware-qualified. Cold WPA2 MCS1 TCP reached 5.61 Mbit/s, followed by
+The typed-host-allocator image
+`311a4975a073eb6f4dcd9ff22cbf53515c8b3f949e292f5de8f3cb30857f8dc9`
+is hardware-qualified. Cold WPA2 MCS1 TCP reached 4.99 Mbit/s, followed by
 20/20 ping, BH alive, WSM idle, and zero buffers. An association-safe warm SDIO
 reload then completed a 30-second 3 Mbit/s UDP run at 3.15 Mbit/s offered and
 3.14 Mbit/s received, followed by 20/20 ping and another zero-buffer drain.
