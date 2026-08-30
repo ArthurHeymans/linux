@@ -46,9 +46,11 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
+# rust_main reaches the TSF fields through the typed 0x04001420 allocation;
+# LLVM also reuses the adjacent 0x0400143c anchor for the same ordered accesses.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001428: 3,
-    0x0400143C: 13,
+    0x04001420: 1,
+    0x0400143C: 15,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x0400143C): 1,
@@ -62,7 +64,8 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25decrypt_rx_frame_hardware', 0x0400143C): 18,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25encrypt_tx_frame_hardware', 0x0400143C): 18,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware6crypto26run_hardware_ccmp_selftest', 0x0400143C): 8,
-    ('rust_main', 0x04001428): 4,
+    ('rust_main', 0x04001420): 2,
+    ('rust_main', 0x0400143C): 2,
 })
 
 

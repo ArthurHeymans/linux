@@ -79,7 +79,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x04001FF4): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware8platform19scheduler_event_irq', 0x04001FD4): 1,
         ('rust_main', 0x04001FCC): 1,
-        ('rust_main', 0x04001FD8): 9,
+        ('rust_main', 0x04001FD8): 10,
         ('xr819_raise_scheduler_bits', 0x04001FD4): 1,
     }
 )

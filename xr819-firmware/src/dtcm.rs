@@ -2903,6 +2903,36 @@ pub(crate) const fn initialized_rx_indication_state() -> DtcmAddress { initializ
 pub(crate) const fn initialized_tsf_resync_state() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, tsf_resync_state)) }
 pub(crate) const fn initialized_random_lfsr() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, random_lfsr)) }
 pub(crate) const fn initialized_tsf_accumulator_low() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, tsf_accumulator_low)) }
+
+#[inline(always)]
+fn initialized_control_words_ptr() -> *mut u8 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_CONTROL_WORDS)
+            .cast_mut()
+            .cast::<u8>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.control_words).cast::<u8>()
+    }
+}
+
+pub(crate) fn initialized_tsf_resync_state_ptr() -> *mut u32 {
+    unsafe {
+        initialized_control_words_ptr()
+            .add(core::mem::offset_of!(InitializedControlWords, tsf_resync_state))
+            .cast::<u32>()
+    }
+}
+
+pub(crate) fn initialized_tsf_accumulator_low_ptr() -> *mut u32 {
+    unsafe {
+        initialized_control_words_ptr()
+            .add(core::mem::offset_of!(InitializedControlWords, tsf_accumulator_low))
+            .cast::<u32>()
+    }
+}
 pub(crate) const fn initialized_timer_counter() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, timer_counter)) }
 pub const SCHEDULER_EVENT_ROOT: DtcmAddress = DtcmAddress::from_offset(0x1fd4);
 pub(crate) const RUNTIME_REGISTER_BACKOFF_STATE: DtcmAddress = DtcmAddress::from_offset(0x2078);

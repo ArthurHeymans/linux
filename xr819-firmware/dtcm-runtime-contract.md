@@ -82,6 +82,13 @@ accessors remain only as ABI/layout oracles. Image
 passes a 30-second aggregated 3.15 Mbit/s offered UDP run, 20/20 ping,
 zero-buffer drain, and association-safe warm rebind with BH alive and WSM idle.
 
+The TSF resynchronization and accumulator words now derive from the link-placed
+`InitializedControlWords` symbol for startup publication, bounded host-download
+polling, and interrupt-enable reconstruction. Image
+`e68fdad3c4712db9900963f3eb6a4108463ff94b44e42bce4eea9373e741de29`
+passes the same 30-second aggregated UDP, 20/20 ping, zero-buffer drain, and
+association-safe warm-rebind qualification.
+
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
 same-image reloads, followed by two further consecutive whole-image reloads.

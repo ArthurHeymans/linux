@@ -268,10 +268,10 @@ pub fn initialize_runtime_state() {
     unsafe {
         // Reconstruct the explicit startup values consumed after the shared
         // DTCM zero baseline.
-        (crate::dtcm::initialized_tsf_resync_state().get() as *mut u32).write_volatile(0);
+        crate::dtcm::initialized_tsf_resync_state_ptr().write_volatile(0);
         crate::tx::initialize_retry_random_state();
         crate::tx::initialize_completion_callback_presence();
-        (crate::dtcm::initialized_tsf_accumulator_low().get() as *mut u32).write_volatile(0);
+        crate::dtcm::initialized_tsf_accumulator_low_ptr().write_volatile(0);
     }
 }
 
@@ -280,8 +280,7 @@ pub fn initialize_runtime_state() {
 pub fn wait_for_host_download_completion(max_polls: u32) -> bool {
     for _ in 0..max_polls {
         if unsafe {
-            crate::dtcm::shared_ptr::<u32>(crate::dtcm::initialized_tsf_resync_state())
-                .read_volatile()
+            crate::dtcm::initialized_tsf_resync_state_ptr().read_volatile()
         } == 0
         {
             return true;
@@ -395,9 +394,9 @@ pub fn prepare_memory_and_interrupts() {
     interrupts
         .vector_base
         .set(((INTERRUPT_CONTROLLER_BASE as u32) << 9).wrapping_add(0));
-    interrupts
-        .enable
-        .set(unsafe { (crate::dtcm::initialized_tsf_accumulator_low().get() as *const u32).read_volatile() });
+    interrupts.enable.set(unsafe {
+        crate::dtcm::initialized_tsf_accumulator_low_ptr().read_volatile()
+    });
     interrupts.control.set(1);
 
     clock.mask_44.set(clock.mask_44.get() & 0x7fff_f777);
