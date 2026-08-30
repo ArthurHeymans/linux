@@ -75,6 +75,13 @@ sustained 3.15 Mbit/s offered UDP TX, 20/20 ping, and warm rebind without
 changing callback ordering or ownership. Qualified image:
 `6988ad72e2eba3b04297882e1f80da7aa9ca4343d6e3d239ba19e8772ed11609`.
 
+Scheduler exclusion publication and all translated foreground reads now derive
+from the link-placed `SchedulerExclusionState` symbol. The numeric field
+accessors remain only as ABI/layout oracles. Image
+`d0b60b4a1ce5809dadca0e0c041f20f853e04dd167975cd2859fc3201a0f8844`
+passes a 30-second aggregated 3.15 Mbit/s offered UDP run, 20/20 ping,
+zero-buffer drain, and association-safe warm rebind with BH alive and WSM idle.
+
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
 same-image reloads, followed by two further consecutive whole-image reloads.

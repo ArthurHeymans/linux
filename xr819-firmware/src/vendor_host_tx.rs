@@ -572,7 +572,7 @@ unsafe fn program_pipe_eligible(context: HostContextAddress) -> bool {
         until_tbtt < 1 || until_tbtt <= duration as i32
     };
     let policy = unsafe { read_live_u8(pas + 0x0e) };
-    let global = unsafe { read_live_u32(crate::dtcm::scheduler_exclusion_mask().get() as u32) };
+    let global = unsafe { crate::dtcm::scheduler_exclusion_state_ptr().read_volatile() };
     if (policy != 0x0f || global & 0x80 == 0) && blocked { return false; }
     if vif_control_bits & 4 == 0 { return true; }
 
@@ -790,7 +790,7 @@ pub unsafe fn pending_live_diagnostic(retained: &RetainedHostTx) -> PendingLiveD
     let link = unsafe { read_host_u8(context.host_link()) };
     let vif = crate::vif::diagnostic_snapshot(interface);
     PendingLiveDiagnostic {
-        global: unsafe { read_live_u32(crate::dtcm::scheduler_exclusion_mask().get() as u32) },
+        global: unsafe { crate::dtcm::scheduler_exclusion_state_ptr().read_volatile() },
         active_mask: vif.map_or(0, |state| state.allowed_links),
         effective_mask: vif.map_or(0, |state| state.effective_links),
         vif_control_bits: vif.map_or(0, |state| state.flags),
@@ -819,7 +819,7 @@ pub unsafe fn service_pending(
     let link = unsafe { read_host_u8(context.host_link()) };
     let link_bit = 1_u16.wrapping_shl(u32::from(link));
     let completion_class = unsafe { read_host_u8(context.completion_class()) };
-    let global_blocked = unsafe { read_live_u32(crate::dtcm::scheduler_exclusion_mask().get() as u32) } & 0xa0 != 0;
+    let global_blocked = unsafe { crate::dtcm::scheduler_exclusion_state_ptr().read_volatile() } & 0xa0 != 0;
     let now = unsafe { vendor_timer() };
     let submitted = unsafe { read_host_u32(context.submit_timer()) };
     let expired = (submitted.wrapping_sub(now).wrapping_add(0x004c_4b40) as i32) < 0;

@@ -249,12 +249,13 @@ fn register_interrupt_source(irq: u32) {
 pub fn initialize_runtime_state() {
     unsafe { crate::dtcm::zero_runtime_bss() };
 
-    // Initialized vendor SRAM supplies the scheduler/radio exclusion word
-    // immediately before the event structure. Sectioned custom images do not
-    // carry that data segment, so stale bootloader bits (notably 0x20) would
-    // make `task_b88e` leave every class-0 frame pending.
-    register32(crate::dtcm::scheduler_exclusion_mask().get()).set(0);
-    register32(crate::dtcm::scheduler_secondary_exclusion().get()).set(0);
+    // Publish the scheduler/radio exclusion family from its typed allocation
+    // root before any class-0 owner can observe it.
+    let scheduler_exclusion = crate::dtcm::scheduler_exclusion_state_ptr();
+    unsafe {
+        scheduler_exclusion.write_volatile(0);
+        scheduler_exclusion.add(1).write_volatile(0);
+    }
 
     boot_word(0x04).set(0);
     boot_write_u16(0x08, 7);
@@ -265,9 +266,8 @@ pub fn initialize_runtime_state() {
     boot_word(0x18).set(0x200);
     boot_word(0x1c).set(0);
     unsafe {
-        // The vendor container's initialized-SRAM segment supplies the zero
-        // observed by 0x164bc at 0x04001428. Our flat custom image omits that
-        // segment, so reproduce its loader effect before entering startup.
+        // Reconstruct the explicit startup values consumed after the shared
+        // DTCM zero baseline.
         (crate::dtcm::initialized_tsf_resync_state().get() as *mut u32).write_volatile(0);
         crate::tx::initialize_retry_random_state();
         crate::tx::initialize_completion_callback_presence();

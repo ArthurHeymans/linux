@@ -55,8 +55,11 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
+# rust_main reaches the preceding typed exclusion object through the adjacent
+# 0x04001fd8 event root with negative offsets; the two stores remain at
+# 0x04001fcc and 0x04001fd0 before event publication.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04001FCC: 3, 0x04001FD4: 5, 0x04001FD8: 1, 0x04001FE6: 1,
+    {0x04001FCC: 3, 0x04001FD4: 5, 0x04001FD8: 2, 0x04001FE6: 1,
      0x04001FF0: 2, 0x04001FF4: 1, 0x04001FFC: 1, 0x04002014: 2}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
@@ -75,7 +78,8 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy29initialize_mac_software_state', 0x04001FFC): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x04001FF4): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware8platform19scheduler_event_irq', 0x04001FD4): 1,
-        ('rust_main', 0x04001FCC): 9,
+        ('rust_main', 0x04001FCC): 1,
+        ('rust_main', 0x04001FD8): 9,
         ('xr819_raise_scheduler_bits', 0x04001FD4): 1,
     }
 )

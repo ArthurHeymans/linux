@@ -3669,6 +3669,21 @@ const fn scheduler_event_field(offset: usize) -> DtcmAddress {
 pub(crate) const fn scheduler_event_offset_unchecked(offset: usize) -> DtcmAddress { scheduler_event_field(offset) }
 pub(crate) const fn scheduler_exclusion_mask() -> DtcmAddress { scheduler_exclusion_field(core::mem::offset_of!(SchedulerExclusionState, exclusion_mask)) }
 pub(crate) const fn scheduler_secondary_exclusion() -> DtcmAddress { scheduler_exclusion_field(core::mem::offset_of!(SchedulerExclusionState, secondary_exclusion)) }
+
+/// Raw root for the link-placed scheduler exclusion family.
+#[inline(always)]
+pub(crate) fn scheduler_exclusion_state_ptr() -> *mut u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_SCHEDULER_EXCLUSION_STATE)
+            .cast_mut()
+            .cast::<u32>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.scheduler_exclusion_state).cast::<u32>()
+    }
+}
 pub(crate) const fn scheduler_pending_events() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, pending_events)) }
 pub(crate) const fn scheduler_runtime_flags() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, runtime_flags)) }
 pub(crate) const fn scheduler_startup_mode() -> DtcmAddress { scheduler_event_field(core::mem::offset_of!(SchedulerEventIsland, startup_mode)) }
