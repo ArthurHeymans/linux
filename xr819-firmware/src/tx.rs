@@ -2699,7 +2699,7 @@ where
     mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
 
     let ring = TxHardwareRingAddress::new(mmio.read_u32(record.hardware_ring().get() as u32));
-    if mmio.read_u8(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32) & 2 != 0 {
+    if mmio.read_u8(crate::dtcm::mac_retry_hardware_state_mmio_address()) & 2 != 0 {
         mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
         mmio.write_u32(
             PIPE_IRQ_PENDING,
@@ -6938,10 +6938,14 @@ fn mac_drain_tail_transition(control: u8, hardware_idle: bool, pipes_idle: bool)
 /// Event servicing must own DTCM scheduler state and MAC MMIO.
 pub unsafe fn service_mac_event_drain_tail() {
     unsafe {
-        let control = (crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as *mut u8).read_volatile();
+        let control = crate::dtcm::mac_retry_hardware_state_ptr()
+            .cast::<u8>()
+            .read_volatile();
         let next = mac_drain_tail_transition(control, mac_hardware_idle(), mac_pipe_records_idle());
         if let Some(next) = next {
-            (crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as *mut u8).write_volatile(next);
+            crate::dtcm::mac_retry_hardware_state_ptr()
+                .cast::<u8>()
+                .write_volatile(next);
             raise_scheduler_bits(1 << 31);
         }
     }

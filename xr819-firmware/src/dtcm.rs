@@ -2791,6 +2791,35 @@ pub(crate) fn mac_tx_queue_state_ptr() -> *mut u32 {
     }
 }
 pub(crate) const MAC_RETRY_HARDWARE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, mac_retry_hardware_state));
+
+/// Raw root for the link-placed retry and drain control word.
+#[inline(always)]
+pub(crate) fn mac_retry_hardware_state_ptr() -> *mut u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_MAC_RETRY_HARDWARE_STATE)
+            .cast_mut()
+            .cast::<u32>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.mac_retry_hardware_state).cast::<u32>()
+    }
+}
+
+/// Numeric boundary for translated MMIO abstractions; host tests retain the
+/// fixed-address layout oracle instead of truncating a process-local pointer.
+#[inline(always)]
+pub(crate) fn mac_retry_hardware_state_mmio_address() -> u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        mac_retry_hardware_state_ptr() as usize as u32
+    }
+    #[cfg(not(target_arch = "arm"))]
+    {
+        MAC_RETRY_HARDWARE_STATE.get() as u32
+    }
+}
 pub(crate) const MAC_RUNTIME_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, mac_runtime_accounting));
 pub(crate) const MAC_CURRENT_PIPE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_pipe));
 pub(crate) const MAC_STATUS_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, status_accounting));

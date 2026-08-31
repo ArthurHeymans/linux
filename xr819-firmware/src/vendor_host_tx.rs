@@ -1025,7 +1025,9 @@ pub unsafe fn scheduler_live_diagnostic(retained: &RetainedHostTx) -> SchedulerL
         ring_tail,
         ring_contains_frame: slot != ring_tail,
         pipe_allowed: unsafe { program_pipe_eligible(context) },
-        retry_gate: unsafe { read_live_u8(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32) },
+        retry_gate: unsafe {
+            read_live_u8(crate::dtcm::mac_retry_hardware_state_mmio_address())
+        },
         receive_gate: unsafe {
             read_live_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as u32)
         },
@@ -1386,7 +1388,7 @@ unsafe fn reserve_non_aggregate_scheduler_at(
     if retained.phase != HostTxPhase::PasQueued {
         return Err(SchedulerReserveError::WrongPhase);
     }
-    if unsafe { read_live_u8(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32) } != 0
+    if unsafe { read_live_u8(crate::dtcm::mac_retry_hardware_state_mmio_address()) } != 0
         || unsafe { read_live_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as u32) } != 0
     {
         return Err(SchedulerReserveError::SchedulerBlocked);
