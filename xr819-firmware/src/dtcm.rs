@@ -2775,6 +2775,21 @@ pub(crate) const fn initialized_rate_policy_word_unchecked(policy: usize, word: 
 pub(crate) const MAC_TX_QUEUE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, mac_tx_queue_state));
 pub(crate) const MAC_TX_QUEUE_HEAD: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, head));
 pub(crate) const MAC_TX_QUEUE_TAIL: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, tail));
+
+/// Raw root for the link-placed MAC TX queue head and tail.
+#[inline(always)]
+pub(crate) fn mac_tx_queue_state_ptr() -> *mut u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_MAC_TX_QUEUE_STATE)
+            .cast_mut()
+            .cast::<u32>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.mac_tx_queue_state).cast::<u32>()
+    }
+}
 pub(crate) const MAC_RETRY_HARDWARE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, mac_retry_hardware_state));
 pub(crate) const MAC_RUNTIME_ACCOUNTING: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, mac_runtime_accounting));
 pub(crate) const MAC_CURRENT_PIPE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, current_pipe));

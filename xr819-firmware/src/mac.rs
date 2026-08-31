@@ -881,8 +881,9 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u8(crate::dtcm::LOW_MAC_CONTROL_04.get(), 0);
         write_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get(), 0x13);
         write_u8(crate::dtcm::LOW_MAC_LEGACY_MODE.get(), 0);
-        write_u32(crate::dtcm::MAC_TX_QUEUE_HEAD.get(), 0);
-        write_u32(crate::dtcm::MAC_TX_QUEUE_TAIL.get(), 0);
+        let tx_queue_state = crate::dtcm::mac_tx_queue_state_ptr();
+        tx_queue_state.write_volatile(0);
+        tx_queue_state.add(1).write_volatile(0);
         write_u8(crate::dtcm::MAC_BEACON_MODE.get(), 2);
         write_u32(crate::dtcm::RX_FIFO_STATE.release_cursor().get(), 0);
         write_u32(crate::dtcm::RX_FIFO_STATE.claim_cursor().get(), 0);

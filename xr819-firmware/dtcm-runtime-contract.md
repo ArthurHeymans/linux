@@ -134,6 +134,13 @@ confirmations, 20/20 ping, and zero-buffer drain with BH alive and WSM idle. The
 same image then passed association-safe warm rebind and another 20/20 ping with
 the same alive/idle/zero-buffer state.
 
+The MAC TX queue head and tail startup reset now derives from the link-placed
+`DTCM_DATA_MAC_TX_QUEUE_STATE` symbol. The two volatile `u32` zero writes remain
+adjacent and ordered head before tail. The packed hardware image is byte-for-byte
+identical to
+`e70ec8f26fdd6df2b91dc28965960e2ac003b96da4bdc193ca41ae95472d34b2`,
+so the same cold aggregated-traffic and warm-rebind qualification applies.
+
 The adjacent initialized rate-policy source was tested but deliberately not
 migrated. Candidate image
 `65794a8b45666f3a41a79ba02b8ff378d0c2fd86ffe7cbee6ff09abb5d58a8d2`
@@ -202,7 +209,7 @@ that warm reload is deterministic.
 | remaining `control_words` | MAC/HIF timing state | Rust zero baseline | zero unless a later family initializer writes it | mixed translated/vendor consumers | family-specific | mixed | zero baseline qualified; semantics open |
 | `host_pas_ring.head/tail` | host PAS scheduler | Rust zero baseline, then both words zeroed | rebuilt roots | host-TX scheduler; MAC startup writer | MAC domain / IRQ+FIQ exclusion | no | roots closed |
 | `host_pas_ring.slots[64]` | host PAS scheduler | Rust zero baseline | all slots reset with head/tail | PAS scheduler and diagnostics | MAC domain / IRQ+FIQ exclusion | no | reset policy closed; slot semantics remain shared |
-| `mac_tx_queue_state` | MAC TX queue | Rust zero baseline, then head and tail zeroed | rebuilt | MAC/TX paths; MAC startup writer | MAC domain / IRQ+FIQ exclusion | no | closed at startup |
+| `mac_tx_queue_state` | MAC TX queue | Rust zero baseline, then head and tail zeroed through the linker root | rebuilt | MAC/TX paths; translated startup writer plus possible vendor/IRQ readers | startup writes are volatile `u32`, ordered head then tail before beacon/RX state reset | no | translated linker-root startup writes closed; runtime reader ownership remains shared/open |
 | `mac_pipe_records[4]` | packet-controller pipe ownership | Rust zero baseline, then `mac::rebuild_pipe_state` reconstructs pipe records | rebuilt by family initializer | MAC/TX/FIQ completion paths | MAC domain / IRQ+FIQ exclusion | yes | audit exact per-field publication order |
 | `mac_retry_hardware_state` | retry/drain gate | Rust zero baseline, then complete control word zero | rebuilt | MAC/TX completion; MAC startup writer | MAC domain / IRQ+FIQ exclusion | indirectly | closed at startup |
 | `mac_beacon_state.mode` and control words | beacon/response state | Rust zero baseline; mode becomes 2 and four control words become zero | partially rebuilt | beacon/TBTT paths; MAC startup writer | MAC domain | yes | open: response and completion fields retained |
