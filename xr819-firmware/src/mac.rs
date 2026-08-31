@@ -864,16 +864,17 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         write_u32(crate::dtcm::mac_edca_slot_timing_ptr() as usize, 0);
         write_u32(crate::dtcm::pas_backoff_override_enabled().get(), 0);
         write_u32(crate::dtcm::pas_backoff_override_window().get(), 0);
+        let initialized_rate_policies = crate::dtcm::initialized_rate_policies_ptr();
         for word in 0..5 {
             write_u32(
                 crate::dtcm::rate_policy_word_unchecked(0, word).get(),
-                read_u32(crate::dtcm::initialized_rate_policy_word_unchecked(0, word).get()),
+                read_u32(initialized_rate_policies.add(word) as usize),
             );
         }
         for word in 0..5 {
             write_u32(
                 crate::dtcm::rate_policy_word_unchecked(1, word).get(),
-                read_u32(crate::dtcm::initialized_rate_policy_word_unchecked(1, word).get()),
+                read_u32(initialized_rate_policies.add(5 + word) as usize),
             );
         }
 

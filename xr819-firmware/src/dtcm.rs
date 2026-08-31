@@ -2772,6 +2772,23 @@ pub(crate) const fn phy_gain_programming_rssi_value_unchecked(slot: usize) -> Dt
 pub(crate) const INITIALIZED_RATE_POLICIES: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, initialized_rate_policies));
 pub(crate) const fn initialized_rate_policy_word(policy: usize, word: usize) -> Option<DtcmAddress> { if policy < 2 && word < 5 { Some(initialized_rate_policy_word_unchecked(policy, word)) } else { None } }
 pub(crate) const fn initialized_rate_policy_word_unchecked(policy: usize, word: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(INITIALIZED_RATE_POLICIES.offset() + (policy * 5 + word) * core::mem::size_of::<SharedU32>()) }
+
+/// Raw root for translated reads from the link-placed initialized PAS policy
+/// templates. Retained or vendor ownership is not inferred from this pointer.
+#[inline(always)]
+pub(crate) fn initialized_rate_policies_ptr() -> *mut u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_INITIALIZED_RATE_POLICIES)
+            .cast_mut()
+            .cast::<u32>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.initialized_rate_policies).cast::<u32>()
+    }
+}
+
 pub(crate) const MAC_TX_QUEUE_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, mac_tx_queue_state));
 pub(crate) const MAC_TX_QUEUE_HEAD: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, head));
 pub(crate) const MAC_TX_QUEUE_TAIL: DtcmAddress = DtcmAddress::from_offset(MAC_TX_QUEUE_STATE.offset() + core::mem::offset_of!(MacTxQueueState, tail));
@@ -5485,6 +5502,10 @@ mod tests {
         assert_eq!(initialized_rate_policy_word(1, 0).unwrap().get(), 0x0400_0214);
         assert_eq!(initialized_rate_policy_word(1, 4).unwrap().get(), 0x0400_0224);
         assert_eq!(initialized_rate_policy_word(1, 4).unwrap().get() + 4, 0x0400_0228);
+        let linked_root = initialized_rate_policies_ptr() as usize;
+        assert_eq!(unsafe { initialized_rate_policies_ptr().add(4) } as usize, linked_root + 0x10);
+        assert_eq!(unsafe { initialized_rate_policies_ptr().add(5) } as usize, linked_root + 0x14);
+        assert_eq!(unsafe { initialized_rate_policies_ptr().add(9) } as usize, linked_root + 0x24);
         assert!(initialized_rate_policy_word(2, 0).is_none());
         assert!(initialized_rate_policy_word(0, 5).is_none());
     }
