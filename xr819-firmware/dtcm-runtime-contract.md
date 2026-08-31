@@ -89,6 +89,19 @@ polling, and interrupt-enable reconstruction. Image
 passes the same 30-second aggregated UDP, 20/20 ping, zero-buffer drain, and
 association-safe warm-rebind qualification.
 
+All translated timer-counter reads now derive from that same link-placed
+control-word symbol. The scan clock, scheduler deadline construction, and both
+host-TX timestamp paths preserve their volatile 32-bit read immediately after
+the hardware timer read and retain wrapping addition. Rust still has no
+field-specific writer beyond initialized-prefix zeroing; possible vendor,
+IRQ/FIQ, callback, or hardware mutation remains shared quarantine rather than
+exclusive Rust ownership. Image
+`6fffffe1133990370503450eef41366923871b53093873dba3e1a5020f8661a3`
+completed a 30-second 3.15 Mbit/s offered UDP run with 1,804 aggregate
+confirmations, drained to zero used buffers, and passed 20/20 ping with BH alive
+and WSM idle. The exact image then passed association-safe warm rebind and
+another 20/20 ping with the same alive/idle/zero-buffer state.
+
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
 same-image reloads, followed by two further consecutive whole-image reloads.
@@ -142,6 +155,7 @@ that warm reload is deterministic.
 | `control_words.tsf_resync_state` | TSF control | Rust zero baseline, then explicit zero | rebuilt | MAC/TSF paths; platform writer | startup single-threaded | indirectly | closed at startup |
 | `control_words.random_lfsr` | vendor retry state | Rust zero baseline; translated Rust retry logic uses a separate ITCM `RETRY_RANDOM_STATE` | reset to zero | vendor consumers only; no translated Rust writer | family-specific | no | zero baseline qualified; semantic ownership open |
 | `control_words.tsf_accumulator_low` | TSF accumulation | Rust zero baseline, then explicit zero | rebuilt | TSF paths; platform writer | startup single-threaded | indirectly | closed for low word |
+| `control_words.timer_counter` | vendor timer offset | Rust zero baseline; no field-specific translated writer | reset to zero before runtime | scan, scheduler, and host-TX timestamp readers; vendor/IRQ/hardware writers remain possible | each translated read is one volatile `u32` snapshot before wrapping addition | indirectly, through deadline/timestamp construction | translated linker-root reads closed; writer ownership remains shared/open |
 | remaining `control_words` | MAC/HIF timing state | Rust zero baseline | zero unless a later family initializer writes it | mixed translated/vendor consumers | family-specific | mixed | zero baseline qualified; semantics open |
 | `host_pas_ring.head/tail` | host PAS scheduler | Rust zero baseline, then both words zeroed | rebuilt roots | host-TX scheduler; MAC startup writer | MAC domain / IRQ+FIQ exclusion | no | roots closed |
 | `host_pas_ring.slots[64]` | host PAS scheduler | Rust zero baseline | all slots reset with head/tail | PAS scheduler and diagnostics | MAC domain / IRQ+FIQ exclusion | no | reset policy closed; slot semantics remain shared |

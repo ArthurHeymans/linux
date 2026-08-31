@@ -57,13 +57,15 @@ FORBIDDEN_FORMS = (
 # completion use typed host-context fields. Reviewing the candidate disassembly
 # confirms that LLVM's adjacent retained-HIF byte literals move with reviewed
 # control-flow changes; no decoded literal load or raw-address owner was
-# introduced. Explicit completion-class publication changes rust_main inlining
-# and leaves the surviving byte literals in complete_tx_pipe_slot and prepared
-# descriptor emission at 0x04009806, 0x0400980b, 0x04009810, and 0x0400985a. Retry nibble
-# advancement remains confined to the typed selective retry helper, while
-# partial give-up reuses ordinary kind-0 completion.
+# introduced. Explicit completion-class publication changes rust_main inlining.
+# Deriving the timer counter from its control-word root changes rust_main code
+# bytes and removes the accidental 0x0400985a sequence; no decoded HIF address
+# load disappears with it. The surviving byte literals remain at 0x04009806,
+# 0x0400980b, and 0x04009810, including prepared descriptor emission. Retry
+# nibble advancement remains confined to the typed selective retry helper,
+# while partial give-up reuses ordinary kind-0 completion.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04009806: 1, 0x0400980B: 1, 0x04009810: 1, 0x0400985A: 1}
+    {0x04009806: 1, 0x0400980B: 1, 0x04009810: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 

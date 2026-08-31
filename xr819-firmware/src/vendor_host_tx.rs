@@ -523,7 +523,10 @@ pub unsafe fn vendor_timer_now() -> u32 {
 
 #[cfg(target_arch = "arm")]
 unsafe fn vendor_timer() -> u32 {
-    unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(crate::dtcm::initialized_timer_counter().get() as u32)) }
+    unsafe {
+        read_live_u32(0x0ac0_0004)
+            .wrapping_add(crate::dtcm::initialized_timer_counter_ptr().read_volatile())
+    }
 }
 
 #[allow(unused_macros)]
@@ -1962,8 +1965,10 @@ pub unsafe fn admit_host_tx(
     let ac = unsafe {
         read_live_u8(crate::dtcm::queue_to_access_category_unchecked(usize::from(queue)).get() as u32)
     };
-    let submit_timer =
-        unsafe { read_live_u32(0x0ac0_0004).wrapping_add(read_live_u32(crate::dtcm::initialized_timer_counter().get() as u32)) };
+    let submit_timer = unsafe {
+        read_live_u32(0x0ac0_0004)
+            .wrapping_add(crate::dtcm::initialized_timer_counter_ptr().read_volatile())
+    };
     let packet_id = request.packet_id;
     let metadata = HostTxMetadata {
         message_address: buffer.buffer_address(),

@@ -2933,6 +2933,15 @@ pub(crate) fn initialized_tsf_accumulator_low_ptr() -> *mut u32 {
             .cast::<u32>()
     }
 }
+
+pub(crate) fn initialized_timer_counter_ptr() -> *const u32 {
+    unsafe {
+        initialized_control_words_ptr()
+            .add(core::mem::offset_of!(InitializedControlWords, timer_counter))
+            .cast::<u32>()
+            .cast_const()
+    }
+}
 pub(crate) const fn initialized_timer_counter() -> DtcmAddress { initialized_control_field(core::mem::offset_of!(InitializedControlWords, timer_counter)) }
 pub const SCHEDULER_EVENT_ROOT: DtcmAddress = DtcmAddress::from_offset(0x1fd4);
 pub(crate) const RUNTIME_REGISTER_BACKOFF_STATE: DtcmAddress = DtcmAddress::from_offset(0x2078);

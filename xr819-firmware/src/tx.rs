@@ -3312,7 +3312,7 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
         }
         let duration = if duration as i32 >= 0 { duration } else { 0 };
         let deadline = read_u32(0x0ac0_0004)
-            .wrapping_add(read_u32(crate::dtcm::initialized_timer_counter().get()))
+            .wrapping_add(crate::dtcm::initialized_timer_counter_ptr().read_volatile())
             .wrapping_add(duration);
         if publication_bisect_reached(5) {
             return 5;
