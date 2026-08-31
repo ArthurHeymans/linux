@@ -46,18 +46,37 @@ IRQ/FIQ, hardware, and translated Rust sharing remains represented by
 preserve the section partition and exact address assertions; typed allocation
 does not grant exclusive Rust ownership or permit relocation.
 
-The foreground ITCM runtime cluster is also address-sensitive quarantine rather
-than ordinary relocatable Rust BSS. Moving `HOST_TX_DRIVER` from `0x000143ac`
-to `0x000143b4` reproducibly corrupted its private `service_cursor` before the
-bounds-checked `states[index]` access. The terminal record decoded as Rust panic
-kind `0x100`, `src/host_tx_driver.rs:244:18` (file hash `0x42df8b59`). Controls
-that retained the HIF queues, ring state, and host-TX driver at their qualified
-addresses survived traffic while later BSS moved; retaining only the HIF queues
-or HIF queues plus ring state did not. The linker therefore orders and asserts
-the `0x00014210..0x00015150` foreground prefix through `HOST_TX_DRIVER`; response
-scratch, transport, and later BSS remain relocatable. Normal translated access
-remains Rust-owned, but the prefix's physical identity stays shared/open until
-the stale or external writer is identified.
+The foreground ITCM runtime cluster is ordinary Rust-owned BSS; it has no
+external physical-address ABI. Its apparent placement dependency was an
+internal packet-RAM address-space bug in the depth-two A-MPDU whole-rearm path.
+The initial command encoded packet record `0x0901514c` for the MAC bus as
+`0x0001514c`. Rearm recovered that bus-form value from the command and then used
+it as a CPU pointer while rebuilding the software record. In the qualified
+layout the overwrite landed on self-resetting scheduler flags and response
+scratch. Moving `HOST_TX_DRIVER` by eight bytes placed its private
+`service_cursor` at `0x0001514c`, exposing the existing overwrite as the
+bounds panic at `src/host_tx_driver.rs:244:18`.
+
+Whole rearm now obtains the CPU-form packet-RAM address from the retained
+software-record free-list node and rejects addresses that are not exact linker-
+owned software-record bases. Hardware commands still receive only the masked
+bus encoding. The temporary linker ordering, fixed-address assertions, and
+foreground-layout gate were removed rather than preserving the accidental
+collision as an ABI. HIF queues, ring state, `HOST_TX_DRIVER`, response scratch,
+and transport therefore remain relocatable Rust-owned BSS.
+
+The corrected hardware-feature image
+`52952343b5abc4d9a4097410a9b3177470d047f660064acd6afec570ae90e0fc`
+relocated the whole foreground cluster by `0x60`: `HIF_QUEUES` to `0x00014270`,
+`HIF_RING_STATE` to `0x000143f4`, `HOST_TX_DRIVER` to `0x0001440c`, response
+scratch to `0x000151b0`, and transport to `0x00015330`. The formerly corrupting
+CPU address `0x0001514c` therefore lay inside `HOST_TX_DRIVER` during
+qualification rather than in self-resetting tail storage. With HT and MCS1
+active, the image completed a 25-second ping flood, 20 seconds of TCP at 2.92
+Mbit/s, and 20 seconds of UDP with 13,512 datagrams offered. It recorded 12,740
+aggregate confirmations, passed 20/20 follow-up ping, and drained to zero used
+buffers with the BH alive and WSM idle. This validates relocation together with
+the corrected CPU-form software-record recovery.
 
 Two consecutive diagnostic reloads produced different entry-image hashes
 (`344c1bd98b3cb1a0d5125681cabb9053c8628d71fea2637f1241adfd87266187`

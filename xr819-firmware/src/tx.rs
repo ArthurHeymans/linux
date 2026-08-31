@@ -3791,8 +3791,11 @@ unsafe fn rearm_depth_two_whole_ampdu(
         if command == 0 || descriptor_node == 0 {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
-        let packet_record = read_u32(command as usize + 0x18) & 0x001f_fffc;
-        if packet_record == 0 {
+        // The transfer word at command +0x18 contains the MAC bus encoding,
+        // not a CPU pointer. Keep the CPU-form packet-RAM address from the
+        // software-record free-list node retained by this slot.
+        let packet_record = read_u32(descriptor_node as usize + 4);
+        if packet_ram::software_record_index(packet_record as usize).is_none() {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
         prepare_depth_two_host_ampdu(
@@ -4559,7 +4562,10 @@ pub unsafe fn prepare_depth_two_host_ampdu(
         .ok_or(ProbeBuildError::InvalidContextPointer)?;
     let second_host = crate::dtcm::host_context_from_raw(second_context)
         .ok_or(ProbeBuildError::InvalidContextPointer)?;
-    if pipe >= 4 || slot >= 4 || packet_record == 0 {
+    if pipe >= 4
+        || slot >= 4
+        || packet_ram::software_record_index(packet_record as usize).is_none()
+    {
         return Err(ProbeBuildError::UnsupportedPublicationShape);
     }
     let first = ContextAddress::new(first_context);

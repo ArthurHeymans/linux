@@ -1036,12 +1036,6 @@ else
   echo "== clean-b6 source/MMIO drift gate skipped: set XR819_B6_ELF to archived clean-b6 ELF =="
 fi
 
-echo "== hardware qualification feature layout: foreground ITCM quarantine =="
-cargo +nightly build --release --bin hif-startup \
-    --features experimental-depth-two-ampdu,vendor-host-tx-diagnostics \
-    --target "$TARGET" "${BUILD_STD[@]}"
-python3 tools/check-itcm-foreground-runtime-layout.py "$ELF"
-
 echo "== arm build: sectioned-image bootstrap =="
 ./tools/build-sectioned-bootloader.sh "$BOOTSTRAP"
 

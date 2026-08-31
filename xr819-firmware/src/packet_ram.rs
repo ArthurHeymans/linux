@@ -309,6 +309,14 @@ pub fn software_record(index: usize) -> usize {
 }
 
 #[inline(always)]
+pub fn software_record_index(address: usize) -> Option<usize> {
+    let range = software_records();
+    let offset = address.checked_sub(range.start)?;
+    (address < range.end && offset % SOFTWARE_RECORD_SIZE == 0)
+        .then_some(offset / SOFTWARE_RECORD_SIZE)
+}
+
+#[inline(always)]
 pub fn automatic_response_list() -> Range<usize> {
     let start = object_address!(AUTOMATIC_RESPONSE_LIST);
     start..start + AUTOMATIC_RESPONSE_LIST_SIZE
@@ -361,4 +369,22 @@ pub fn contains_owned_storage(address: usize) -> bool {
         || software_records().contains(&address)
         || automatic_response_list().contains(&address)
         || rx_fifo_backing().contains(&address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn software_record_addresses_require_exact_record_bases() {
+        for index in 0..SOFTWARE_RECORD_COUNT {
+            assert_eq!(software_record_index(software_record(index)), Some(index));
+            assert_eq!(software_record_index(software_record(index) + 4), None);
+        }
+        assert_eq!(software_record_index(software_records().end), None);
+        assert_eq!(
+            software_record_index(software_record(0) & 0x001f_fffc),
+            None,
+        );
+    }
 }
