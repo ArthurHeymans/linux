@@ -64,6 +64,20 @@ SECTIONS
     .bss (NOLOAD) : ALIGN(4)
     {
         __bss_start = .;
+        /*
+         * This foreground prefix is address-sensitive shared quarantine. A
+         * shifted HOST_TX_DRIVER reproducibly corrupts service_cursor during
+         * initial traffic, while moving the following BSS remains healthy.
+         * Keep the observed prefix explicit until the external/stale writer is
+         * identified and removed.
+         */
+        __itcm_hif_queues_start = .;
+        KEEP(*(.bss.*HIF_QUEUES))
+        __itcm_hif_ring_state_start = .;
+        KEEP(*(.bss.*HIF_RING_STATE))
+        __itcm_host_tx_driver_start = .;
+        KEEP(*(.bss.*HOST_TX_DRIVER))
+        __itcm_foreground_quarantine_end = .;
         *(.bss .bss.*)
         *(COMMON)
         __bss_end = .;
@@ -165,6 +179,14 @@ SECTIONS
            "XR819 image exceeds the conservative vendor ITCM envelope")
     ASSERT(__bss_end <= __itcm_observed_limit,
            "XR819 ITCM-backed BSS exceeds the observed envelope")
+    ASSERT(__itcm_hif_queues_start == __bss_start,
+           "XR819 HIF queues no longer lead foreground BSS")
+    ASSERT(__itcm_hif_ring_state_start == __itcm_hif_queues_start + 0x184,
+           "XR819 HIF queues extent changed")
+    ASSERT(__itcm_host_tx_driver_start == __itcm_hif_ring_state_start + 0x18,
+           "XR819 HIF ring-state extent changed")
+    ASSERT(__itcm_foreground_quarantine_end == __itcm_host_tx_driver_start + 0xda4,
+           "XR819 host-TX-driver extent changed")
     ASSERT(ORIGIN(DTCM_STATE) == __dtcm_state_start,
            "XR819 Rust DTCM regions do not start at the state base")
     ASSERT(__dtcm_state_object_start == 0x04000000,

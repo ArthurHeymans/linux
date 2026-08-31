@@ -46,6 +46,19 @@ IRQ/FIQ, hardware, and translated Rust sharing remains represented by
 preserve the section partition and exact address assertions; typed allocation
 does not grant exclusive Rust ownership or permit relocation.
 
+The foreground ITCM runtime cluster is also address-sensitive quarantine rather
+than ordinary relocatable Rust BSS. Moving `HOST_TX_DRIVER` from `0x000143ac`
+to `0x000143b4` reproducibly corrupted its private `service_cursor` before the
+bounds-checked `states[index]` access. The terminal record decoded as Rust panic
+kind `0x100`, `src/host_tx_driver.rs:244:18` (file hash `0x42df8b59`). Controls
+that retained the HIF queues, ring state, and host-TX driver at their qualified
+addresses survived traffic while later BSS moved; retaining only the HIF queues
+or HIF queues plus ring state did not. The linker therefore orders and asserts
+the `0x00014210..0x00015150` foreground prefix through `HOST_TX_DRIVER`; response
+scratch, transport, and later BSS remain relocatable. Normal translated access
+remains Rust-owned, but the prefix's physical identity stays shared/open until
+the stale or external writer is identified.
+
 Two consecutive diagnostic reloads produced different entry-image hashes
 (`344c1bd98b3cb1a0d5125681cabb9053c8628d71fea2637f1241adfd87266187`
 and `3c334fa3a77974158cd2479e08036bbe8393ad65a587855d20a9bd9cef45cfd4`).
