@@ -43,27 +43,29 @@ FORBIDDEN_FORMS = (
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001ADC: 5,
-    0x04001ADD: 2,
+    0x04001AC0: 6,
+    0x04001ADD: 3,
     0x04001ADE: 1,
-    0x04001AE4: 3,
+    0x04001AE4: 5,
     0x04001AEC: 2,
-    0x04001B04: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x04001AEC): 1,
-    ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x04001B04): 1,
+    ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x04001AC0): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19program_rate_tables', 0x04001AEC): 3,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04001ADE): 3,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04001AE4): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reprogram_after_channel', 0x04001ADD): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reprogram_after_channel', 0x04001AE4): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x04001ADC): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001ADC): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x04001ADC): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001ADC): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x04001AC0): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001AC0): 2,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x04001AC0): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x04001AE4): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001AC0): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001ADD): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001AE4): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy29initialize_mac_software_state', 0x04001ADD): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3vif10apply_edca', 0x04001B04): 1,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware3vif10apply_edca', 0x04001AC0): 1,
     ('rust_main', 0x04001AE4): 1,
 })
 

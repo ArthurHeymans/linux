@@ -4721,9 +4721,10 @@ pub unsafe fn publish_depth_two_host_ampdu(
         let interface = usize::from(read_u8(first.interface_address()));
         let pas = crate::dtcm::pas_stride_view_unchecked(interface);
         let edca_slot_timing = read_u32(pas.packed_aifs().get());
-        if read_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get()) != edca_slot_timing {
+        let edca_slot_timing_cache = crate::dtcm::mac_edca_slot_timing_ptr() as usize;
+        if read_u32(edca_slot_timing_cache) != edca_slot_timing {
             write_u32(crate::platform::mac_register(0x0e64), edca_slot_timing);
-            write_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get(), edca_slot_timing);
+            write_u32(edca_slot_timing_cache, edca_slot_timing);
         }
         let queue = usize::from(read_u8(
             crate::dtcm::queue_to_access_category_unchecked(usize::from(pipe)).get(),
@@ -7248,12 +7249,13 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let interface = u32::from(mmio.read_u8(frame.interface()));
     let pas = crate::dtcm::pas_stride_view_unchecked(interface as usize);
     let edca_slot_timing = mmio.read_u32(pas.packed_aifs().get() as u32);
-    if mmio.read_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get() as u32) != edca_slot_timing {
+    let edca_slot_timing_cache = crate::dtcm::mac_edca_slot_timing_mmio_address();
+    if mmio.read_u32(edca_slot_timing_cache) != edca_slot_timing {
         mmio.write_u32(
             crate::platform::mac_register(0x0e64) as u32,
             edca_slot_timing,
         );
-        mmio.write_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get() as u32, edca_slot_timing);
+        mmio.write_u32(edca_slot_timing_cache, edca_slot_timing);
     }
     if publication_bisect_reached(6) {
         return 6;

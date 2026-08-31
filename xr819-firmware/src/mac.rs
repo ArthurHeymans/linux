@@ -782,7 +782,7 @@ pub unsafe fn finish_unjoined_scan_radio_stop() {
     unsafe {
         write_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get(), 0);
         write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
-        write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
+        write_u8(crate::dtcm::mac_wake_phy_state_ptr() as usize, 2);
         write_u8(crate::dtcm::LOW_MAC_CONTROL_0A.get(), 0);
         write_u8(crate::dtcm::LOW_MAC_CONTROL_0B.get(), 0);
         write_u8(crate::dtcm::MAC_RADIO_STOP_STATE.get(), 0);
@@ -861,7 +861,7 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
         // Vendor initialized DTCM supplies zero for the EDCA hardware cache
         // and the optional contention-window override controls. Rebuilt code
         // consumes all three, so reconstruct them explicitly.
-        write_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get(), 0);
+        write_u32(crate::dtcm::mac_edca_slot_timing_ptr() as usize, 0);
         write_u32(crate::dtcm::pas_backoff_override_enabled().get(), 0);
         write_u32(crate::dtcm::pas_backoff_override_window().get(), 0);
         for word in 0..5 {
@@ -954,7 +954,7 @@ pub unsafe fn initialize_vendor_startup_state(max_polls: u32) -> Result<(), MacS
             write_u32(previous_link_field.get(), 0);
         }
         write_u8(crate::dtcm::LOW_MAC_RECEIVE_STATE_BYTE.get(), 0);
-        write_u8(crate::dtcm::MAC_WAKE_PHY_STATE.get(), 2);
+        write_u8(crate::dtcm::mac_wake_phy_state_ptr() as usize, 2);
 
         for pipe in 0..4 {
             write_u8(crate::dtcm::mac_pipe_control_byte_04_unchecked(pipe).get(), 0);

@@ -2879,6 +2879,27 @@ pub(crate) const fn mac_wake_timer_initialization_fields() -> [DtcmAddress; 3] {
     timer_initialization_fields(MAC_WAKE_TIMER)
 }
 pub(crate) const MAC_WAKE_PHY_STATE: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, phy_state));
+
+/// Raw root for fields translated from the link-placed MAC wake runtime state.
+#[inline(always)]
+fn mac_wake_runtime_state_ptr() -> *mut u8 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_MAC_WAKE_RUNTIME_STATE)
+            .cast_mut()
+            .cast::<u8>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.mac_wake_runtime_state).cast::<u8>()
+    }
+}
+
+#[inline(always)]
+pub(crate) fn mac_wake_phy_state_ptr() -> *mut u8 {
+    unsafe { mac_wake_runtime_state_ptr().add(core::mem::offset_of!(MacWakeRuntimeState, phy_state)) }
+}
+
 pub(crate) const MAC_WAKE_TRANSITION_PENDING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, transition_pending));
 pub(crate) const MAC_WAKE_RESTORE_PENDING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, restore_pending));
 pub const MAC_WAKE_MODE: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, mode));
@@ -2889,6 +2910,30 @@ pub(crate) const fn mac_retry_rate_unchecked(rate: usize) -> DtcmAddress { DtcmA
 /// intentionally add the original rate index, crossing out of retry_rate_map.
 pub(crate) const fn mac_secondary_rate_overlay_unchecked(rate: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(LOW_MAC_GLOBAL.offset() + 0x47a + rate) }
 pub(crate) const MAC_EDCA_SLOT_TIMING: DtcmAddress = DtcmAddress::from_offset(MAC_WAKE_RUNTIME_STATE.offset() + core::mem::offset_of!(MacWakeRuntimeState, edca_slot_timing));
+
+#[inline(always)]
+pub(crate) fn mac_edca_slot_timing_ptr() -> *mut u32 {
+    unsafe {
+        mac_wake_runtime_state_ptr()
+            .add(core::mem::offset_of!(MacWakeRuntimeState, edca_slot_timing))
+            .cast::<u32>()
+    }
+}
+
+/// Numeric boundary for translated MMIO abstractions; host tests retain the
+/// fixed-address layout oracle instead of truncating a process-local pointer.
+#[inline(always)]
+pub(crate) fn mac_edca_slot_timing_mmio_address() -> u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        mac_edca_slot_timing_ptr() as usize as u32
+    }
+    #[cfg(not(target_arch = "arm"))]
+    {
+        MAC_EDCA_SLOT_TIMING.get() as u32
+    }
+}
+
 pub(crate) const MAC_BEACON_STATE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, mac_beacon_state));
 pub(crate) const MAC_BEACON_RESPONSE_COMMANDS: DtcmAddress = DtcmAddress::from_offset(MAC_BEACON_STATE.offset() + core::mem::offset_of!(MacBeaconState, response_commands));
 pub(crate) const fn mac_beacon_response_command(index: usize) -> Option<DtcmAddress> { if index < 2 { Some(mac_beacon_response_command_unchecked(index)) } else { None } }

@@ -564,9 +564,12 @@ pub unsafe fn apply_edca(
         .wrapping_sub(0x111);
     unsafe { write_u32(pas.packed_aifs().get(), aifs) };
 
-    if read_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get()) == 0 && read_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get()) != aifs {
+    let edca_slot_timing = crate::dtcm::mac_edca_slot_timing_ptr() as usize;
+    if read_u16(crate::dtcm::LOW_MAC_CURRENT_CHANNEL.get()) == 0
+        && read_u32(edca_slot_timing) != aifs
+    {
         unsafe {
-            write_u32(crate::dtcm::MAC_EDCA_SLOT_TIMING.get(), aifs);
+            write_u32(edca_slot_timing, aifs);
             write_u32(crate::platform::mac_register(0x0e64), aifs);
             reset_pas_backoff(interface)?;
         }

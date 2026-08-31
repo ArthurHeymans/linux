@@ -185,14 +185,31 @@ drain with BH alive and WSM idle. After a board power cycle, the same installed
 image passed a fresh association and another 20/20 ping with the same
 alive/idle/zero-buffer state.
 
+Translated MAC wake PHY-state and EDCA slot-timing accesses now derive from the
+link-placed `DTCM_DATA_MAC_WAKE_RUNTIME_STATE` symbol. Startup, channel
+transitions, radio stop, EDCA application, and both direct and generic-MMIO TX
+paths preserve their existing volatile widths and operation order. Numeric
+field accessors remain as ABI/layout oracles, including the host-test fallback
+for the generic-MMIO address boundary. Image
+`085c8089b33945e0d811f3e0bc3365c5492b74fee0e744b1ca74039505d9cb29`
+naturally moved the foreground ITCM cluster another eight bytes, then completed
+a 25-second ping flood, 20-second TCP at 3.66 Mbit/s, 14,089 offered UDP
+datagrams with 15,702 aggregate confirmations, 20/20 follow-up ping, and
+zero-buffer drain with BH alive and WSM idle. The exact image then passed an
+association-safe warm rebind, a 30-second 3.15 Mbit/s offered UDP run with 6,768
+aggregate confirmations, and another 20/20 ping with the same
+alive/idle/zero-buffer state.
+
 The adjacent initialized rate-policy source was tested but deliberately not
 migrated. Candidate image
 `65794a8b45666f3a41a79ba02b8ff378d0c2fd86ffe7cbee6ff09abb5d58a8d2`
 kept the two decoded `0x04000200` roots and the volatile copy order, but twice
 reported firmware assert line 244 during the first data traffic and left the BH
-in fatal state. The source change was reverted, the qualified parent image was
-restored, and `initialized_rate_policies` remains numeric shared quarantine
-until the code-layout or startup-timing sensitivity is understood.
+in fatal state. The source change was reverted and the qualified parent image
+was restored. The failure was later traced to the depth-two software-record
+CPU/bus address alias described above rather than rate-policy ownership;
+`initialized_rate_policies` remains numeric shared quarantine until it is
+retried and qualified as an independent change.
 
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
