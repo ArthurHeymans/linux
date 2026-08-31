@@ -6385,27 +6385,21 @@ where
 
             let flags = read_u32(context.control_bits_address());
             if flags & (1 << 5) != 0 {
-                let accumulated = u64::from(read_u32(
-                    crate::dtcm::ampdu_tx_duration_low().get(),
-                )) | (u64::from(read_u32(
-                    crate::dtcm::ampdu_tx_duration_high().get(),
-                )) << 32);
+                let accumulated = u64::from(
+                    crate::dtcm::ampdu_tx_duration_low_ptr().read_volatile(),
+                ) | (u64::from(
+                    crate::dtcm::ampdu_tx_duration_high_ptr().read_volatile(),
+                ) << 32);
                 let accumulated = accumulated.wrapping_add(u64::from(read_u16(context.frame_length_address())));
-                write_u32(crate::dtcm::ampdu_tx_duration_low().get(), accumulated as u32);
-                write_u32(
-                    crate::dtcm::ampdu_tx_duration_high().get(),
-                    (accumulated >> 32) as u32,
-                );
-                write_u32(
-                    crate::dtcm::ampdu_tx_counted_frames().get(),
-                    read_u32(crate::dtcm::ampdu_tx_counted_frames().get()).wrapping_add(1),
-                );
+                crate::dtcm::ampdu_tx_duration_low_ptr().write_volatile(accumulated as u32);
+                crate::dtcm::ampdu_tx_duration_high_ptr()
+                    .write_volatile((accumulated >> 32) as u32);
+                let counted_frames = crate::dtcm::ampdu_tx_counted_frames_ptr();
+                counted_frames.write_volatile(counted_frames.read_volatile().wrapping_add(1));
 
                 if flags & (1 << 6) != 0 {
-                    write_u32(
-                        crate::dtcm::ampdu_tx_error_frames().get(),
-                        read_u32(crate::dtcm::ampdu_tx_error_frames().get()).wrapping_add(1),
-                    );
+                    let error_frames = crate::dtcm::ampdu_tx_error_frames_ptr();
+                    error_frames.write_volatile(error_frames.read_volatile().wrapping_add(1));
                     if backend.completion_messages_enabled()
                         && (flags >> 20) & 3 != 0
                         && read_u8(crate::dtcm::lmc_message_control().get()) & 1 != 0

@@ -111,6 +111,18 @@ remain shared/open. The packed image remains byte-identical at
 same exact-image cold aggregated-traffic, 20/20 ping, zero-buffer drain, and
 warm-rebind qualification applies.
 
+The translated A-MPDU TX telemetry updates now derive from the link-placed
+`DTCM_DATA_AMPDU_COUNTERS` symbol. Completion drain preserves the volatile
+`u32` low/high duration reads, low/high writes, counted-frame read/write, and
+conditional error-frame read/write in their established order. The unused RX,
+opaque, and retry fields remain shared quarantine, and typed access does not
+claim exclusive ownership of any counter. Image
+`a21455a1d60aff62fe8db24e29d624ee5ab8b12a887c444847e56748de24be05`
+completed a 30-second 3.15 Mbit/s offered UDP run with 1,182 aggregate
+confirmations, 20/20 ping, and zero-buffer drain with BH alive and WSM idle. The
+exact image then passed association-safe warm rebind and another 20/20 ping with
+the same alive/idle/zero-buffer state.
+
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
 same-image reloads, followed by two further consecutive whole-image reloads.
@@ -162,6 +174,7 @@ that warm reload is deterministic.
 | `irq_callbacks[32]` | interrupt dispatch | Rust zero baseline; registration replaces selected entries with Thumb callback pointers | partially rebuilt | interrupt dispatch and registration | IRQ/FIQ masked while routing changes | yes, callback publication | open: enumerate selected and retained entries |
 | `scheduler_exclusion_state` | scheduler/MAC exclusion | Rust zero baseline, then both words explicitly zeroed by `platform::initialize_runtime_state` | rebuilt | scheduler foreground/IRQ/FIQ paths; platform writer | IRQ/FIQ contract required after startup | no | closed at startup |
 | `ampdu_completion_control.enabled` | completion-class accounting gate | Rust zero baseline; no field-specific translated writer | reset to zero before runtime | one completion-drain reader; vendor/IRQ/hardware writers remain possible | one volatile `u32` snapshot before pending-class scan | indirectly affects completion flags | translated linker-root read closed; writer ownership remains shared/open |
+| `ampdu_counters` translated TX fields | A-MPDU completion telemetry | Rust zero baseline; completion drain updates duration, counted-frame, and error-frame fields | reset, then accumulated at runtime | one completion-drain reader/writer; other fields and external writers remain possible | completion-drain sequencing; volatile `u32` read/modify/write order preserved | diagnostics/telemetry only | translated linker-root accesses closed; family ownership remains shared/open |
 | `control_words.tsf_resync_state` | TSF control | Rust zero baseline, then explicit zero | rebuilt | MAC/TSF paths; platform writer | startup single-threaded | indirectly | closed at startup |
 | `control_words.random_lfsr` | vendor retry state | Rust zero baseline; translated Rust retry logic uses a separate ITCM `RETRY_RANDOM_STATE` | reset to zero | vendor consumers only; no translated Rust writer | family-specific | no | zero baseline qualified; semantic ownership open |
 | `control_words.tsf_accumulator_low` | TSF accumulation | Rust zero baseline, then explicit zero | rebuilt | TSF paths; platform writer | startup single-threaded | indirectly | closed for low word |

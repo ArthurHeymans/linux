@@ -2712,6 +2712,45 @@ pub(crate) const fn ampdu_tx_duration_low() -> DtcmAddress { ampdu_telemetry_fie
 pub(crate) const fn ampdu_tx_duration_high() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high)) }
 pub(crate) const fn ampdu_rx_management(index: usize) -> Option<DtcmAddress> { if index < 4 { Some(ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, rx_management_0) + index * 4)) } else { None } }
 pub(crate) const fn ampdu_tx_retry_count() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_retry_count)) }
+
+#[inline(always)]
+fn ampdu_telemetry_counters_ptr() -> *mut u8 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_AMPDU_COUNTERS)
+            .cast_mut()
+            .cast::<u8>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.ampdu_counters).cast::<u8>()
+    }
+}
+
+#[inline(always)]
+fn ampdu_telemetry_field_ptr(offset: usize) -> *mut u32 {
+    unsafe { ampdu_telemetry_counters_ptr().add(offset).cast::<u32>() }
+}
+
+#[inline(always)]
+pub(crate) fn ampdu_tx_error_frames_ptr() -> *mut u32 {
+    ampdu_telemetry_field_ptr(core::mem::offset_of!(AmpduTelemetryCounters, tx_error_frames))
+}
+
+#[inline(always)]
+pub(crate) fn ampdu_tx_counted_frames_ptr() -> *mut u32 {
+    ampdu_telemetry_field_ptr(core::mem::offset_of!(AmpduTelemetryCounters, tx_counted_frames))
+}
+
+#[inline(always)]
+pub(crate) fn ampdu_tx_duration_low_ptr() -> *mut u32 {
+    ampdu_telemetry_field_ptr(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_low))
+}
+
+#[inline(always)]
+pub(crate) fn ampdu_tx_duration_high_ptr() -> *mut u32 {
+    ampdu_telemetry_field_ptr(core::mem::offset_of!(AmpduTelemetryCounters, tx_duration_high))
+}
 pub(crate) const PHY_CHANNEL_THRESHOLD_DESCRIPTORS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, phy_channel_threshold_descriptors));
 pub(crate) const fn phy_channel_threshold_descriptor(profile: usize) -> Option<DtcmAddress> { if profile < 2 { Some(phy_channel_threshold_descriptor_unchecked(profile)) } else { None } }
 pub(crate) const fn phy_channel_threshold_descriptor_unchecked(profile: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(PHY_CHANNEL_THRESHOLD_DESCRIPTORS.offset() + profile * core::mem::size_of::<PhyChannelThresholdDescriptor>()) }
