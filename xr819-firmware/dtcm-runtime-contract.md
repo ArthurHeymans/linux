@@ -102,6 +102,15 @@ confirmations, drained to zero used buffers, and passed 20/20 ping with BH alive
 and WSM idle. The exact image then passed association-safe warm rebind and
 another 20/20 ping with the same alive/idle/zero-buffer state.
 
+The A-MPDU completion-control gate now derives from its link-placed
+`DTCM_DATA_AMPDU_COMPLETION_CONTROL` symbol. Completion drain preserves the
+single volatile `u32` read before scanning pending completion classes. Rust has
+no field-specific writer, so vendor, IRQ/FIQ, callback, and hardware ownership
+remain shared/open. The packed image remains byte-identical at
+`6fffffe1133990370503450eef41366923871b53093873dba3e1a5020f8661a3`, so the
+same exact-image cold aggregated-traffic, 20/20 ping, zero-buffer drain, and
+warm-rebind qualification applies.
+
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
 same-image reloads, followed by two further consecutive whole-image reloads.
@@ -152,6 +161,7 @@ that warm reload is deterministic.
 | `initialized_rate_policies[2][5]` | PAS policy template | Rust zero baseline | zero template copied into runtime PAS policy records | startup reader; PAS readers are possible | startup single-threaded for copy | no | zero template qualified; semantics still open |
 | `irq_callbacks[32]` | interrupt dispatch | Rust zero baseline; registration replaces selected entries with Thumb callback pointers | partially rebuilt | interrupt dispatch and registration | IRQ/FIQ masked while routing changes | yes, callback publication | open: enumerate selected and retained entries |
 | `scheduler_exclusion_state` | scheduler/MAC exclusion | Rust zero baseline, then both words explicitly zeroed by `platform::initialize_runtime_state` | rebuilt | scheduler foreground/IRQ/FIQ paths; platform writer | IRQ/FIQ contract required after startup | no | closed at startup |
+| `ampdu_completion_control.enabled` | completion-class accounting gate | Rust zero baseline; no field-specific translated writer | reset to zero before runtime | one completion-drain reader; vendor/IRQ/hardware writers remain possible | one volatile `u32` snapshot before pending-class scan | indirectly affects completion flags | translated linker-root read closed; writer ownership remains shared/open |
 | `control_words.tsf_resync_state` | TSF control | Rust zero baseline, then explicit zero | rebuilt | MAC/TSF paths; platform writer | startup single-threaded | indirectly | closed at startup |
 | `control_words.random_lfsr` | vendor retry state | Rust zero baseline; translated Rust retry logic uses a separate ITCM `RETRY_RANDOM_STATE` | reset to zero | vendor consumers only; no translated Rust writer | family-specific | no | zero baseline qualified; semantic ownership open |
 | `control_words.tsf_accumulator_low` | TSF accumulation | Rust zero baseline, then explicit zero | rebuilt | TSF paths; platform writer | startup single-threaded | indirectly | closed for low word |

@@ -2688,6 +2688,22 @@ pub(crate) const fn initialized_hif_ring_depth_threshold() -> DtcmAddress { init
 pub(crate) const fn initialized_hif_count_threshold() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, count_threshold)) }
 pub(crate) const fn initialized_hif_coalesce_delay() -> DtcmAddress { initialized_hif_control_field(core::mem::offset_of!(InitializedHifControl, coalesce_delay)) }
 pub(crate) const AMPDU_COMPLETION_CONTROL: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, ampdu_completion_control));
+
+/// Raw root for the link-placed A-MPDU completion-control gate.
+#[inline(always)]
+pub(crate) fn ampdu_completion_control_ptr() -> *const u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_AMPDU_COMPLETION_CONTROL).cast::<u32>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.ampdu_completion_control)
+            .cast::<u32>()
+            .cast_const()
+    }
+}
+
 pub(crate) const AMPDU_TELEMETRY_COUNTERS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, ampdu_counters));
 const fn ampdu_telemetry_field(offset: usize) -> DtcmAddress { DtcmAddress::from_offset(AMPDU_TELEMETRY_COUNTERS.offset() + offset) }
 pub(crate) const fn ampdu_tx_error_frames() -> DtcmAddress { ampdu_telemetry_field(core::mem::offset_of!(AmpduTelemetryCounters, tx_error_frames)) }

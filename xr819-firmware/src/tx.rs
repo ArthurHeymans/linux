@@ -6361,7 +6361,7 @@ where
     unsafe {
         let mut cursor = CompletionDrainCursor::begin();
         let mut zero_class_pending = 0_u8;
-        if read_u32(crate::dtcm::AMPDU_COMPLETION_CONTROL.get()) != 0 {
+        if crate::dtcm::ampdu_completion_control_ptr().read_volatile() != 0 {
             let mut index = cursor.next;
             while index != cursor.target {
                 let node = COMPLETION_RING.frame_node(index);
