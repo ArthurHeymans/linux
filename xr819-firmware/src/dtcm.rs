@@ -2913,6 +2913,26 @@ pub(crate) const fn host_pas_ring_slot_unchecked(index: usize) -> DtcmAddress { 
 pub(crate) const IRQ_CALLBACK_TABLE: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, irq_callbacks)); pub(crate) const PHY_WATCHDOG_COUNTER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, phy_watchdog_counter) + core::mem::offset_of!(PhyWatchdogCounter, count)); pub(crate) const MULTI_VIF_BEACON_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, timer)); pub(crate) const MEASUREMENT_DWELL_TIMER: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, multi_vif_beacon_timer_tail) + core::mem::offset_of!(InitializedMultiVifBeaconTimerTail, measurement_dwell_timer));
 pub(crate) const fn irq_callback(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(irq_callback_unchecked(index)) } else { None } }
 pub(crate) const fn irq_callback_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(IRQ_CALLBACK_TABLE.offset() + index * core::mem::size_of::<SharedU32>()) }
+
+/// Raw root for the link-placed interrupt callback publication table.
+#[inline(always)]
+fn irq_callbacks_ptr() -> *mut u32 {
+    #[cfg(target_arch = "arm")]
+    {
+        core::ptr::addr_of!(DTCM_DATA_IRQ_CALLBACKS)
+            .cast_mut()
+            .cast::<u32>()
+    }
+    #[cfg(not(target_arch = "arm"))]
+    unsafe {
+        addr_of_mut!((*layout_ptr()).initialized_prefix.irq_callbacks).cast::<u32>()
+    }
+}
+
+#[inline(always)]
+pub(crate) fn irq_callback_ptr_unchecked(index: usize) -> *mut u32 {
+    unsafe { irq_callbacks_ptr().add(index) }
+}
 pub(crate) const VISIBLE_COMPLETION_WORDS: DtcmAddress = DtcmAddress::from_offset(core::mem::offset_of!(InitializedDtcmPrefix, visible_completion_words));
 pub(crate) const fn visible_completion_word(index: usize) -> Option<DtcmAddress> { if index < 10 { Some(visible_completion_word_unchecked(index)) } else { None } }
 pub(crate) const fn visible_completion_word_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(VISIBLE_COMPLETION_WORDS.offset() + index * core::mem::size_of::<SharedU32>()) }

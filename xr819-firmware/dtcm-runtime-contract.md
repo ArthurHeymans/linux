@@ -123,6 +123,26 @@ confirmations, 20/20 ping, and zero-buffer drain with BH alive and WSM idle. The
 exact image then passed association-safe warm rebind and another 20/20 ping with
 the same alive/idle/zero-buffer state.
 
+Translated interrupt callback publication now derives from the link-placed
+`DTCM_DATA_IRQ_CALLBACKS` symbol. Each registration still performs one volatile
+`u32` callback write before enabling the corresponding interrupt source; the
+reverse `31 - irq` table ordering is unchanged. This closes translated writers,
+not interrupt-dispatch or vendor ownership. Image
+`e70ec8f26fdd6df2b91dc28965960e2ac003b96da4bdc193ca41ae95472d34b2`
+completed a 30-second 3.15 Mbit/s offered UDP run with 1,390 aggregate
+confirmations, 20/20 ping, and zero-buffer drain with BH alive and WSM idle. The
+same image then passed association-safe warm rebind and another 20/20 ping with
+the same alive/idle/zero-buffer state.
+
+The adjacent initialized rate-policy source was tested but deliberately not
+migrated. Candidate image
+`65794a8b45666f3a41a79ba02b8ff378d0c2fd86ffe7cbee6ff09abb5d58a8d2`
+kept the two decoded `0x04000200` roots and the volatile copy order, but twice
+reported firmware assert line 244 during the first data traffic and left the BH
+in fatal state. The source change was reverted, the qualified parent image was
+restored, and `initialized_rate_policies` remains numeric shared quarantine
+until the code-layout or startup-timing sensitivity is understood.
+
 After that reconstruction, the complete `0x0000..0x2078` image can start from
 zero. Both `0x0000..0x0800` and `0x0800..0x2078` survived consecutive
 same-image reloads, followed by two further consecutive whole-image reloads.
@@ -171,7 +191,7 @@ that warm reload is deterministic.
 | `queue_pipe_mappings` | queue/pipe policy | Rust zero baseline; startup rewrites the mapping word and both four-byte direction maps | rebuilt | MAC/TX scheduling; startup writer | startup single-threaded | indirectly | closed for translated maps |
 | `duration_quantum_pointers[4]` | MAC pipe timing | Rust zero baseline, then complete startup rewrite from MAC register identities | rebuilt | TX descriptor publication; startup writer | startup single-threaded | contains MMIO pointers | closed |
 | `initialized_rate_policies[2][5]` | PAS policy template | Rust zero baseline | zero template copied into runtime PAS policy records | startup reader; PAS readers are possible | startup single-threaded for copy | no | zero template qualified; semantics still open |
-| `irq_callbacks[32]` | interrupt dispatch | Rust zero baseline; registration replaces selected entries with Thumb callback pointers | partially rebuilt | interrupt dispatch and registration | IRQ/FIQ masked while routing changes | yes, callback publication | open: enumerate selected and retained entries |
+| `irq_callbacks[32]` | interrupt dispatch | Rust zero baseline; registration replaces selected entries with Thumb callback pointers | partially rebuilt | translated registration plus interrupt dispatch/vendor readers | one volatile `u32` callback publication before interrupt enable; IRQ/FIQ routing contract unchanged | yes, callback publication | translated linker-root writers closed; reader and retained-entry ownership remains shared/open |
 | `scheduler_exclusion_state` | scheduler/MAC exclusion | Rust zero baseline, then both words explicitly zeroed by `platform::initialize_runtime_state` | rebuilt | scheduler foreground/IRQ/FIQ paths; platform writer | IRQ/FIQ contract required after startup | no | closed at startup |
 | `ampdu_completion_control.enabled` | completion-class accounting gate | Rust zero baseline; no field-specific translated writer | reset to zero before runtime | one completion-drain reader; vendor/IRQ/hardware writers remain possible | one volatile `u32` snapshot before pending-class scan | indirectly affects completion flags | translated linker-root read closed; writer ownership remains shared/open |
 | `ampdu_counters` translated TX fields | A-MPDU completion telemetry | Rust zero baseline; completion drain updates duration, counted-frame, and error-frame fields | reset, then accumulated at runtime | one completion-drain reader/writer; other fields and external writers remain possible | completion-drain sequencing; volatile `u32` read/modify/write order preserved | diagnostics/telemetry only | translated linker-root accesses closed; family ownership remains shared/open |

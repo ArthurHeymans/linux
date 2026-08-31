@@ -231,7 +231,9 @@ extern "C" fn packet_dma_irq26() {
 /// reverse-ordered 32-entry table and enable the interrupt source.
 fn register_interrupt_source_with(irq: u32, callback: extern "C" fn()) {
     let callback = callback as *const () as usize as u32 | 1;
-    register32(crate::dtcm::irq_callback_unchecked((31 - irq) as usize).get()).set(callback);
+    unsafe {
+        crate::dtcm::irq_callback_ptr_unchecked((31 - irq) as usize).write_volatile(callback);
+    }
     let interrupts = interrupt_controller();
     interrupts.enable.set(interrupts.enable.get() | (1 << irq));
 }
