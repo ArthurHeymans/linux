@@ -33,6 +33,12 @@ pub const AUTOMATIC_RESPONSE_LIST_SIZE: usize = 0x8c;
 pub const RX_FIFO_LOGICAL_SIZE: usize = 0x7000;
 pub const RX_FIFO_STORAGE_SIZE: usize = 0x8000;
 
+/// CPU-visible physical extent of the linker-owned runtime packet-RAM pool.
+/// Hardware command words use narrower bus encodings and must never be treated
+/// as values in this range.
+pub const RUNTIME_CPU_START: u32 = 0x0900_7000;
+pub const RUNTIME_CPU_END: u32 = RUNTIME_CPU_START + 0x0000_f630;
+
 #[repr(C, align(4))]
 struct OpaqueStorage<const N: usize>(UnsafeCell<MaybeUninit<[u8; N]>>);
 
@@ -189,11 +195,11 @@ pub fn response_pointer(index: usize) -> usize {
 }
 
 #[inline(always)]
-pub fn ampdu_spacing_word_address(selector: u8) -> u32 {
+pub fn ampdu_spacing_word_address(selector: u8) -> usize {
     automatic_response_list()
         .end
         .wrapping_sub(4)
-        .wrapping_sub(usize::from(selector) * 4) as u32
+        .wrapping_sub(usize::from(selector) * 4)
 }
 
 pub fn tx_commands() -> Range<usize> {
@@ -206,6 +212,17 @@ pub fn tx_command(pipe: usize, slot: usize) -> usize {
     debug_assert!(pipe < TX_PIPE_COUNT);
     debug_assert!(slot < TX_COMMANDS_PER_PIPE);
     object_address!(TX_COMMANDS) + (pipe * TX_COMMANDS_PER_PIPE + slot) * TX_COMMAND_SIZE
+}
+
+#[inline(always)]
+pub fn tx_command_index(address: usize) -> Option<(usize, usize)> {
+    let range = tx_commands();
+    let offset = address.checked_sub(range.start)?;
+    if address >= range.end || offset % TX_COMMAND_SIZE != 0 {
+        return None;
+    }
+    let index = offset / TX_COMMAND_SIZE;
+    Some((index / TX_COMMANDS_PER_PIPE, index % TX_COMMANDS_PER_PIPE))
 }
 
 #[inline(always)]
@@ -316,6 +333,23 @@ pub fn software_record_index(address: usize) -> Option<usize> {
         .then_some(offset / SOFTWARE_RECORD_SIZE)
 }
 
+/// Encode one aligned CPU-form runtime packet-RAM address for MAC opcode 0x65.
+/// The resulting bus word is intentionally one-way: software ownership must
+/// retain or recover the original CPU address from a typed software record.
+#[inline(always)]
+pub fn ampdu_transfer_word(cpu_address: usize) -> Option<u32> {
+    #[cfg(target_arch = "arm")]
+    let in_runtime = (RUNTIME_CPU_START as usize..RUNTIME_CPU_END as usize)
+        .contains(&cpu_address);
+    #[cfg(not(target_arch = "arm"))]
+    let in_runtime = (RUNTIME_CPU_START as usize..RUNTIME_CPU_END as usize)
+        .contains(&cpu_address)
+        || contains_runtime_storage(cpu_address);
+
+    (in_runtime && cpu_address & 3 == 0)
+        .then_some(0x6500_0000 | (cpu_address as u32 & 0x001f_fffc))
+}
+
 #[inline(always)]
 pub fn automatic_response_list() -> Range<usize> {
     let start = object_address!(AUTOMATIC_RESPONSE_LIST);
@@ -355,7 +389,7 @@ pub fn rx_fifo_base() -> usize {
 /// Whether an address belongs to a qualified linker-owned runtime object.
 /// Unknown packet-RAM holes and all boot/diagnostic overlays return false.
 #[inline(always)]
-pub fn contains_owned_storage(address: usize) -> bool {
+pub fn contains_runtime_storage(address: usize) -> bool {
     host_frame_states().contains(&address)
         || response_pointers().contains(&address)
         || tx_commands().contains(&address)
@@ -368,12 +402,42 @@ pub fn contains_owned_storage(address: usize) -> bool {
         || internal_tx_buffers().contains(&address)
         || software_records().contains(&address)
         || automatic_response_list().contains(&address)
-        || rx_fifo_backing().contains(&address)
+}
+
+#[inline(always)]
+pub fn contains_owned_range(address: usize, length: usize) -> bool {
+    let Some(end) = address.checked_add(length) else { return false };
+    let contains = |range: Range<usize>| address >= range.start && end <= range.end;
+    contains(host_frame_states())
+        || contains(response_pointers())
+        || contains(tx_commands())
+        || contains(rate_ram())
+        || contains(duration_words())
+        || contains(response_commands())
+        || contains(interface_metadata()..interface_metadata() + INTERFACE_METADATA_SIZE)
+        || contains(hif_inputs())
+        || contains(hif_outputs())
+        || contains(internal_tx_buffers())
+        || contains(software_records())
+        || contains(automatic_response_list())
+        || contains(rx_fifo_backing())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tx_command_addresses_require_exact_pipe_slot_bases() {
+        for pipe in 0..TX_PIPE_COUNT {
+            for slot in 0..TX_COMMANDS_PER_PIPE {
+                let address = tx_command(pipe, slot);
+                assert_eq!(tx_command_index(address), Some((pipe, slot)));
+                assert_eq!(tx_command_index(address + 4), None);
+            }
+        }
+        assert_eq!(tx_command_index(tx_commands().end), None);
+    }
 
     #[test]
     fn software_record_addresses_require_exact_record_bases() {
@@ -386,5 +450,28 @@ mod tests {
             software_record_index(software_record(0) & 0x001f_fffc),
             None,
         );
+    }
+
+    #[test]
+    fn owned_range_checks_reject_cross_object_and_overflowing_reads() {
+        assert!(contains_owned_range(tx_command(0, 0), TX_COMMAND_SIZE));
+        assert!(!contains_owned_range(tx_commands().end - 2, 4));
+        assert!(!contains_owned_range(usize::MAX - 1, 4));
+    }
+
+    #[test]
+    fn ampdu_transfer_encoding_accepts_only_aligned_cpu_runtime_addresses() {
+        assert_eq!(
+            ampdu_transfer_word(RUNTIME_CPU_START as usize),
+            Some(0x6500_0000 | (RUNTIME_CPU_START & 0x001f_fffc)),
+        );
+        assert_eq!(
+            ampdu_transfer_word((RUNTIME_CPU_END - 4) as usize),
+            Some(0x6500_0000 | ((RUNTIME_CPU_END - 4) & 0x001f_fffc)),
+        );
+        assert_eq!(ampdu_transfer_word((RUNTIME_CPU_START + 2) as usize), None);
+        assert_eq!(ampdu_transfer_word(RUNTIME_CPU_END as usize), None);
+        assert_eq!(ampdu_transfer_word((RUNTIME_CPU_START & 0x001f_fffc) as usize), None);
+        assert!(ampdu_transfer_word(automatic_response_list().start).is_some());
     }
 }

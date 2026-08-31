@@ -2849,6 +2849,16 @@ pub(crate) const fn mac_current_pipe_state_byte() -> DtcmAddress { DtcmAddress::
 pub(crate) const MAC_SOFTWARE_RECORDS: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, software_records));
 pub(crate) const fn mac_software_record_next_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_SOFTWARE_RECORDS.offset() + core::mem::offset_of!(SoftwareRecordFreeList, nodes) + index * core::mem::size_of::<SoftwareRecordNode>() + core::mem::offset_of!(SoftwareRecordNode, next)) }
 pub(crate) const fn mac_software_record_packet_unchecked(index: usize) -> DtcmAddress { DtcmAddress::from_offset_unchecked(MAC_SOFTWARE_RECORDS.offset() + core::mem::offset_of!(SoftwareRecordFreeList, nodes) + index * core::mem::size_of::<SoftwareRecordNode>() + core::mem::offset_of!(SoftwareRecordNode, packet_record)) }
+
+/// Resolve only exact CPU-form free-list node bases. Interior fields, the list
+/// head, and packet-RAM bus encodings are not valid software-record identities.
+pub(crate) fn mac_software_record_node_index(address: u32) -> Option<usize> {
+    let nodes = mac_software_record_next_unchecked(0).get();
+    let offset = usize::try_from(address).ok()?.checked_sub(nodes)?;
+    (offset % core::mem::size_of::<SoftwareRecordNode>() == 0)
+        .then_some(offset / core::mem::size_of::<SoftwareRecordNode>())
+        .filter(|index| *index < 4)
+}
 pub(crate) const MAC_ACCOUNTING_AVERAGE: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, average));
 pub(crate) const MAC_SILICON_CONTROL: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, silicon_control));
 pub(crate) const MAC_ACCOUNTING_PARAMETER0: DtcmAddress = DtcmAddress::from_offset(MAC_RUNTIME_ACCOUNTING.offset() + core::mem::offset_of!(MacRuntimeAccountingState, parameter0));
@@ -5534,6 +5544,13 @@ mod tests {
         assert_eq!(MAC_CURRENT_SLOT.get(), 0x0400_1f88);
         assert_eq!(MAC_PIPE_EVENT_FLAGS.get(), 0x0400_1f8c);
         assert_eq!(MAC_SOFTWARE_RECORDS.get(), 0x0400_1f90);
+        for index in 0..4 {
+            let node = mac_software_record_next_unchecked(index).get() as u32;
+            assert_eq!(mac_software_record_node_index(node), Some(index));
+            assert_eq!(mac_software_record_node_index(node + 4), None);
+        }
+        assert_eq!(mac_software_record_node_index(MAC_SOFTWARE_RECORDS.get() as u32), None);
+        assert_eq!(mac_software_record_node_index(0x0001_1f94), None);
         assert_eq!(MAC_ACCOUNTING_AVERAGE.get(), 0x0400_1fb4);
         assert_eq!(MAC_SILICON_CONTROL.get(), 0x0400_1fbc);
         assert_eq!(MAC_ACCOUNTING_PARAMETER0.get(), 0x0400_1fc0);

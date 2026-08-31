@@ -871,8 +871,9 @@ pub struct DepthTwoAmpduDescriptor {
     pub aggregate_length: u16,
 }
 
-const fn ampdu_transfer_word(address: u32) -> u32 {
-    0x6500_0000 | (address & 0x001f_fffc)
+fn ampdu_transfer_word(cpu_address: usize) -> u32 {
+    packet_ram::ampdu_transfer_word(cpu_address)
+        .expect("A-MPDU transfer requires an aligned CPU-form runtime packet-RAM address")
 }
 
 const AMPDU_SPACING_SELECTORS: [[u8; 8]; 8] = [
@@ -911,7 +912,7 @@ fn ampdu_spacing_word(selector: u8) -> Option<u32> {
 pub fn build_depth_two_ampdu_descriptor(input: DepthTwoAmpduInput) -> DepthTwoAmpduDescriptor {
     let mut words = [0_u32; 6];
     let mut length = 0_usize;
-    words[length] = ampdu_transfer_word(input.first_frame_state.wrapping_add(8));
+    words[length] = ampdu_transfer_word(input.first_frame_state.wrapping_add(8) as usize);
     length += 1;
     words[length] = 0x6600_0000;
     length += 1;
@@ -919,7 +920,7 @@ pub fn build_depth_two_ampdu_descriptor(input: DepthTwoAmpduInput) -> DepthTwoAm
         words[length] = spacing;
         length += 1;
     }
-    words[length] = ampdu_transfer_word(input.second_frame_state.wrapping_add(8));
+    words[length] = ampdu_transfer_word(input.second_frame_state.wrapping_add(8) as usize);
     length += 1;
     words[length] = 0xe400_0000;
     length += 1;
@@ -1610,8 +1611,9 @@ unsafe fn capture_status2_ownership(
     let command = slot_word(0x14) as usize;
     let hardware_ring = unsafe { read_u32(pipe_state + 8) } as usize;
     let diagnostic_pointer_word = |address: usize, offset: usize| {
-        if packet_ram::contains_owned_storage(address) {
-            unsafe { read_u32(address + offset) }
+        let Some(word) = address.checked_add(offset) else { return 0 };
+        if packet_ram::contains_owned_range(word, core::mem::size_of::<u32>()) {
+            unsafe { read_u32(word) }
         } else {
             0
         }
@@ -3788,14 +3790,20 @@ unsafe fn rearm_depth_two_whole_ampdu(
         let second = FrameNodeAddress::new(second_raw).context();
         let command = read_u32(slot.command().get());
         let descriptor_node = read_u32(slot.auxiliary().get());
-        if command == 0 || descriptor_node == 0 {
+        if packet_ram::tx_command_index(command as usize)
+            != Some((usize::from(pipe), usize::from(read_u8(record.current_slot().get()) & 3)))
+        {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
+        let Some(descriptor_index) = crate::dtcm::mac_software_record_node_index(descriptor_node)
+        else {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        };
         // The transfer word at command +0x18 contains the MAC bus encoding,
         // not a CPU pointer. Keep the CPU-form packet-RAM address from the
-        // software-record free-list node retained by this slot.
+        // exact software-record free-list node retained by this slot.
         let packet_record = read_u32(descriptor_node as usize + 4);
-        if packet_ram::software_record_index(packet_record as usize).is_none() {
+        if packet_ram::software_record_index(packet_record as usize) != Some(descriptor_index) {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
         prepare_depth_two_host_ampdu(
@@ -4463,7 +4471,10 @@ pub unsafe fn publish_host_class0_slot(
     let pipe_state = pipe_state_address(pipe);
     let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
     let live_command = unsafe { read_u32(slot_record as usize + 0x14) };
-    if command != live_command || !packet_ram::tx_commands().contains(&(command as usize)) {
+    if command != live_command
+        || packet_ram::tx_command_index(command as usize)
+            != Some((usize::from(pipe), usize::from(slot)))
+    {
         unsafe {
             crate::hif::publish_halting_exception(
                 [
@@ -4562,9 +4573,17 @@ pub unsafe fn prepare_depth_two_host_ampdu(
         .ok_or(ProbeBuildError::InvalidContextPointer)?;
     let second_host = crate::dtcm::host_context_from_raw(second_context)
         .ok_or(ProbeBuildError::InvalidContextPointer)?;
+    let descriptor_index = crate::dtcm::mac_software_record_node_index(descriptor_node);
     if pipe >= 4
         || slot >= 4
-        || packet_ram::software_record_index(packet_record as usize).is_none()
+        || packet_ram::tx_command_index(command as usize)
+            != Some((usize::from(pipe), usize::from(slot)))
+        || descriptor_index.is_none()
+        || packet_ram::software_record_index(packet_record as usize) != descriptor_index
+        || first_host.expected_frame_state().raw()
+            != unsafe { read_u32(first_host.frame_state_address().get()) }
+        || second_host.expected_frame_state().raw()
+            != unsafe { read_u32(second_host.frame_state_address().get()) }
     {
         return Err(ProbeBuildError::UnsupportedPublicationShape);
     }
@@ -4640,7 +4659,7 @@ pub unsafe fn prepare_depth_two_host_ampdu(
         for (index, word) in descriptor.phy_words.into_iter().enumerate() {
             write_u32(command as usize + 0x0c + index * 4, word);
         }
-        write_u32(command as usize + 0x18, ampdu_transfer_word(packet_record));
+        write_u32(command as usize + 0x18, ampdu_transfer_word(packet_record as usize));
         for (index, word) in descriptor.words[..usize::from(descriptor.length)]
             .iter()
             .copied()
@@ -7518,7 +7537,8 @@ impl PreparedProbePublication {
             let hardware_ring = read_u32(pipe_state as usize + 8);
             let live_command = read_u32(self.slot_record.command().get());
             if self.command.raw() != live_command
-                || !packet_ram::tx_commands().contains(&(self.command.raw() as usize))
+                || packet_ram::tx_command_index(self.command.raw() as usize)
+                    != Some((usize::from(self.pipe), usize::from(self.slot)))
             {
                 crate::hif::publish_halting_exception(
                     [

@@ -1260,14 +1260,21 @@ pub unsafe fn publish_depth_two_ampdu(
 
     let descriptor_head = crate::dtcm::MAC_SOFTWARE_RECORDS.get() as u32;
     let descriptor_node = unsafe { read_live_u32(descriptor_head) };
-    if descriptor_node == 0 {
+    let Some(descriptor_index) = crate::dtcm::mac_software_record_node_index(descriptor_node)
+    else {
+        unsafe { write_live_u8(link_state, original_link_state) };
+        let _ = unsafe { second_reservation.cancel(guard, second) };
+        let _ = unsafe { first_reservation.cancel(guard, first) };
+        return Err(AmpduPublishError::DescriptorUnavailable);
+    };
+    let descriptor_next = unsafe { read_live_u32(descriptor_node) };
+    let packet_record = unsafe { read_live_u32(descriptor_node + 4) };
+    if packet_ram::software_record_index(packet_record as usize) != Some(descriptor_index) {
         unsafe { write_live_u8(link_state, original_link_state) };
         let _ = unsafe { second_reservation.cancel(guard, second) };
         let _ = unsafe { first_reservation.cancel(guard, first) };
         return Err(AmpduPublishError::DescriptorUnavailable);
     }
-    let descriptor_next = unsafe { read_live_u32(descriptor_node) };
-    let packet_record = unsafe { read_live_u32(descriptor_node + 4) };
     let first_next = unsafe { read_host_u32(first.context.next_in_ampdu()) };
     let second_next = unsafe { read_host_u32(second.context.next_in_ampdu()) };
     unsafe {

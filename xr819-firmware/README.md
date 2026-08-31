@@ -468,7 +468,10 @@ explicit zeroing paths walk `__dtcm_data_start..__dtcm_data_end` and
 than reconstructing either subrange from integer addresses. There is still no
 main-image DTCM fill record.
 Hardware descriptors, packet buffers, and MMIO identities remain in shared
-packet RAM or MMIO rather than TCM. The internal TX context pool is an exact
+packet RAM or MMIO rather than TCM. CPU-form packet-RAM pointers, MAC offsets,
+DMA bus addresses, and command encodings have separate ownership rules recorded
+in [`packet-ram-address-contract.md`](packet-ram-address-contract.md). The
+internal TX context pool is an exact
 typed member view of the shared quarantine object, not a standalone allocation
 or exclusive ownership claim; retained teardown and diagnostic code still
 addresses that fixed identity.
