@@ -33,6 +33,7 @@ python3 tools/check-hif-dma-addresses.py
 python3 tools/check-crypto-dma-addresses.py
 python3 tools/check-mac-packet-addresses.py
 python3 tools/check-platform-packet-addresses.py
+python3 tools/check-tx-packet-addresses.py
 python3 tools/check-dtcm-access.py
 python3 tools/generate-dtcm-snapshot-contract.py --check
 python3 tools/compare-dtcm-initialized-snapshots.py --self-test

@@ -382,6 +382,24 @@ pub const unsafe fn mac_packet_offset_unchecked(cpu_address: usize) -> u32 {
     cpu_address as u32 & 0x007f_ffff
 }
 
+/// Encode a raw 32-bit value as a MAC packet offset. This preserves the pure
+/// descriptor-builder API; publication boundaries must validate CPU identity.
+#[inline(always)]
+pub const fn encode_mac_packet_offset_u32(cpu_address: u32) -> u32 {
+    cpu_address & 0x007f_ffff
+}
+
+/// Apply the MAC TX payload bus encoding and the caller's qualified alignment
+/// mask. This is a pure descriptor encoding; publication retains and validates
+/// the separate CPU-form context identity.
+#[inline(always)]
+pub const fn encode_tx_payload_bus_address(
+    cpu_address: u32,
+    address_mask: u32,
+) -> u32 {
+    address_mask & cpu_address & 0xf6ff_ffff
+}
+
 #[inline(always)]
 pub fn response_command_bus_address(cpu_address: usize) -> Option<u32> {
     response_command_index(cpu_address)

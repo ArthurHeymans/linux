@@ -666,7 +666,12 @@ fn finalize_phy_control(phy: PhyRateWords, rate_index: u8, frame_length: u16) ->
 
 fn single_frame_secondary_command(tx_flags: u32, header_duration: u16, duration_slot: u8) -> u32 {
     if tx_flags & 1 == 0 {
-        0x2100_0000 | (packet_ram::duration_word(usize::from(duration_slot)) as u32 & 0x007f_ffff)
+        0x2100_0000
+            | unsafe {
+                packet_ram::mac_packet_offset_unchecked(packet_ram::duration_word(usize::from(
+                    duration_slot,
+                )))
+            }
     } else {
         0x3200_0000 | header_duration as u32
     }
@@ -768,14 +773,17 @@ pub fn build_single_frame_pipe_descriptor(
         | u32::from(input.frame_length.wrapping_add(4));
     words[3] = 0x3100_0000 + frame_control;
     words[4] = 0x4700_0000 + (frame_control >> 8);
-    words[5] = 0x2080_0000 | (input.metadata_address & 0x007f_ffff);
+    words[5] =
+        0x2080_0000 | packet_ram::encode_mac_packet_offset_u32(input.metadata_address);
     words[6] = 0x3200_0000 | u32::from(input.duration);
-    words[7] = 0x2900_0000 | (header.descriptor_tail() & 0x007f_ffff);
+    words[7] =
+        0x2900_0000 | packet_ram::encode_mac_packet_offset_u32(header.descriptor_tail());
     words[8] = input.secondary_command;
     let mut length = 9;
     if input.frame_length > DOT11_FIXED_HEADER_LENGTH {
         let payload = header.payload_after_fixed_header();
-        words[9] = 0x4000_0000 | (input.address_mask & payload & 0xf6ff_ffff);
+        words[9] =
+            0x4000_0000 | packet_ram::encode_tx_payload_bus_address(payload, input.address_mask);
         words[10] = (u32::from(input.frame_length - DOT11_FIXED_HEADER_LENGTH) & 0x0fff) << 12
             | (payload & 3);
         length = 11;
@@ -7941,7 +7949,8 @@ pub unsafe fn build_prepared_probe_descriptor(
             metadata_address,
             duration: (address.duration_address() as *const u16).read_volatile(),
             header_address: context.header,
-            secondary_command: 0x2100_0000 | (secondary_address & 0x007f_ffff),
+            secondary_command: 0x2100_0000
+                | packet_ram::encode_mac_packet_offset_u32(secondary_address),
             address_mask: 0x007f_fffc,
             terminal_command: 0x0700_4600,
         })
@@ -7998,9 +8007,11 @@ unsafe fn emit_prepared_probe_descriptor(
         add(0x3100_0000 + frame_control);
         add(0x4700_0000 + (frame_control >> 8));
         add(0x2080_0000
-            | (packet_ram::interface_metadata_byte(usize::from(if_id)) as u32 & 0x007f_ffff));
+            | packet_ram::mac_packet_offset_unchecked(packet_ram::interface_metadata_byte(
+                usize::from(if_id),
+            )));
         add(0x3200_0000 | u32::from((address.duration_address() as *const u16).read_volatile()));
-        add(0x2900_0000 | (frame.descriptor_tail() & 0x007f_ffff));
+        add(0x2900_0000 | packet_ram::encode_mac_packet_offset_u32(frame.descriptor_tail()));
         add(single_frame_secondary_command(
             tx_flags,
             (frame.sequence_control() as *const u16).read_volatile(),
@@ -8012,7 +8023,8 @@ unsafe fn emit_prepared_probe_descriptor(
         // 24/26/30/32/36-byte software header length.
         if context.length > DOT11_FIXED_HEADER_LENGTH {
             let payload = frame.payload_after_fixed_header();
-            add(0x4000_0000 | (0x007f_fffc & payload & 0xf6ff_ffff));
+            add(0x4000_0000
+                | packet_ram::encode_tx_payload_bus_address(payload, 0x007f_fffc));
             add(
                 (u32::from(context.length - DOT11_FIXED_HEADER_LENGTH) & 0x0fff) << 12
                     | (payload & 3),
