@@ -47,15 +47,19 @@ FORBIDDEN_FORMS = (
 # the reviewed descriptor-before-trigger and slot-before-GO operation order.
 # Adding checked published-slot identity construction changes only the Rust
 # symbol disambiguator for `PreparedProbePublication::publish` (`MsK` to `MsL`).
+# Checked ordinary live-slot construction adds one decoded slot-field access at
+# `0x0400172c` and advances that same method disambiguator from `MsL` to `MsM`.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001720: 5,
     0x04001722: 1,
     0x04001723: 2,
+    0x0400172C: 1,
     0x04001738: 1,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
-    ('_RNvMsL_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
+    ('_RNvMs7_NtCsbx17WDetRei_14xr819_firmware2txNtB5_10LiveTxSlot14from_pipe_slot', 0x0400172C): 1,
+    ('_RNvMsM_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001720): 3,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04001723): 2,
     ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation6cancel', 0x04001738): 1,

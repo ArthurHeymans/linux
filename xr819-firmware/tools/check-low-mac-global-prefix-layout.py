@@ -45,9 +45,11 @@ FORBIDDEN_FORMS = (
 # Centralized retained-frame validation changes helper inlining in
 # `service_single_probe_runtime_inactive`: two `0x04001686` loads are folded,
 # one `0x04001694` load is split out, and one instruction-shaped `0x04001686`
-# literal appears without introducing another decoded owner.
+# literal appears without introducing another decoded owner. Checked live-slot
+# construction later reclassifies one such word as the existing inactive
+# runtime owner's decoded `0x04001686` load.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 5,
+    0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
     0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 6,
     0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2,
 })
@@ -57,7 +59,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04001685): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx31prepare_single_frame_pas_timing', 0x04001682): 2,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001687): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 8,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 9,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 16,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19build_control_frame', 0x040016B0): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19program_rate_tables', 0x04001682): 2,

@@ -422,6 +422,33 @@ struct PublishedSlotIdentity {
     slot: u8,
 }
 
+#[derive(Clone, Copy)]
+struct LiveTxSlot {
+    address: crate::dtcm::MacPipeSlotAddress,
+    frame_node: FrameNodeAddress,
+    command: u32,
+}
+
+impl LiveTxSlot {
+    unsafe fn from_pipe_slot(pipe: u8, slot: u8) -> Option<Self> {
+        if pipe >= 4 || slot >= 4 {
+            return None;
+        }
+        unsafe {
+            let address = pipe_record_address(pipe).slot_unchecked(usize::from(slot));
+            let frame_node = FrameNodeAddress::from_raw(read_u32(address.frame().get()))?;
+            let command = read_u32(address.command().get());
+            (packet_ram::tx_command_index(command as usize)
+                == Some((usize::from(pipe), usize::from(slot))))
+            .then_some(Self {
+                address,
+                frame_node,
+                command,
+            })
+        }
+    }
+}
+
 impl PublishedSlotIdentity {
     fn new(context: ContextAddress, pipe: u8, slot: u8) -> Option<Self> {
         if pipe >= 4 || slot >= 4 || ContextAddress::from_raw(context.raw()) != Some(context) {
@@ -5957,19 +5984,25 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
     unsafe {
         trace_tx_stage(TX_TRACE_SUCCESS);
         trace_tx_value(0x2c, u32::from(pipe));
+        if pipe >= 4 {
+            crate::halt_always!();
+        }
         let pipe_index = usize::from(pipe);
         let current = read_u8(crate::dtcm::mac_pipe_cursor_mirror_02_unchecked(pipe_index).get());
-        let current_index = usize::from(current);
-        let current_frame = FrameNodeAddress::new(read_u32(
-            crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, current_index).get(),
-        ));
+        if current >= 4 {
+            crate::halt_always!();
+        }
+        let Some(current_slot) = LiveTxSlot::from_pipe_slot(pipe, current) else {
+            crate::halt_always!();
+        };
+        let current_frame = current_slot.frame_node;
 
         write_u32(0xfff0_1a98, read_u32(0xfff0_1a98).wrapping_add(1));
         write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
-        write_u8(crate::dtcm::mac_pipe_slot_control_03_unchecked(pipe_index, current_index).get(), 3);
+        write_u8(current_slot.address.state().get(), 3);
 
         if read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get()) == 1
-            && read_u8(crate::dtcm::mac_pipe_slot_retry_rate_unchecked(pipe_index, current_index).get()) == 0xff
+            && read_u8(current_slot.address.retry_rate().get()) == 0xff
         {
             let frame = current_frame.context();
             let flags = read_u32(frame.control_bits_address());
@@ -5989,13 +6022,12 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
             if current == last {
                 let mut index = read_u8(crate::dtcm::mac_pipe_current_slot_unchecked(pipe_index).get());
                 loop {
-                    let slot_index = usize::from(index);
-                    let slot = crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, slot_index);
+                    let Some(slot) = LiveTxSlot::from_pipe_slot(pipe, index) else {
+                        crate::halt_always!();
+                    };
                     complete_tx_pipe_slot(
-                        FrameNodeAddress::new(read_u32(
-                            crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, slot_index).get(),
-                        )),
-                        slot.get() as u32,
+                        slot.frame_node,
+                        slot.address.raw(),
                         0,
                         backend,
                     );
@@ -6052,20 +6084,27 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
             crate::dtcm::RX_FIFO_STATE.ba_scan_cursor().get(),
             read_u32(crate::platform::mac_register(0x0604)),
         );
+        if pipe >= 4 {
+            crate::halt_always!();
+        }
         let pipe_index = usize::from(pipe);
         let current = read_u8(crate::dtcm::mac_pipe_cursor_mirror_02_unchecked(pipe_index).get());
+        if current >= 4 {
+            crate::halt_always!();
+        }
         let current_index = usize::from(current);
         let slot = crate::dtcm::mac_pipe_slot_state_word_unchecked(pipe_index, current_index);
         if read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get()) == 0 {
             backend.start_without_pending_diagnostic(pipe);
             return;
         }
+        let Some(live_slot) = LiveTxSlot::from_pipe_slot(pipe, current) else {
+            crate::halt_always!();
+        };
 
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::TX_START);
-        write_u8(crate::dtcm::mac_pipe_slot_control_03_unchecked(pipe_index, current_index).get(), 2);
-        let frame_node = FrameNodeAddress::new(read_u32(
-            crate::dtcm::mac_pipe_slot_frame_unchecked(pipe_index, current_index).get(),
-        ));
+        write_u8(live_slot.address.state().get(), 2);
+        let frame_node = live_slot.frame_node;
         let context = frame_node.context();
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 3 {
             let secondary = read_u8(
@@ -6105,9 +6144,7 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
             write_u8(crate::dtcm::LOW_MAC_SELECTED_RATE.get(), rate);
         }
 
-        let slot_state = read_u32(
-            crate::dtcm::mac_pipe_slot_command_unchecked(pipe_index, current_index).get(),
-        );
+        let slot_state = live_slot.command;
         if read_u32(slot_state as usize + 8) & (1 << 27) == 0
             && current != read_u8(crate::dtcm::mac_pipe_cursor_mirror_01_unchecked(pipe_index).get())
         {

@@ -44,19 +44,21 @@ FORBIDDEN_FORMS = (
 # Regenerated only after reviewing the candidate disassembly and operation order.
 # Centralized retained-frame validation changes shared helper inlining and folds
 # one duplicate `0x04001d40` load in `service_single_probe_runtime_inactive`.
+# Checked live-slot construction later materializes two instruction-shaped
+# words and one additional decoded load for that existing owner.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001D12: 1,
     0x04001D18: 2,
     0x04001D1C: 1,
     0x04001D2C: 4,
     0x04001D38: 2,
-    0x04001D40: 2,
+    0x04001D40: 4,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_phy_operation_1', 0x04001D18): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_phy_operation_1', 0x04001D38): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001D2C): 5,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001D40): 4,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001D40): 5,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x04001D12): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001D1C): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001D2C): 1,

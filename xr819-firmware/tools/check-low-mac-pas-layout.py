@@ -61,7 +61,9 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 
 # Filled from decoded PC-relative literal loads in the reviewed linked image.
 # Keys are (containing ELF symbol, loaded value); counts preserve repeated xrefs
-# even when several instructions reuse one literal-pool word.
+# even when several instructions reuse one literal-pool word. Checked live-slot
+# construction folds one duplicate `0x04003a6a` load in the shared inactive
+# runtime helper without removing the typed PAS access.
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
         ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_', 0x04003A6C): 1,
@@ -80,7 +82,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx24initialize_internal_pool', 0x04003688): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx31prepare_single_frame_pas_timing', 0x04003AD8): 2,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003684): 2,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003A6A): 7,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003A6A): 6,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19build_control_frame', 0x04003A70): 2,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04003A68): 2,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04003AD0): 1,

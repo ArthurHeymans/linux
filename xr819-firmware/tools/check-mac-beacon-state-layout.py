@@ -40,14 +40,17 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
+# Checked live-slot construction changes shared inactive-helper code generation:
+# three duplicate `0x04001aa8` loads are folded while one instruction-shaped
+# word appears without introducing another decoded beacon-state owner.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001A88: 1,
-    0x04001AA8: 5,
+    0x04001AA8: 6,
     0x04001AB0: 1,
     0x04001AB4: 4,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001AA8): 9,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001AA8): 6,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04001AB4): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac27program_joined_station_mode', 0x04001AB4): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac28install_response_descriptors', 0x04001A88): 1,

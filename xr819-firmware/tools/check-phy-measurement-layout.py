@@ -57,6 +57,8 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
+# Checked live-slot construction changes shared inactive-helper inlining and
+# folds one duplicate `0x040099a9` load; the PHY measurement owner is unchanged.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
     {0x0400997C: 2, 0x0400998B: 1, 0x0400998C: 1, 0x04009990: 1,
      0x04009994: 1, 0x04009998: 1, 0x040099A9: 7, 0x040099AB: 1}
@@ -66,7 +68,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x040099A9): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_phy_operation_1', 0x040099A9): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x0400997C): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x040099A9): 3,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x040099A9): 2,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy22prepare_rf_mode0_stage', 0x0400998B): 3,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy22prepare_rf_mode0_stage', 0x040099AB): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x04009990): 4,
