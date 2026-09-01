@@ -1,10 +1,11 @@
-//! Concurrent retained host-TX ownership with a single class-0 MAC executor.
+//! Concurrent retained host-TX ownership with a pipe-indexed class-0 MAC executor.
 //!
 //! Each of the 30 host contexts owns its original HIF request until the inherited
 //! confirmation handoff point. The current HIF transport then returns request
 //! credit before it enqueues the separately copied confirmation; this module does
-//! not redesign that parent ordering. Pending contexts advance independently,
-//! while at most one context may reserve or own the shared class-0 hardware runtime.
+//! not redesign that parent ordering. Pending contexts advance independently.
+//! Publication remains serialized, but retained hardware owners are discovered
+//! and serviced independently per MAC pipe in preparation for safe concurrency.
 
 use crate::{hif, host_tx_diagnostics, host_tx_policy, tx, vendor_host_tx};
 
@@ -180,7 +181,10 @@ impl HostTxDriver {
         // Service the shared MAC executor once, then route every completion
         // drained in that pass by its registered pipe/slot/frame-node owner.
         // A successful batch may enqueue all of its slots before returning.
-        if self.hardware_runtime_owner().is_some() {
+        let Some(owners) = self.hardware_runtime_owners() else {
+            crate::halt_always!();
+        };
+        if !owners.is_empty() {
             let mut completion = unsafe { tx::service_host_class0_runtime(events, 32) };
             while let Some(completed) = completion {
                 self.route_hardware_completion(completed);
@@ -188,16 +192,25 @@ impl HostTxDriver {
             }
         }
 
-        if let Some(index) = self.hardware_runtime_owner() {
-            diagnostic = unsafe {
+        let Some(owners) = self.hardware_runtime_owners() else {
+            crate::halt_always!();
+        };
+        for pipe in 0..4 {
+            let Some(index) = owners.first(pipe) else {
+                continue;
+            };
+            let event = unsafe {
                 self.service_index(
                     index,
                     events,
                     mac_domain,
                     allow_hardware_publication,
-                    allow_debug_event,
+                    allow_debug_event && diagnostic.is_none(),
                 )
             };
+            if diagnostic.is_none() {
+                diagnostic = event;
+            }
             budget -= 1;
         }
 
@@ -219,21 +232,39 @@ impl HostTxDriver {
             }
             budget -= 1;
         }
-        if allow_hardware_publication && self.hardware_runtime_owner().is_none() {
+        let Some(owners) = self.hardware_runtime_owners() else {
+            crate::halt_always!();
+        };
+        if allow_hardware_publication && owners.is_empty() {
             unsafe { self.publish_ready_batch(mac_domain) };
         }
         diagnostic
     }
 
-    fn hardware_runtime_owner(&self) -> Option<usize> {
-        self.states.iter().position(|state| {
-            matches!(state, Some(HostTxState::Reserved { .. }))
-                || matches!(
-                    state,
-                    Some(HostTxState::Owned { retained, .. })
-                        if retained.phase() == vendor_host_tx::HostTxPhase::Scheduled
-                )
-        })
+    fn hardware_runtime_owners(&self) -> Option<host_tx_policy::PipeRuntimeOwners> {
+        let mut owners = host_tx_policy::PipeRuntimeOwners::new();
+        for (index, state) in self.states.iter().enumerate() {
+            let pipe = match state {
+                Some(HostTxState::Reserved { reservation, .. }) => Some(reservation.pipe()),
+                Some(HostTxState::Owned {
+                    retained,
+                    hardware,
+                    ..
+                }) if retained.phase() == vendor_host_tx::HostTxPhase::Scheduled => {
+                    let Some(hardware) = hardware else {
+                        return None;
+                    };
+                    Some(hardware.pipe)
+                }
+                _ => None,
+            };
+            if let Some(pipe) = pipe
+                && !owners.observe(index, pipe)
+            {
+                return None;
+            }
+        }
+        Some(owners)
     }
 
     fn next_software_owner(&mut self) -> Option<usize> {
@@ -706,9 +737,12 @@ impl HostTxDriver {
                     }
                 }
 
+                let Some(hardware_owners) = self.hardware_runtime_owners() else {
+                    crate::halt_always!();
+                };
                 if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
                     && allow_hardware_publication
-                    && self.hardware_runtime_owner().is_none()
+                    && hardware_owners.is_empty()
                 {
                     let mut guard = mac_domain.enter();
                     if !self.scheduler_phy_started_this_pass {

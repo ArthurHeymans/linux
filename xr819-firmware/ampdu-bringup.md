@@ -577,3 +577,11 @@ This does not yet permit simultaneous hardware owners: the host scheduler still
 publishes only when no class-0 runtime owner exists. It removes the first
 software-state collision that would otherwise reset another pipe's retry count
 or publication identities when multi-pipe outstanding work is enabled.
+
+The host driver now also discovers retained class-0 owners by pipe, coalescing
+multiple contexts that legitimately share one staged batch or aggregate owner.
+Each occupied pipe receives its own bounded service step after the shared MAC
+completion pass. Missing scheduled-owner metadata and out-of-range pipes halt
+before publication or completion routing. Publication remains globally
+serialized, so this is an ownership-model change rather than a concurrency
+switch.

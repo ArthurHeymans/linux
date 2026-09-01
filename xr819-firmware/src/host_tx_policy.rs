@@ -6,6 +6,54 @@
 //! compiled and tested on every build, in the same spirit as
 //! `tx::plan_ordinary_tx_pipe_status`.
 
+/// First retained class-0 runtime owner observed for each MAC pipe.
+///
+/// Multiple contexts may legitimately share one pipe owner (a staged batch or
+/// depth-two aggregate), so later observations of that pipe are coalesced. An
+/// out-of-range pipe is rejected instead of being masked into another owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PipeRuntimeOwners {
+    first: [Option<u8>; 4],
+}
+
+impl PipeRuntimeOwners {
+    pub const fn new() -> Self {
+        Self { first: [None; 4] }
+    }
+
+    pub fn observe(&mut self, index: usize, pipe: u8) -> bool {
+        if pipe >= 4 || index > usize::from(u8::MAX) {
+            return false;
+        }
+        let entry = &mut self.first[usize::from(pipe)];
+        if entry.is_none() {
+            *entry = Some(index as u8);
+        }
+        true
+    }
+
+    pub const fn first(self, pipe: usize) -> Option<usize> {
+        if pipe < 4 {
+            match self.first[pipe] {
+                Some(index) => Some(index as usize),
+                None => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.first.iter().all(Option::is_none)
+    }
+}
+
+impl Default for PipeRuntimeOwners {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Match completion-ring evidence against the exact slot recorded before GO.
 ///
 /// Context-only routing was measured and reverted because it could release a
@@ -71,6 +119,21 @@ mod tests {
         assert_eq!(rate_try_for_single_rate(0, 200), [0xf, 0, 0]);
         // Out-of-range indices report nothing rather than corrupting a word.
         assert_eq!(rate_try_for_single_rate(24, 0), [0; 3]);
+    }
+
+    #[test]
+    fn pipe_runtime_owners_coalesce_batches_but_keep_pipes_independent() {
+        let mut owners = PipeRuntimeOwners::new();
+        assert!(owners.observe(7, 2));
+        assert!(owners.observe(9, 2));
+        assert!(owners.observe(11, 0));
+        assert_eq!(owners.first(0), Some(11));
+        assert_eq!(owners.first(2), Some(7));
+        assert_eq!(owners.first(1), None);
+        assert!(!owners.is_empty());
+        assert!(!owners.observe(12, 4));
+        assert_eq!(PipeRuntimeOwners::new().first(4), None);
+        assert!(PipeRuntimeOwners::new().is_empty());
     }
 
     #[test]

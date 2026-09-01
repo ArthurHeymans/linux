@@ -64,12 +64,14 @@ FORBIDDEN_FORMS = (
 # the frame and destination as typed packet-RAM values; the resulting inlining
 # removes the accidental 0x04009810 byte sequence. Scoping retry ownership per
 # pipe perturbs the same adjacent instruction bytes again, replacing the two
-# accidental `0x04009806`/`0x0400980b` words with one `0x0400980d` word; there
-# is still no decoded HIF-address load. Retry nibble advancement remains confined
+# accidental `0x04009806`/`0x0400980b` words with one `0x0400980d` word.
+# Pipe-indexed owner discovery perturbs the inlined host service again, producing
+# accidental `0x04009805`, `0x0400980a`, and `0x04009857` words; there is still
+# no decoded HIF-address load. Retry nibble advancement remains confined
 # to the typed selective retry helper,
 # while partial give-up reuses ordinary kind-0 completion.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x0400980D: 1}
+    {0x04009805: 1, 0x0400980A: 1, 0x04009857: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
