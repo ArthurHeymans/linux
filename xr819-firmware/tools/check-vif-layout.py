@@ -25,8 +25,10 @@ FORBIDDEN_FORMS = ("VIF_BASE", "VIF_STRIDE", "VIF_RECORDS", "VIF_RECORD_SIZE")
 
 # Exact decoded literal-load xrefs in the qualified feature-free image. This is
 # regenerated only after reviewing disassembly and operation ordering. The
-# additional `0x04003fc0` read validates the received BlockAck address against
-# the active VIF before selective aggregate retry ownership is changed.
+# additional `0x04003fc0` reads validate the received BlockAck address against
+# the active VIF before selective aggregate retry ownership is changed. Shared
+# TX frame validation changes helper inlining and folds one duplicate literal
+# load in `service_single_probe_runtime_inactive`; the typed VIF read remains.
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
         ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index', 0x04003EB0): 2,
@@ -43,7 +45,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21prepare_probe_context', 0x04003FC4): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx26service_host_management_tx', 0x04003EB1): 2,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003EB0): 4,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003FC0): 7,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04003FC0): 6,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x0400425C): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04003EB0): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x0400425E): 1,

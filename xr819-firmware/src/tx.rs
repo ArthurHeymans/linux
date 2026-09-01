@@ -763,18 +763,12 @@ impl SingleFramePipeDescriptor {
 pub fn build_single_frame_pipe_descriptor(
     input: SingleFramePipeInput,
 ) -> Result<SingleFramePipeDescriptor, ProbeBuildError> {
-    if input.frame_length < DOT11_FIXED_HEADER_LENGTH
-        || packet_ram::RuntimePacketAddress::new(
-            input.header_address.raw(),
-            usize::from(input.frame_length),
-        )
-        .is_none()
-        || packet_ram::RuntimePacketAddress::new(input.metadata_address.raw(), 1).is_none()
-    {
+    let header = validated_tx_frame(input.header_address.raw(), input.frame_length)
+        .ok_or(ProbeBuildError::PacketRamMismatch)?;
+    if packet_ram::RuntimePacketAddress::new(input.metadata_address.raw(), 1).is_none() {
         return Err(ProbeBuildError::PacketRamMismatch);
     }
     let mut words = [0_u32; 13];
-    let header = TxFrameAddress::new(input.header_address.raw());
     let frame_control = u32::from(input.frame_control) | if input.retry_flag { 0x0800 } else { 0 };
     words[0] = 0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff);
     words[1] = 0x5000_0000 | (input.phy_control_word & 0x00ff_ffff);
@@ -1448,6 +1442,22 @@ impl TxFrameAddress {
     const fn descriptor_tail(self) -> u32 { self.address_1() }
     const fn payload_after_fixed_header(self) -> u32 {
         self.0.wrapping_add(DOT11_FIXED_HEADER_LENGTH as u32)
+    }
+}
+
+fn validated_tx_frame(address: u32, length: u16) -> Option<TxFrameAddress> {
+    (length >= DOT11_FIXED_HEADER_LENGTH)
+        .then(|| packet_ram::RuntimePacketAddress::new(address, usize::from(length)))
+        .flatten()
+        .map(|address| TxFrameAddress::new(address.raw()))
+}
+
+unsafe fn validated_context_tx_frame(context: ContextAddress) -> Option<TxFrameAddress> {
+    unsafe {
+        validated_tx_frame(
+            read_u32(context.frame_address_address()),
+            read_u16(context.frame_length_address()),
+        )
     }
 }
 
@@ -6028,8 +6038,13 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
             && read_u32(context.control_bits_address()) & 1 == 0
         {
             let rate = read_u8(context.duration_slot_address());
+            if usize::from(rate) >= packet_ram::DURATION_WORD_COUNT {
+                crate::halt_always!();
+            }
             let duration = read_u16(packet_ram::duration_word(usize::from(rate)));
-            let header = TxFrameAddress::new(read_u32(context.frame_address_address()));
+            let Some(header) = validated_context_tx_frame(context) else {
+                crate::halt_always!();
+            };
             write_u16(header.sequence_control() as usize, duration);
             write_u16(context.sequence_number_address(), duration);
             write_u32(
@@ -6450,8 +6465,9 @@ where
                         && (flags >> 20) & 3 != 0
                         && read_u8(crate::dtcm::lmc_message_control().get()) & 1 != 0
                     {
-                        if let Some(message) =
-                            allocate_lmc_message(|| backend.message_allocation_failed())
+                        if let Some(header) = validated_context_tx_frame(context)
+                            && let Some(message) =
+                                allocate_lmc_message(|| backend.message_allocation_failed())
                         {
                             // The allocator returns the typed record selected by the producer cursor.
                             write_u8(message.kind().get(), 7);
@@ -6464,7 +6480,6 @@ where
                                 read_u8(crate::dtcm::access_category_to_queue_unchecked(queue).get()),
                             );
                             write_u16(message.completion_sequence().get(), read_u16(context.sequence_number_address()) << 4);
-                            let header = TxFrameAddress::new(read_u32(context.frame_address_address()));
                             write_u16(
                                 message.completion_mac_word(0).unwrap().get(),
                                 read_u16(header.address_1_halfword_unchecked(0) as usize),
@@ -6616,8 +6631,12 @@ where
             if (flags >> 1) & 3 == 3 {
                 let countdown = (device + 0x14b) as *mut u8;
                 let countdown_value = countdown.read_volatile();
-                let peer = (context.frame_address_address() as *const u32).read_volatile() as usize;
-                if countdown_value != 0 && ((peer + 4) as *const u8).read_volatile() & 1 != 0 {
+                let peer = validated_context_tx_frame(context);
+                if countdown_value != 0
+                    && peer.is_some_and(|peer| {
+                        ((peer.raw() as usize + 4) as *const u8).read_volatile() & 1 != 0
+                    })
+                {
                     let next = countdown_value.wrapping_sub(1);
                     countdown.write_volatile(next);
                     if next == 0 {
@@ -7688,7 +7707,8 @@ unsafe fn prepare_single_frame_pas_timing(
             crate::dtcm::low_mac_short_airtime_unchecked(timing_index).get()
         });
         let mode = read_u8(pas.mode_byte().get());
-        let header = TxFrameAddress::new(read_u32(frame.frame_address() as usize));
+        let header = validated_context_tx_frame(frame.context())
+            .ok_or(ProbeBuildError::PacketRamMismatch)?;
         let special_peer = (mode == 5 || mode == 6)
             && (0..6).all(|offset| {
                 read_u8(header.address_2_byte_unchecked(offset as u32) as usize)
@@ -7990,20 +8010,13 @@ unsafe fn emit_prepared_probe_descriptor(
 ) -> Result<u32, ProbeBuildError> {
     unsafe {
         let address = ContextAddress::new(context.context);
-        if context.length < DOT11_FIXED_HEADER_LENGTH {
-            return Err(ProbeBuildError::PacketRamMismatch);
-        }
-        let frame_address = packet_ram::RuntimePacketAddress::new(
-            context.header,
-            usize::from(context.length),
-        )
-        .ok_or(ProbeBuildError::PacketRamMismatch)?;
+        let frame = validated_tx_frame(context.header, context.length)
+            .ok_or(ProbeBuildError::PacketRamMismatch)?;
         let descriptor_address = packet_ram::RuntimePacketAddress::new(
             destination,
             core::mem::size_of::<[u32; 13]>(),
         )
         .ok_or(ProbeBuildError::PacketRamMismatch)?;
-        let frame = TxFrameAddress::new(frame_address.raw());
         let descriptor = TxDescriptorAddress::new(descriptor_address.raw());
         let rate = (address.tx_rate_address() as *const u8).read_volatile();
         let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
@@ -11009,6 +11022,21 @@ mod tests {
         assert_eq!(classify_dot11_header(0x0388, false), Dot11HeaderShape { length: 32, qos_data: true });
         assert_eq!(classify_dot11_header(0x8388, false), Dot11HeaderShape { length: 36, qos_data: true });
         assert_eq!(classify_dot11_header(0x0088, true), Dot11HeaderShape { length: 24, qos_data: false });
+    }
+
+    #[test]
+    fn tx_frame_validation_rejects_short_frames_aliases_and_range_ends() {
+        assert_eq!(
+            validated_tx_frame(0x0901_4fe8, 42).map(TxFrameAddress::raw),
+            Some(0x0901_4fe8),
+        );
+        assert_eq!(validated_tx_frame(0x0901_4fe8, 23), None);
+        assert_eq!(validated_tx_frame(0x0001_4fe8, 42), None);
+        assert_eq!(
+            validated_tx_frame(packet_ram::RUNTIME_CPU_END - 24, 24).map(TxFrameAddress::raw),
+            Some(packet_ram::RUNTIME_CPU_END - 24),
+        );
+        assert_eq!(validated_tx_frame(packet_ram::RUNTIME_CPU_END - 23, 24), None);
     }
 
     #[test]

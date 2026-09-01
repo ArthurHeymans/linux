@@ -43,6 +43,8 @@ FORBIDDEN_FORMS = (
 # Regenerated only after reviewing the candidate disassembly and operation order.
 # Selective retry adds one typed free-list-head access when the aggregate-only
 # descriptor record is returned before the missing member becomes kind 0.
+# Centralized retained-frame validation changes shared helper inlining and folds
+# one duplicate `0x04001fbc` load in `service_single_probe_runtime_inactive`.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001F78: 6,
     0x04001F84: 1,
@@ -53,7 +55,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_', 0x04001F84): 2,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx26enter_mac_fatal_quiescence', 0x04001F78): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001F78): 15,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001FBC): 9,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001FBC): 8,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25initialize_mac_core_mode0', 0x04001FBC): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware8platform18prepare_packet_dma', 0x04001F90): 1,
 })

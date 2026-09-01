@@ -64,9 +64,10 @@ FORBIDDEN_FORMS = (
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
 # Selective retry still enqueues acknowledged members through the typed native
-# completion-ring view; the reviewed candidate no longer materializes an
-# address-shaped literal word for that access.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+# completion-ring view. Centralized retained-frame validation perturbs nearby
+# code generation and materializes one instruction-shaped `0x04009023` word;
+# it has no decoded literal load or new completion-ring owner.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04009023: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 

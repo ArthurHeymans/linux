@@ -16,7 +16,9 @@ expected = {
     "packet_ram::mac_packet_offset_unchecked(": 1,
     "packet_ram::encode_mac_packet_offset_u32(": 3,
     "packet_ram::encode_tx_payload_bus_address(": 0,
-    "packet_ram::RuntimePacketAddress::new(": 9,
+    "packet_ram::RuntimePacketAddress::new(": 8,
+    "validated_tx_frame(": 4,
+    "validated_context_tx_frame(": 5,
     ".mac_offset()": 2,
     ".tx_payload_bus_address(": 2,
 }

@@ -57,9 +57,12 @@ Ordinary TX descriptor publication first constructs a
 command-list destination fits inside one linker-owned runtime object. Distinct
 `MacPacketOffset` and `TxPayloadBusAddress` values can then be derived from that
 CPU-form identity; their representations cannot be supplied where a CPU pointer
-is required. Interface metadata and duration-table selectors are range-checked
-before their addresses are formed. Source gates reject open-coded MAC, platform,
-and production TX packet-RAM masks and freeze the checked TX boundary calls.
+is required. TX start, timing, completion-message, and completion-dispatch paths
+also revalidate each retained context frame address together with its full frame
+length before dereferencing header fields. Interface metadata and duration-table
+selectors are range-checked before their addresses are formed. Source gates
+reject open-coded MAC, platform, and production TX packet-RAM masks and freeze
+the checked TX boundary calls.
 
 ### HIF and crypto DMA
 
