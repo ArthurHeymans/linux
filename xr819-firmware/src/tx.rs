@@ -1000,6 +1000,19 @@ pub fn classify_depth_two_block_ack(
     })
 }
 
+pub fn merge_depth_two_block_ack_states(
+    previous: Option<[BlockAckMemberState; 2]>,
+    current: [BlockAckMemberState; 2],
+) -> [BlockAckMemberState; 2] {
+    core::array::from_fn(|index| match (previous.map(|states| states[index]), current[index]) {
+        (Some(BlockAckMemberState::Acknowledged), _)
+        | (_, BlockAckMemberState::Acknowledged) => BlockAckMemberState::Acknowledged,
+        (Some(BlockAckMemberState::Missing), _)
+        | (_, BlockAckMemberState::Missing) => BlockAckMemberState::Missing,
+        _ => BlockAckMemberState::OutsideWindow,
+    })
+}
+
 pub fn plan_depth_two_block_ack_actions(
     members: [BlockAckMemberState; 2],
     retry_allowed: [bool; 2],
@@ -3638,12 +3651,21 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+#[derive(Clone, Copy)]
+struct RetainedDepthTwoBlockAck {
+    members: [FrameNodeAddress; 2],
+    states: [BlockAckMemberState; 2],
+}
+
 #[cfg(target_arch = "arm")]
 pub struct SingleProbeMacBackend {
     retry: [BoundedSingleTxRetry; 4],
     mismatch: [u8; 4],
     selective_retry: [Option<FrameNodeAddress>; 4],
     partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 4],
+    #[cfg(feature = "experimental-depth-two-ampdu")]
+    depth_two_block_ack: [Option<RetainedDepthTwoBlockAck>; 4],
     publications: [Option<PublishedSlotIdentity>; 16],
     completed: BoundedCompletionQueue<HostClass0Completion, HOST_CLASS0_COMPLETION_CAPACITY>,
 }
@@ -3656,6 +3678,8 @@ impl SingleProbeMacBackend {
             mismatch: [0; 4],
             selective_retry: [None; 4],
             partial_give_up: [None; 4],
+            #[cfg(feature = "experimental-depth-two-ampdu")]
+            depth_two_block_ack: [None; 4],
             publications: [None; 16],
             completed: BoundedCompletionQueue::new(),
         }
@@ -3677,6 +3701,10 @@ impl SingleProbeMacBackend {
             self.mismatch[pipe_index] = 0;
             self.selective_retry[pipe_index] = None;
             self.partial_give_up[pipe_index] = None;
+            #[cfg(feature = "experimental-depth-two-ampdu")]
+            {
+                self.depth_two_block_ack[pipe_index] = None;
+            }
             if batch == BatchPosition::Only {
                 self.publications[pipe_index * 4..pipe_index * 4 + 4].fill(None);
             }
@@ -3699,6 +3727,7 @@ impl SingleProbeMacBackend {
         self.mismatch[pipe_index] = 0;
         self.selective_retry[pipe_index] = None;
         self.partial_give_up[pipe_index] = None;
+        self.depth_two_block_ack[pipe_index] = None;
         let first_index = pipe_index * 4 + usize::from(slot & 3);
         let Some(second_index) = self.publications[pipe_index * 4..pipe_index * 4 + 4]
             .iter()
@@ -4139,6 +4168,7 @@ unsafe fn rearm_depth_two_whole_ampdu(
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
 unsafe fn depth_two_block_ack_actions_for(
     first_frame_node: FrameNodeAddress,
+    observation: RetainedDepthTwoBlockAck,
 ) -> Option<([BlockAckMemberAction; 2], [FrameNodeAddress; 2])> {
     unsafe {
         let first = first_frame_node.context();
@@ -4146,39 +4176,17 @@ unsafe fn depth_two_block_ack_actions_for(
         if second_raw == 0 {
             return None;
         }
-        let second_frame_node = FrameNodeAddress::new(second_raw);
-        let second = second_frame_node.context();
-        let (frame, length) = crate::radio::find_low_mac_frame_by_subtype(0x94)?;
-        if length < 0x1c || read_u16(frame) & 0x00fc != 0x0094 {
-            return None;
-        }
-        let interface = read_u8(first.interface_address());
-        if !(0..3).all(|word| {
-            crate::vif::own_mac_word(interface, word)
-                == Some(read_u16(frame + 4 + word * 2))
-        }) {
+        let second_frame_node = FrameNodeAddress::from_raw(second_raw)?;
+        let members = [first_frame_node, second_frame_node];
+        if observation.members != members {
             return None;
         }
         let tid = read_u8(first.tid_address());
-        if (read_u16(frame + 0x10) >> 12) as u8 != tid {
-            return None;
-        }
-        let start = read_u16(frame + 0x12) >> 4;
-        let bitmap = u64::from(read_u32(frame + 0x14))
-            | (u64::from(read_u32(frame + 0x18)) << 32);
-        let members = classify_depth_two_block_ack(
-            start,
-            bitmap,
-            [
-                read_u16(first.sequence_number_address()),
-                read_u16(second.sequence_number_address()),
-            ],
-        );
         let session_active = tid < 8
             && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
         Some((
-            plan_depth_two_block_ack_actions(members, [true; 2], session_active),
-            [first_frame_node, second_frame_node],
+            plan_depth_two_block_ack_actions(observation.states, [true; 2], session_active),
+            members,
         ))
     }
 }
@@ -4297,9 +4305,10 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         } {
             #[cfg(feature = "experimental-depth-two-ampdu")]
             {
-                if let Some((actions, members)) = unsafe {
-                    depth_two_block_ack_actions_for(frame_node)
-                } {
+                let observation = self.depth_two_block_ack[pipe_index].take();
+                if let Some((actions, members)) = observation.and_then(|observation| unsafe {
+                    depth_two_block_ack_actions_for(frame_node, observation)
+                }) {
                     if actions == [BlockAckMemberAction::Confirm; 2] {
                         return SingleTxRetryDecision::CompleteSuccess;
                     }
@@ -6168,7 +6177,7 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
         let start = read_u16(frame + 0x12) >> 4;
         let bitmap = u64::from(read_u32(frame + 0x14))
             | (u64::from(read_u32(frame + 0x18)) << 32);
-        let members = classify_depth_two_block_ack(
+        let current = classify_depth_two_block_ack(
             start,
             bitmap,
             [
@@ -6176,15 +6185,27 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
                 read_u16(second_node.context().sequence_number_address()),
             ],
         );
+        let pipe = publication.pipe;
+        let pipe_index = usize::from(pipe);
+        let member_nodes = [publication.frame_node, second_node];
+        let retained = &mut runtime.backend.depth_two_block_ack[pipe_index];
+        let previous = retained
+            .filter(|observation| observation.members == member_nodes)
+            .map(|observation| observation.states);
+        let states = merge_depth_two_block_ack_states(previous, current);
+        *retained = Some(RetainedDepthTwoBlockAck {
+            members: member_nodes,
+            states,
+        });
 
-        // Compressed BA frames can arrive repeatedly while the receiver grows
-        // its bitmap. Keep ownership until both members are acknowledged; a
-        // bounded watchdog fallback will handle a genuinely missing member.
-        if members != [BlockAckMemberState::Acknowledged; 2] {
+        // Compressed BA frames can arrive repeatedly with shifted or growing
+        // windows. Acknowledgements are sticky for this exact aggregate; keep
+        // ownership until both members have been observed as acknowledged.
+        if states != [BlockAckMemberState::Acknowledged; 2] {
             return true;
         }
+        *retained = None;
 
-        let pipe = publication.pipe;
         let record = pipe_record_address(pipe);
         let Some(slot) = publication.live_slot() else {
             return true;
@@ -11663,6 +11684,46 @@ mod tests {
         assert!(aggregate_retry_command_owned(1, 4));
         assert!(!aggregate_retry_command_owned(1, 3));
         assert!(!aggregate_retry_command_owned(0, 4));
+    }
+
+    #[test]
+    fn depth_two_block_ack_accumulates_repeated_and_growing_bitmaps() {
+        let sequences = [0x0100, 0x0101];
+        let first_only = classify_depth_two_block_ack(0x0100, 0b01, sequences);
+        let repeated_first = merge_depth_two_block_ack_states(Some(first_only), first_only);
+        assert_eq!(
+            repeated_first,
+            [BlockAckMemberState::Acknowledged, BlockAckMemberState::Missing],
+        );
+
+        let second_only = classify_depth_two_block_ack(0x0100, 0b10, sequences);
+        assert_eq!(
+            merge_depth_two_block_ack_states(Some(repeated_first), second_only),
+            [BlockAckMemberState::Acknowledged; 2],
+        );
+        assert_eq!(
+            merge_depth_two_block_ack_states(Some(second_only), first_only),
+            [BlockAckMemberState::Acknowledged; 2],
+        );
+
+        let total_miss = classify_depth_two_block_ack(0x0100, 0, sequences);
+        assert_eq!(total_miss, [BlockAckMemberState::Missing; 2]);
+        assert_eq!(
+            plan_depth_two_block_ack_actions(total_miss, [true; 2], true),
+            [BlockAckMemberAction::Retry; 2],
+        );
+        assert_eq!(
+            plan_depth_two_block_ack_actions(total_miss, [true; 2], false),
+            [BlockAckMemberAction::GiveUp; 2],
+        );
+
+        // An acknowledgement is sticky for one exact aggregate even if a later
+        // compressed BA shifts its window away from that member.
+        let shifted = classify_depth_two_block_ack(0x0101, 0b1, sequences);
+        assert_eq!(
+            merge_depth_two_block_ack_states(Some(first_only), shifted),
+            [BlockAckMemberState::Acknowledged; 2],
+        );
     }
 
     #[test]

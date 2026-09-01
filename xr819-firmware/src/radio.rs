@@ -963,47 +963,6 @@ pub const fn vendor_rx_advance(offset: u32, slot_length: u16) -> u32 {
     )
 }
 
-#[cfg(target_arch = "arm")]
-unsafe fn vendor_rx_slot_valid(offset: u32) -> bool {
-    unsafe {
-        ((fifo_base() + vendor_rx_offset(offset) as usize) as *const u32).read_volatile()
-            == FIFO_MAGIC
-    }
-}
-
-/// Read-only translation of vendor `rxfifo_find_frame_by_subtype()` using its
-/// independent normal-frame cursor at DTCM `0x040016c0`.
-///
-/// # Safety
-/// The cooperative reactor must exclusively own low-MAC RX cursor inspection.
-#[cfg(target_arch = "arm")]
-pub unsafe fn find_low_mac_frame_by_subtype(subtype: u8) -> Option<(usize, usize)> {
-    unsafe {
-        let mut cursor = vendor_rx_offset(
-            crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.ba_scan_cursor())
-                .read_volatile(),
-        );
-        let producer = vendor_rx_offset(DMA_PRODUCER.read_volatile());
-        let mut remaining = 768_u16;
-        while cursor != producer && remaining != 0 {
-            let slot = fifo_base() + cursor as usize;
-            let frame = slot + 0x20;
-            if ((frame as *const u16).read_volatile() & 0x00ff) == u16::from(subtype) {
-                let slot_length = ((slot + 0x18) as *const u16).read_volatile();
-                return (slot_length >= 4).then_some((frame, usize::from(slot_length) - 4));
-            }
-            let slot_length = ((slot + 0x18) as *const u16).read_volatile();
-            let next = vendor_rx_advance(cursor, slot_length);
-            if !vendor_rx_slot_valid(next) {
-                return None;
-            }
-            cursor = next;
-            remaining -= 1;
-        }
-        None
-    }
-}
-
 unsafe fn poll_indication(
     if_id: u8,
     active_channel: u16,

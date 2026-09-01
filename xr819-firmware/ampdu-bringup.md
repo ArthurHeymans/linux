@@ -603,3 +603,10 @@ completed contexts on each of four simultaneously owned pipes before the host
 driver drains the backend. The bounded eight-entry queue retains exact copied
 context, frame-node, pipe, slot, status, and retry identities and still halts on
 an impossible ninth completion rather than dropping ownership evidence.
+
+Repeated compressed BlockAck handling now retains the classified member states
+per pipe and exact aggregate frame-node pair instead of rescanning released RX
+FIFO storage later. Acknowledgements are sticky across repeated or shifted
+bitmaps, so first-only followed by second-only evidence completes both members;
+total misses still enter whole-aggregate retry, and stale observations whose
+member identities no longer match are rejected before selective retry planning.

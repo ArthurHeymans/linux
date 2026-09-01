@@ -62,7 +62,11 @@ also revalidate each retained context frame address together with its full frame
 length before dereferencing header fields. The publication registry retains the
 exact DTCM context/frame-node and packet-RAM command base for each `(pipe, slot)`;
 depth-two BlockAck handling requires the live slot's frame and command words to
-still match that identity before consuming retained state. Ordinary TX start
+still match that identity before consuming retained state. Repeated compressed
+BlockAck observations are retained only against the aggregate's two exact DTCM
+frame-node identities; the second link is checked again before selective retry
+planning, so stale or cross-aggregate bitmaps cannot authorize a dereference.
+Ordinary TX start
 and successful-completion drains independently construct a `LiveTxSlot`,
 requiring bounded pipe/slot cursors, an exact DTCM frame node, and the matching
 packet-RAM command base before dereferencing either retained word. Watchdog
