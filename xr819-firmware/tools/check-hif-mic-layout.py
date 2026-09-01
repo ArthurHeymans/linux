@@ -62,12 +62,14 @@ FORBIDDEN_FORMS = (
 # bytes and removes the accidental 0x0400985a sequence; no decoded HIF address
 # load disappears with it. Checked prepared-descriptor publication now retains
 # the frame and destination as typed packet-RAM values; the resulting inlining
-# removes the accidental 0x04009810 byte sequence. The surviving byte literals
-# remain at 0x04009806 and 0x0400980b. Retry nibble advancement remains confined
+# removes the accidental 0x04009810 byte sequence. Scoping retry ownership per
+# pipe perturbs the same adjacent instruction bytes again, replacing the two
+# accidental `0x04009806`/`0x0400980b` words with one `0x0400980d` word; there
+# is still no decoded HIF-address load. Retry nibble advancement remains confined
 # to the typed selective retry helper,
 # while partial give-up reuses ordinary kind-0 completion.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x04009806: 1, 0x0400980B: 1}
+    {0x0400980D: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 

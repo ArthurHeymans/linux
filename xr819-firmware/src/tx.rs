@@ -3608,7 +3608,7 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
 
 #[cfg(target_arch = "arm")]
 pub struct SingleProbeMacBackend {
-    retry: BoundedSingleTxRetry,
+    retry: [BoundedSingleTxRetry; 4],
     mismatch: [u8; 4],
     selective_retry: [Option<FrameNodeAddress>; 4],
     partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 4],
@@ -3620,7 +3620,7 @@ pub struct SingleProbeMacBackend {
 impl SingleProbeMacBackend {
     pub const fn new(max_retries: u8) -> Self {
         Self {
-            retry: BoundedSingleTxRetry::new(max_retries),
+            retry: [BoundedSingleTxRetry::new(max_retries); 4],
             mismatch: [0; 4],
             selective_retry: [None; 4],
             partial_give_up: [None; 4],
@@ -3639,17 +3639,17 @@ impl SingleProbeMacBackend {
         let Some(publication) = PublishedSlotIdentity::new(context, pipe, slot) else {
             return false;
         };
-        if batch == BatchPosition::Only {
-            self.retry.reset();
-            self.mismatch = [0; 4];
-            self.selective_retry = [None; 4];
-            self.partial_give_up = [None; 4];
-            self.publications = [None; 16];
-        } else if batch == BatchPosition::First {
-            self.retry.reset();
-            self.mismatch[usize::from(pipe & 3)] = 0;
+        let pipe_index = usize::from(pipe & 3);
+        if matches!(batch, BatchPosition::Only | BatchPosition::First) {
+            self.retry[pipe_index].reset();
+            self.mismatch[pipe_index] = 0;
+            self.selective_retry[pipe_index] = None;
+            self.partial_give_up[pipe_index] = None;
+            if batch == BatchPosition::Only {
+                self.publications[pipe_index * 4..pipe_index * 4 + 4].fill(None);
+            }
         }
-        let publication_index = usize::from(pipe & 3) * 4 + usize::from(slot & 3);
+        let publication_index = pipe_index * 4 + usize::from(slot & 3);
         self.publications[publication_index] = Some(publication);
         true
     }
@@ -3662,16 +3662,17 @@ impl SingleProbeMacBackend {
         pipe: u8,
         slot: u8,
     ) -> bool {
-        self.retry.reset();
-        self.mismatch[usize::from(pipe & 3)] = 0;
-        self.selective_retry[usize::from(pipe & 3)] = None;
-        self.partial_give_up[usize::from(pipe & 3)] = None;
-        let first_index = usize::from(pipe & 3) * 4 + usize::from(slot & 3);
-        let Some(second_index) = self
-            .publications
+        let pipe_index = usize::from(pipe & 3);
+        self.retry[pipe_index].reset();
+        self.mismatch[pipe_index] = 0;
+        self.selective_retry[pipe_index] = None;
+        self.partial_give_up[pipe_index] = None;
+        let first_index = pipe_index * 4 + usize::from(slot & 3);
+        let Some(second_index) = self.publications[pipe_index * 4..pipe_index * 4 + 4]
             .iter()
             .enumerate()
             .find_map(|(index, publication)| {
+                let index = pipe_index * 4 + index;
                 (index != first_index && publication.is_none()).then_some(index)
             })
         else {
@@ -3893,7 +3894,7 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
                 unsafe { crate::dtcm::shared_ptr::<u16>(host.try_count()).read_volatile() }
                     .min(u16::from(u8::MAX)) as u8
             } else {
-                self.retry.attempts()
+                self.retry[usize::from(publication.pipe & 3)].attempts()
             };
             self.push_completion(HostClass0Completion {
                 context: context.raw(),
@@ -4255,6 +4256,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         slot: u32,
         frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
+        let pipe_index = usize::from(pipe & 3);
         if unsafe {
             read_u8(
                 crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
@@ -4292,11 +4294,11 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                                 write_u32(members[confirm_index].context().next_in_ampdu_address(), 0);
                                 enqueue_acknowledged_aggregate_member(members[confirm_index]);
                             }
-                            self.selective_retry[usize::from(pipe & 3)] = Some(members[retry_index]);
-                            self.retry.record_rearm();
+                            self.selective_retry[pipe_index] = Some(members[retry_index]);
+                            self.retry[pipe_index].record_rearm();
                             return SingleTxRetryDecision::Rearm;
                         }
-                        self.partial_give_up[usize::from(pipe & 3)] =
+                        self.partial_give_up[pipe_index] =
                             Some((members[confirm_index], members[retry_index]));
                         return SingleTxRetryDecision::CompleteSuccess;
                     }
@@ -4309,7 +4311,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                             )
                         })
                     {
-                        self.partial_give_up[usize::from(pipe & 3)] =
+                        self.partial_give_up[pipe_index] =
                             Some((members[confirm_index], members[give_up_index]));
                         return SingleTxRetryDecision::CompleteSuccess;
                     }
@@ -4317,7 +4319,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 // A missing or unusable bitmap retains the already-qualified
                 // conservative whole-aggregate retry path.
                 return if unsafe { prepare_depth_two_whole_retry(frame_node) }.is_some() {
-                    self.retry.record_rearm();
+                    self.retry[pipe_index].record_rearm();
                     SingleTxRetryDecision::Rearm
                 } else {
                     SingleTxRetryDecision::GiveUp
@@ -4329,12 +4331,12 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         let Some(context) = crate::dtcm::host_context_from_raw(
             frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET),
         ) else {
-            return self.retry.decide();
+            return self.retry[pipe_index].decide();
         };
 
         let rate = unsafe { crate::dtcm::shared_ptr::<u8>(context.tx_rate()).read_volatile() };
         let Some(status_field) = context.rate_try(usize::from(rate >> 3)) else {
-            return self.retry.decide();
+            return self.retry[pipe_index].decide();
         };
         let status_address = status_field.get();
         let shift = u32::from((rate & 7) * 4);
@@ -4353,7 +4355,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             crate::dtcm::shared_ptr::<u8>(context.retry_policy()).read_volatile()
         };
         let Some(policy) = crate::rate_policy::get(policy_index) else {
-            return self.retry.decide();
+            return self.retry[pipe_index].decide();
         };
         let try_count = unsafe { crate::dtcm::shared_ptr::<u16>(context.try_count()).read_volatile() };
         let flags = unsafe { crate::dtcm::shared_ptr::<u32>(context.control_bits()).read_volatile() };
@@ -4385,7 +4387,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     crate::dtcm::shared_ptr::<u16>(context.try_count())
                         .write_volatile(try_count.wrapping_add(1));
                 }
-                self.retry.record_rearm();
+                self.retry[pipe_index].record_rearm();
                 SingleTxRetryDecision::Rearm
             }
         }
@@ -5109,12 +5111,21 @@ pub unsafe fn take_host_class0_completion() -> Option<HostClass0Completion> {
 
 /// Compact read-only snapshot of the bounded class-0 MAC backend.
 ///
-/// Bits 0..7 contain retry attempts, bit 8 reports a queued completion, and
-/// bits 16..31 contain its internal status when present.
+/// Bits 0..7 contain the maximum retry attempts across all pipes, bit 8
+/// reports a queued completion, and bits 16..31 contain its internal status
+/// when present.
 #[cfg(target_arch = "arm")]
 pub unsafe fn host_class0_runtime_diagnostic() -> u32 {
     let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
-    u32::from(runtime.backend.retry.attempts())
+    u32::from(
+        runtime
+            .backend
+            .retry
+            .iter()
+            .map(|retry| retry.attempts())
+            .max()
+            .unwrap_or(0),
+    )
         | runtime
             .backend
             .completed

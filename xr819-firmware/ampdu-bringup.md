@@ -100,10 +100,11 @@ then completed:
 - a 60-second TCP soak at 3.39 Mbit/s, with 17,844 TX confirms, 17,206 aggregate
   confirms, 20/20 ping, an alive BH, idle WSM, and zero used buffers.
 
-This closes depth-two on-air publication and successful BlockAck retirement, but
-not the vendor performance gap. The code remains behind
-`experimental-depth-two-ampdu` while per-member partial-BA retry and larger
-aggregate depths are still untranslated.
+This closed the initial depth-two on-air publication and successful BlockAck
+retirement slice. Later work below translated and qualified per-member partial-
+BA retry in both directions. The code remains behind
+`experimental-depth-two-ampdu` pending natural first-member-loss qualification
+and larger aggregate depths.
 
 ## Partial-BlockAck retry investigation
 
@@ -569,3 +570,10 @@ stream can invalidate member two or the whole aggregate, but cannot invalidate
 member one while preserving both transfer operands, member order, and the
 qualified aggregate shape; first-member proof now requires controlled RF loss
 or external attenuation/interference.
+
+After closing the retained-address safety audit, retry accounting and publication
+cleanup were split from one global backend value into four pipe-local states.
+This does not yet permit simultaneous hardware owners: the host scheduler still
+publishes only when no class-0 runtime owner exists. It removes the first
+software-state collision that would otherwise reset another pipe's retry count
+or publication identities when multi-pipe outstanding work is enabled.
