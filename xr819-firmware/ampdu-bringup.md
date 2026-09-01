@@ -623,3 +623,10 @@ ordinary batch member requires exactly one staged identity, and depth-two
 registration rejects any existing identity. An accidental second owner can no
 longer erase the retained context, frame-node, or command identity needed to
 route the first owner's completion.
+
+Retry attempt accounting is now indexed by the exact `(pipe, slot)` identity
+rather than by pipe alone. Registration resets only the published slot, retry
+decisions reject interior or cross-pipe retained slot addresses, and completion
+reporting reads attempts from the publication's exact slot. Same-pipe
+concurrency remains disabled, but a later second outstanding slot can no longer
+share or reset the first slot's retry budget.

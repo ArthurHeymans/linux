@@ -81,7 +81,10 @@ depth-two retry/rearm paths use the same mockable identity validator before
 reading retained slot metadata, rebuilding descriptors, or touching the ring.
 Terminal retry completion carries that validator's selected pipe through command-
 mask release and member conversion rather than rereading the shared current-pipe
-latch after another pipe may have become active.
+latch after another pipe may have become active. Retry counters are additionally
+keyed by the exact pipe-slot DTCM root; interior addresses and roots belonging to
+another pipe are rejected before retry policy can consume or mutate that slot's
+budget.
 Every remaining production hardware-ring consumer now accepts only the exact
 per-pipe MMIO root; advance, resynchronization, diagnostics, retry completion,
 BlockAck completion, and single/batched publication reject mismatched retained

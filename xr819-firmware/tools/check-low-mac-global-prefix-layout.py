@@ -53,7 +53,10 @@ FORBIDDEN_FORMS = (
 # pipe candidate selection folds one rust_main `0x04001690` load and its shared
 # literal word without adding a new low-MAC-global access. Passing the selected
 # retry pipe through completion instead of rereading the global latch adds one
-# instruction-shaped `0x04001686` word with no decoded owner.
+# instruction-shaped `0x04001686` word with no decoded owner. Splitting retry
+# counters by exact pipe/slot perturbs the shared inactive-runtime helper and
+# exposes one additional reviewed decoded access at both `0x04001686` and
+# `0x04001694` without introducing another source owner.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
     0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 5,
@@ -65,8 +68,8 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04001685): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx31prepare_single_frame_pas_timing', 0x04001682): 2,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001687): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 9,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 17,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 10,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 18,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19build_control_frame', 0x040016B0): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19program_rate_tables', 0x04001682): 2,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac20program_slot_timings', 0x0400169C): 1,

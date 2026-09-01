@@ -3657,6 +3657,28 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
     }
 }
 
+const fn pipe_slot_state_index(pipe: u8, slot: u8) -> Option<usize> {
+    if pipe < 4 && slot < 4 {
+        Some(pipe as usize * 4 + slot as usize)
+    } else {
+        None
+    }
+}
+
+fn retained_slot_state_index(pipe: u8, slot_raw: u32) -> Option<usize> {
+    if pipe >= 4 {
+        return None;
+    }
+    (0..4_u8).find_map(|slot| {
+        let address = crate::dtcm::mac_pipe_slot_state_word_unchecked(
+            usize::from(pipe),
+            usize::from(slot),
+        )
+        .get() as u32;
+        (address == slot_raw).then_some(usize::from(pipe) * 4 + usize::from(slot))
+    })
+}
+
 fn publication_registration_allowed(
     occupied: [bool; 4],
     batch: BatchPosition,
@@ -3682,7 +3704,7 @@ struct RetainedDepthTwoBlockAck {
 
 #[cfg(target_arch = "arm")]
 pub struct SingleProbeMacBackend {
-    retry: [BoundedSingleTxRetry; 4],
+    retry: [BoundedSingleTxRetry; 16],
     mismatch: [u8; 4],
     selective_retry: [Option<FrameNodeAddress>; 4],
     partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 4],
@@ -3696,7 +3718,7 @@ pub struct SingleProbeMacBackend {
 impl SingleProbeMacBackend {
     pub const fn new(max_retries: u8) -> Self {
         Self {
-            retry: [BoundedSingleTxRetry::new(max_retries); 4],
+            retry: [BoundedSingleTxRetry::new(max_retries); 16],
             mismatch: [0; 4],
             selective_retry: [None; 4],
             partial_give_up: [None; 4],
@@ -3718,6 +3740,9 @@ impl SingleProbeMacBackend {
             return false;
         };
         let pipe_index = usize::from(pipe & 3);
+        let Some(retry_index) = pipe_slot_state_index(pipe, slot) else {
+            return false;
+        };
         let occupied = core::array::from_fn(|slot| {
             self.publications[pipe_index * 4 + slot].is_some()
         });
@@ -3725,7 +3750,7 @@ impl SingleProbeMacBackend {
             return false;
         }
         if matches!(batch, BatchPosition::Only | BatchPosition::First) {
-            self.retry[pipe_index].reset();
+            self.retry[retry_index].reset();
             self.mismatch[pipe_index] = 0;
             self.selective_retry[pipe_index] = None;
             self.partial_give_up[pipe_index] = None;
@@ -3748,13 +3773,16 @@ impl SingleProbeMacBackend {
         slot: u8,
     ) -> bool {
         let pipe_index = usize::from(pipe & 3);
+        let Some(retry_index) = pipe_slot_state_index(pipe, slot) else {
+            return false;
+        };
         if self.publications[pipe_index * 4..pipe_index * 4 + 4]
             .iter()
             .any(Option::is_some)
         {
             return false;
         }
-        self.retry[pipe_index].reset();
+        self.retry[retry_index].reset();
         self.mismatch[pipe_index] = 0;
         self.selective_retry[pipe_index] = None;
         self.partial_give_up[pipe_index] = None;
@@ -3985,7 +4013,11 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
                 unsafe { crate::dtcm::shared_ptr::<u16>(host.try_count()).read_volatile() }
                     .min(u16::from(u8::MAX)) as u8
             } else {
-                self.retry[usize::from(publication.pipe & 3)].attempts()
+                let Some(retry_index) = pipe_slot_state_index(publication.pipe, publication.slot)
+                else {
+                    terminal_probe_backend_fault(publication.pipe)
+                };
+                self.retry[retry_index].attempts()
             };
             self.push_completion(HostClass0Completion {
                 context: context.raw(),
@@ -4327,6 +4359,9 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
         let pipe_index = usize::from(pipe & 3);
+        let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
+            terminal_probe_backend_fault(pipe)
+        };
         if unsafe {
             read_u8(
                 crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
@@ -4343,7 +4378,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     if actions == [BlockAckMemberAction::Confirm; 2] {
                         return SingleTxRetryDecision::CompleteSuccess;
                     }
-                    let retry_index = actions
+                    let member_retry_index = actions
                         .iter()
                         .position(|action| *action == BlockAckMemberAction::Retry);
                     let confirm_index = actions
@@ -4352,7 +4387,8 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     let give_up_index = actions
                         .iter()
                         .position(|action| *action == BlockAckMemberAction::GiveUp);
-                    if let (Some(retry_index), Some(confirm_index)) = (retry_index, confirm_index)
+                    if let (Some(member_retry_index), Some(confirm_index)) =
+                        (member_retry_index, confirm_index)
                         && actions.iter().all(|action| {
                             matches!(
                                 action,
@@ -4360,17 +4396,17 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                             )
                         })
                     {
-                        if unsafe { prepare_selective_member_retry(members[retry_index]) } {
+                        if unsafe { prepare_selective_member_retry(members[member_retry_index]) } {
                             unsafe {
                                 write_u32(members[confirm_index].context().next_in_ampdu_address(), 0);
                                 enqueue_acknowledged_aggregate_member(members[confirm_index]);
                             }
-                            self.selective_retry[pipe_index] = Some(members[retry_index]);
-                            self.retry[pipe_index].record_rearm();
+                            self.selective_retry[pipe_index] = Some(members[member_retry_index]);
+                            self.retry[retry_index].record_rearm();
                             return SingleTxRetryDecision::Rearm;
                         }
                         self.partial_give_up[pipe_index] =
-                            Some((members[confirm_index], members[retry_index]));
+                            Some((members[confirm_index], members[member_retry_index]));
                         return SingleTxRetryDecision::CompleteSuccess;
                     }
                     if let (Some(give_up_index), Some(confirm_index)) =
@@ -4390,7 +4426,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 // A missing or unusable bitmap retains the already-qualified
                 // conservative whole-aggregate retry path.
                 return if unsafe { prepare_depth_two_whole_retry(frame_node) }.is_some() {
-                    self.retry[pipe_index].record_rearm();
+                    self.retry[retry_index].record_rearm();
                     SingleTxRetryDecision::Rearm
                 } else {
                     SingleTxRetryDecision::GiveUp
@@ -4402,12 +4438,12 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         let Some(context) = crate::dtcm::host_context_from_raw(
             frame_node.raw().wrapping_sub(FRAME_NODE_OFFSET),
         ) else {
-            return self.retry[pipe_index].decide();
+            return self.retry[retry_index].decide();
         };
 
         let rate = unsafe { crate::dtcm::shared_ptr::<u8>(context.tx_rate()).read_volatile() };
         let Some(status_field) = context.rate_try(usize::from(rate >> 3)) else {
-            return self.retry[pipe_index].decide();
+            return self.retry[retry_index].decide();
         };
         let status_address = status_field.get();
         let shift = u32::from((rate & 7) * 4);
@@ -4426,7 +4462,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             crate::dtcm::shared_ptr::<u8>(context.retry_policy()).read_volatile()
         };
         let Some(policy) = crate::rate_policy::get(policy_index) else {
-            return self.retry[pipe_index].decide();
+            return self.retry[retry_index].decide();
         };
         let try_count = unsafe { crate::dtcm::shared_ptr::<u16>(context.try_count()).read_volatile() };
         let flags = unsafe { crate::dtcm::shared_ptr::<u32>(context.control_bits()).read_volatile() };
@@ -4458,7 +4494,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     crate::dtcm::shared_ptr::<u16>(context.try_count())
                         .write_volatile(try_count.wrapping_add(1));
                 }
-                self.retry[pipe_index].record_rearm();
+                self.retry[retry_index].record_rearm();
                 SingleTxRetryDecision::Rearm
             }
         }
@@ -9517,6 +9553,19 @@ pub fn prepare_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_state_indices_require_an_exact_pipe_slot_identity() {
+        assert_eq!(pipe_slot_state_index(2, 3), Some(11));
+        assert_eq!(pipe_slot_state_index(4, 0), None);
+        assert_eq!(pipe_slot_state_index(0, 4), None);
+
+        let slot = crate::dtcm::mac_pipe_slot_state_word_unchecked(2, 3).get() as u32;
+        assert_eq!(retained_slot_state_index(2, slot), Some(11));
+        assert_eq!(retained_slot_state_index(1, slot), None);
+        assert_eq!(retained_slot_state_index(2, slot + 1), None);
+        assert_eq!(retained_slot_state_index(4, slot), None);
+    }
 
     #[test]
     fn publication_registration_rejects_overlapping_pipe_owners() {
