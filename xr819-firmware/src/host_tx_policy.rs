@@ -6,39 +6,60 @@
 //! compiled and tested on every build, in the same spirit as
 //! `tx::plan_ordinary_tx_pipe_status`.
 
-/// First retained class-0 runtime owner observed for each MAC pipe.
+/// Retained class-0 runtime owners observed at exact MAC pipe-slot identities.
 ///
-/// Multiple contexts may legitimately share one pipe owner (a staged batch or
-/// depth-two aggregate), so later observations of that pipe are coalesced. An
-/// out-of-range pipe is rejected instead of being masked into another owner.
+/// Multiple contexts may legitimately share one slot owner for a depth-two
+/// aggregate. Distinct staged batch slots remain independently visible, while
+/// `first_in_pipe` preserves the existing one-service-step-per-pipe behavior.
+/// Out-of-range identities are rejected instead of being masked.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PipeRuntimeOwners {
-    first: [Option<u8>; 4],
+pub struct Class0RuntimeOwners {
+    first_by_pipe: [Option<u8>; 4],
+    by_slot: [Option<u8>; 16],
 }
 
-impl PipeRuntimeOwners {
+impl Class0RuntimeOwners {
     pub const fn new() -> Self {
-        Self { first: [None; 4] }
+        Self {
+            first_by_pipe: [None; 4],
+            by_slot: [None; 16],
+        }
     }
 
-    pub fn observe(&mut self, index: usize, pipe: u8) -> bool {
-        if pipe >= 4 || index > usize::from(u8::MAX) {
+    pub fn observe(&mut self, index: usize, pipe: u8, slot: u8) -> bool {
+        if pipe >= 4 || slot >= 4 || index > usize::from(u8::MAX) {
             return false;
         }
-        let entry = &mut self.first[usize::from(pipe)];
-        if entry.is_none() {
-            *entry = Some(index as u8);
+        let index = index as u8;
+        let pipe_entry = &mut self.first_by_pipe[usize::from(pipe)];
+        if pipe_entry.is_none() {
+            *pipe_entry = Some(index);
+        }
+        let slot_entry = &mut self.by_slot[usize::from(pipe) * 4 + usize::from(slot)];
+        if slot_entry.is_none() {
+            *slot_entry = Some(index);
         }
         true
     }
 
-    pub const fn contains(self, pipe: u8) -> bool {
-        pipe < 4 && self.first[pipe as usize].is_some()
+    pub const fn contains_pipe(self, pipe: u8) -> bool {
+        pipe < 4 && self.first_by_pipe[pipe as usize].is_some()
     }
 
-    pub const fn first(self, pipe: usize) -> Option<usize> {
+    pub const fn first_in_pipe(self, pipe: usize) -> Option<usize> {
         if pipe < 4 {
-            match self.first[pipe] {
+            match self.first_by_pipe[pipe] {
+                Some(index) => Some(index as usize),
+                None => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    pub const fn slot_owner(self, pipe: u8, slot: u8) -> Option<usize> {
+        if pipe < 4 && slot < 4 {
+            match self.by_slot[pipe as usize * 4 + slot as usize] {
                 Some(index) => Some(index as usize),
                 None => None,
             }
@@ -48,11 +69,11 @@ impl PipeRuntimeOwners {
     }
 
     pub fn is_empty(self) -> bool {
-        self.first.iter().all(Option::is_none)
+        self.first_by_pipe.iter().all(Option::is_none)
     }
 }
 
-impl Default for PipeRuntimeOwners {
+impl Default for Class0RuntimeOwners {
     fn default() -> Self {
         Self::new()
     }
@@ -126,21 +147,27 @@ mod tests {
     }
 
     #[test]
-    fn pipe_runtime_owners_coalesce_batches_but_keep_pipes_independent() {
-        let mut owners = PipeRuntimeOwners::new();
-        assert!(owners.observe(7, 2));
-        assert!(owners.observe(9, 2));
-        assert!(owners.observe(11, 0));
-        assert_eq!(owners.first(0), Some(11));
-        assert_eq!(owners.first(2), Some(7));
-        assert_eq!(owners.first(1), None);
-        assert!(owners.contains(0));
-        assert!(!owners.contains(1));
-        assert!(!owners.contains(4));
+    fn runtime_owners_coalesce_aggregate_members_but_retain_distinct_slots() {
+        let mut owners = Class0RuntimeOwners::new();
+        assert!(owners.observe(7, 2, 1));
+        assert!(owners.observe(9, 2, 1));
+        assert!(owners.observe(10, 2, 3));
+        assert!(owners.observe(11, 0, 2));
+        assert_eq!(owners.first_in_pipe(0), Some(11));
+        assert_eq!(owners.first_in_pipe(2), Some(7));
+        assert_eq!(owners.first_in_pipe(1), None);
+        assert_eq!(owners.slot_owner(2, 1), Some(7));
+        assert_eq!(owners.slot_owner(2, 3), Some(10));
+        assert_eq!(owners.slot_owner(2, 0), None);
+        assert!(owners.contains_pipe(0));
+        assert!(!owners.contains_pipe(1));
+        assert!(!owners.contains_pipe(4));
         assert!(!owners.is_empty());
-        assert!(!owners.observe(12, 4));
-        assert_eq!(PipeRuntimeOwners::new().first(4), None);
-        assert!(PipeRuntimeOwners::new().is_empty());
+        assert!(!owners.observe(12, 4, 0));
+        assert!(!owners.observe(12, 0, 4));
+        assert_eq!(Class0RuntimeOwners::new().first_in_pipe(4), None);
+        assert_eq!(Class0RuntimeOwners::new().slot_owner(0, 4), None);
+        assert!(Class0RuntimeOwners::new().is_empty());
     }
 
     #[test]

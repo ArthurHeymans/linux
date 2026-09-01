@@ -636,3 +636,10 @@ observations now use the same exact pipe-slot index. Every ordinary batch member
 resets its own slot state, including the last staged member, while a depth-two
 pair shares only its published aggregate slot. Same-pipe outstanding work can no
 longer consume another slot's accumulated bitmap or deferred member action.
+
+The host driver's retained-owner inventory now records every exact `(pipe,
+slot)` while preserving the qualified one-service-step-per-pipe schedule.
+Depth-two contexts sharing one aggregate slot are coalesced, ordinary staged
+slots remain distinct, and completion routing rejects a pipe-slot with no live
+owner before searching exact context and frame-node identities. Publication is
+still limited to one active batch per pipe.

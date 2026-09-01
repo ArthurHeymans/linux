@@ -65,7 +65,10 @@ A single or first publication now requires an empty per-pipe registry, the last
 member requires exactly one staged identity, and depth-two registration rejects
 any pre-existing identity rather than silently overwriting ownership evidence;
 depth-two BlockAck handling requires the live slot's frame and command words to
-still match that identity before consuming retained state. Repeated compressed
+still match that identity before consuming retained state. The host driver also
+inventories retained owners by exact pipe-slot: aggregate members may share one
+slot, ordinary batch slots remain distinct, and a completion for an unowned slot
+is rejected before context/frame-node matching. Repeated compressed
 BlockAck observations are retained only against the aggregate's two exact DTCM
 frame-node identities; the second link is checked again before selective retry
 planning, so stale or cross-aggregate bitmaps cannot authorize a dereference.

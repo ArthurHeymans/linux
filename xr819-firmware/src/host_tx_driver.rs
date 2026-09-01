@@ -197,7 +197,7 @@ impl HostTxDriver {
             crate::halt_always!();
         };
         for pipe in 0..4 {
-            let Some(index) = owners.first(pipe) else {
+            let Some(index) = owners.first_in_pipe(pipe) else {
                 continue;
             };
             let event = unsafe {
@@ -242,11 +242,13 @@ impl HostTxDriver {
         diagnostic
     }
 
-    fn hardware_runtime_owners(&self) -> Option<host_tx_policy::PipeRuntimeOwners> {
-        let mut owners = host_tx_policy::PipeRuntimeOwners::new();
+    fn hardware_runtime_owners(&self) -> Option<host_tx_policy::Class0RuntimeOwners> {
+        let mut owners = host_tx_policy::Class0RuntimeOwners::new();
         for (index, state) in self.states.iter().enumerate() {
-            let pipe = match state {
-                Some(HostTxState::Reserved { reservation, .. }) => Some(reservation.pipe()),
+            let identity = match state {
+                Some(HostTxState::Reserved { reservation, .. }) => {
+                    Some((reservation.pipe(), reservation.slot()))
+                }
                 Some(HostTxState::Owned {
                     retained,
                     hardware,
@@ -255,12 +257,12 @@ impl HostTxDriver {
                     let Some(hardware) = hardware else {
                         return None;
                     };
-                    Some(hardware.pipe)
+                    Some((hardware.pipe, hardware.slot))
                 }
                 _ => None,
             };
-            if let Some(pipe) = pipe
-                && !owners.observe(index, pipe)
+            if let Some((pipe, slot)) = identity
+                && !owners.observe(index, pipe, slot)
             {
                 return None;
             }
@@ -284,6 +286,22 @@ impl HostTxDriver {
     }
 
     fn route_hardware_completion(&mut self, completion: tx::HostClass0Completion) {
+        let Some(owners) = self.hardware_runtime_owners() else {
+            crate::halt_always!();
+        };
+        if owners
+            .slot_owner(completion.pipe, completion.slot)
+            .is_none()
+        {
+            unsafe {
+                host_tx_diagnostics::trace(
+                    0x4854_3f00,
+                    completion.context,
+                    u32::from(completion.pipe) | (u32::from(completion.slot) << 8),
+                );
+            }
+            return;
+        }
         let owner = self.states.iter().position(|state| {
             matches!(
                 state,
@@ -337,7 +355,7 @@ impl HostTxDriver {
     unsafe fn publish_ready_batch(
         &mut self,
         mac_domain: &mut crate::mac_domain::MacDomain,
-        owners: host_tx_policy::PipeRuntimeOwners,
+        owners: host_tx_policy::Class0RuntimeOwners,
     ) {
         let mut first_index = None;
         let mut ready_count = 0;
@@ -357,7 +375,7 @@ impl HostTxDriver {
             if pipe >= 4 {
                 crate::halt_always!();
             }
-            if owners.contains(pipe) {
+            if owners.contains_pipe(pipe) {
                 continue;
             }
             if first_index.is_none() {
