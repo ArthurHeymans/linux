@@ -449,6 +449,33 @@ impl LiveTxSlot {
     }
 }
 
+#[derive(Clone, Copy)]
+enum RetirableTxSlot {
+    Empty(crate::dtcm::MacPipeSlotAddress),
+    Live(LiveTxSlot),
+}
+
+impl RetirableTxSlot {
+    unsafe fn from_pipe_slot(pipe: u8, slot: u8) -> Option<Self> {
+        if pipe >= 4 || slot >= 4 {
+            return None;
+        }
+        unsafe {
+            let address = pipe_record_address(pipe).slot_unchecked(usize::from(slot));
+            let frame_node = read_u32(address.frame().get());
+            if frame_node == 0 {
+                return empty_retirement_allowed(
+                    frame_node,
+                    read_u8(address.kind().get()),
+                    read_u8(address.state().get()),
+                )
+                .then_some(Self::Empty(address));
+            }
+            LiveTxSlot::from_pipe_slot(pipe, slot).map(Self::Live)
+        }
+    }
+}
+
 impl PublishedSlotIdentity {
     fn new(context: ContextAddress, pipe: u8, slot: u8) -> Option<Self> {
         if pipe >= 4 || slot >= 4 || ContextAddress::from_raw(context.raw()) != Some(context) {
@@ -1471,6 +1498,16 @@ struct TxHardwareRingAddress(u32);
 
 impl TxHardwareRingAddress {
     const fn new(address: u32) -> Self { Self(address) }
+    const fn for_pipe(pipe: u8, address: u32) -> Option<Self> {
+        if pipe < 4
+            && address
+                == crate::platform::tx_ring_register(pipe as usize, 0) as u32
+        {
+            Some(Self(address))
+        } else {
+            None
+        }
+    }
     const fn raw(self) -> u32 { self.0 }
     const fn field(self, offset: usize) -> u32 { self.0.wrapping_add(offset as u32) }
     const fn duration_fifo(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, duration_fifo)) }
@@ -2188,6 +2225,10 @@ const fn aggregate_retry_command_owned(slot_kind: u8, slot_state: u8) -> bool {
     slot_kind == 1 && slot_state == 4
 }
 
+const fn empty_retirement_allowed(frame_node: u32, slot_kind: u8, slot_state: u8) -> bool {
+    frame_node == 0 && !aggregate_retry_command_owned(slot_kind, slot_state)
+}
+
 /// Release the current hardware command-mask owner for a retry-owned kind-1 slot.
 ///
 /// # Safety
@@ -2215,6 +2256,34 @@ unsafe fn release_aggregate_retry_command_mask(
     }
 }
 
+/// Release a retry-owned command-mask bit only after the slot's exact frame and
+/// packet-RAM command identities have been validated.
+#[cfg(target_arch = "arm")]
+unsafe fn release_retiring_aggregate_command_mask(pipe: u8, slot: LiveTxSlot) -> Option<bool> {
+    unsafe {
+        if !aggregate_retry_command_owned(
+            read_u8(slot.address.kind().get()),
+            read_u8(slot.address.state().get()),
+        ) {
+            return Some(false);
+        }
+        let record = pipe_record_address(pipe);
+        let ring = TxHardwareRingAddress::for_pipe(
+            pipe,
+            read_u32(record.hardware_ring().get()),
+        )?;
+        let current = read_u8(record.current_slot().get());
+        if current >= 4 {
+            return None;
+        }
+        write_u32(
+            ring.cursor_and_pending_mask() as usize,
+            read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
+        );
+        Some(true)
+    }
+}
+
 /// Completes one slot the hardware has already left behind, using the vendor
 /// give-up status `0x0b` so the host receives a truthful TX failure instead of
 /// silently losing the frame.
@@ -2225,19 +2294,30 @@ unsafe fn release_aggregate_retry_command_mask(
 #[cfg(target_arch = "arm")]
 unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
     pipe: u8,
-    record: crate::dtcm::MacPipeRecordAddress,
-    slot: crate::dtcm::MacPipeSlotAddress,
+    slot: u8,
     cursor: OrdinaryTxPipeCursorPlan,
     backend: &mut B,
 ) {
     unsafe {
+        let record = pipe_record_address(pipe);
+        let Some(slot) = RetirableTxSlot::from_pipe_slot(pipe, slot) else {
+            crate::halt_always!();
+        };
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RETIRED);
-        let aggregate = release_aggregate_retry_command_mask(pipe, slot);
-        let frame_node = read_u32(slot.frame().get());
-        if frame_node != 0 {
-            complete_tx_pipe_slot(FrameNodeAddress::new(frame_node), slot.raw(), 0x0b, backend);
-        } else {
-            write_u32(slot.frame().get(), 0);
+        let aggregate = match slot {
+            RetirableTxSlot::Empty(_) => false,
+            RetirableTxSlot::Live(slot) => {
+                let Some(released) = release_retiring_aggregate_command_mask(pipe, slot) else {
+                    crate::halt_always!();
+                };
+                released
+            }
+        };
+        match slot {
+            RetirableTxSlot::Empty(slot) => write_u32(slot.frame().get(), 0),
+            RetirableTxSlot::Live(slot) => {
+                complete_tx_pipe_slot(slot.frame_node, slot.address.raw(), 0x0b, backend)
+            }
         }
         if aggregate {
             write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
@@ -2343,8 +2423,7 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                     write_u8(record.watchdog().get(), counter.wrapping_sub(1) as u8);
                 }
                 PipeWatchdogAction::Expired => {
-                    let current = read_u8(record.current_slot().get()) & 3;
-                    let slot = record.slot_unchecked(usize::from(current));
+                    let current = read_u8(record.current_slot().get());
                     let cursor = hardware_pipe_cursor(&mut VolatileMacPipeMmio, pipe)
                         .map(|cursor| OrdinaryTxPipeCursorPlan::Recycle {
                             next_head: cursor & 3,
@@ -2355,7 +2434,7 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                     crate::host_tx_diagnostics::bump(
                         crate::host_tx_diagnostics::counter::WATCHDOG_RECOVERED,
                     );
-                    retire_unmatched_tx_slot(pipe, record, slot, cursor, backend);
+                    retire_unmatched_tx_slot(pipe, current, cursor, backend);
                     // Vendor `txp_fn_4155` clears the programmed/abort bits and
                     // reloads the counter after a recovery pass.
                     write_u8(record.control().get(), read_u8(record.control().get()) & 0xf6);
@@ -9615,6 +9694,14 @@ mod tests {
     }
 
     #[test]
+    fn empty_retirement_rejects_retry_owned_aggregate_slots() {
+        assert!(empty_retirement_allowed(0, 0, 3));
+        assert!(empty_retirement_allowed(0, 1, 3));
+        assert!(!empty_retirement_allowed(0, 1, 4));
+        assert!(!empty_retirement_allowed(0x0400_5ad8, 0, 3));
+    }
+
+    #[test]
     fn pipe_watchdog_counts_down_then_nudges_then_expires() {
         // Arming reloads the counter to 5, so an armed pipe that never
         // completes walks 5 -> 3 healthy, 2 -> 1 nudging, then expires.
@@ -9670,6 +9757,25 @@ mod tests {
         assert_eq!(descriptor.command(), 0xa000);
         assert_eq!(descriptor.flags(), 0xa004);
         assert_eq!(descriptor.duration(), 0xa008);
+    }
+
+    #[test]
+    fn hardware_ring_identity_is_exact_for_each_pipe() {
+        for pipe in 0..4 {
+            let expected = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
+            assert_eq!(
+                TxHardwareRingAddress::for_pipe(pipe, expected),
+                Some(TxHardwareRingAddress::new(expected)),
+            );
+            assert_eq!(TxHardwareRingAddress::for_pipe(pipe, expected + 0x80), None);
+        }
+        assert_eq!(
+            TxHardwareRingAddress::for_pipe(
+                4,
+                crate::platform::tx_ring_register(0, 0) as u32,
+            ),
+            None,
+        );
     }
 
     #[test]

@@ -65,8 +65,13 @@ depth-two BlockAck handling requires the live slot's frame and command words to
 still match that identity before consuming retained state. Ordinary TX start
 and successful-completion drains independently construct a `LiveTxSlot`,
 requiring bounded pipe/slot cursors, an exact DTCM frame node, and the matching
-packet-RAM command base before dereferencing either retained word. Interface
-metadata and duration-table selectors are range-checked before their addresses
+packet-RAM command base before dereferencing either retained word. Watchdog
+retirement preserves the vendor's legitimate empty-frame recovery case, but a
+non-empty slot must satisfy the same live identity; retry-owned aggregate slots
+must validate that identity, the pipe's exact hardware-ring MMIO root, and a
+bounded current cursor before their command-mask bit is released. Interface
+metadata and duration-table selectors
+are range-checked before their addresses
 are formed. Source gates
 reject open-coded MAC, platform, and production TX packet-RAM masks and freeze
 the checked TX boundary calls.
