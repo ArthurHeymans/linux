@@ -3657,6 +3657,22 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
     }
 }
 
+fn publication_registration_allowed(
+    occupied: [bool; 4],
+    batch: BatchPosition,
+    slot: u8,
+) -> bool {
+    if slot >= 4 || occupied[usize::from(slot)] {
+        return false;
+    }
+    let count = occupied.into_iter().filter(|occupied| *occupied).count();
+    match batch {
+        BatchPosition::Only | BatchPosition::First => count == 0,
+        BatchPosition::Last => count == 1,
+        BatchPosition::Middle => false,
+    }
+}
+
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
 #[derive(Clone, Copy)]
 struct RetainedDepthTwoBlockAck {
@@ -3702,6 +3718,12 @@ impl SingleProbeMacBackend {
             return false;
         };
         let pipe_index = usize::from(pipe & 3);
+        let occupied = core::array::from_fn(|slot| {
+            self.publications[pipe_index * 4 + slot].is_some()
+        });
+        if !publication_registration_allowed(occupied, batch, slot) {
+            return false;
+        }
         if matches!(batch, BatchPosition::Only | BatchPosition::First) {
             self.retry[pipe_index].reset();
             self.mismatch[pipe_index] = 0;
@@ -3710,9 +3732,6 @@ impl SingleProbeMacBackend {
             #[cfg(feature = "experimental-depth-two-ampdu")]
             {
                 self.depth_two_block_ack[pipe_index] = None;
-            }
-            if batch == BatchPosition::Only {
-                self.publications[pipe_index * 4..pipe_index * 4 + 4].fill(None);
             }
         }
         let publication_index = pipe_index * 4 + usize::from(slot & 3);
@@ -3729,6 +3748,12 @@ impl SingleProbeMacBackend {
         slot: u8,
     ) -> bool {
         let pipe_index = usize::from(pipe & 3);
+        if self.publications[pipe_index * 4..pipe_index * 4 + 4]
+            .iter()
+            .any(Option::is_some)
+        {
+            return false;
+        }
         self.retry[pipe_index].reset();
         self.mismatch[pipe_index] = 0;
         self.selective_retry[pipe_index] = None;
@@ -9492,6 +9517,50 @@ pub fn prepare_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_registration_rejects_overlapping_pipe_owners() {
+        assert!(publication_registration_allowed(
+            [false; 4],
+            BatchPosition::Only,
+            2,
+        ));
+        assert!(publication_registration_allowed(
+            [false; 4],
+            BatchPosition::First,
+            3,
+        ));
+        assert!(!publication_registration_allowed(
+            [false; 4],
+            BatchPosition::Last,
+            1,
+        ));
+        assert!(publication_registration_allowed(
+            [true, false, false, false],
+            BatchPosition::Last,
+            1,
+        ));
+        assert!(!publication_registration_allowed(
+            [true, false, false, false],
+            BatchPosition::Only,
+            1,
+        ));
+        assert!(!publication_registration_allowed(
+            [true, false, false, false],
+            BatchPosition::Last,
+            0,
+        ));
+        assert!(!publication_registration_allowed(
+            [true, false, false, false],
+            BatchPosition::Middle,
+            1,
+        ));
+        assert!(!publication_registration_allowed(
+            [false; 4],
+            BatchPosition::Only,
+            4,
+        ));
+    }
 
     #[test]
     fn class_zero_completion_queue_holds_two_members_for_every_pipe() {

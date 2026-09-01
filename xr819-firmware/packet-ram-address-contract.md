@@ -60,7 +60,10 @@ CPU-form identity; their representations cannot be supplied where a CPU pointer
 is required. TX start, timing, completion-message, and completion-dispatch paths
 also revalidate each retained context frame address together with its full frame
 length before dereferencing header fields. The publication registry retains the
-exact DTCM context/frame-node and packet-RAM command base for each `(pipe, slot)`;
+exact DTCM context/frame-node and packet-RAM command base for each `(pipe, slot)`.
+A single or first publication now requires an empty per-pipe registry, the last
+member requires exactly one staged identity, and depth-two registration rejects
+any pre-existing identity rather than silently overwriting ownership evidence;
 depth-two BlockAck handling requires the live slot's frame and command words to
 still match that identity before consuming retained state. Repeated compressed
 BlockAck observations are retained only against the aggregate's two exact DTCM

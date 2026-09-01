@@ -616,3 +616,10 @@ success and give-up handling instead of rereading the shared
 `MAC_CURRENT_PIPE` byte after policy and descriptor work. This keeps command-mask
 release, partial member conversion, and copied completion identities tied to the
 same pipe even while another pipe is active.
+
+Publication registration now independently enforces that ownership boundary.
+Single and first descriptors require an empty per-pipe identity slice, the last
+ordinary batch member requires exactly one staged identity, and depth-two
+registration rejects any existing identity. An accidental second owner can no
+longer erase the retained context, frame-node, or command identity needed to
+route the first owner's completion.
