@@ -41,6 +41,57 @@ pub const RUNTIME_CPU_END: u32 = RUNTIME_CPU_START + 0x0000_f630;
 pub const RX_FIFO_CPU_START: u32 = 0x0940_0000;
 pub const RX_FIFO_CPU_END: u32 = RX_FIFO_CPU_START + RX_FIFO_STORAGE_SIZE as u32;
 
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimePacketAddress(u32);
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MacPacketOffset(u32);
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxPayloadBusAddress(u32);
+
+impl RuntimePacketAddress {
+    pub fn new(address: u32, length: usize) -> Option<Self> {
+        let address_usize = address as usize;
+        address_usize.checked_add(length)?;
+        #[cfg(not(target_arch = "arm"))]
+        let in_physical_runtime = address_usize >= RUNTIME_CPU_START as usize
+            && address_usize + length <= RUNTIME_CPU_END as usize;
+        #[cfg(target_arch = "arm")]
+        let owned = contains_runtime_range(address_usize, length);
+        #[cfg(not(target_arch = "arm"))]
+        let owned = in_physical_runtime || contains_runtime_range(address_usize, length);
+
+        (length != 0 && owned).then_some(Self(address))
+    }
+
+    #[inline(always)]
+    pub const fn raw(self) -> u32 { self.0 }
+
+    #[inline(always)]
+    pub const fn mac_offset(self) -> MacPacketOffset {
+        MacPacketOffset(encode_mac_packet_offset_u32(self.0))
+    }
+
+    #[inline(always)]
+    pub const fn tx_payload_bus_address(self, address_mask: u32) -> TxPayloadBusAddress {
+        TxPayloadBusAddress(encode_tx_payload_bus_address(self.0, address_mask))
+    }
+}
+
+impl MacPacketOffset {
+    #[inline(always)]
+    pub const fn raw(self) -> u32 { self.0 }
+}
+
+impl TxPayloadBusAddress {
+    #[inline(always)]
+    pub const fn raw(self) -> u32 { self.0 }
+}
+
 #[repr(C, align(4))]
 struct OpaqueStorage<const N: usize>(UnsafeCell<MaybeUninit<[u8; N]>>);
 
@@ -478,7 +529,7 @@ pub fn contains_runtime_storage(address: usize) -> bool {
 }
 
 #[inline(always)]
-pub fn contains_owned_range(address: usize, length: usize) -> bool {
+pub fn contains_runtime_range(address: usize, length: usize) -> bool {
     let Some(end) = address.checked_add(length) else { return false };
     let contains = |range: Range<usize>| address >= range.start && end <= range.end;
     contains(host_frame_states())
@@ -493,7 +544,15 @@ pub fn contains_owned_range(address: usize, length: usize) -> bool {
         || contains(internal_tx_buffers())
         || contains(software_records())
         || contains(automatic_response_list())
-        || contains(rx_fifo_backing())
+}
+
+#[inline(always)]
+pub fn contains_owned_range(address: usize, length: usize) -> bool {
+    contains_runtime_range(address, length) || {
+        let Some(end) = address.checked_add(length) else { return false };
+        let range = rx_fifo_backing();
+        address >= range.start && end <= range.end
+    }
 }
 
 #[cfg(test)]
@@ -568,6 +627,22 @@ mod tests {
         assert!(contains_owned_range(tx_command(0, 0), TX_COMMAND_SIZE));
         assert!(!contains_owned_range(tx_commands().end - 2, 4));
         assert!(!contains_owned_range(usize::MAX - 1, 4));
+    }
+
+    #[test]
+    fn typed_runtime_addresses_reject_aliases_ends_and_non_runtime_storage() {
+        let address = RuntimePacketAddress::new(RUNTIME_CPU_START, 4).unwrap();
+        assert_eq!(address.raw(), RUNTIME_CPU_START);
+        assert_eq!(address.mac_offset().raw(), RUNTIME_CPU_START & 0x007f_ffff);
+        assert_eq!(
+            address.tx_payload_bus_address(0x007f_fffc).raw(),
+            RUNTIME_CPU_START & 0x007f_fffc,
+        );
+        assert!(RuntimePacketAddress::new(RUNTIME_CPU_END - 4, 4).is_some());
+        assert!(RuntimePacketAddress::new(RUNTIME_CPU_END - 2, 4).is_none());
+        assert!(RuntimePacketAddress::new(RUNTIME_CPU_START, 0).is_none());
+        assert!(RuntimePacketAddress::new(RUNTIME_CPU_START & 0x007f_ffff, 4).is_none());
+        assert!(RuntimePacketAddress::new(RX_FIFO_CPU_START, 4).is_none());
     }
 
     #[test]

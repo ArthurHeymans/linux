@@ -737,9 +737,9 @@ pub struct SingleFramePipeInput {
     pub hardware_rate: u8,
     pub frame_control: u16,
     pub retry_flag: bool,
-    pub metadata_address: u32,
+    pub metadata_address: packet_ram::RuntimePacketAddress,
     pub duration: u16,
-    pub header_address: u32,
+    pub header_address: packet_ram::RuntimePacketAddress,
     pub secondary_command: u32,
     pub address_mask: u32,
     pub terminal_command: u32,
@@ -762,9 +762,19 @@ impl SingleFramePipeDescriptor {
 /// inputs so descriptor publication cannot silently invent them.
 pub fn build_single_frame_pipe_descriptor(
     input: SingleFramePipeInput,
-) -> SingleFramePipeDescriptor {
+) -> Result<SingleFramePipeDescriptor, ProbeBuildError> {
+    if input.frame_length < DOT11_FIXED_HEADER_LENGTH
+        || packet_ram::RuntimePacketAddress::new(
+            input.header_address.raw(),
+            usize::from(input.frame_length),
+        )
+        .is_none()
+        || packet_ram::RuntimePacketAddress::new(input.metadata_address.raw(), 1).is_none()
+    {
+        return Err(ProbeBuildError::PacketRamMismatch);
+    }
     let mut words = [0_u32; 13];
-    let header = TxFrameAddress::new(input.header_address);
+    let header = TxFrameAddress::new(input.header_address.raw());
     let frame_control = u32::from(input.frame_control) | if input.retry_flag { 0x0800 } else { 0 };
     words[0] = 0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff);
     words[1] = 0x5000_0000 | (input.phy_control_word & 0x00ff_ffff);
@@ -773,27 +783,29 @@ pub fn build_single_frame_pipe_descriptor(
         | u32::from(input.frame_length.wrapping_add(4));
     words[3] = 0x3100_0000 + frame_control;
     words[4] = 0x4700_0000 + (frame_control >> 8);
-    words[5] =
-        0x2080_0000 | packet_ram::encode_mac_packet_offset_u32(input.metadata_address);
+    words[5] = 0x2080_0000 | input.metadata_address.mac_offset().raw();
     words[6] = 0x3200_0000 | u32::from(input.duration);
     words[7] =
         0x2900_0000 | packet_ram::encode_mac_packet_offset_u32(header.descriptor_tail());
     words[8] = input.secondary_command;
     let mut length = 9;
     if input.frame_length > DOT11_FIXED_HEADER_LENGTH {
-        let payload = header.payload_after_fixed_header();
-        words[9] =
-            0x4000_0000 | packet_ram::encode_tx_payload_bus_address(payload, input.address_mask);
+        let payload = packet_ram::RuntimePacketAddress::new(
+            header.payload_after_fixed_header(),
+            usize::from(input.frame_length - DOT11_FIXED_HEADER_LENGTH),
+        )
+        .ok_or(ProbeBuildError::PacketRamMismatch)?;
+        words[9] = 0x4000_0000 | payload.tx_payload_bus_address(input.address_mask).raw();
         words[10] = (u32::from(input.frame_length - DOT11_FIXED_HEADER_LENGTH) & 0x0fff) << 12
-            | (payload & 3);
+            | (payload.raw() & 3);
         length = 11;
     }
     words[length] = input.terminal_command;
     words[length + 1] = 0xf000_0000;
-    SingleFramePipeDescriptor {
+    Ok(SingleFramePipeDescriptor {
         words,
         length: (length + 2) as u8,
-    }
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7911,7 +7923,7 @@ pub unsafe fn release_unpublished_probe_context(context: PreparedProbeContext) {
 /// pointers must be valid.
 pub unsafe fn build_prepared_probe_descriptor(
     context: &PreparedProbeContext,
-) -> SingleFramePipeDescriptor {
+) -> Result<SingleFramePipeDescriptor, ProbeBuildError> {
     unsafe {
         let address = ContextAddress::new(context.context);
         let rate = (address.tx_rate_address() as *const u8).read_volatile();
@@ -7933,8 +7945,23 @@ pub unsafe fn build_prepared_probe_descriptor(
             rate_attribute,
         );
         let if_id = (address.interface_address() as *const u8).read_volatile();
-        let metadata_address = packet_ram::interface_metadata_byte(usize::from(if_id)) as u32;
+        if usize::from(if_id) >= packet_ram::INTERFACE_METADATA_SIZE {
+            return Err(ProbeBuildError::PacketRamMismatch);
+        }
+        let metadata_address = packet_ram::RuntimePacketAddress::new(
+            packet_ram::interface_metadata_byte(usize::from(if_id)) as u32,
+            1,
+        )
+        .ok_or(ProbeBuildError::PacketRamMismatch)?;
+        let header_address = packet_ram::RuntimePacketAddress::new(
+            context.header,
+            usize::from(context.length),
+        )
+        .ok_or(ProbeBuildError::PacketRamMismatch)?;
         let duration_slot = (address.duration_slot_address() as *const u8).read_volatile();
+        if usize::from(duration_slot) >= packet_ram::DURATION_WORD_COUNT {
+            return Err(ProbeBuildError::PacketRamMismatch);
+        }
         // `txp_submit_to_pipe` uses PAS `bVifSlot` (`ctx+0xbe`) here when
         // flags bit 0 is clear. Both internal and host contexts use this
         // selector; the TX rate indexes different PHY tables.
@@ -7948,7 +7975,7 @@ pub unsafe fn build_prepared_probe_descriptor(
             retry_flag: (address.control_bits_address() as *const u32).read_volatile() & 0x10 != 0,
             metadata_address,
             duration: (address.duration_address() as *const u16).read_volatile(),
-            header_address: context.header,
+            header_address,
             secondary_command: 0x2100_0000
                 | packet_ram::encode_mac_packet_offset_u32(secondary_address),
             address_mask: 0x007f_fffc,
@@ -7963,8 +7990,21 @@ unsafe fn emit_prepared_probe_descriptor(
 ) -> Result<u32, ProbeBuildError> {
     unsafe {
         let address = ContextAddress::new(context.context);
-        let frame = TxFrameAddress::new(context.header);
-        let descriptor = TxDescriptorAddress::new(destination);
+        if context.length < DOT11_FIXED_HEADER_LENGTH {
+            return Err(ProbeBuildError::PacketRamMismatch);
+        }
+        let frame_address = packet_ram::RuntimePacketAddress::new(
+            context.header,
+            usize::from(context.length),
+        )
+        .ok_or(ProbeBuildError::PacketRamMismatch)?;
+        let descriptor_address = packet_ram::RuntimePacketAddress::new(
+            destination,
+            core::mem::size_of::<[u32; 13]>(),
+        )
+        .ok_or(ProbeBuildError::PacketRamMismatch)?;
+        let frame = TxFrameAddress::new(frame_address.raw());
+        let descriptor = TxDescriptorAddress::new(descriptor_address.raw());
         let rate = (address.tx_rate_address() as *const u8).read_volatile();
         let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
         let request_flag_rate_bits =
@@ -7984,7 +8024,18 @@ unsafe fn emit_prepared_probe_descriptor(
             rate_attribute,
         );
         let if_id = (address.interface_address() as *const u8).read_volatile();
+        if usize::from(if_id) >= packet_ram::INTERFACE_METADATA_SIZE {
+            return Err(ProbeBuildError::PacketRamMismatch);
+        }
+        let metadata_address = packet_ram::RuntimePacketAddress::new(
+            packet_ram::interface_metadata_byte(usize::from(if_id)) as u32,
+            1,
+        )
+        .ok_or(ProbeBuildError::PacketRamMismatch)?;
         let duration_slot = (address.duration_slot_address() as *const u8).read_volatile();
+        if usize::from(duration_slot) >= packet_ram::DURATION_WORD_COUNT {
+            return Err(ProbeBuildError::PacketRamMismatch);
+        }
         let frame_control = u32::from((address.frame_control_address() as *const u16).read_volatile())
             | if (address.control_bits_address() as *const u32).read_volatile() & 0x10 != 0 {
                 0x0800
@@ -8006,10 +8057,7 @@ unsafe fn emit_prepared_probe_descriptor(
         add(0x5200_0000 | (u32::from(hardware_rate) << 16) | u32::from(context.length + 4));
         add(0x3100_0000 + frame_control);
         add(0x4700_0000 + (frame_control >> 8));
-        add(0x2080_0000
-            | packet_ram::mac_packet_offset_unchecked(packet_ram::interface_metadata_byte(
-                usize::from(if_id),
-            )));
+        add(0x2080_0000 | metadata_address.mac_offset().raw());
         add(0x3200_0000 | u32::from((address.duration_address() as *const u16).read_volatile()));
         add(0x2900_0000 | packet_ram::encode_mac_packet_offset_u32(frame.descriptor_tail()));
         add(single_frame_secondary_command(
@@ -8022,12 +8070,15 @@ unsafe fn emit_prepared_probe_descriptor(
         // in the payload segment; this is independent of the context's parsed
         // 24/26/30/32/36-byte software header length.
         if context.length > DOT11_FIXED_HEADER_LENGTH {
-            let payload = frame.payload_after_fixed_header();
-            add(0x4000_0000
-                | packet_ram::encode_tx_payload_bus_address(payload, 0x007f_fffc));
+            let payload = packet_ram::RuntimePacketAddress::new(
+                frame.payload_after_fixed_header(),
+                usize::from(context.length - DOT11_FIXED_HEADER_LENGTH),
+            )
+            .ok_or(ProbeBuildError::PacketRamMismatch)?;
+            add(0x4000_0000 | payload.tx_payload_bus_address(0x007f_fffc).raw());
             add(
                 (u32::from(context.length - DOT11_FIXED_HEADER_LENGTH) & 0x0fff) << 12
-                    | (payload & 3),
+                    | (payload.raw() & 3),
             );
         }
         add(0x0700_4600);
@@ -10981,20 +11032,21 @@ mod tests {
 
     #[test]
     fn single_frame_descriptor_matches_vendor_command_shape() {
-        let descriptor = build_single_frame_pipe_descriptor(SingleFramePipeInput {
+        let input = SingleFramePipeInput {
             phy_rate_word: 0x123456,
             phy_control_word: 0xabcdef,
             frame_length: 42,
             hardware_rate: 3,
             frame_control: 0x0040,
             retry_flag: true,
-            metadata_address: 0x0901_2345,
+            metadata_address: packet_ram::RuntimePacketAddress::new(0x0901_2345, 1).unwrap(),
             duration: 0x0064,
-            header_address: 0x0901_4fe8,
+            header_address: packet_ram::RuntimePacketAddress::new(0x0901_4fe8, 42).unwrap(),
             secondary_command: 0x2100_1234,
             address_mask: u32::MAX,
             terminal_command: 0x4e14_0000,
-        });
+        };
+        let descriptor = build_single_frame_pipe_descriptor(input).unwrap();
         assert_eq!(
             descriptor.words(),
             &[
@@ -11012,6 +11064,13 @@ mod tests {
                 0x4e14_0000,
                 0xf000_0000,
             ]
+        );
+        assert_eq!(
+            build_single_frame_pipe_descriptor(SingleFramePipeInput {
+                frame_length: DOT11_FIXED_HEADER_LENGTH - 1,
+                ..input
+            }),
+            Err(ProbeBuildError::PacketRamMismatch),
         );
     }
 

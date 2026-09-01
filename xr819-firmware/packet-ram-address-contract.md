@@ -50,10 +50,16 @@ dereferenced or written.
 root or object base. Response-pointer publication separately accepts only exact
 response-command bases before applying the DMA bus encoding, and rejects invalid
 pipe slots before any volatile write. Platform startup uses the same owned
-23-bit encoder for TX-ring and automatic-response roots. TX descriptor builders
-use the owned 23-bit and payload-bus encoders while retaining their CPU-form
-context identities. Source gates reject open-coded MAC, platform, and production
-TX packet-RAM masks.
+23-bit encoder for TX-ring and automatic-response roots.
+
+Ordinary TX descriptor publication first constructs a
+`packet_ram::RuntimePacketAddress`, which proves that the complete frame or
+command-list destination fits inside one linker-owned runtime object. Distinct
+`MacPacketOffset` and `TxPayloadBusAddress` values can then be derived from that
+CPU-form identity; their representations cannot be supplied where a CPU pointer
+is required. Interface metadata and duration-table selectors are range-checked
+before their addresses are formed. Source gates reject open-coded MAC, platform,
+and production TX packet-RAM masks and freeze the checked TX boundary calls.
 
 ### HIF and crypto DMA
 
@@ -86,7 +92,7 @@ byte from authorizing an out-of-range multi-byte read.
 
 Production `0x007f_ffff` and `0xf6ff_ffff` packet-address masks are now confined
 to `packet_ram.rs`; numeric copies in tests remain independent encoding oracles.
-The TX `0x007f_fffc` value is an alignment/field mask passed to the centralized
-payload encoder, not a recoverable pointer representation. Further work can
-wrap command fields in distinct value types, but no remaining translated path
+The TX `0x007f_fffc` value is an alignment/field mask passed to the typed payload
+encoder, not a recoverable pointer representation. Remaining raw command words
+combine opcodes with already validated typed address values; no translated path
 was found that converts a masked hardware form back into a CPU pointer.
