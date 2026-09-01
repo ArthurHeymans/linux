@@ -68,6 +68,7 @@ pub enum CcmpError {
     MissingKey,
     Authentication,
     HardwareTimeout,
+    InvalidDmaAddress,
 }
 
 pub fn add_key(if_id: u8, request: &crate::wsm::AddKeyRequest<'_>) -> Result<(), KeyError> {
@@ -447,6 +448,10 @@ fn encrypt_tx_frame_hardware(
     let payload_length = payload_end
         .checked_sub(payload_start)
         .ok_or(CcmpError::MalformedFrame)?;
+    let payload_address = crate::packet_ram::packet_dma_bus_address(
+        frame[payload_start..].as_mut_ptr() as usize,
+    )
+    .ok_or(CcmpError::InvalidDmaAddress)?;
     let context = hardware_ccm_context(frame, frame_control, pn, payload_length)?;
     let aad_stream = hardware_aad_stream(aad, aad_length)?;
     let registers = aes_registers();
@@ -475,7 +480,6 @@ fn encrypt_tx_frame_hardware(
         .command_status
         .set(hardware_aad_tail_command(aad_length).ok_or(CcmpError::MalformedFrame)?);
 
-    let payload_address = frame[payload_start..].as_mut_ptr() as usize as u32 & 0xf6ff_ffff;
     registers.source.set(payload_address);
     registers.destination.set(payload_address);
     registers.length.set(payload_length as u32);
@@ -540,6 +544,10 @@ fn decrypt_rx_frame_hardware(
     let payload_length = payload_end
         .checked_sub(payload_start)
         .ok_or(CcmpError::MalformedFrame)?;
+    let payload_address = crate::packet_ram::packet_dma_bus_address(
+        frame[payload_start..].as_mut_ptr() as usize,
+    )
+    .ok_or(CcmpError::InvalidDmaAddress)?;
     let context = hardware_ccm_context(frame, frame_control, pn, payload_length)?;
     let aad_stream = hardware_aad_stream(aad, aad_length)?;
     let registers = aes_registers();
@@ -564,7 +572,6 @@ fn decrypt_rx_frame_hardware(
             .wrapping_sub(1),
     );
 
-    let payload_address = frame[payload_start..].as_mut_ptr() as usize as u32 & 0xf6ff_ffff;
     registers.source.set(payload_address);
     registers.destination.set(payload_address);
     registers.length.set(payload_length as u32);

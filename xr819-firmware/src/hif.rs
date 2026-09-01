@@ -94,7 +94,7 @@ const REQUEST_PAYLOAD_CAPACITY: usize = RX_BUFFER_SIZE - 4;
 unsafe fn known_dma_bus_address(cpu_address: usize) -> u32 {
     // Fixed linker-owned HIF roots satisfy the packet-RAM contract by
     // construction. Dynamic queue addresses use the checked Option directly.
-    unsafe { packet_ram::hif_dma_bus_address_unchecked(cpu_address) }
+    unsafe { packet_ram::packet_dma_bus_address_unchecked(cpu_address) }
 }
 
 const fn owned_descriptor_length(length: u16) -> u32 {
@@ -695,7 +695,7 @@ impl Transport {
 
         let queue_slot = (staged & 63) as usize;
         let buffer_address = self.queues.tx_buffers[queue_slot] as usize;
-        let Some(bus_address) = packet_ram::hif_dma_bus_address(buffer_address) else {
+        let Some(bus_address) = packet_ram::packet_dma_bus_address(buffer_address) else {
             return;
         };
         // Vendor staging reads MsgLen from the queued buffer rather than
@@ -847,7 +847,7 @@ impl Transport {
         if buffer_address == 0 {
             return;
         }
-        let Some(bus_address) = packet_ram::hif_dma_bus_address(buffer_address) else {
+        let Some(bus_address) = packet_ram::packet_dma_bus_address(buffer_address) else {
             return;
         };
         self.queues.rx_released = self.queues.rx_released.wrapping_add(1);

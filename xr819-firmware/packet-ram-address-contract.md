@@ -54,12 +54,16 @@ command identity rather than mere membership in the command array.
 ### HIF and crypto DMA
 
 HIF RX initialization and TX staging pass CPU-form addresses through
-`packet_ram::hif_dma_bus_address`, which accepts only linker-owned runtime or RX
-FIFO storage. `HifQueues` retains the CPU-form identity, and completion
+`packet_ram::packet_dma_bus_address`, which accepts only linker-owned runtime or
+RX FIFO storage. `HifQueues` retains the CPU-form identity, and completion
 reclamation uses that software queue entry rather than reconstructing a pointer
-from a descriptor. The source gate rejects any open-coded HIF DMA mask.
-AES/MIC command setup still masks a pointer derived from the live Rust slice and
-continues to use the slice pointer for CPU access.
+from a descriptor. Fixed linker-owned emergency and startup roots use the
+explicit unsafe encoder without adding a fallible call to the exception stack.
+
+AES/CCMP validates the live payload slice through the same checked encoder
+before publishing either source or destination. It returns
+`CcmpError::InvalidDmaAddress` before starting hardware when a slice is not in
+owned packet RAM. Source gates reject open-coded HIF and crypto DMA masks.
 
 ### RX FIFO
 
@@ -76,8 +80,8 @@ byte from authorizing an out-of-range multi-byte read.
 
 ## Remaining audit boundary
 
-Open-coded `0x007f_ffff` MAC masks and the remaining `0xf6ff_ffff` crypto/TX
-masks are hardware encoders, not decoders. They should be moved behind named
+Open-coded `0x007f_ffff` MAC masks and the remaining `0xf6ff_ffff` MAC/TX masks
+are hardware encoders, not decoders. They should be moved behind named
 packet-RAM encoding helpers as each family is independently reviewed, without
 changing command word layout or volatile publication order. No remaining
 translated path was found that converts either masked form back into a CPU

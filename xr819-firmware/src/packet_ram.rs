@@ -352,21 +352,21 @@ pub fn ampdu_transfer_word(cpu_address: usize) -> Option<u32> {
         .then_some(0x6500_0000 | (cpu_address as u32 & 0x001f_fffc))
 }
 
-/// Encode a CPU-form address already proven to identify packet RAM for an HIF
-/// DMA descriptor.
+/// Encode a CPU-form address already proven to identify packet RAM for a DMA
+/// descriptor.
 ///
 /// # Safety
 ///
 /// `cpu_address` must be inside linker-owned runtime packet RAM or the RX FIFO.
 #[inline(always)]
-pub const unsafe fn hif_dma_bus_address_unchecked(cpu_address: usize) -> u32 {
+pub const unsafe fn packet_dma_bus_address_unchecked(cpu_address: usize) -> u32 {
     cpu_address as u32 & 0xf6ff_ffff
 }
 
-/// Check and encode a CPU-form packet-RAM address for an HIF DMA descriptor.
+/// Check and encode a CPU-form packet-RAM address for a DMA descriptor.
 /// The bus value is intentionally not reversible; queue ownership retains the
 /// CPU-form address until the descriptor is reclaimed.
-pub fn hif_dma_bus_address(cpu_address: usize) -> Option<u32> {
+pub fn packet_dma_bus_address(cpu_address: usize) -> Option<u32> {
     let in_physical_packet_ram =
         (RUNTIME_CPU_START as usize..RUNTIME_CPU_END as usize).contains(&cpu_address)
             || (RX_FIFO_CPU_START as usize..RX_FIFO_CPU_END as usize).contains(&cpu_address);
@@ -377,7 +377,7 @@ pub fn hif_dma_bus_address(cpu_address: usize) -> Option<u32> {
         || contains_runtime_storage(cpu_address)
         || rx_fifo_backing().contains(&cpu_address);
 
-    owned.then(|| unsafe { hif_dma_bus_address_unchecked(cpu_address) })
+    owned.then(|| unsafe { packet_dma_bus_address_unchecked(cpu_address) })
 }
 
 #[inline(always)]
@@ -483,22 +483,22 @@ mod tests {
     }
 
     #[test]
-    fn hif_dma_encoding_accepts_cpu_packet_ram_but_rejects_bus_aliases() {
+    fn packet_dma_encoding_accepts_cpu_packet_ram_but_rejects_bus_aliases() {
         assert_eq!(
-            hif_dma_bus_address(RUNTIME_CPU_START as usize),
+            packet_dma_bus_address(RUNTIME_CPU_START as usize),
             Some(RUNTIME_CPU_START & 0xf6ff_ffff),
         );
         assert_eq!(
-            hif_dma_bus_address((RX_FIFO_CPU_END - 1) as usize),
+            packet_dma_bus_address((RX_FIFO_CPU_END - 1) as usize),
             Some((RX_FIFO_CPU_END - 1) & 0xf6ff_ffff),
         );
-        assert_eq!(hif_dma_bus_address(RUNTIME_CPU_END as usize), None);
+        assert_eq!(packet_dma_bus_address(RUNTIME_CPU_END as usize), None);
         assert_eq!(
-            hif_dma_bus_address((RUNTIME_CPU_START & 0xf6ff_ffff) as usize),
+            packet_dma_bus_address((RUNTIME_CPU_START & 0xf6ff_ffff) as usize),
             None,
         );
-        assert!(hif_dma_bus_address(hif_output(0)).is_some());
-        assert!(hif_dma_bus_address(rx_fifo_base()).is_some());
+        assert!(packet_dma_bus_address(hif_output(0)).is_some());
+        assert!(packet_dma_bus_address(rx_fifo_base()).is_some());
     }
 
     #[test]
