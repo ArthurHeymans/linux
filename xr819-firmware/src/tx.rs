@@ -1519,6 +1519,7 @@ struct TxHardwareRingLayout {
 struct TxHardwareRingAddress(u32);
 
 impl TxHardwareRingAddress {
+    #[cfg(test)]
     const fn new(address: u32) -> Self { Self(address) }
     const fn for_pipe(pipe: u8, address: u32) -> Option<Self> {
         if pipe < 4
@@ -1539,6 +1540,20 @@ impl TxHardwareRingAddress {
     const fn inactive_sentinel(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, inactive_sentinel)) }
     const fn completion_word(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, completion_word)) }
     const fn cursor_and_pending_mask(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, cursor_and_pending_mask)) }
+}
+
+fn retained_hardware_ring<M: MacPipeMmio>(
+    mmio: &mut M,
+    pipe: u8,
+) -> Option<TxHardwareRingAddress> {
+    if pipe >= 4 {
+        return None;
+    }
+    let record = pipe_record_address(pipe);
+    TxHardwareRingAddress::for_pipe(
+        pipe,
+        mmio.read_u32(record.hardware_ring().get() as u32),
+    )
 }
 
 const DOT11_FIXED_HEADER_LENGTH: u16 = 24;
@@ -1661,7 +1676,8 @@ fn pipe_state_address(pipe: u8) -> u32 {
 ///
 /// Returns true when the pipe was still armed, which selects the vendor
 /// slot-record cleanup sweep in `txp_fn_4425` (`0x38c`).
-pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
+pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> Option<bool> {
+    let ring = retained_hardware_ring(mmio, pipe)?;
     let record = pipe_record_address(pipe);
     let armed = mmio.read_u8(record.state().get() as u32) != 0;
     let cursor = if armed {
@@ -1675,14 +1691,13 @@ pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
     } else {
         mmio.read_u8(record.producer_slot().get() as u32) & 3
     };
-    let ring = TxHardwareRingAddress::new(mmio.read_u32(record.hardware_ring().get() as u32));
     mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
     mmio.write_u32(
         PIPE_IRQ_PENDING,
         0_u32.wrapping_sub((PIPE_ADVANCE_ACK_BASE << (pipe & 3)).wrapping_add(0x10)),
     );
     resync_pipe_ring_cursor(mmio, ring, cursor);
-    armed
+    Some(armed)
 }
 
 /// Writes both `ring + 0x20` cursor fields, preserving the pending-slot mask in
@@ -1707,14 +1722,14 @@ fn resync_pipe_ring_cursor<M: MacPipeMmio>(
 /// cursor `(ring[0x20] & 0x3fffffff) >> 27`. Unlike `advance_pipe_slot` this
 /// touches neither the pipe acknowledgement nor the command sentinel, so it is
 /// safe to call from the completion handler that already retired the burst.
-pub fn resync_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) {
+pub fn resync_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
+    let Some(ring) = retained_hardware_ring(mmio, pipe) else {
+        return false;
+    };
     let record = pipe_record_address(pipe);
-    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
-    if ring == 0 {
-        return;
-    }
     let producer = mmio.read_u8(record.producer_slot().get() as u32);
-    resync_pipe_ring_cursor(mmio, TxHardwareRingAddress::new(ring), producer);
+    resync_pipe_ring_cursor(mmio, ring, producer);
+    true
 }
 
 /// The invariant asserted at the end of vendor `txp_fn_4425` (`0x38c`): the
@@ -1733,13 +1748,13 @@ pub fn pipe_cursor_invariant_holds(packed: u32) -> bool {
 ///
 /// The invariant holds when nibble 1 equals nibble 6.
 pub fn pipe_cursor_diagnostic<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u32) {
+    if pipe >= 4 {
+        return (u32::from(pipe), 0);
+    }
     let record = pipe_record_address(pipe);
-    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
-    let ring_word = if ring == 0 {
-        0
-    } else {
-        mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_and_pending_mask())
-    };
+    let ring_word = retained_hardware_ring(mmio, pipe)
+        .map(|ring| mmio.read_u32(ring.cursor_and_pending_mask()))
+        .unwrap_or(0);
     let packed = u32::from(pipe & 3)
         | (u32::from(mmio.read_u8(record.producer_slot().get() as u32) & 0x0f) << 4)
         | (u32::from(mmio.read_u8(record.last_slot().get() as u32) & 0x0f) << 8)
@@ -2059,14 +2074,31 @@ pub unsafe fn enter_mac_fatal_quiescence(
         // MAC fatal cannot preempt the later cooperative command matcher.
         // The complete pre-GO and postmortem records remain committed in BSS.
         let postmortem = &*record;
+        let pipe = postmortem.current_pipe as u8;
         let pipe_state = postmortem.current_pipe_record as usize;
         let slot = postmortem.current_slot as usize;
         let command = read_u32(slot.wrapping_add(0x14)) as usize;
-        let hardware_ring = read_u32(pipe_state.wrapping_add(8)) as usize;
+        let expected_record = crate::dtcm::MacPipeRecordAddress::from_index(usize::from(pipe));
+        let hardware_ring = expected_record
+            .filter(|record| record.raw() == postmortem.current_pipe_record)
+            .and_then(|record| {
+                TxHardwareRingAddress::for_pipe(pipe, read_u32(record.hardware_ring().get()))
+            });
+        let ring_word = hardware_ring
+            .map(|ring| read_u32(ring.cursor_and_pending_mask() as usize))
+            .unwrap_or(0);
         // The slot the MAC itself is pointing at, which is not necessarily the
         // one we think is current.
-        let cursor_slot = ((read_u32(hardware_ring.wrapping_add(0x20)) >> 27) & 3) as usize;
-        let cursor_command = packet_ram::tx_command(postmortem.current_pipe as usize, cursor_slot);
+        let cursor_slot = ((ring_word >> 27) & 3) as usize;
+        let cursor_command = expected_record
+            .map(|_| packet_ram::tx_command(usize::from(pipe), cursor_slot))
+            .unwrap_or(0);
+        let cursor_command_word_0 = if cursor_command != 0 { read_u32(cursor_command) } else { 0 };
+        let cursor_command_word_14 = if cursor_command != 0 {
+            read_u32(cursor_command.wrapping_add(0x14))
+        } else {
+            0
+        };
         let trace_count = read_u32(0xfff0_3794);
         let prior_event = |back: u32| {
             let index = trace_count.wrapping_sub(back) & 0x1f;
@@ -2099,14 +2131,14 @@ pub unsafe fn enter_mac_fatal_quiescence(
                 | (u32::from(read_u8(pipe_state.wrapping_add(2))) << 16)
                 | (u32::from(read_u8(pipe_state.wrapping_add(3))) << 24),
             cursor_command as u32,
-            read_u32(cursor_command),
-            read_u32(cursor_command.wrapping_add(0x14)),
+            cursor_command_word_0,
+            cursor_command_word_14,
             rx[0],
             rx[1],
             postmortem.current_pipe,
             pipe_state as u32,
-            hardware_ring as u32,
-            read_u32(hardware_ring.wrapping_add(0x20)),
+            hardware_ring.map(TxHardwareRingAddress::raw).unwrap_or(0),
+            ring_word,
             postmortem.event_readiness,
             // Vendor asserts that the software slot pointer equals the hardware
             // ring cursor (`ring+0x20` bits 29:27); see tx_ptcs.c's check in
@@ -2457,13 +2489,15 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                 }
                 PipeWatchdogAction::Expired => {
                     let current = read_u8(record.current_slot().get());
-                    let cursor = hardware_pipe_cursor(&mut VolatileMacPipeMmio, pipe)
-                        .map(|cursor| OrdinaryTxPipeCursorPlan::Recycle {
-                            next_head: cursor & 3,
-                        })
-                        .unwrap_or(OrdinaryTxPipeCursorPlan::Recycle {
+                    let cursor = match hardware_pipe_cursor(&mut VolatileMacPipeMmio, pipe) {
+                        Ok(Some(cursor)) => OrdinaryTxPipeCursorPlan::Recycle {
+                            next_head: cursor,
+                        },
+                        Ok(None) => OrdinaryTxPipeCursorPlan::Recycle {
                             next_head: read_u8(record.last_slot().get()).wrapping_add(1) & 3,
-                        });
+                        },
+                        Err(()) => crate::halt_always!(),
+                    };
                     crate::host_tx_diagnostics::bump(
                         crate::host_tx_diagnostics::counter::WATCHDOG_RECOVERED,
                     );
@@ -2480,13 +2514,22 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
 
 /// Reads the hardware ring cursor (`ring + 0x20` bits 29:27) for one pipe.
 /// `None` when the pipe has no programmed ring.
-fn hardware_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> Option<u8> {
-    let record = pipe_record_address(pipe);
-    let ring = mmio.read_u32(record.hardware_ring().get() as u32);
-    if ring == 0 {
-        return None;
+fn hardware_pipe_cursor<M: MacPipeMmio>(
+    mmio: &mut M,
+    pipe: u8,
+) -> Result<Option<u8>, ()> {
+    if pipe >= 4 {
+        return Err(());
     }
-    Some(((mmio.read_u32(TxHardwareRingAddress::new(ring).cursor_and_pending_mask()) >> 27) & 3) as u8)
+    let record = pipe_record_address(pipe);
+    let raw = mmio.read_u32(record.hardware_ring().get() as u32);
+    if raw == 0 {
+        return Ok(None);
+    }
+    let ring = TxHardwareRingAddress::for_pipe(pipe, raw).ok_or(())?;
+    Ok(Some(
+        ((mmio.read_u32(ring.cursor_and_pending_mask()) >> 27) & 3) as u8,
+    ))
 }
 
 /// Policy boundary for the unresolved `pas_backoff_reset` in ordinary status.
@@ -2895,7 +2938,12 @@ where
     M: MacPipeMmio,
     B: SingleFrameRearmBackend,
 {
-    let pipe = pipe & 3;
+    if pipe >= 4 {
+        backend.fatal_unsupported_rearm_shape(pipe, slot, frame_node);
+    }
+    let Some(ring) = retained_hardware_ring(mmio, pipe) else {
+        backend.fatal_unsupported_rearm_shape(pipe, slot, frame_node);
+    };
     let record = pipe_record_address(pipe);
     let slot_address = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot);
 
@@ -2915,7 +2963,6 @@ where
 
     mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
 
-    let ring = TxHardwareRingAddress::new(mmio.read_u32(record.hardware_ring().get() as u32));
     if mmio.read_u8(crate::dtcm::mac_retry_hardware_state_mmio_address()) & 2 != 0 {
         mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
         mmio.write_u32(
@@ -3000,6 +3047,9 @@ where
     }
 
     let frame_node = FrameNodeAddress::new(mmio.read_u32(slot.frame().get() as u32));
+    let Some(ring) = retained_hardware_ring(mmio, pipe) else {
+        backend.fatal_unsupported_multi_slot_retry(pipe, slot.raw(), frame_node);
+    };
     // Vendor ownership transition: started -> retry-owned, then globally busy.
     mmio.write_u8(slot.state().get() as u32, 4);
     mmio.write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32, 1);
@@ -3007,11 +3057,13 @@ where
     if mmio.read_u8(record.state().get() as u32) != 1 {
         for selected_pipe in 0..4_u8 {
             if pending & (0x100_u32 << selected_pipe) != 0 {
-                let selected_record = pipe_record_address(selected_pipe);
-                let ring = TxHardwareRingAddress::new(
-                    mmio.read_u32(selected_record.hardware_ring().get() as u32),
+                let Some(selected_ring) = retained_hardware_ring(mmio, selected_pipe) else {
+                    backend.fatal_unsupported_multi_slot_retry(pipe, slot.raw(), frame_node);
+                };
+                mmio.write_u32(
+                    selected_ring.inactive_sentinel(),
+                    PIPE_RETRY_INACTIVE_SENTINEL,
                 );
-                mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
             }
         }
         mmio.write_u32(
@@ -3038,9 +3090,6 @@ where
             let current = mmio.read_u8(record.current_slot().get() as u32);
             let last = mmio.read_u8(record.last_slot().get() as u32);
             backend.complete_success(frame_node, slot.raw());
-            let ring = TxHardwareRingAddress::new(
-                mmio.read_u32(record.hardware_ring().get() as u32),
-            );
             mmio.write_u32(ring.completion_word(), 1);
             let next = current.wrapping_add(1) & 3;
             mmio.write_u8(record.current_slot().get() as u32, next);
@@ -3073,9 +3122,6 @@ where
             let current = mmio.read_u8(record.current_slot().get() as u32);
             let last = mmio.read_u8(record.last_slot().get() as u32);
             backend.complete_give_up(frame_node, slot.raw(), 0x0b);
-            let ring = TxHardwareRingAddress::new(
-                mmio.read_u32(record.hardware_ring().get() as u32),
-            );
             mmio.write_u32(ring.completion_word(), 1);
 
             let next = current.wrapping_add(1) & 3;
@@ -4742,7 +4788,7 @@ pub unsafe fn publish_host_class0_slot(
         }
         crate::halt_always!();
     }
-    if hardware_ring == 0 {
+    if TxHardwareRingAddress::for_pipe(pipe, hardware_ring).is_none() {
         return Err(ProbeBuildError::PipeStateUnavailable);
     }
     #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
@@ -4942,11 +4988,14 @@ pub unsafe fn publish_depth_two_host_ampdu(
     pipe: u8,
     slot: u8,
 ) -> Result<(), ProbeBuildError> {
+    if pipe >= 4 || slot >= 4 {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
     let pipe_state = pipe_state_address(pipe);
     let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
-    if hardware_ring == 0 {
+    let Some(ring) = TxHardwareRingAddress::for_pipe(pipe, hardware_ring) else {
         return Err(ProbeBuildError::PipeStateUnavailable);
-    }
+    };
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     if !runtime.backend.register_ampdu_publication(
         ContextAddress::new(first_context),
@@ -4972,9 +5021,8 @@ pub unsafe fn publish_depth_two_host_ampdu(
         }
         let first = ContextAddress::new(first_context);
         let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
-        write_u8(record.current_slot().get(), slot & 3);
-        write_u8(record.last_slot().get(), slot & 3);
-        let ring = TxHardwareRingAddress::new(hardware_ring);
+        write_u8(record.current_slot().get(), slot);
+        write_u8(record.last_slot().get(), slot);
         write_u32(ring.go() as usize, 0);
 
         // Common tail of vendor `txp_scheduler_run` after every descriptor
@@ -5008,14 +5056,16 @@ pub unsafe fn publish_depth_two_host_ampdu(
             crate::dtcm::duration_quantum_pointer_unchecked(usize::from(pipe)).get(),
         );
         write_u32(quantum_destination as usize, quantum.wrapping_add(0x1f) >> 5);
-        finalize_staged_pipe(
+        if !finalize_staged_pipe(
             &mut VolatileMacPipeMmio,
             pipe,
             pipe_state,
             hardware_ring,
             slot,
             slot,
-        );
+        ) {
+            return Err(ProbeBuildError::PipeStateUnavailable);
+        }
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
     }
@@ -6101,9 +6151,14 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
             return true;
         }
 
+        let Some(ring) = TxHardwareRingAddress::for_pipe(
+            pipe,
+            read_u32(record.hardware_ring().get()),
+        ) else {
+            crate::halt_always!();
+        };
         write_u32(PIPE_IRQ_TRIGGER as usize, (1_u32 << pipe) << 25);
         complete_tx_pipe_slot(publication.frame_node, slot.raw(), 0, &mut runtime.backend);
-        let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
         write_u32(ring.completion_word() as usize, 1);
         let next = publication.slot.wrapping_add(1) & 3;
         write_u8(record.current_slot().get(), next);
@@ -7379,13 +7434,13 @@ fn single_frame_slot_matches(
 fn prepare_pre_go_publication<M: MacPipeMmio>(
     mmio: &mut M,
     input: SingleProbePublicationInput,
+    ring: TxHardwareRingAddress,
     duration: u32,
 ) {
     let frame = input.frame_node;
     let descriptor = TxDescriptorAddress::new(input.command_storage);
     let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(input.pipe_state);
     let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(input.slot_record);
-    let ring = TxHardwareRingAddress::new(input.hardware_ring);
     // Vendor txp_scheduler_run performs no descriptor readback between its
     // trigger and GO writes. Gather the expensive image directly into BSS
     // while the pipe is inactive, avoiding a 152-byte firmware stack copy.
@@ -7477,12 +7532,17 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     mmio: &mut M,
     input: SingleProbePublicationInput,
 ) -> u8 {
-    let pipe = input.pipe & 3;
-    let slot_index = input.slot & 3;
+    if input.pipe >= 4 || input.slot >= 4 {
+        return u8::MAX;
+    }
+    let pipe = input.pipe;
+    let slot_index = input.slot;
     let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(input.pipe_state);
     let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(input.slot_record);
+    let Some(ring) = TxHardwareRingAddress::for_pipe(pipe, input.hardware_ring) else {
+        return u8::MAX;
+    };
     let descriptor = TxDescriptorAddress::new(input.command_storage);
-    let ring = TxHardwareRingAddress::new(input.hardware_ring);
     let frame = input.frame_node;
 
     // `current` tracks hardware progress through the batch, so only the first
@@ -7525,7 +7585,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     {
         let diagnostic_duration = mmio.read_u32(slot.duration().get() as u32);
-        prepare_pre_go_publication(mmio, input, diagnostic_duration);
+        prepare_pre_go_publication(mmio, input, ring, diagnostic_duration);
     }
     if publication_bisect_reached(5) {
         return 5;
@@ -7648,13 +7708,20 @@ fn finalize_staged_pipe<M: MacPipeMmio>(
     hardware_ring: u32,
     first_slot: u8,
     last_slot: u8,
-) {
-    let pipe = pipe & 3;
-    let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
-    let ring = TxHardwareRingAddress::new(hardware_ring);
+) -> bool {
+    if pipe >= 4 || first_slot >= 4 || last_slot >= 4 {
+        return false;
+    }
+    let record = pipe_record_address(pipe);
+    let Some(ring) = TxHardwareRingAddress::for_pipe(pipe, hardware_ring) else {
+        return false;
+    };
+    if pipe_state != record.raw() {
+        return false;
+    }
     mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
 
-    let mut slot_index = first_slot & 3;
+    let mut slot_index = first_slot;
     loop {
         let slot = record.slot_unchecked(usize::from(slot_index));
         let active_count = mmio
@@ -7667,7 +7734,7 @@ fn finalize_staged_pipe<M: MacPipeMmio>(
         mmio.write_u8(slot.state().get() as u32, 1);
         let duration = mmio.read_u32(slot.duration().get() as u32);
         mmio.write_u32(ring.duration_fifo(), duration);
-        if slot_index == last_slot & 3 {
+        if slot_index == last_slot {
             break;
         }
         slot_index = slot_index.wrapping_add(1) & 3;
@@ -7678,6 +7745,7 @@ fn finalize_staged_pipe<M: MacPipeMmio>(
     mmio.write_u8(record.control().get() as u32, pipe_flags);
     mmio.write_u8(record.watchdog().get() as u32, 5);
     mmio.write_u32(ring.go(), 1);
+    true
 }
 
 /// Cross the shared MAC trigger boundary for a fully staged class-0 batch.
@@ -7692,16 +7760,21 @@ pub unsafe fn finalize_staged_host_class0_pipe(
     first_slot: u8,
     last_slot: u8,
 ) {
+    if pipe >= 4 {
+        crate::halt_always!();
+    }
     let pipe_state = pipe_state_address(pipe);
     let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
-    finalize_staged_pipe(
+    if !finalize_staged_pipe(
         &mut VolatileMacPipeMmio,
         pipe,
         pipe_state,
         hardware_ring,
         first_slot,
         last_slot,
-    );
+    ) {
+        crate::halt_always!();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7836,7 +7909,7 @@ impl PreparedProbePublication {
                 );
                 crate::halt_always!();
             }
-            if hardware_ring == 0 {
+            if TxHardwareRingAddress::for_pipe(self.pipe, hardware_ring).is_none() {
                 let cancellation = self.cancel();
                 return Err(cancellation
                     .err()
@@ -9723,18 +9796,19 @@ mod tests {
         mmio.set(pipe_state + 1, 2); // last consumed
         mmio.set(pipe_state + 3, 1); // armed
         mmio.set(pipe_state + 6, 7); // abort counter
-        mmio.set(pipe_state + 8, 0x9000);
+        let ring = crate::platform::tx_ring_register(2, 0) as u32;
+        mmio.set(pipe_state + 8, ring);
         // Pending-slot mask and hardware-owned high bits must survive.
-        mmio.set(0x9020, 0x8000_000f | (1 << 24) | (1 << 27));
+        mmio.set(ring + 0x20, 0x8000_000f | (1 << 24) | (1 << 27));
 
-        assert!(advance_pipe_slot(&mut mmio, 2));
+        assert_eq!(advance_pipe_slot(&mut mmio, 2), Some(true));
 
         assert_eq!(mmio.get(pipe_state + 3), 0);
         assert_eq!(mmio.get(pipe_state + 6), 8);
-        assert_eq!(mmio.get(0x9018), PIPE_RETRY_INACTIVE_SENTINEL);
+        assert_eq!(mmio.get(ring + 0x18), PIPE_RETRY_INACTIVE_SENTINEL);
         assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0_u32.wrapping_sub(0x4450));
         // cursor = (last + 1) & 3 = 3, written to bits 26:24 and 29:27.
-        assert_eq!(mmio.get(0x9020), 0x8000_000f | (3 << 24) | (3 << 27));
+        assert_eq!(mmio.get(ring + 0x20), 0x8000_000f | (3 << 24) | (3 << 27));
     }
 
     #[test]
@@ -9864,14 +9938,15 @@ mod tests {
         mmio.set(pipe_state + 1, 3);
         mmio.set(pipe_state + 3, 0);
         mmio.set(pipe_state + 6, 0xff);
-        mmio.set(pipe_state + 8, 0x9000);
+        let ring = crate::platform::tx_ring_register(0, 0) as u32;
+        mmio.set(pipe_state + 8, ring);
 
-        assert!(!advance_pipe_slot(&mut mmio, 0));
+        assert_eq!(advance_pipe_slot(&mut mmio, 0), Some(false));
 
         // A saturated abort counter is left alone, and the idle branch mirrors
         // the producer rather than `last + 1`.
         assert_eq!(mmio.get(pipe_state + 6), 0xff);
-        assert_eq!(mmio.get(0x9020), (2 << 24) | (2 << 27));
+        assert_eq!(mmio.get(ring + 0x20), (2 << 24) | (2 << 27));
     }
 
     #[test]
@@ -9914,16 +9989,53 @@ mod tests {
     }
 
     #[test]
+    fn retained_hardware_ring_consumers_reject_mismatched_roots_before_mmio() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe = 2_u8;
+        let record = pipe_record_address(pipe);
+        let wrong_ring = crate::platform::tx_ring_register(1, 0) as u32;
+        mmio.set(record.hardware_ring().get() as u32, wrong_ring);
+
+        assert_eq!(advance_pipe_slot(&mut mmio, pipe), None);
+        assert!(!resync_pipe_cursor(&mut mmio, pipe));
+        assert_eq!(hardware_pipe_cursor(&mut mmio, pipe), Err(()));
+        assert_eq!(mmio.write_count, 0);
+
+        let input = SingleProbePublicationInput {
+            pipe,
+            slot: 0,
+            pipe_state: record.raw(),
+            slot_record: record.slot_unchecked(0).raw(),
+            command_storage: packet_ram::tx_command(usize::from(pipe), 0) as u32,
+            hardware_ring: wrong_ring,
+            frame_node: FrameNodeAddress::from_raw(0x0400_9248).unwrap(),
+            expects_ack: false,
+            batch: BatchPosition::Only,
+        };
+        assert_eq!(execute_single_probe_publication(&mut mmio, input), u8::MAX);
+        assert!(!finalize_staged_pipe(
+            &mut mmio,
+            pipe,
+            record.raw(),
+            wrong_ring,
+            0,
+            0,
+        ));
+        assert_eq!(mmio.write_count, 0);
+    }
+
+    #[test]
     fn resync_pipe_cursor_matches_vendor_invariant_and_keeps_mask() {
         let mut mmio = MockPipeMmio::new();
         let pipe_state = pipe_state_address(1);
         mmio.set(pipe_state, 3);
-        mmio.set(pipe_state + 8, 0x9080);
-        mmio.set(0x90a0, 0xc000_00aa | (1 << 24) | (1 << 27));
+        let ring = crate::platform::tx_ring_register(1, 0) as u32;
+        mmio.set(pipe_state + 8, ring);
+        mmio.set(ring + 0x20, 0xc000_00aa | (1 << 24) | (1 << 27));
 
-        resync_pipe_cursor(&mut mmio, 1);
+        assert!(resync_pipe_cursor(&mut mmio, 1));
 
-        let word = mmio.get(0x90a0);
+        let word = mmio.get(ring + 0x20);
         assert_eq!(word & 0x00ff_ffff, 0xaa);
         assert_eq!(word & 0xc000_0000, 0xc000_0000);
         // The invariant asserted by vendor `txp_fn_4425`.
@@ -9946,8 +10058,9 @@ mod tests {
         mmio.set(pipe_state + 1, 2); // last
         mmio.set(pipe_state + 2, 2); // current
         mmio.set(pipe_state + 3, 1); // armed
-        mmio.set(pipe_state + 8, 0x9000);
-        mmio.set(0x9020, (1 << 24) | (1 << 27));
+        let ring = crate::platform::tx_ring_register(2, 0) as u32;
+        mmio.set(pipe_state + 8, ring);
+        mmio.set(ring + 0x20, (1 << 24) | (1 << 27));
 
         let (packed, ring_word) = pipe_cursor_diagnostic(&mut mmio, 2);
 
@@ -9970,8 +10083,10 @@ mod tests {
         mmio.set(pipe_state_address(1) + 2, 0);
         let slot = current_slot_address(&mut mmio, 1);
         mmio.set(slot + 3, 3);
-        mmio.set(pipe_state_address(1) + 8, 0x9000);
-        mmio.set(pipe_state_address(3) + 8, 0xa000);
+        let ring_1 = crate::platform::tx_ring_register(1, 0) as u32;
+        let ring_3 = crate::platform::tx_ring_register(3, 0) as u32;
+        mmio.set(pipe_state_address(1) + 8, ring_1);
+        mmio.set(pipe_state_address(3) + 8, ring_3);
         let mut backend = MockRetryBackend::new(SingleTxRetryDecision::GiveUp);
 
         let outcome = execute_single_outstanding_tx_retry(
@@ -9985,8 +10100,8 @@ mod tests {
         assert_eq!(mmio.writes[1], (crate::dtcm::MAC_CURRENT_SLOT.get() as u32, slot));
         assert_eq!(mmio.get(slot + 3), 4);
         assert_eq!(mmio.get(crate::dtcm::LOW_MAC_PIPE_BUSY.get() as u32), 1);
-        assert_eq!(mmio.writes[2], (0x9018, PIPE_RETRY_INACTIVE_SENTINEL));
-        assert_eq!(mmio.writes[3], (0xa018, PIPE_RETRY_INACTIVE_SENTINEL));
+        assert_eq!(mmio.writes[2], (ring_1 + 0x18, PIPE_RETRY_INACTIVE_SENTINEL));
+        assert_eq!(mmio.writes[3], (ring_3 + 0x18, PIPE_RETRY_INACTIVE_SENTINEL));
         assert_eq!(mmio.writes[4], (PIPE_IRQ_PENDING, 0xffff_fdff));
         assert_eq!(backend.decided, None);
     }
@@ -10000,7 +10115,8 @@ mod tests {
         mmio.set(pipe_state + 2, 0);
         mmio.set(pipe_state + 3, 1);
         mmio.set(pipe_state + 5, 0);
-        mmio.set(pipe_state + 8, 0x9000);
+        let ring = crate::platform::tx_ring_register(0, 0) as u32;
+        mmio.set(pipe_state + 8, ring);
         let slot = current_slot_address(&mut mmio, 0);
         mmio.set(slot + 1, 4);
         mmio.set(slot + 3, 3);
@@ -10019,7 +10135,7 @@ mod tests {
             Some((FrameNodeAddress::new(0x0400_90d8), slot, 0x0b))
         );
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
-        assert_eq!(mmio.get(0x901c), 1);
+        assert_eq!(mmio.get(ring + 0x1c), 1);
         assert_eq!(mmio.get(pipe_state), 1);
         assert_eq!(mmio.get(pipe_state + 2), 1);
         assert_eq!(mmio.get(pipe_state + 3), 0);
@@ -10037,7 +10153,8 @@ mod tests {
         mmio.set(pipe_state + 2, 0);
         mmio.set(pipe_state + 3, 1);
         mmio.set(pipe_state + 5, 0);
-        mmio.set(pipe_state + 8, 0x9000);
+        let ring = crate::platform::tx_ring_register(0, 0) as u32;
+        mmio.set(pipe_state + 8, ring);
         let slot = current_slot_address(&mut mmio, 0);
         mmio.set(slot + 1, 4);
         mmio.set(slot + 3, 3);
@@ -10056,7 +10173,7 @@ mod tests {
             Some((FrameNodeAddress::new(0x0400_90d8), slot, 0))
         );
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
-        assert_eq!(mmio.get(0x901c), 1);
+        assert_eq!(mmio.get(ring + 0x1c), 1);
         assert_eq!(mmio.get(pipe_state + 2), 1);
         assert_eq!(mmio.get(pipe_state + 3), 0);
         assert_eq!(mmio.get(pipe_state + 4), 0);
@@ -10072,6 +10189,10 @@ mod tests {
         mmio.set(pipe_state + 2, 1);
         mmio.set(pipe_state + 3, 1);
         mmio.set(pipe_state + 5, 1);
+        mmio.set(
+            pipe_state + 8,
+            crate::platform::tx_ring_register(2, 0) as u32,
+        );
         let slot = current_slot_address(&mut mmio, 2);
         mmio.set(slot + 1, 4);
         mmio.set(slot + 3, 3);
@@ -10157,8 +10278,9 @@ mod tests {
         let pipe_state = pipe_state_address(pipe);
         mmio.set(pipe_state, 0);
         mmio.set(pipe_state + 2, 0);
-        mmio.set(pipe_state + 8, 0x9000);
-        mmio.set(0x9020, 0x0f);
+        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
+        mmio.set(pipe_state + 8, ring);
+        mmio.set(ring + 0x20, 0x0f);
         let slot = pipe_state + 0x0c;
         mmio.set(slot, 0);
         mmio.set(slot + 1, 0xff);
@@ -10209,7 +10331,7 @@ mod tests {
         let command_mask_index = mmio
             .writes
             .iter()
-            .position(|(address, _)| *address == 0x9020)
+            .position(|(address, _)| *address == ring + 0x20)
             .unwrap_or_else(|| panic!("missing retry command-mask write"));
         assert!(descriptor_index < trigger_index);
         assert!(trigger_index < command_mask_index);
@@ -10220,7 +10342,7 @@ mod tests {
         assert_eq!(mmio.get(frame.raw() + 0x5a), 0x13);
         assert_eq!(mmio.get(0xa004), 0x4d7f);
         assert_eq!(mmio.get(0xa008), 0xd800_2138);
-        assert_eq!(mmio.get(0x9020), 0x0e);
+        assert_eq!(mmio.get(ring + 0x20), 0x0e);
         assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_feff);
         assert!(!backend.rebuilt);
     }
@@ -10232,8 +10354,9 @@ mod tests {
         let pipe_state = pipe_state_address(pipe);
         mmio.set(pipe_state, 0);
         mmio.set(pipe_state + 2, 1);
-        mmio.set(pipe_state + 8, 0x9000);
-        mmio.set(0x9020, 0x0f);
+        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
+        mmio.set(pipe_state + 8, ring);
+        mmio.set(ring + 0x20, 0x0f);
         let slot = pipe_state + 0x0c + 0x18;
         mmio.set(slot, 0);
         mmio.set(slot + 1, 0x11);
@@ -10273,7 +10396,7 @@ mod tests {
         assert_eq!(outcome, SingleFrameRearmOutcome::CommandMaskAcknowledged);
         assert_eq!(mmio.get(pipe_state), 0);
         assert_eq!(mmio.get(pipe_state + 2), 1);
-        assert_eq!(mmio.get(0x9020), 0x0d);
+        assert_eq!(mmio.get(ring + 0x20), 0x0d);
         assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_feff);
         assert!(!backend.rebuilt);
     }
@@ -10285,8 +10408,9 @@ mod tests {
         let pipe_state = pipe_state_address(pipe);
         mmio.set(pipe_state, 0);
         mmio.set(pipe_state + 2, 0);
-        mmio.set(pipe_state + 8, 0x9000);
-        mmio.set(0x9020, 1);
+        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
+        mmio.set(pipe_state + 8, ring);
+        mmio.set(ring + 0x20, 1);
         let slot = pipe_state + 0x0c;
         mmio.set(slot, 0);
         mmio.set(slot + 1, 0xff);
@@ -10332,7 +10456,8 @@ mod tests {
         let pipe_state = pipe_state_address(pipe);
         mmio.set(pipe_state, 3);
         mmio.set(pipe_state + 2, 3);
-        mmio.set(pipe_state + 8, 0x9000);
+        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
+        mmio.set(pipe_state + 8, ring);
         let slot = pipe_state + 0x0c + 3 * 0x18;
         mmio.set(slot, 0);
         mmio.set(slot + 1, 4);
@@ -10370,7 +10495,7 @@ mod tests {
             outcome,
             SingleFrameRearmOutcome::HardwareSentinelAcknowledged
         );
-        assert_eq!(mmio.get(0x9018), 0xff00_ffff);
+        assert_eq!(mmio.get(ring + 0x18), 0xff00_ffff);
         assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_0df0);
     }
 
@@ -10379,8 +10504,8 @@ mod tests {
         let mut mmio = MockPipeMmio::new();
         let pipe_state = pipe_state_address(0);
         let slot = pipe_state + 0x0c;
-        let hardware_ring = 0x8000;
-        let command = 0x9000;
+        let hardware_ring = crate::platform::tx_ring_register(0, 0) as u32;
+        let command = packet_ram::tx_command(0, 0) as u32;
         let frame = FrameNodeAddress::new(0x0400_90d8);
         mmio.set(frame.raw() + 0x2c, 3);
         mmio.set(frame.raw() + 0x3a, 0x20);
@@ -10472,9 +10597,9 @@ mod tests {
     #[test]
     fn staged_two_slot_batch_triggers_once_and_publishes_both_durations() {
         let mut mmio = MockPipeMmio::new();
-        let pipe = 1;
+        let pipe = 1_u8;
         let pipe_state = pipe_state_address(pipe);
-        let hardware_ring = 0x8800;
+        let hardware_ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
         let first_slot = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state)
             .slot_unchecked(3);
         let last_slot = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state)
@@ -10484,14 +10609,14 @@ mod tests {
         mmio.set(pipe_state + 4, 8);
         mmio.set(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32, 4);
 
-        finalize_staged_pipe(
+        assert!(finalize_staged_pipe(
             &mut mmio,
             pipe,
             pipe_state,
             hardware_ring,
             3,
             0,
-        );
+        ));
 
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), (1_u32 << pipe) << 25);
         assert_eq!(mmio.get(first_slot.state().get() as u32), 1);

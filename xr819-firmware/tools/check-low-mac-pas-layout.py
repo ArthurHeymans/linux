@@ -63,7 +63,9 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 # Keys are (containing ELF symbol, loaded value); counts preserve repeated xrefs
 # even when several instructions reuse one literal-pool word. Checked live-slot
 # construction folds one duplicate `0x04003a6a` load in the shared inactive
-# runtime helper without removing the typed PAS access.
+# runtime helper without removing the typed PAS access. Exact retained-ring
+# validation adds a second decoded pipe-record-root access in staged
+# finalization without adding another aligned literal word.
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
         ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_', 0x04003A6C): 1,
@@ -71,7 +73,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x04003B34): 1,
         ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x04003A6C): 1,
         ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x04003B74): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04003A6C): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04003A6C): 2,
         ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start', 0x04003A68): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04003A6D): 1,
         ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04003A6A): 1,

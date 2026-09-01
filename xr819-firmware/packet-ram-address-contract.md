@@ -72,7 +72,14 @@ must validate that identity, the pipe's exact hardware-ring MMIO root, and a
 bounded current cursor before their command-mask bit is released. Ordinary and
 depth-two retry/rearm paths use the same mockable identity validator before
 reading retained slot metadata, rebuilding descriptors, or touching the ring.
-Interface metadata and duration-table selectors
+Every remaining production hardware-ring consumer now accepts only the exact
+per-pipe MMIO root; advance, resynchronization, diagnostics, retry completion,
+BlockAck completion, and single/batched publication reject mismatched retained
+roots before MMIO access. The first candidate (`ca809215…`) also repeated
+unrelated slot/frame/command validation inside the infallible publication tail;
+it was rejected after leaving nine host buffers stuck. Keeping those identities
+at their existing ownership boundary while validating only the retained ring
+restored cold and warm traffic. Interface metadata and duration-table selectors
 are range-checked before their addresses
 are formed. Source gates
 reject open-coded MAC, platform, and production TX packet-RAM masks and freeze
