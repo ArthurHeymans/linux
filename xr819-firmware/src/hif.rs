@@ -90,6 +90,13 @@ static OUTPUT_HASHES: SharedOutputHashes = SharedOutputHashes(UnsafeCell::new([0
 pub const SHARED_BUFFER_SIZE: usize = packet_ram::HIF_OUTPUT_SIZE;
 const REQUEST_PAYLOAD_CAPACITY: usize = RX_BUFFER_SIZE - 4;
 
+#[inline(always)]
+unsafe fn known_dma_bus_address(cpu_address: usize) -> u32 {
+    // Fixed linker-owned HIF roots satisfy the packet-RAM contract by
+    // construction. Dynamic queue addresses use the checked Option directly.
+    unsafe { packet_ram::hif_dma_bus_address_unchecked(cpu_address) }
+}
+
 const fn owned_descriptor_length(length: u16) -> u32 {
     ((length as u32).wrapping_add(1) & 0x1ffe) | 1
 }
@@ -415,9 +422,9 @@ unsafe fn next_emergency_sequence() -> u16 {
 }
 
 fn publish_emergency_descriptor(shared: &HifShared, length: u16) {
-    shared
-        .emergency_address
-        .set((packet_ram::hif_output(0) as u32) & 0xf6ff_ffff);
+    shared.emergency_address.set(unsafe {
+        known_dma_bus_address(packet_ram::hif_output(0))
+    });
     shared
         .emergency_control
         .set(u32::from(length).wrapping_add(1).wrapping_rem(1 << 13) | 1);
@@ -538,7 +545,9 @@ impl Transport {
             if index < RX_BUFFER_COUNT {
                 let address = packet_ram::hif_input(index);
                 queues.rx_buffers[index] = address as u32;
-                descriptor.address.set((address as u32) & 0xf6ff_ffff);
+                descriptor
+                    .address
+                    .set(unsafe { known_dma_bus_address(address) });
                 descriptor
                     .control
                     .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
@@ -686,6 +695,9 @@ impl Transport {
 
         let queue_slot = (staged & 63) as usize;
         let buffer_address = self.queues.tx_buffers[queue_slot] as usize;
+        let Some(bus_address) = packet_ram::hif_dma_bus_address(buffer_address) else {
+            return;
+        };
         // Vendor staging reads MsgLen from the queued buffer rather than
         // retaining a separate length snapshot. This keeps descriptor and
         // mutable in-place response header ownership inseparable.
@@ -709,9 +721,7 @@ impl Transport {
 
         let descriptor_slot = (staged & 3) as usize;
         let descriptor = &self.shared.tx[descriptor_slot];
-        descriptor
-            .address
-            .set((buffer_address as u32) & 0xf6ff_ffff);
+        descriptor.address.set(bus_address);
         let descriptor_control =
             owned_descriptor_length(length) | (descriptor_sequence(header_id) << 13);
         descriptor.control.set(descriptor_control);
@@ -837,15 +847,16 @@ impl Transport {
         if buffer_address == 0 {
             return;
         }
+        let Some(bus_address) = packet_ram::hif_dma_bus_address(buffer_address) else {
+            return;
+        };
         self.queues.rx_released = self.queues.rx_released.wrapping_add(1);
         let producer = self.state.rx_producer;
         let producer_slot = (producer & 31) as usize;
         let producer_descriptor =
             unsafe { &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[producer_slot] };
         self.queues.rx_buffers[producer_slot] = buffer_address as u32;
-        producer_descriptor
-            .address
-            .set((buffer_address as u32) & 0xf6ff_ffff);
+        producer_descriptor.address.set(bus_address);
         producer_descriptor
             .control
             .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));

@@ -29,6 +29,7 @@ python3 tools/check-rust-main-stack.py "$ELF"
 
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
+python3 tools/check-hif-dma-addresses.py
 python3 tools/check-dtcm-access.py
 python3 tools/generate-dtcm-snapshot-contract.py --check
 python3 tools/compare-dtcm-initialized-snapshots.py --self-test

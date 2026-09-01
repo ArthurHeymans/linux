@@ -12,6 +12,7 @@ KNOWN_DATA = {
     ("src/loader.rs", 0x090A0F0F),
     ("src/packet_ram.rs", 0x7000),
     ("src/packet_ram.rs", 0x09007000),
+    ("src/packet_ram.rs", 0x09400000),
     ("src/phy.rs", 0x09001F01),
     ("src/platform.rs", 0x09090000),
 }

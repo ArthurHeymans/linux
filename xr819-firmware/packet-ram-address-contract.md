@@ -53,11 +53,13 @@ command identity rather than mere membership in the command array.
 
 ### HIF and crypto DMA
 
-HIF RX initialization and TX staging publish masked bus addresses to hardware,
-but retain CPU-form addresses in `HifQueues`. Completion reclamation uses the
-software queue entry; it never reconstructs a CPU pointer from a descriptor.
-AES/MIC command setup similarly masks a pointer derived from the live Rust slice
-and continues to use the slice pointer for CPU access.
+HIF RX initialization and TX staging pass CPU-form addresses through
+`packet_ram::hif_dma_bus_address`, which accepts only linker-owned runtime or RX
+FIFO storage. `HifQueues` retains the CPU-form identity, and completion
+reclamation uses that software queue entry rather than reconstructing a pointer
+from a descriptor. The source gate rejects any open-coded HIF DMA mask.
+AES/MIC command setup still masks a pointer derived from the live Rust slice and
+continues to use the slice pointer for CPU access.
 
 ### RX FIFO
 
@@ -74,8 +76,9 @@ byte from authorizing an out-of-range multi-byte read.
 
 ## Remaining audit boundary
 
-Open-coded `0x007f_ffff` and `0xf6ff_ffff` masks remain hardware encoders, not
-decoders. They should be moved behind named packet-RAM encoding helpers as each
-MAC/HIF/crypto family is independently reviewed, without changing command word
-layout or volatile publication order. No remaining translated path was found
-that converts either masked form back into a CPU pointer.
+Open-coded `0x007f_ffff` MAC masks and the remaining `0xf6ff_ffff` crypto/TX
+masks are hardware encoders, not decoders. They should be moved behind named
+packet-RAM encoding helpers as each family is independently reviewed, without
+changing command word layout or volatile publication order. No remaining
+translated path was found that converts either masked form back into a CPU
+pointer.
