@@ -49,9 +49,10 @@ dereferenced or written.
 `packet_ram::mac_packet_offset_unchecked`; every caller supplies a linker-owned
 root or object base. Response-pointer publication separately accepts only exact
 response-command bases before applying the DMA bus encoding, and rejects invalid
-pipe slots before any volatile write. The source gate rejects open-coded MAC
-packet-RAM masks. Remaining `platform.rs` and TX descriptor forms are
-encode-only values written to MAC registers or command words.
+pipe slots before any volatile write. Platform startup uses the same owned
+23-bit encoder for TX-ring and automatic-response roots. Source gates reject
+open-coded MAC and platform packet-RAM masks. Remaining TX descriptor forms are
+encode-only values written to command words.
 
 ### HIF and crypto DMA
 
@@ -82,8 +83,8 @@ byte from authorizing an out-of-range multi-byte read.
 
 ## Remaining audit boundary
 
-Open-coded `0x007f_ffff` platform/TX masks and the remaining `0xf6ff_ffff` TX
-masks are hardware encoders, not decoders. They should be moved behind named
+The remaining open-coded `0x007f_ffff` and `0xf6ff_ffff` TX masks are hardware
+encoders, not decoders. They should be moved behind named
 packet-RAM encoding helpers as each family is independently reviewed, without
 changing command word layout or volatile publication order. No remaining
 translated path was found that converts either masked form back into a CPU

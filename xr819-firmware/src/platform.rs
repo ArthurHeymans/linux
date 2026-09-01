@@ -699,12 +699,14 @@ pub fn prepare_packet_dma() {
     post_code(0x5044_4d21);
 
     for (first_pipe, second_pipe) in [(0, 1), (2, 3)] {
-        register32(tx_ring_register(first_pipe, 0x0c))
-            .set(packet_ram::tx_command(first_pipe, 0) as u32 & 0x007f_ffff);
+        register32(tx_ring_register(first_pipe, 0x0c)).set(unsafe {
+            packet_ram::mac_packet_offset_unchecked(packet_ram::tx_command(first_pipe, 0))
+        });
         register32(tx_ring_register(first_pipe, 0x10)).set(packet_ram::TX_COMMAND_SIZE as u32);
         register32(tx_ring_register(first_pipe, 0x14)).set(1);
-        register32(tx_ring_register(second_pipe, 0x0c))
-            .set(packet_ram::tx_command(second_pipe, 0) as u32 & 0x007f_ffff);
+        register32(tx_ring_register(second_pipe, 0x0c)).set(unsafe {
+            packet_ram::mac_packet_offset_unchecked(packet_ram::tx_command(second_pipe, 0))
+        });
         register32(tx_ring_register(second_pipe, 0x10)).set(packet_ram::TX_COMMAND_SIZE as u32);
         register32(tx_ring_register(second_pipe, 0x14)).set(1);
     }
@@ -722,7 +724,9 @@ pub fn prepare_packet_dma() {
     let list_base = packet_ram::automatic_response_list().start;
     register32(list_base).set(0x4e14_0000);
     for index in 0..33 {
-        register32(list_base + 4 + index * 4).set(0x2200_0000 | (list_base as u32 & 0x007f_ffff));
+        register32(list_base + 4 + index * 4).set(
+            0x2200_0000 | unsafe { packet_ram::mac_packet_offset_unchecked(list_base) },
+        );
     }
     register32(list_base + 4 + 33 * 4).set(0xf000_0000);
     post_code(0x5044_4d23);
