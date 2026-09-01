@@ -49,10 +49,12 @@ FORBIDDEN_FORMS = (
 # construction later reclassifies one such word as the existing inactive
 # runtime owner's decoded `0x04001686` load. Shared retry-slot validation folds
 # the remaining instruction-shaped `0x04001686` word and splits one additional
-# decoded `0x04001694` access in that same reviewed runtime owner.
+# decoded `0x04001694` access in that same reviewed runtime owner. Concurrent-
+# pipe candidate selection folds one rust_main `0x04001690` load and its shared
+# literal word without adding a new low-MAC-global access.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 3,
-    0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 6,
+    0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 5,
     0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
@@ -83,7 +85,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvNtCsbx17WDetRei_14xr819_firmware5radio15poll_indication', 0x04001694): 2,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware5radio22resynchronize_consumer', 0x04001690): 2,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware5radio7release', 0x04001690): 3,
-    ('rust_main', 0x04001690): 2,
+    ('rust_main', 0x04001690): 1,
 })
 
 

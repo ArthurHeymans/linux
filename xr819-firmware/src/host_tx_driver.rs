@@ -4,8 +4,9 @@
 //! confirmation handoff point. The current HIF transport then returns request
 //! credit before it enqueues the separately copied confirmation; this module does
 //! not redesign that parent ordering. Pending contexts advance independently.
-//! Publication remains serialized, but retained hardware owners are discovered
-//! and serviced independently per MAC pipe in preparation for safe concurrency.
+//! Retained hardware owners are discovered and serviced independently per MAC
+//! pipe; publication admits at most one new batch per pass and never targets a
+//! pipe that still has a retained runtime owner.
 
 use crate::{hif, host_tx_diagnostics, host_tx_policy, tx, vendor_host_tx};
 
@@ -235,8 +236,8 @@ impl HostTxDriver {
         let Some(owners) = self.hardware_runtime_owners() else {
             crate::halt_always!();
         };
-        if allow_hardware_publication && owners.is_empty() {
-            unsafe { self.publish_ready_batch(mac_domain) };
+        if allow_hardware_publication {
+            unsafe { self.publish_ready_batch(mac_domain, owners) };
         }
         diagnostic
     }
@@ -330,21 +331,43 @@ impl HostTxDriver {
         ));
     }
 
-    /// Publish one or two ready PAS contexts. A pair is staged into consecutive
-    /// slots of the same pipe and crosses the MAC trigger boundary once.
-    unsafe fn publish_ready_batch(&mut self, mac_domain: &mut crate::mac_domain::MacDomain) {
-        let ready_count = self
-            .states
-            .iter()
-            .filter(|state| {
-                matches!(
-                    state,
-                    Some(HostTxState::Owned { retained, hardware: None, .. })
-                        if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
-                )
-            })
-            .take(2)
-            .count();
+    /// Publish one or two ready PAS contexts onto a pipe without a retained
+    /// runtime owner. A pair is staged into consecutive slots of the same pipe
+    /// and crosses the MAC trigger boundary once.
+    unsafe fn publish_ready_batch(
+        &mut self,
+        mac_domain: &mut crate::mac_domain::MacDomain,
+        owners: host_tx_policy::PipeRuntimeOwners,
+    ) {
+        let mut first_index = None;
+        let mut ready_count = 0;
+        for (index, state) in self.states.iter().enumerate() {
+            let Some(HostTxState::Owned {
+                retained,
+                hardware: None,
+                ..
+            }) = state
+            else {
+                continue;
+            };
+            if retained.phase() != vendor_host_tx::HostTxPhase::PasQueued {
+                continue;
+            }
+            let pipe = unsafe { vendor_host_tx::scheduler_live_diagnostic(retained) }.pipe;
+            if pipe >= 4 {
+                crate::halt_always!();
+            }
+            if owners.contains(pipe) {
+                continue;
+            }
+            if first_index.is_none() {
+                first_index = Some(index);
+            }
+            ready_count += 1;
+            if ready_count == 2 {
+                break;
+            }
+        }
         if ready_count == 1 && self.scheduler_single_wait == 0 {
             // The command lane admits at most one request after this service
             // pass. Give it one pass to supply a partner before falling back
@@ -353,13 +376,7 @@ impl HostTxDriver {
             return;
         }
         self.scheduler_single_wait = 0;
-        let Some(first_index) = self.states.iter().position(|state| {
-            matches!(
-                state,
-                Some(HostTxState::Owned { retained, hardware: None, .. })
-                    if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
-            )
-        }) else {
+        let Some(first_index) = first_index else {
             return;
         };
         let Some(HostTxState::Owned {

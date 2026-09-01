@@ -585,3 +585,15 @@ completion pass. Missing scheduled-owner metadata and out-of-range pipes halt
 before publication or completion routing. Publication remains globally
 serialized, so this is an ownership-model change rather than a concurrency
 switch.
+
+Multi-pipe publication is now enabled one bounded step beyond that prerequisite.
+The scheduler scans ready PAS contexts for a queue-mapped pipe absent from the
+retained owner set, skips contexts whose pipe is still active, and admits at
+most one new batch per service pass. The reservation boundary still rechecks
+live pipe idleness and all existing slot, frame, command, and hardware-ring
+identities before publication. Same-pipe batches and depth-two aggregates remain
+coalesced under one pipe owner; no pipe may acquire a second retained owner.
+The qualified image sustained three simultaneous one-Mbit UDP streams split
+across Linux TX queues 0 and 2, followed by 20/20 ping with the BH alive, WSM
+idle, and no used buffers. Cold and ordinary warm depth-two traffic remained
+healthy as well.

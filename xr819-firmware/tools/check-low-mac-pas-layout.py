@@ -31,6 +31,9 @@ FORBIDDEN_FORMS = (
 
 # Exact aligned words in the linked feature-free image. This catches added or
 # removed known-family values, including words not reached by a decoded load.
+# Selecting a ready context from an unowned pipe adds one typed scheduler-live
+# diagnostic read. Reviewed inlining changes one adjacent accidental 0x04003a68
+# word into 0x04003a6d without adding a decoded raw-address owner.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
     {
         0x04003680: 1,
@@ -38,10 +41,10 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
         0x04003688: 1,
         0x04003768: 1,
         0x04003A50: 1,
-        0x04003A68: 6,
+        0x04003A68: 5,
         0x04003A6A: 6,
         0x04003A6C: 4,
-        0x04003A6D: 5,
+        0x04003A6D: 6,
         0x04003A70: 2,
         0x04003ACC: 1,
         0x04003AD0: 1,
@@ -65,7 +68,10 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 # construction folds one duplicate `0x04003a6a` load in the shared inactive
 # runtime helper without removing the typed PAS access. Exact retained-ring
 # validation adds a second decoded pipe-record-root access in staged
-# finalization without adding another aligned literal word.
+# finalization without adding another aligned literal word. Concurrent-pipe
+# candidate selection moves one inlined rust_main queue-map read into the typed
+# `scheduler_live_diagnostic` helper and changes its adjacent byte offset from
+# 0x04003a68 to 0x04003a6d.
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
         ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_', 0x04003A6C): 1,
@@ -75,6 +81,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x04003B74): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04003A6C): 2,
         ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start', 0x04003A68): 1,
+        ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx25scheduler_live_diagnostic', 0x04003A6D): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04003A6D): 1,
         ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04003A6A): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx21program_pipe_eligible', 0x04003AEC): 1,
@@ -110,7 +117,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RNvNtCsbx17WDetRei_14xr819_firmware4join12activate_sta', 0x04003AE8): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x04003A6D): 1,
         ('_RNvNtCsbx17WDetRei_14xr819_firmware8platform23program_station_address', 0x04003ACC): 1,
-        ('rust_main', 0x04003A68): 2,
+        ('rust_main', 0x04003A68): 1,
     }
 )
 

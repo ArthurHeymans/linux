@@ -32,6 +32,10 @@ impl PipeRuntimeOwners {
         true
     }
 
+    pub const fn contains(self, pipe: u8) -> bool {
+        pipe < 4 && self.first[pipe as usize].is_some()
+    }
+
     pub const fn first(self, pipe: usize) -> Option<usize> {
         if pipe < 4 {
             match self.first[pipe] {
@@ -130,6 +134,9 @@ mod tests {
         assert_eq!(owners.first(0), Some(11));
         assert_eq!(owners.first(2), Some(7));
         assert_eq!(owners.first(1), None);
+        assert!(owners.contains(0));
+        assert!(!owners.contains(1));
+        assert!(!owners.contains(4));
         assert!(!owners.is_empty());
         assert!(!owners.observe(12, 4));
         assert_eq!(PipeRuntimeOwners::new().first(4), None);

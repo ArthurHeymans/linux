@@ -52,10 +52,12 @@ FORBIDDEN_FORMS = (
 # Typed watchdog retirement advances it once more from `MsM` to `MsN`.
 # The shared retry validator adds one generic live-slot field access and moves
 # both retry command-mask release call sites through its generic MMIO instance.
+# Concurrent-pipe candidate selection adds one typed scheduler-live pipe-state
+# byte access at `0x04001723` before reserving an otherwise idle pipe.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001720: 5,
     0x04001722: 1,
-    0x04001723: 2,
+    0x04001723: 3,
     0x0400172C: 2,
     0x04001738: 1,
 })
@@ -64,6 +66,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
     ('_RNvMs7_NtCsbx17WDetRei_14xr819_firmware2txNtB5_10LiveTxSlot14from_pipe_slot', 0x0400172C): 1,
     ('_RINvMs7_NtCsbx17WDetRei_14xr819_firmware2txNtB6_10LiveTxSlot9from_mmioNtB6_19VolatileMacPipeMmioEB8_', 0x0400172C): 1,
     ('_RNvMsN_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
+    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx25scheduler_live_diagnostic', 0x04001723): 1,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001720): 3,
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04001723): 2,
     ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation6cancel', 0x04001738): 1,
