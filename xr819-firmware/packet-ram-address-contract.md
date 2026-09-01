@@ -45,11 +45,13 @@ dereferenced or written.
 
 ### Ordinary MAC command pointers
 
-The `0x007f_ffff` forms in `mac.rs`, `platform.rs`, and ordinary descriptor
-construction are encode-only values written to MAC registers or command words.
-Software retains CPU-form command and buffer addresses separately in typed
-contexts, pipe slots, and linker-derived roots. Publication now checks exact
-command identity rather than mere membership in the command array.
+`mac.rs` derives its 23-bit offsets through
+`packet_ram::mac_packet_offset_unchecked`; every caller supplies a linker-owned
+root or object base. Response-pointer publication separately accepts only exact
+response-command bases before applying the DMA bus encoding, and rejects invalid
+pipe slots before any volatile write. The source gate rejects open-coded MAC
+packet-RAM masks. Remaining `platform.rs` and TX descriptor forms are
+encode-only values written to MAC registers or command words.
 
 ### HIF and crypto DMA
 
@@ -80,8 +82,8 @@ byte from authorizing an out-of-range multi-byte read.
 
 ## Remaining audit boundary
 
-Open-coded `0x007f_ffff` MAC masks and the remaining `0xf6ff_ffff` MAC/TX masks
-are hardware encoders, not decoders. They should be moved behind named
+Open-coded `0x007f_ffff` platform/TX masks and the remaining `0xf6ff_ffff` TX
+masks are hardware encoders, not decoders. They should be moved behind named
 packet-RAM encoding helpers as each family is independently reviewed, without
 changing command word layout or volatile publication order. No remaining
 translated path was found that converts either masked form back into a CPU

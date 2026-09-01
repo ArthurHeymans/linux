@@ -264,6 +264,14 @@ pub fn response_command(index: usize) -> usize {
 }
 
 #[inline(always)]
+pub fn response_command_index(address: usize) -> Option<usize> {
+    let range = response_commands();
+    let offset = address.checked_sub(range.start)?;
+    (address < range.end && offset % TX_COMMAND_SIZE == 0)
+        .then_some(offset / TX_COMMAND_SIZE)
+}
+
+#[inline(always)]
 pub fn interface_metadata() -> usize {
     object_address!(INTERFACE_METADATA)
 }
@@ -361,6 +369,23 @@ pub fn ampdu_transfer_word(cpu_address: usize) -> Option<u32> {
 #[inline(always)]
 pub const unsafe fn packet_dma_bus_address_unchecked(cpu_address: usize) -> u32 {
     cpu_address as u32 & 0xf6ff_ffff
+}
+
+/// Encode a CPU-form address already proven to identify runtime packet RAM for
+/// a MAC register or command field that carries a 23-bit packet-memory offset.
+///
+/// # Safety
+///
+/// `cpu_address` must be derived from a linker-owned runtime packet-RAM object.
+#[inline(always)]
+pub const unsafe fn mac_packet_offset_unchecked(cpu_address: usize) -> u32 {
+    cpu_address as u32 & 0x007f_ffff
+}
+
+#[inline(always)]
+pub fn response_command_bus_address(cpu_address: usize) -> Option<u32> {
+    response_command_index(cpu_address)
+        .map(|_| unsafe { packet_dma_bus_address_unchecked(cpu_address) })
 }
 
 /// Check and encode a CPU-form packet-RAM address for a DMA descriptor.
@@ -478,6 +503,25 @@ mod tests {
         assert_eq!(software_record_index(software_records().end), None);
         assert_eq!(
             software_record_index(software_record(0) & 0x001f_fffc),
+            None,
+        );
+    }
+
+    #[test]
+    fn response_command_addresses_require_exact_bases_before_bus_encoding() {
+        for index in 0..RESPONSE_COMMAND_COUNT {
+            let address = response_command(index);
+            assert_eq!(response_command_index(address), Some(index));
+            assert_eq!(
+                response_command_bus_address(address),
+                Some(unsafe { packet_dma_bus_address_unchecked(address) }),
+            );
+            assert_eq!(response_command_index(address + 4), None);
+            assert_eq!(response_command_bus_address(address + 4), None);
+        }
+        assert_eq!(response_command_index(response_commands().end), None);
+        assert_eq!(
+            response_command_bus_address(response_command(0) & 0xf6ff_ffff),
             None,
         );
     }

@@ -5,7 +5,8 @@ use crate::{packet_ram, platform, radio};
 
 #[inline(always)]
 fn packet_offset(address: usize) -> u32 {
-    address as u32 & 0x007f_ffff
+    // Every caller supplies a linker-derived packet-RAM root or object base.
+    unsafe { packet_ram::mac_packet_offset_unchecked(address) }
 }
 
 const RATE_ENCODING: [u8; 22] = [
@@ -345,18 +346,26 @@ pub unsafe fn program_active_vif_rate_tables(interface: u8) -> bool {
 }
 
 unsafe fn program_pipe_slot(pointer: usize, slot: u8) {
-    unsafe {
-        write_u32(
-            packet_ram::response_pointer(usize::from(slot)),
-            (pointer as u32) & 0xf6ff_ffff,
-        )
+    let Some(bus_address) = packet_ram::response_command_bus_address(pointer) else {
+        return;
     };
+    if usize::from(slot) >= packet_ram::RESPONSE_POINTER_COUNT {
+        return;
+    }
     let logical = if slot == 0x1b {
         30
     } else if slot == 0x1c {
         31
+    } else if let Some(logical) = slot.checked_sub(2) {
+        logical
     } else {
-        slot - 2
+        return;
+    };
+    unsafe {
+        write_u32(
+            packet_ram::response_pointer(usize::from(slot)),
+            bus_address,
+        )
     };
     let register_bit = if logical == 30 { 31 } else { logical };
     for address in [
