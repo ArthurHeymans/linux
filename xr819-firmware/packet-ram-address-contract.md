@@ -84,7 +84,9 @@ mask release and member conversion rather than rereading the shared current-pipe
 latch after another pipe may have become active. Retry counters are additionally
 keyed by the exact pipe-slot DTCM root; interior addresses and roots belonging to
 another pipe are rejected before retry policy can consume or mutate that slot's
-budget.
+budget. Deferred selective-retry members, partial give-up pairs, and retained
+BlockAck states use that same exact key, preventing a later slot on the pipe from
+consuming an earlier slot's ownership decision.
 Every remaining production hardware-ring consumer now accepts only the exact
 per-pipe MMIO root; advance, resynchronization, diagnostics, retry completion,
 BlockAck completion, and single/batched publication reject mismatched retained

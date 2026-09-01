@@ -630,3 +630,9 @@ decisions reject interior or cross-pipe retained slot addresses, and completion
 reporting reads attempts from the publication's exact slot. Same-pipe
 concurrency remains disabled, but a later second outstanding slot can no longer
 share or reset the first slot's retry budget.
+
+Selective-retry member ownership, partial give-up pairs, and retained BlockAck
+observations now use the same exact pipe-slot index. Every ordinary batch member
+resets its own slot state, including the last staged member, while a depth-two
+pair shares only its published aggregate slot. Same-pipe outstanding work can no
+longer consume another slot's accumulated bitmap or deferred member action.

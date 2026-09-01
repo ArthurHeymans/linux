@@ -3706,10 +3706,10 @@ struct RetainedDepthTwoBlockAck {
 pub struct SingleProbeMacBackend {
     retry: [BoundedSingleTxRetry; 16],
     mismatch: [u8; 4],
-    selective_retry: [Option<FrameNodeAddress>; 4],
-    partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 4],
+    selective_retry: [Option<FrameNodeAddress>; 16],
+    partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 16],
     #[cfg(feature = "experimental-depth-two-ampdu")]
-    depth_two_block_ack: [Option<RetainedDepthTwoBlockAck>; 4],
+    depth_two_block_ack: [Option<RetainedDepthTwoBlockAck>; 16],
     publications: [Option<PublishedSlotIdentity>; 16],
     completed: BoundedCompletionQueue<HostClass0Completion, HOST_CLASS0_COMPLETION_CAPACITY>,
 }
@@ -3720,10 +3720,10 @@ impl SingleProbeMacBackend {
         Self {
             retry: [BoundedSingleTxRetry::new(max_retries); 16],
             mismatch: [0; 4],
-            selective_retry: [None; 4],
-            partial_give_up: [None; 4],
+            selective_retry: [None; 16],
+            partial_give_up: [None; 16],
             #[cfg(feature = "experimental-depth-two-ampdu")]
-            depth_two_block_ack: [None; 4],
+            depth_two_block_ack: [None; 16],
             publications: [None; 16],
             completed: BoundedCompletionQueue::new(),
         }
@@ -3749,15 +3749,15 @@ impl SingleProbeMacBackend {
         if !publication_registration_allowed(occupied, batch, slot) {
             return false;
         }
+        self.retry[retry_index].reset();
+        self.selective_retry[retry_index] = None;
+        self.partial_give_up[retry_index] = None;
+        #[cfg(feature = "experimental-depth-two-ampdu")]
+        {
+            self.depth_two_block_ack[retry_index] = None;
+        }
         if matches!(batch, BatchPosition::Only | BatchPosition::First) {
-            self.retry[retry_index].reset();
             self.mismatch[pipe_index] = 0;
-            self.selective_retry[pipe_index] = None;
-            self.partial_give_up[pipe_index] = None;
-            #[cfg(feature = "experimental-depth-two-ampdu")]
-            {
-                self.depth_two_block_ack[pipe_index] = None;
-            }
         }
         let publication_index = pipe_index * 4 + usize::from(slot & 3);
         self.publications[publication_index] = Some(publication);
@@ -3784,9 +3784,9 @@ impl SingleProbeMacBackend {
         }
         self.retry[retry_index].reset();
         self.mismatch[pipe_index] = 0;
-        self.selective_retry[pipe_index] = None;
-        self.partial_give_up[pipe_index] = None;
-        self.depth_two_block_ack[pipe_index] = None;
+        self.selective_retry[retry_index] = None;
+        self.partial_give_up[retry_index] = None;
+        self.depth_two_block_ack[retry_index] = None;
         let first_index = pipe_index * 4 + usize::from(slot & 3);
         let Some(second_index) = self.publications[pipe_index * 4..pipe_index * 4 + 4]
             .iter()
@@ -4358,7 +4358,6 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         slot: u32,
         frame_node: FrameNodeAddress,
     ) -> SingleTxRetryDecision {
-        let pipe_index = usize::from(pipe & 3);
         let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
             terminal_probe_backend_fault(pipe)
         };
@@ -4371,7 +4370,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         } {
             #[cfg(feature = "experimental-depth-two-ampdu")]
             {
-                let observation = self.depth_two_block_ack[pipe_index].take();
+                let observation = self.depth_two_block_ack[retry_index].take();
                 if let Some((actions, members)) = observation.and_then(|observation| unsafe {
                     depth_two_block_ack_actions_for(frame_node, observation)
                 }) {
@@ -4401,11 +4400,11 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                                 write_u32(members[confirm_index].context().next_in_ampdu_address(), 0);
                                 enqueue_acknowledged_aggregate_member(members[confirm_index]);
                             }
-                            self.selective_retry[pipe_index] = Some(members[member_retry_index]);
+                            self.selective_retry[retry_index] = Some(members[member_retry_index]);
                             self.retry[retry_index].record_rearm();
                             return SingleTxRetryDecision::Rearm;
                         }
-                        self.partial_give_up[pipe_index] =
+                        self.partial_give_up[retry_index] =
                             Some((members[confirm_index], members[member_retry_index]));
                         return SingleTxRetryDecision::CompleteSuccess;
                     }
@@ -4418,7 +4417,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                             )
                         })
                     {
-                        self.partial_give_up[pipe_index] =
+                        self.partial_give_up[retry_index] =
                             Some((members[confirm_index], members[give_up_index]));
                         return SingleTxRetryDecision::CompleteSuccess;
                     }
@@ -4523,7 +4522,10 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         };
         #[cfg(feature = "experimental-depth-two-ampdu")]
         if unsafe { read_u8(live_slot.address.kind().get()) == 1 } {
-            if let Some(missing) = self.selective_retry[usize::from(pipe & 3)].take() {
+            let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
+                terminal_probe_backend_fault(pipe)
+            };
+            if let Some(missing) = self.selective_retry[retry_index].take() {
                 let link = unsafe { read_u8(missing.context().link_id_address()) };
                 unsafe { convert_depth_two_slot_to_selective_retry(link, slot, missing) };
                 execute_fixed_rate_single_frame_rearm(
@@ -4566,7 +4568,11 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             terminal_probe_backend_fault(pipe);
         };
         #[cfg(feature = "experimental-depth-two-ampdu")]
-        if let Some((acknowledged, missing)) = self.partial_give_up[usize::from(pipe)].take() {
+        let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
+            terminal_probe_backend_fault(pipe)
+        };
+        #[cfg(feature = "experimental-depth-two-ampdu")]
+        if let Some((acknowledged, missing)) = self.partial_give_up[retry_index].take() {
             unsafe {
                 crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP);
                 write_u32(acknowledged.context().next_in_ampdu_address(), 0);
@@ -6257,9 +6263,11 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
             ],
         );
         let pipe = publication.pipe;
-        let pipe_index = usize::from(pipe);
+        let Some(retry_index) = pipe_slot_state_index(pipe, publication.slot) else {
+            crate::halt_always!();
+        };
         let member_nodes = [publication.frame_node, second_node];
-        let retained = &mut runtime.backend.depth_two_block_ack[pipe_index];
+        let retained = &mut runtime.backend.depth_two_block_ack[retry_index];
         let previous = retained
             .filter(|observation| observation.members == member_nodes)
             .map(|observation| observation.states);
