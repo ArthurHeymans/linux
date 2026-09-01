@@ -430,22 +430,44 @@ struct LiveTxSlot {
 }
 
 impl LiveTxSlot {
-    unsafe fn from_pipe_slot(pipe: u8, slot: u8) -> Option<Self> {
+    fn from_mmio<M: MacPipeMmio>(
+        mmio: &mut M,
+        pipe: u8,
+        slot: u8,
+        retained_slot: u32,
+        retained_frame: Option<FrameNodeAddress>,
+    ) -> Option<Self> {
         if pipe >= 4 || slot >= 4 {
             return None;
         }
-        unsafe {
-            let address = pipe_record_address(pipe).slot_unchecked(usize::from(slot));
-            let frame_node = FrameNodeAddress::from_raw(read_u32(address.frame().get()))?;
-            let command = read_u32(address.command().get());
-            (packet_ram::tx_command_index(command as usize)
-                == Some((usize::from(pipe), usize::from(slot))))
-            .then_some(Self {
-                address,
-                frame_node,
-                command,
-            })
+        let address = pipe_record_address(pipe).slot_unchecked(usize::from(slot));
+        if retained_slot != address.raw() {
+            return None;
         }
+        let frame_node = FrameNodeAddress::from_raw(mmio.read_u32(address.frame().get() as u32))?;
+        if retained_frame.is_some_and(|retained| retained != frame_node) {
+            return None;
+        }
+        let command = mmio.read_u32(address.command().get() as u32);
+        (command
+            == packet_ram::tx_command(usize::from(pipe), usize::from(slot)) as u32)
+        .then_some(Self {
+            address,
+            frame_node,
+            command,
+        })
+    }
+
+    unsafe fn from_pipe_slot(pipe: u8, slot: u8) -> Option<Self> {
+        let retained_slot = (pipe < 4 && slot < 4)
+            .then(|| pipe_record_address(pipe).slot_unchecked(usize::from(slot)).raw())?;
+        Self::from_mmio(
+            &mut VolatileMacPipeMmio,
+            pipe,
+            slot,
+            retained_slot,
+            None,
+        )
     }
 }
 
@@ -2229,31 +2251,42 @@ const fn empty_retirement_allowed(frame_node: u32, slot_kind: u8, slot_state: u8
     frame_node == 0 && !aggregate_retry_command_owned(slot_kind, slot_state)
 }
 
-/// Release the current hardware command-mask owner for a retry-owned kind-1 slot.
-///
-/// # Safety
-/// The pipe and slot must identify the same exclusively owned live record.
-#[cfg(target_arch = "arm")]
-unsafe fn release_aggregate_retry_command_mask(
+/// Release the current hardware command-mask owner for a retry-owned kind-1
+/// slot only after validating its complete retained identity.
+fn release_aggregate_retry_command_mask<M: MacPipeMmio>(
+    mmio: &mut M,
     pipe: u8,
-    slot: crate::dtcm::MacPipeSlotAddress,
-) -> bool {
-    unsafe {
-        if !aggregate_retry_command_owned(
-            read_u8(slot.kind().get()),
-            read_u8(slot.state().get()),
-        ) {
-            return false;
-        }
-        let record = pipe_record_address(pipe & 3);
-        let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
-        let current = read_u8(record.current_slot().get()) & 3;
-        write_u32(
-            ring.cursor_and_pending_mask() as usize,
-            read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
-        );
-        true
+    retained_slot: u32,
+    retained_frame: FrameNodeAddress,
+) -> Option<bool> {
+    if pipe >= 4 {
+        return None;
     }
+    let record = pipe_record_address(pipe);
+    let current = mmio.read_u8(record.current_slot().get() as u32);
+    let slot = LiveTxSlot::from_mmio(
+        mmio,
+        pipe,
+        current,
+        retained_slot,
+        Some(retained_frame),
+    )?;
+    if !aggregate_retry_command_owned(
+        mmio.read_u8(slot.address.kind().get() as u32),
+        mmio.read_u8(slot.address.state().get() as u32),
+    ) {
+        return Some(false);
+    }
+    let ring = TxHardwareRingAddress::for_pipe(
+        pipe,
+        mmio.read_u32(record.hardware_ring().get() as u32),
+    )?;
+    let command_mask = mmio.read_u32(ring.cursor_and_pending_mask());
+    mmio.write_u32(
+        ring.cursor_and_pending_mask(),
+        command_mask & !(1_u32 << current),
+    );
+    Some(true)
 }
 
 /// Release a retry-owned command-mask bit only after the slot's exact frame and
@@ -3956,22 +3989,29 @@ unsafe fn rearm_depth_two_whole_ampdu(
     pending_mask: u32,
 ) -> Result<(), ProbeBuildError> {
     unsafe {
-        let pipe = pipe & 3;
+        if pipe >= 4 {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
         let record = pipe_record_address(pipe);
-        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
-        let first = first_frame_node.context();
+        let current = read_u8(record.current_slot().get());
+        let Some(live_slot) = LiveTxSlot::from_mmio(
+            &mut VolatileMacPipeMmio,
+            pipe,
+            current,
+            slot_raw,
+            Some(first_frame_node),
+        ) else {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        };
+        let slot = live_slot.address;
+        let first = live_slot.frame_node.context();
         let second_raw = read_u32(first.next_in_ampdu_address());
         if second_raw == 0 {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
         let second = FrameNodeAddress::new(second_raw).context();
-        let command = read_u32(slot.command().get());
+        let command = live_slot.command;
         let descriptor_node = read_u32(slot.auxiliary().get());
-        if packet_ram::tx_command_index(command as usize)
-            != Some((usize::from(pipe), usize::from(read_u8(record.current_slot().get()) & 3)))
-        {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
         let Some(descriptor_index) = crate::dtcm::mac_software_record_node_index(descriptor_node)
         else {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
@@ -3987,21 +4027,25 @@ unsafe fn rearm_depth_two_whole_ampdu(
             first.raw(),
             second.raw(),
             pipe,
-            read_u8(record.current_slot().get()) & 3,
+            current,
             slot_raw,
             command,
             descriptor_node,
             packet_record,
         )?;
 
-        let ring = TxHardwareRingAddress::new(read_u32(record.hardware_ring().get()));
+        let Some(ring) = TxHardwareRingAddress::for_pipe(
+            pipe,
+            read_u32(record.hardware_ring().get()),
+        ) else {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        };
         // Retry ownership is already live in the hardware ring. As in the
         // ordinary vendor rearm path, rebuild the command in place, preserve
         // slot state 4, trigger the pipe, then release only the current command
         // mask bit. Re-running GO would publish a second active owner instead.
         write_u8(slot.state().get(), 4);
         write_u32(PIPE_IRQ_TRIGGER as usize, (1_u32 << pipe) << 25);
-        let current = read_u8(record.current_slot().get()) & 3;
         write_u32(
             ring.cursor_and_pending_mask() as usize,
             read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
@@ -4308,14 +4352,22 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         frame_node: FrameNodeAddress,
         pending_mask: u32,
     ) {
+        if pipe >= 4 {
+            crate::halt_always!();
+        }
+        let record = pipe_record_address(pipe);
+        let current = unsafe { read_u8(record.current_slot().get()) };
+        let Some(live_slot) = LiveTxSlot::from_mmio(
+            &mut VolatileMacPipeMmio,
+            pipe,
+            current,
+            slot,
+            Some(frame_node),
+        ) else {
+            terminal_probe_backend_fault(pipe);
+        };
         #[cfg(feature = "experimental-depth-two-ampdu")]
-        if unsafe {
-            read_u8(
-                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot)
-                    .kind()
-                    .get(),
-            ) == 1
-        } {
+        if unsafe { read_u8(live_slot.address.kind().get()) == 1 } {
             if let Some(missing) = self.selective_retry[usize::from(pipe & 3)].take() {
                 let link = unsafe { read_u8(missing.context().link_id_address()) };
                 unsafe { convert_depth_two_slot_to_selective_retry(link, slot, missing) };
@@ -4347,12 +4399,17 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
     }
 
     fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32) {
-        let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3 };
-        let aggregate = unsafe {
-            release_aggregate_retry_command_mask(
-                pipe,
-                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot),
-            )
+        let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) };
+        if pipe >= 4 {
+            crate::halt_always!();
+        }
+        let Some(aggregate) = release_aggregate_retry_command_mask(
+            &mut VolatileMacPipeMmio,
+            pipe,
+            slot,
+            frame_node,
+        ) else {
+            terminal_probe_backend_fault(pipe);
         };
         #[cfg(feature = "experimental-depth-two-ampdu")]
         if let Some((acknowledged, missing)) = self.partial_give_up[usize::from(pipe)].take() {
@@ -4378,11 +4435,17 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
 
     fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16) {
         unsafe { crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP) };
-        let aggregate = unsafe {
-            release_aggregate_retry_command_mask(
-                read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) & 3,
-                crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot),
-            )
+        let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) };
+        if pipe >= 4 {
+            crate::halt_always!();
+        }
+        let Some(aggregate) = release_aggregate_retry_command_mask(
+            &mut VolatileMacPipeMmio,
+            pipe,
+            slot,
+            frame_node,
+        ) else {
+            terminal_probe_backend_fault(pipe);
         };
         unsafe { complete_tx_pipe_slot(frame_node, slot, status, self) };
         if aggregate {
@@ -9699,6 +9762,78 @@ mod tests {
         assert!(empty_retirement_allowed(0, 1, 3));
         assert!(!empty_retirement_allowed(0, 1, 4));
         assert!(!empty_retirement_allowed(0x0400_5ad8, 0, 3));
+    }
+
+    #[test]
+    fn retry_command_release_requires_complete_live_slot_identity() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe = 2_u8;
+        let current = 1_u8;
+        let record = pipe_record_address(pipe);
+        let slot = record.slot_unchecked(usize::from(current));
+        let frame_node = FrameNodeAddress::from_raw(0x0400_9248).unwrap();
+        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
+        mmio.set(record.current_slot().get() as u32, u32::from(current));
+        mmio.set(record.hardware_ring().get() as u32, ring);
+        mmio.set(slot.kind().get() as u32, 1);
+        mmio.set(slot.state().get() as u32, 4);
+        mmio.set(slot.frame().get() as u32, frame_node.raw());
+        mmio.set(
+            slot.command().get() as u32,
+            packet_ram::tx_command(usize::from(pipe), usize::from(current)) as u32,
+        );
+        mmio.set(ring + 0x20, 0x8000_000f);
+
+        assert_eq!(
+            mmio.get(slot.command().get() as u32),
+            packet_ram::tx_command(usize::from(pipe), usize::from(current)) as u32,
+        );
+        assert_eq!(
+            FrameNodeAddress::from_raw(mmio.get(slot.frame().get() as u32)),
+            Some(frame_node),
+        );
+        assert!(LiveTxSlot::from_mmio(
+            &mut mmio,
+            pipe,
+            current,
+            slot.raw(),
+            Some(frame_node),
+        )
+        .is_some());
+        assert_eq!(
+            release_aggregate_retry_command_mask(
+                &mut mmio,
+                pipe,
+                slot.raw(),
+                frame_node,
+            ),
+            Some(true),
+        );
+        assert_eq!(mmio.get(ring + 0x20), 0x8000_000d);
+
+        mmio.set(ring + 0x20, 0x8000_000f);
+        assert_eq!(
+            release_aggregate_retry_command_mask(
+                &mut mmio,
+                pipe,
+                slot.raw() + 0x18,
+                frame_node,
+            ),
+            None,
+        );
+        assert_eq!(mmio.get(ring + 0x20), 0x8000_000f);
+
+        mmio.set(slot.command().get() as u32, packet_ram::tx_command(0, 0) as u32);
+        assert_eq!(
+            release_aggregate_retry_command_mask(
+                &mut mmio,
+                pipe,
+                slot.raw(),
+                frame_node,
+            ),
+            None,
+        );
+        assert_eq!(mmio.get(ring + 0x20), 0x8000_000f);
     }
 
     #[test]

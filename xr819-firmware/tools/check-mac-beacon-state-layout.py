@@ -42,10 +42,11 @@ FORBIDDEN_FORMS = (
 # Regenerated only after reviewing the candidate disassembly and operation order.
 # Checked live-slot construction changes shared inactive-helper code generation:
 # three duplicate `0x04001aa8` loads are folded while one instruction-shaped
-# word appears without introducing another decoded beacon-state owner.
+# word appears without introducing another decoded beacon-state owner. Shared
+# retry-slot validation folds that remaining instruction-shaped word again.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001A88: 1,
-    0x04001AA8: 6,
+    0x04001AA8: 5,
     0x04001AB0: 1,
     0x04001AB4: 4,
 })

@@ -69,8 +69,10 @@ packet-RAM command base before dereferencing either retained word. Watchdog
 retirement preserves the vendor's legitimate empty-frame recovery case, but a
 non-empty slot must satisfy the same live identity; retry-owned aggregate slots
 must validate that identity, the pipe's exact hardware-ring MMIO root, and a
-bounded current cursor before their command-mask bit is released. Interface
-metadata and duration-table selectors
+bounded current cursor before their command-mask bit is released. Ordinary and
+depth-two retry/rearm paths use the same mockable identity validator before
+reading retained slot metadata, rebuilding descriptors, or touching the ring.
+Interface metadata and duration-table selectors
 are range-checked before their addresses
 are formed. Source gates
 reject open-coded MAC, platform, and production TX packet-RAM masks and freeze

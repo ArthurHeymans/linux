@@ -45,14 +45,15 @@ FORBIDDEN_FORMS = (
 # Centralized retained-frame validation changes shared helper inlining and folds
 # one duplicate `0x04001d40` load in `service_single_probe_runtime_inactive`.
 # Checked live-slot construction later materializes two instruction-shaped
-# words and one additional decoded load for that existing owner.
+# words and one additional decoded load for that existing owner. Shared
+# retry-slot validation folds one of those instruction-shaped words again.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04001D12: 1,
     0x04001D18: 2,
     0x04001D1C: 1,
     0x04001D2C: 4,
     0x04001D38: 2,
-    0x04001D40: 4,
+    0x04001D40: 3,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_phy_operation_1', 0x04001D18): 1,
