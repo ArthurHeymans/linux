@@ -413,6 +413,38 @@ pub struct HostClass0Completion {
     pub ack_failures: u8,
 }
 
+/// One service pass can retire a two-context batch on each of four MAC pipes
+/// before the host driver starts draining copied completion identities.
+const HOST_CLASS0_COMPLETION_CAPACITY: usize = 4 * 2;
+
+struct BoundedCompletionQueue<T, const N: usize> {
+    entries: [Option<T>; N],
+}
+
+impl<T, const N: usize> BoundedCompletionQueue<T, N> {
+    const fn new() -> Self {
+        Self {
+            entries: [const { None }; N],
+        }
+    }
+
+    fn push(&mut self, value: T) -> Result<(), T> {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.is_none()) else {
+            return Err(value);
+        };
+        *entry = Some(value);
+        Ok(())
+    }
+
+    fn take(&mut self) -> Option<T> {
+        self.entries.iter_mut().find_map(Option::take)
+    }
+
+    fn first(&self) -> Option<&T> {
+        self.entries.iter().find_map(Option::as_ref)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PublishedSlotIdentity {
     context: ContextAddress,
@@ -3613,7 +3645,7 @@ pub struct SingleProbeMacBackend {
     selective_retry: [Option<FrameNodeAddress>; 4],
     partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 4],
     publications: [Option<PublishedSlotIdentity>; 16],
-    completed: [Option<HostClass0Completion>; 4],
+    completed: BoundedCompletionQueue<HostClass0Completion, HOST_CLASS0_COMPLETION_CAPACITY>,
 }
 
 #[cfg(target_arch = "arm")]
@@ -3625,7 +3657,7 @@ impl SingleProbeMacBackend {
             selective_retry: [None; 4],
             partial_give_up: [None; 4],
             publications: [None; 16],
-            completed: [None; 4],
+            completed: BoundedCompletionQueue::new(),
         }
     }
 
@@ -3690,14 +3722,13 @@ impl SingleProbeMacBackend {
     }
 
     fn push_completion(&mut self, completion: HostClass0Completion) {
-        let Some(entry) = self.completed.iter_mut().find(|entry| entry.is_none()) else {
+        if let Err(completion) = self.completed.push(completion) {
             terminal_probe_backend_fault(completion.pipe)
-        };
-        *entry = Some(completion);
+        }
     }
 
     pub fn take_completion(&mut self) -> Option<HostClass0Completion> {
-        self.completed.iter_mut().find_map(|entry| entry.take())
+        self.completed.take()
     }
 }
 
@@ -5129,8 +5160,8 @@ pub unsafe fn host_class0_runtime_diagnostic() -> u32 {
         | runtime
             .backend
             .completed
-            .iter()
-            .find_map(|completion| *completion)
+            .first()
+            .copied()
             .map(|completion| (1 << 8) | (u32::from(completion.status) << 16))
             .unwrap_or(0)
 }
@@ -9430,6 +9461,21 @@ pub fn prepare_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn class_zero_completion_queue_holds_two_members_for_every_pipe() {
+        let mut completed = BoundedCompletionQueue::<u8, HOST_CLASS0_COMPLETION_CAPACITY>::new();
+        for value in 0..HOST_CLASS0_COMPLETION_CAPACITY as u8 {
+            assert_eq!(completed.push(value), Ok(()));
+        }
+        assert_eq!(completed.push(0xff), Err(0xff));
+        for value in 0..HOST_CLASS0_COMPLETION_CAPACITY as u8 {
+            assert_eq!(completed.take(), Some(value));
+        }
+        assert_eq!(completed.take(), None);
+        assert_eq!(completed.push(0xfe), Ok(()));
+        assert_eq!(completed.take(), Some(0xfe));
+    }
 
     struct MockMacEventBackend {
         events: [i32; 4],

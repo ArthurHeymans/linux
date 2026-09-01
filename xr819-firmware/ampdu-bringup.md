@@ -597,3 +597,9 @@ The qualified image sustained three simultaneous one-Mbit UDP streams split
 across Linux TX queues 0 and 2, followed by 20/20 ping with the BH alive, WSM
 idle, and no used buffers. Cold and ordinary warm depth-two traffic remained
 healthy as well.
+
+The copied class-0 completion queue is sized for the resulting worst case: two
+completed contexts on each of four simultaneously owned pipes before the host
+driver drains the backend. The bounded eight-entry queue retains exact copied
+context, frame-node, pipe, slot, status, and retry identities and still halts on
+an impossible ninth completion rather than dropping ownership evidence.

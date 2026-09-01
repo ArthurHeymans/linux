@@ -67,8 +67,10 @@ FORBIDDEN_FORMS = (
 # completion-ring view. Centralized retained-frame validation perturbs nearby
 # code generation and materializes one instruction-shaped word with no decoded
 # literal load or new completion-ring owner. Shared retry-slot validation shifts
-# that incidental instruction word from `0x04009023` to `0x04009025`.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04009025: 1})
+# that incidental instruction word from `0x04009023` to `0x04009025`. Sizing
+# the copied-completion queue for four depth-two pipes shifts it once more to
+# `0x04009026`; there is still no decoded completion-ring load.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04009026: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 

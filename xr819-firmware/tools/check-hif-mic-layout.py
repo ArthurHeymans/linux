@@ -68,12 +68,14 @@ FORBIDDEN_FORMS = (
 # Pipe-indexed owner discovery perturbs the inlined host service again, producing
 # accidental `0x04009805`, `0x0400980a`, and `0x04009857` words. Selecting a
 # publishable context from an unowned pipe reduces those to accidental
-# `0x0400980d` and `0x04009859` words; there is still no decoded HIF-address
+# `0x0400980d` and `0x04009859` words. Expanding the copied-completion queue to
+# its four-pipe depth perturbs the same inlining into accidental `0x04009806`,
+# `0x0400980b`, and `0x04009859` words; there is still no decoded HIF-address
 # load. Retry nibble advancement remains confined
 # to the typed selective retry helper,
 # while partial give-up reuses ordinary kind-0 completion.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x0400980D: 1, 0x04009859: 1}
+    {0x04009806: 1, 0x0400980B: 1, 0x04009859: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
