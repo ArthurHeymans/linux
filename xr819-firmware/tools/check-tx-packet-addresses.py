@@ -19,6 +19,9 @@ expected = {
     "packet_ram::RuntimePacketAddress::new(": 8,
     "validated_tx_frame(": 4,
     "validated_context_tx_frame(": 5,
+    "FrameNodeAddress::from_raw(": 1,
+    "PublishedSlotIdentity::new(": 3,
+    ".live_slot()": 2,
     ".mac_offset()": 2,
     ".tx_payload_bus_address(": 2,
 }

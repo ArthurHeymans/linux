@@ -59,8 +59,11 @@ command-list destination fits inside one linker-owned runtime object. Distinct
 CPU-form identity; their representations cannot be supplied where a CPU pointer
 is required. TX start, timing, completion-message, and completion-dispatch paths
 also revalidate each retained context frame address together with its full frame
-length before dereferencing header fields. Interface metadata and duration-table
-selectors are range-checked before their addresses are formed. Source gates
+length before dereferencing header fields. The publication registry retains the
+exact DTCM context/frame-node and packet-RAM command base for each `(pipe, slot)`;
+depth-two BlockAck handling requires the live slot's frame and command words to
+still match that identity before consuming retained state. Interface metadata
+and duration-table selectors are range-checked before their addresses are formed. Source gates
 reject open-coded MAC, platform, and production TX packet-RAM masks and freeze
 the checked TX boundary calls.
 

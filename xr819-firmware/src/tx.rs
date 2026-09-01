@@ -264,6 +264,16 @@ impl ContextAddress {
         Self(address)
     }
 
+    pub const fn from_raw(address: u32) -> Option<Self> {
+        if crate::dtcm::host_context_from_raw(address).is_some()
+            || crate::dtcm::InternalContextAddress::from_raw(address).is_some()
+        {
+            Some(Self(address))
+        } else {
+            None
+        }
+    }
+
     pub const fn raw(self) -> u32 {
         self.0
     }
@@ -347,6 +357,14 @@ impl FrameNodeAddress {
         Self(address)
     }
 
+    pub const fn from_raw(address: u32) -> Option<Self> {
+        let context = address.wrapping_sub(FRAME_NODE_OFFSET);
+        match ContextAddress::from_raw(context) {
+            Some(context) if context.frame_node().raw() == address => Some(Self(address)),
+            _ => None,
+        }
+    }
+
     pub const fn raw(self) -> u32 {
         self.0
     }
@@ -399,8 +417,36 @@ pub struct HostClass0Completion {
 struct PublishedSlotIdentity {
     context: ContextAddress,
     frame_node: FrameNodeAddress,
+    command: u32,
     pipe: u8,
     slot: u8,
+}
+
+impl PublishedSlotIdentity {
+    fn new(context: ContextAddress, pipe: u8, slot: u8) -> Option<Self> {
+        if pipe >= 4 || slot >= 4 || ContextAddress::from_raw(context.raw()) != Some(context) {
+            return None;
+        }
+        Some(Self {
+            context,
+            frame_node: context.frame_node(),
+            command: packet_ram::tx_command(usize::from(pipe), usize::from(slot)) as u32,
+            pipe,
+            slot,
+        })
+    }
+
+    #[cfg(target_arch = "arm")]
+    unsafe fn live_slot(self) -> Option<crate::dtcm::MacPipeSlotAddress> {
+        unsafe {
+            let slot = pipe_record_address(self.pipe).slot_unchecked(usize::from(self.slot));
+            (read_u32(slot.frame().get()) == self.frame_node.raw()
+                && read_u32(slot.command().get()) == self.command
+                && packet_ram::tx_command_index(self.command as usize)
+                    == Some((usize::from(self.pipe), usize::from(self.slot))))
+            .then_some(slot)
+        }
+    }
 }
 
 struct ProbeChecksum(UnsafeCell<u32>);
@@ -3404,7 +3450,10 @@ impl SingleProbeMacBackend {
         context: ContextAddress,
         pipe: u8,
         slot: u8,
-    ) {
+    ) -> bool {
+        let Some(publication) = PublishedSlotIdentity::new(context, pipe, slot) else {
+            return false;
+        };
         if batch == BatchPosition::Only {
             self.retry.reset();
             self.mismatch = [0; 4];
@@ -3416,12 +3465,8 @@ impl SingleProbeMacBackend {
             self.mismatch[usize::from(pipe & 3)] = 0;
         }
         let publication_index = usize::from(pipe & 3) * 4 + usize::from(slot & 3);
-        self.publications[publication_index] = Some(PublishedSlotIdentity {
-            context,
-            frame_node: context.frame_node(),
-            pipe: pipe & 3,
-            slot: slot & 3,
-        });
+        self.publications[publication_index] = Some(publication);
+        true
     }
 
     #[cfg(feature = "experimental-depth-two-ampdu")]
@@ -3447,18 +3492,14 @@ impl SingleProbeMacBackend {
         else {
             return false;
         };
-        self.publications[first_index] = Some(PublishedSlotIdentity {
-            context: first,
-            frame_node: first.frame_node(),
-            pipe: pipe & 3,
-            slot: slot & 3,
-        });
-        self.publications[second_index] = Some(PublishedSlotIdentity {
-            context: second,
-            frame_node: second.frame_node(),
-            pipe: pipe & 3,
-            slot: slot & 3,
-        });
+        let Some(first) = PublishedSlotIdentity::new(first, pipe, slot) else {
+            return false;
+        };
+        let Some(second) = PublishedSlotIdentity::new(second, pipe, slot) else {
+            return false;
+        };
+        self.publications[first_index] = Some(first);
+        self.publications[second_index] = Some(second);
         true
     }
 
@@ -4541,9 +4582,12 @@ pub unsafe fn publish_host_class0_slot(
     }
 
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
-    runtime
+    if !runtime
         .backend
-        .register_publication(batch, ContextAddress::new(context), pipe, slot);
+        .register_publication(batch, ContextAddress::new(context), pipe, slot)
+    {
+        return Err(ProbeBuildError::InvalidContextPointer);
+    }
     unsafe {
         // `txq_build_aggregate_lists()` has already started command 1 before
         // scheduler reservation and descriptor construction. Publication must
@@ -5836,7 +5880,9 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
         let tid = (read_u16(frame + 0x10) >> 12) as u8;
         let runtime = &mut *PROBE_EXPERIMENT.0.get();
         let candidate = runtime.backend.publications.iter().flatten().copied().find(|entry| {
-            let slot = pipe_record_address(entry.pipe).slot_unchecked(usize::from(entry.slot & 3));
+            let Some(slot) = entry.live_slot() else {
+                return false;
+            };
             if read_u8(slot.kind().get()) != 1
                 || read_u32(entry.context.next_in_ampdu_address()) == 0
                 || read_u8(entry.context.tid_address()) != tid
@@ -5853,9 +5899,11 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
             return false;
         };
 
-        let second_node = FrameNodeAddress::new(read_u32(
+        let Some(second_node) = FrameNodeAddress::from_raw(read_u32(
             publication.context.next_in_ampdu_address(),
-        ));
+        )) else {
+            return true;
+        };
         let start = read_u16(frame + 0x12) >> 4;
         let bitmap = u64::from(read_u32(frame + 0x14))
             | (u64::from(read_u32(frame + 0x18)) << 32);
@@ -5875,9 +5923,11 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
             return true;
         }
 
-        let pipe = publication.pipe & 3;
+        let pipe = publication.pipe;
         let record = pipe_record_address(pipe);
-        let slot = record.slot_unchecked(usize::from(publication.slot & 3));
+        let Some(slot) = publication.live_slot() else {
+            return true;
+        };
         if !matches!(read_u8(slot.state().get()), 3 | 4) {
             return true;
         }
@@ -6464,8 +6514,7 @@ where
                     if backend.completion_messages_enabled()
                         && (flags >> 20) & 3 != 0
                         && read_u8(crate::dtcm::lmc_message_control().get()) & 1 != 0
-                    {
-                        if let Some(header) = validated_context_tx_frame(context)
+                        && let Some(header) = validated_context_tx_frame(context)
                             && let Some(message) =
                                 allocate_lmc_message(|| backend.message_allocation_failed())
                         {
@@ -6494,7 +6543,6 @@ where
                             );
                             raise_scheduler_bits(1 << 22);
                         }
-                    }
                 }
             }
 
@@ -7557,12 +7605,17 @@ impl PreparedProbePublication {
                 bisect_stage,
             };
 
-            backend.register_publication(
+            if !backend.register_publication(
                 BatchPosition::Only,
                 ContextAddress::new(self.context.context),
                 self.pipe,
                 self.slot,
-            );
+            ) {
+                let cancellation = self.cancel();
+                return Err(cancellation
+                    .err()
+                    .unwrap_or(ProbeBuildError::InvalidContextPointer));
+            }
             if publication_bisect_reached(3) {
                 return Ok(publication(3));
             }
@@ -10680,9 +10733,19 @@ mod tests {
 
     #[test]
     fn context_and_frame_node_addresses_round_trip() {
-        let context = ContextAddress::new(0x0400_9084);
-        assert_eq!(context.frame_node().raw(), 0x0400_90d8);
-        assert_eq!(context.frame_node().context(), context);
+        let context = ContextAddress::from_raw(0x0400_9084).unwrap();
+        let frame_node = FrameNodeAddress::from_raw(0x0400_90d8).unwrap();
+        assert_eq!(context.frame_node(), frame_node);
+        assert_eq!(frame_node.context(), context);
+        assert_eq!(ContextAddress::from_raw(0x0400_9088), None);
+        assert_eq!(FrameNodeAddress::from_raw(0x0400_90dc), None);
+
+        let publication = PublishedSlotIdentity::new(context, 2, 3).unwrap();
+        assert_eq!(publication.context, context);
+        assert_eq!(publication.frame_node, frame_node);
+        assert_eq!(publication.command, packet_ram::tx_command(2, 3) as u32);
+        assert!(PublishedSlotIdentity::new(context, 4, 0).is_none());
+        assert!(PublishedSlotIdentity::new(context, 0, 4).is_none());
     }
 
     #[test]
