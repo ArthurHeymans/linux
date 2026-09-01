@@ -51,9 +51,11 @@ FORBIDDEN_FORMS = (
 # the remaining instruction-shaped `0x04001686` word and splits one additional
 # decoded `0x04001694` access in that same reviewed runtime owner. Concurrent-
 # pipe candidate selection folds one rust_main `0x04001690` load and its shared
-# literal word without adding a new low-MAC-global access.
+# literal word without adding a new low-MAC-global access. Passing the selected
+# retry pipe through completion instead of rereading the global latch adds one
+# instruction-shaped `0x04001686` word with no decoded owner.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 3,
+    0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
     0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 5,
     0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2,
 })

@@ -610,3 +610,9 @@ FIFO storage later. Acknowledgements are sticky across repeated or shifted
 bitmaps, so first-only followed by second-only evidence completes both members;
 total misses still enter whole-aggregate retry, and stale observations whose
 member identities no longer match are rejected before selective retry planning.
+
+Retry terminal completion now carries the executor's already-latched pipe into
+success and give-up handling instead of rereading the shared
+`MAC_CURRENT_PIPE` byte after policy and descriptor work. This keeps command-mask
+release, partial member conversion, and copied completion identities tied to the
+same pipe even while another pipe is active.

@@ -76,6 +76,9 @@ must validate that identity, the pipe's exact hardware-ring MMIO root, and a
 bounded current cursor before their command-mask bit is released. Ordinary and
 depth-two retry/rearm paths use the same mockable identity validator before
 reading retained slot metadata, rebuilding descriptors, or touching the ring.
+Terminal retry completion carries that validator's selected pipe through command-
+mask release and member conversion rather than rereading the shared current-pipe
+latch after another pipe may have become active.
 Every remaining production hardware-ring consumer now accepts only the exact
 per-pipe MMIO root; advance, resynchronization, diagnostics, retry completion,
 BlockAck completion, and single/batched publication reject mismatched retained

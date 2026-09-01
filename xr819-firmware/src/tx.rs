@@ -2835,9 +2835,15 @@ pub trait SingleTxRetryBackend {
         pending_mask: u32,
     );
 
-    fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32);
+    fn complete_success(&mut self, pipe: u8, frame_node: FrameNodeAddress, slot: u32);
 
-    fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16);
+    fn complete_give_up(
+        &mut self,
+        pipe: u8,
+        frame_node: FrameNodeAddress,
+        slot: u32,
+        status: u16,
+    );
 
     /// Status class 6 enters the vendor multi-slot path and is outside the
     /// enabled single-frame subset. Production must enter fatal quiescence.
@@ -3134,7 +3140,7 @@ where
             mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
             let current = mmio.read_u8(record.current_slot().get() as u32);
             let last = mmio.read_u8(record.last_slot().get() as u32);
-            backend.complete_success(frame_node, slot.raw());
+            backend.complete_success(pipe, frame_node, slot.raw());
             mmio.write_u32(ring.completion_word(), 1);
             let next = current.wrapping_add(1) & 3;
             mmio.write_u8(record.current_slot().get() as u32, next);
@@ -3166,7 +3172,7 @@ where
             mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
             let current = mmio.read_u8(record.current_slot().get() as u32);
             let last = mmio.read_u8(record.last_slot().get() as u32);
-            backend.complete_give_up(frame_node, slot.raw(), 0x0b);
+            backend.complete_give_up(pipe, frame_node, slot.raw(), 0x0b);
             mmio.write_u32(ring.completion_word(), 1);
 
             let next = current.wrapping_add(1) & 3;
@@ -4486,8 +4492,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         );
     }
 
-    fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32) {
-        let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) };
+    fn complete_success(&mut self, pipe: u8, frame_node: FrameNodeAddress, slot: u32) {
         if pipe >= 4 {
             crate::halt_always!();
         }
@@ -4521,9 +4526,14 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         }
     }
 
-    fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16) {
+    fn complete_give_up(
+        &mut self,
+        pipe: u8,
+        frame_node: FrameNodeAddress,
+        slot: u32,
+        status: u16,
+    ) {
         unsafe { crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP) };
-        let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) };
         if pipe >= 4 {
             crate::halt_always!();
         }
@@ -9636,7 +9646,7 @@ mod tests {
         decision: SingleTxRetryDecision,
         decided: Option<(u8, u32, FrameNodeAddress)>,
         rearmed: Option<(u8, u32, FrameNodeAddress, u32)>,
-        completed: Option<(FrameNodeAddress, u32, u16)>,
+        completed: Option<(u8, FrameNodeAddress, u32, u16)>,
     }
 
     impl MockRetryBackend {
@@ -9671,12 +9681,18 @@ mod tests {
             self.rearmed = Some((pipe, slot, frame_node, pending_mask));
         }
 
-        fn complete_success(&mut self, frame_node: FrameNodeAddress, slot: u32) {
-            self.completed = Some((frame_node, slot, 0));
+        fn complete_success(&mut self, pipe: u8, frame_node: FrameNodeAddress, slot: u32) {
+            self.completed = Some((pipe, frame_node, slot, 0));
         }
 
-        fn complete_give_up(&mut self, frame_node: FrameNodeAddress, slot: u32, status: u16) {
-            self.completed = Some((frame_node, slot, status));
+        fn complete_give_up(
+            &mut self,
+            pipe: u8,
+            frame_node: FrameNodeAddress,
+            slot: u32,
+            status: u16,
+        ) {
+            self.completed = Some((pipe, frame_node, slot, status));
         }
 
         fn fatal_unsupported_multi_slot_retry(
@@ -10210,7 +10226,7 @@ mod tests {
         assert_eq!(outcome, SingleTxRetryOutcome::GivenUp);
         assert_eq!(
             backend.completed,
-            Some((FrameNodeAddress::new(0x0400_90d8), slot, 0x0b))
+            Some((0, FrameNodeAddress::new(0x0400_90d8), slot, 0x0b))
         );
         assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
         assert_eq!(mmio.get(ring + 0x1c), 1);
@@ -10223,17 +10239,17 @@ mod tests {
     }
 
     #[test]
-    fn block_ack_success_completes_before_command_and_ack() {
+    fn block_ack_success_keeps_the_selected_pipe_through_completion() {
         let mut mmio = MockPipeMmio::new();
-        mmio.set(crate::dtcm::MAC_CURRENT_PIPE.get() as u32, 0);
-        let pipe_state = pipe_state_address(0);
+        mmio.set(crate::dtcm::MAC_CURRENT_PIPE.get() as u32, 2);
+        let pipe_state = pipe_state_address(2);
         mmio.set(pipe_state + 1, 0);
         mmio.set(pipe_state + 2, 0);
         mmio.set(pipe_state + 3, 1);
         mmio.set(pipe_state + 5, 0);
-        let ring = crate::platform::tx_ring_register(0, 0) as u32;
+        let ring = crate::platform::tx_ring_register(2, 0) as u32;
         mmio.set(pipe_state + 8, ring);
-        let slot = current_slot_address(&mut mmio, 0);
+        let slot = current_slot_address(&mut mmio, 2);
         mmio.set(slot + 1, 4);
         mmio.set(slot + 3, 3);
         mmio.set(slot + 0x0c, 0x0400_90d8);
@@ -10241,22 +10257,22 @@ mod tests {
 
         let outcome = execute_single_outstanding_tx_retry(
             &mut mmio,
-            SchedulerWord::new(0x0100),
+            SchedulerWord::new(0x0400),
             &mut backend,
         );
 
         assert_eq!(outcome, SingleTxRetryOutcome::Completed);
         assert_eq!(
             backend.completed,
-            Some((FrameNodeAddress::new(0x0400_90d8), slot, 0))
+            Some((2, FrameNodeAddress::new(0x0400_90d8), slot, 0))
         );
-        assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 25);
+        assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), 1 << 27);
         assert_eq!(mmio.get(ring + 0x1c), 1);
         assert_eq!(mmio.get(pipe_state + 2), 1);
         assert_eq!(mmio.get(pipe_state + 3), 0);
         assert_eq!(mmio.get(pipe_state + 4), 0);
         assert_eq!(mmio.get(pipe_state + 5), 5);
-        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_fef0);
+        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_fbf0);
     }
 
     #[test]
