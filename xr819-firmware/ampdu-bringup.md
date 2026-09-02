@@ -743,3 +743,14 @@ confirm/retry/give-up actions. Whole-aggregate rearm is allowed only for a total
 miss when every member may retry at the same next rate and the BA session is
 still active. This closes the pure decision layer; retained identities and MMIO
 publication still remain depth-two.
+
+The first production ownership boundary is now generalized independently of
+MMIO construction. `SingleProbeMacBackend::register_ampdu_publications()`
+validates a contiguous two-to-four context prefix, reserves the physical slot's
+registry entry for the aggregate head, places later identities in the remaining
+per-pipe entries, validates every context before mutation, and resets retry/BA
+state once. The existing depth-two publisher now uses this path, so hardware
+regression qualification is required even though on-air aggregate depth remains
+two. Image `3b124888...a263eb8c` passed that regression with 20,018 TX frames,
+14,446 aggregates, 3.40 Mbit/s TCP, final 20/20 ping, BH alive, WSM idle, and
+zero used buffers. Recovery firmware was restored after the run.

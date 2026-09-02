@@ -3683,6 +3683,26 @@ fn retained_slot_state_index(pipe: u8, slot_raw: u32) -> Option<usize> {
     })
 }
 
+fn ampdu_publication_indices(slot: u8, member_count: usize) -> Option<[usize; 4]> {
+    if slot >= 4 || !(2..=4).contains(&member_count) {
+        return None;
+    }
+    let mut indices = [usize::MAX; 4];
+    indices[0] = usize::from(slot);
+    let mut position = 1;
+    for index in 0..4 {
+        if index == usize::from(slot) {
+            continue;
+        }
+        if position == member_count {
+            break;
+        }
+        indices[position] = index;
+        position += 1;
+    }
+    (position == member_count).then_some(indices)
+}
+
 fn publication_registration_allowed(
     occupied: [bool; 4],
     batch: BatchPosition,
@@ -3781,13 +3801,19 @@ impl SingleProbeMacBackend {
     }
 
     #[cfg(feature = "experimental-depth-two-ampdu")]
-    fn register_ampdu_publication(
+    fn register_ampdu_publications(
         &mut self,
-        first: ContextAddress,
-        second: ContextAddress,
+        members: [Option<ContextAddress>; 4],
         pipe: u8,
         slot: u8,
     ) -> bool {
+        let member_count = members.iter().take_while(|member| member.is_some()).count();
+        if members[member_count..].iter().any(Option::is_some) {
+            return false;
+        }
+        let Some(indices) = ampdu_publication_indices(slot, member_count) else {
+            return false;
+        };
         let pipe_index = usize::from(pipe & 3);
         let Some(retry_index) = pipe_slot_state_index(pipe, slot) else {
             return false;
@@ -3798,31 +3824,42 @@ impl SingleProbeMacBackend {
         {
             return false;
         }
+
+        let mut publications = [None; 4];
+        for position in 0..member_count {
+            let Some(context) = members[position] else {
+                return false;
+            };
+            let Some(publication) = PublishedSlotIdentity::new(context, pipe, slot) else {
+                return false;
+            };
+            publications[position] = Some(publication);
+        }
+
         self.retry[retry_index].reset();
         self.mismatch[pipe_index] = 0;
         self.selective_retry[retry_index] = None;
         self.partial_give_up[retry_index] = None;
         self.depth_two_block_ack[retry_index] = None;
-        let first_index = pipe_index * 4 + usize::from(slot & 3);
-        let Some(second_index) = self.publications[pipe_index * 4..pipe_index * 4 + 4]
-            .iter()
-            .enumerate()
-            .find_map(|(index, publication)| {
-                let index = pipe_index * 4 + index;
-                (index != first_index && publication.is_none()).then_some(index)
-            })
-        else {
-            return false;
-        };
-        let Some(first) = PublishedSlotIdentity::new(first, pipe, slot) else {
-            return false;
-        };
-        let Some(second) = PublishedSlotIdentity::new(second, pipe, slot) else {
-            return false;
-        };
-        self.publications[first_index] = Some(first);
-        self.publications[second_index] = Some(second);
+        for position in 0..member_count {
+            self.publications[pipe_index * 4 + indices[position]] = publications[position];
+        }
         true
+    }
+
+    #[cfg(feature = "experimental-depth-two-ampdu")]
+    fn register_ampdu_publication(
+        &mut self,
+        first: ContextAddress,
+        second: ContextAddress,
+        pipe: u8,
+        slot: u8,
+    ) -> bool {
+        self.register_ampdu_publications(
+            [Some(first), Some(second), None, None],
+            pipe,
+            slot,
+        )
     }
 
     fn push_completion(&mut self, completion: HostClass0Completion) {
@@ -9790,6 +9827,18 @@ mod tests {
         assert_eq!(retained_slot_state_index(1, slot), None);
         assert_eq!(retained_slot_state_index(2, slot + 1), None);
         assert_eq!(retained_slot_state_index(4, slot), None);
+    }
+
+    #[test]
+    fn ampdu_publication_indices_preserve_head_slot_and_bound_members() {
+        assert_eq!(
+            ampdu_publication_indices(3, 2),
+            Some([3, 0, usize::MAX, usize::MAX]),
+        );
+        assert_eq!(ampdu_publication_indices(2, 4), Some([2, 0, 1, 3]));
+        assert_eq!(ampdu_publication_indices(0, 1), None);
+        assert_eq!(ampdu_publication_indices(0, 5), None);
+        assert_eq!(ampdu_publication_indices(4, 2), None);
     }
 
     #[test]
