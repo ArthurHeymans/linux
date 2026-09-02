@@ -784,3 +784,16 @@ zero used buffers. Two preceding runs completed comparable traffic with the
 same clean firmware state but lost only the final ping replies; the third clean
 run, including a low reported RX bitrate, confirms the documented transient
 RF/path behavior. Recovery firmware was restored after every run.
+
+Whole-aggregate retry is now bounded over the same exact two-to-four member PAS
+chain. It validates the complete chain before mutation, requires an active BA
+session, available retry policy and status storage for every member, the
+existing two-attempt aggregate limit, and one shared next rate. Only a retained
+total miss may take the depth-three/four whole-rearm path; any partial deeper
+observation gives up safely until selective retry is generalized. Rearm rebuilds
+the generic descriptor in place from the retained CPU-form software-record
+identity, preserves slot state 4, releases only that slot's command-mask bit,
+and never issues a second GO. Image `26805e09...5a4d84ff` passed hardware
+qualification with 19,174 TX frames, 14,338 aggregates, 2.63 Mbit/s TCP, final
+20/20 ping, BH alive, WSM idle, and zero used buffers. Recovery firmware was
+restored after the run.
