@@ -754,3 +754,18 @@ regression qualification is required even though on-air aggregate depth remains
 two. Image `3b124888...a263eb8c` passed that regression with 20,018 TX frames,
 14,446 aggregates, 3.40 Mbit/s TCP, final 20/20 ping, BH alive, WSM idle, and
 zero used buffers. Recovery firmware was restored after the run.
+
+Descriptor preparation now accepts the same bounded two-to-four context prefix.
+It validates every linker-owned host context and frame-state identity, requires
+one rate, emits each ordinary per-MPDU subdescriptor, builds the tested bounded
+vendor opcode stream, and links every PAS through `next_in_ampdu` with an exact
+terminal zero. The depth-two entry point is now a wrapper over this generic
+constructor, while the publisher still supplies exactly two members. ARM uses
+an explicitly unsafe unchecked A-MPDU transfer encoder only after these exact
+packet-RAM identities have been construction-proven; host planning retains the
+fallible encoder. Image `4c6518c4...f18b0a1e` passed follow-up hardware
+qualification with 20,879 TX frames, 15,128 aggregates, 3.22 Mbit/s TCP, final
+20/20 ping, BH alive, WSM idle, and zero used buffers. An immediately preceding
+run completed 21,246 TX frames with the same clean firmware state but lost its
+final ping check; the clean follow-up classifies that as transient RF/path
+noise. Recovery firmware was restored after both runs.

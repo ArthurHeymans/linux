@@ -22,10 +22,14 @@ owned CPU-form identity proves the target object.
 
 ### A-MPDU command streams
 
-`packet_ram::ampdu_transfer_word` is the owner of opcode `0x65` encoding. It
-accepts only aligned addresses in the linker-owned runtime pool. Host tests also
-accept process-local linker objects so descriptor construction can be tested
-without manufacturing target pointers.
+`packet_ram::ampdu_transfer_word` is the checked owner of opcode `0x65`
+encoding. It accepts only aligned addresses in the linker-owned runtime pool.
+Host tests also accept process-local linker objects so descriptor construction
+can be tested without manufacturing target pointers. Target descriptor
+preparation may use `ampdu_transfer_word_unchecked` only after exact host-context,
+frame-state, DTCM descriptor-node, and packet-record ownership has already been
+validated; this avoids adding a fallible panic path to the constrained system
+stack.
 
 The command word is write-only from the CPU-address perspective. Whole-aggregate
 rearm does not recover an address from `command + 0x18`; it validates the exact
@@ -35,7 +39,7 @@ requires the DTCM-node and packet-record indices to match.
 Initial and retry publication additionally require:
 
 - the command address to be the exact linker-owned `(pipe, slot)` command base;
-- both host contexts to retain their exact linker-owned frame-state addresses;
+- every aggregate host context to retain its exact linker-owned frame-state address;
 - the DTCM descriptor node to be an exact free-list node base;
 - the packet record to be the matching exact linker-owned software-record base.
 

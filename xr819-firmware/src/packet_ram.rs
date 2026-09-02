@@ -398,6 +398,17 @@ pub fn software_record_index(address: usize) -> Option<usize> {
 /// The resulting bus word is intentionally one-way: software ownership must
 /// retain or recover the original CPU address from a typed software record.
 #[inline(always)]
+/// Encodes a construction-proven aligned runtime packet-RAM address for the
+/// MAC A-MPDU transfer opcode.
+///
+/// # Safety
+///
+/// `cpu_address` must be an aligned CPU-form address inside linker-owned
+/// runtime packet RAM. Callers must validate the owning object before use.
+pub unsafe fn ampdu_transfer_word_unchecked(cpu_address: usize) -> u32 {
+    0x6500_0000 | (cpu_address as u32 & 0x001f_fffc)
+}
+
 pub fn ampdu_transfer_word(cpu_address: usize) -> Option<u32> {
     #[cfg(target_arch = "arm")]
     let in_runtime = (RUNTIME_CPU_START as usize..RUNTIME_CPU_END as usize)

@@ -1057,8 +1057,15 @@ pub struct DepthTwoAmpduDescriptor {
 }
 
 fn ampdu_transfer_word(cpu_address: usize) -> u32 {
-    packet_ram::ampdu_transfer_word(cpu_address)
-        .expect("A-MPDU transfer requires an aligned CPU-form runtime packet-RAM address")
+    #[cfg(target_arch = "arm")]
+    unsafe {
+        packet_ram::ampdu_transfer_word_unchecked(cpu_address)
+    }
+    #[cfg(not(target_arch = "arm"))]
+    {
+        packet_ram::ampdu_transfer_word(cpu_address)
+            .expect("A-MPDU transfer requires an aligned CPU-form runtime packet-RAM address")
+    }
 }
 
 const AMPDU_SPACING_SELECTORS: [[u8; 8]; 8] = [
@@ -5020,9 +5027,8 @@ pub unsafe fn publish_host_class0_slot(
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-pub unsafe fn prepare_depth_two_host_ampdu(
-    first_context: u32,
-    second_context: u32,
+pub unsafe fn prepare_host_ampdu(
+    contexts: [Option<u32>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
     pipe: u8,
     slot: u8,
     slot_record: u32,
@@ -5030,10 +5036,13 @@ pub unsafe fn prepare_depth_two_host_ampdu(
     descriptor_node: u32,
     packet_record: u32,
 ) -> Result<(), ProbeBuildError> {
-    let first_host = crate::dtcm::host_context_from_raw(first_context)
-        .ok_or(ProbeBuildError::InvalidContextPointer)?;
-    let second_host = crate::dtcm::host_context_from_raw(second_context)
-        .ok_or(ProbeBuildError::InvalidContextPointer)?;
+    let member_count = contexts.iter().take_while(|context| context.is_some()).count();
+    if !(2..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&member_count)
+        || contexts[member_count..].iter().any(Option::is_some)
+    {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
+
     let descriptor_index = crate::dtcm::mac_software_record_node_index(descriptor_node);
     if pipe >= 4
         || slot >= 4
@@ -5041,19 +5050,45 @@ pub unsafe fn prepare_depth_two_host_ampdu(
             != Some((usize::from(pipe), usize::from(slot)))
         || descriptor_index.is_none()
         || packet_ram::software_record_index(packet_record as usize) != descriptor_index
-        || first_host.expected_frame_state().raw()
-            != unsafe { read_u32(first_host.frame_state_address().get()) }
-        || second_host.expected_frame_state().raw()
-            != unsafe { read_u32(second_host.frame_state_address().get()) }
     {
         return Err(ProbeBuildError::UnsupportedPublicationShape);
     }
-    let first = ContextAddress::new(first_context);
-    let second = ContextAddress::new(second_context);
-    let rate = unsafe { read_u8(first.tx_rate_address()) };
-    if rate != unsafe { read_u8(second.tx_rate_address()) } {
-        return Err(ProbeBuildError::UnsupportedPublicationShape);
+
+    let mut hosts = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    let mut typed = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    for index in 0..member_count {
+        let raw = contexts[index].ok_or(ProbeBuildError::InvalidContextPointer)?;
+        let host = crate::dtcm::host_context_from_raw(raw)
+            .ok_or(ProbeBuildError::InvalidContextPointer)?;
+        if host.expected_frame_state().raw()
+            != unsafe { read_u32(host.frame_state_address().get()) }
+        {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        hosts[index] = Some(host);
+        typed[index] = Some(ContextAddress::new(raw));
     }
+
+    let first_host = hosts[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+    let first = typed[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+    let rate = unsafe { read_u8(first.tx_rate_address()) };
+    let mut members = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    let mut special_ack = false;
+    for index in 0..member_count {
+        let context = typed[index].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+        if unsafe { read_u8(context.tx_rate_address()) } != rate {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        let frame_state = unsafe { read_u32(context.frame_state_address_address()) };
+        let frame_length = unsafe { read_u16(context.frame_length_address()) };
+        unsafe { emit_host_frame_descriptor_at(context.raw(), frame_state)? };
+        special_ack |= unsafe { read_u32(context.control_bits_address()) } & 0x0030_0000 == 0;
+        members[index] = Some(PlannedAmpduMember {
+            frame_state,
+            frame_length,
+        });
+    }
+
     let tx_flags = unsafe { read_u32(first.control_bits_address()) };
     let request_flag_rate_bits = unsafe { read_u8(first.request_flag_rate_bits_address()) };
     let legacy_mode = unsafe { read_u8(crate::dtcm::LOW_MAC_LEGACY_MODE.get()) };
@@ -5074,22 +5109,11 @@ pub unsafe fn prepare_depth_two_host_ampdu(
         request_flag_rate_bits,
         rate_attribute,
     );
-    let first_length = unsafe { read_u16(first.frame_length_address()) };
-    let second_length = unsafe { read_u16(second.frame_length_address()) };
-    let first_frame_state = unsafe { read_u32(first.frame_state_address_address()) };
-    let second_frame_state = unsafe { read_u32(second.frame_state_address_address()) };
-    // Vendor prepares one ordinary descriptor per PAS at dwParentQ, then the
-    // aggregate stream invokes each descriptor from word 2 so the shared PHY
-    // prefix is skipped and the 0x07004600 return resumes the aggregate body.
-    unsafe { emit_host_frame_descriptor_at(first_context, first_frame_state)? };
-    unsafe { emit_host_frame_descriptor_at(second_context, second_frame_state)? };
-    let special_ack = tx_flags & 0x0030_0000 == 0
-        || unsafe { read_u32(second.control_bits_address()) } & 0x0030_0000 == 0;
-    let descriptor = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
-        first_frame_state,
-        second_frame_state,
-        first_frame_length: first_length,
-        second_frame_length: second_length,
+    let first_length = members[0]
+        .ok_or(ProbeBuildError::UnsupportedPublicationShape)?
+        .frame_length;
+    let descriptor = build_planned_ampdu_descriptor(PlannedAmpduInput {
+        members,
         phy_rate_word: phy.rate,
         phy_control_word: finalize_phy_control(phy, rate, first_length),
         hardware_rate,
@@ -5097,7 +5121,8 @@ pub unsafe fn prepare_depth_two_host_ampdu(
             crate::configuration::mpdu_start_spacing(),
             rate,
         ),
-    });
+    })
+    .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
 
     unsafe {
         for index in 0..16_u32 {
@@ -5112,17 +5137,14 @@ pub unsafe fn prepare_depth_two_host_ampdu(
         if special_ack {
             write_u32(command as usize + 4, read_u32(command as usize + 4) | 0x8c);
         }
-        // Vendor resets the descriptor cursor to command +0x0c after building
-        // the auxiliary MPDU stream, then emits the shared PHY words before
-        // the opcode-0 transfer at +0x18. The first experiment incorrectly
-        // put these three words inside the auxiliary record, leaving the MAC's
-        // top-level command entry zeroed.
         for (index, word) in descriptor.phy_words.into_iter().enumerate() {
             write_u32(command as usize + 0x0c + index * 4, word);
         }
         write_u32(command as usize + 0x18, ampdu_transfer_word(packet_record as usize));
-        for (index, word) in descriptor.words[..usize::from(descriptor.length)]
+        for (index, word) in descriptor
+            .words
             .iter()
+            .take(usize::from(descriptor.length))
             .copied()
             .enumerate()
         {
@@ -5143,14 +5165,45 @@ pub unsafe fn prepare_depth_two_host_ampdu(
             (u32::from(read_u16(first.payload_extended_address())) << 15)
                 + if special_ack { 0x20b4 } else { 0 },
         );
-        // `txp_build_pipe_descriptor(..., 1)` publishes the aggregate airtime
-        // through PAS +0x48 before the common scheduler tail derives the pipe
-        // quantum. The first experiment omitted both this write and that tail.
         write_u32(first.word_48_address(), aggregate_airtime);
-        write_u32(first.next_in_ampdu_address(), second_host.pas().raw());
-        write_u32(second.next_in_ampdu_address(), 0);
+        for index in 0..member_count {
+            let context = typed[index].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+            let next = if index + 1 == member_count {
+                0
+            } else {
+                hosts[index + 1]
+                    .ok_or(ProbeBuildError::UnsupportedPublicationShape)?
+                    .pas()
+                    .raw()
+            };
+            write_u32(context.next_in_ampdu_address(), next);
+        }
     }
     Ok(())
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+pub unsafe fn prepare_depth_two_host_ampdu(
+    first_context: u32,
+    second_context: u32,
+    pipe: u8,
+    slot: u8,
+    slot_record: u32,
+    command: u32,
+    descriptor_node: u32,
+    packet_record: u32,
+) -> Result<(), ProbeBuildError> {
+    unsafe {
+        prepare_host_ampdu(
+            [Some(first_context), Some(second_context), None, None],
+            pipe,
+            slot,
+            slot_record,
+            command,
+            descriptor_node,
+            packet_record,
+        )
+    }
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
@@ -9611,14 +9664,12 @@ pub fn prepare_probe(
     Ok(prepared)
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PlannedAmpduMember {
     pub frame_state: u32,
     pub frame_length: u16,
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PlannedAmpduInput {
     pub members: [Option<PlannedAmpduMember>;
@@ -9629,7 +9680,6 @@ pub(crate) struct PlannedAmpduInput {
     pub spacing_selector: u8,
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PlannedAmpduDescriptor {
     pub words: [u32; 11],
@@ -9643,7 +9693,6 @@ pub(crate) struct PlannedAmpduDescriptor {
 ///
 /// Every non-final member contributes its padded delimiter length and optional
 /// spacing transfer. Members must form one contiguous prefix with depth 2..=4.
-#[cfg(test)]
 pub(crate) fn build_planned_ampdu_descriptor(
     input: PlannedAmpduInput,
 ) -> Option<PlannedAmpduDescriptor> {
@@ -9657,17 +9706,18 @@ pub(crate) fn build_planned_ampdu_descriptor(
     let mut words = [0_u32; 11];
     let mut word_count = 0_usize;
     let mut aggregate_length = 0_u32;
-    for (index, member) in input.members[..member_count].iter().copied().enumerate() {
-        let member = member?;
-        words[word_count] = ampdu_transfer_word(member.frame_state.wrapping_add(8) as usize);
+    for index in 0..member_count {
+        let member = input.members.get(index).copied().flatten()?;
+        *words.get_mut(word_count)? =
+            ampdu_transfer_word(member.frame_state.wrapping_add(8) as usize);
         word_count += 1;
         if index + 1 == member_count {
             aggregate_length = aggregate_length.checked_add(u32::from(member.frame_length) + 8)?;
         } else {
-            words[word_count] = 0x6600_0000;
+            *words.get_mut(word_count)? = 0x6600_0000;
             word_count += 1;
             if let Some(spacing) = ampdu_spacing_word(input.spacing_selector) {
-                words[word_count] = spacing;
+                *words.get_mut(word_count)? = spacing;
                 word_count += 1;
             }
             let padded = u32::from(member.frame_length).checked_add(0x0b)? & !3;
@@ -9676,7 +9726,7 @@ pub(crate) fn build_planned_ampdu_descriptor(
                 .checked_add(u32::from(input.spacing_selector) * 4)?;
         }
     }
-    words[word_count] = 0xe400_0000;
+    *words.get_mut(word_count)? = 0xe400_0000;
     word_count += 1;
     let aggregate_length = u16::try_from(aggregate_length).ok()?;
     let phy_words = [

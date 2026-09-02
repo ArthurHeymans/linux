@@ -233,7 +233,6 @@ pub const fn rate_try_for_single_rate(rate: u8, ack_failures: u8) -> [u32; 3] {
     rate_try
 }
 
-#[cfg(test)]
 pub(crate) const MAX_EXPERIMENTAL_AMPDU_DEPTH: usize = 4;
 
 #[cfg(test)]
