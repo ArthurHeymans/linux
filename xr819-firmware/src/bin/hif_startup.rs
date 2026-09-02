@@ -26,7 +26,8 @@ use xr819_firmware::tx;
 use xr819_firmware::vif;
 use xr819_firmware::wsm::{
     StartupIndication, encode_join_complete_indication, encode_scan_complete_indication,
-    encode_xr819_tx_confirm_details, encode_xr819_tx_confirm_retry_details,
+    encode_xr819_multi_tx_confirm_header, encode_xr819_tx_confirm_details,
+    encode_xr819_tx_confirm_retry_details, encode_xr819_tx_confirm_retry_entry,
 };
 use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
 
@@ -100,6 +101,68 @@ impl Firmware {
             last_watchdog_tick: 0,
             #[cfg(target_arch = "arm")]
             watchdog_timer_countdown: 0,
+        }
+    }
+}
+
+#[cfg(feature = "experimental-fast-loop")]
+fn publish_coalesced_host_tx_confirmations(firmware: &mut Firmware, host_request_waiting: bool) {
+    const MAX_CONFIRMATIONS: usize = 4;
+    if host_request_waiting || !firmware.transport.response_available() {
+        return;
+    }
+    let count = firmware
+        .host_tx_driver
+        .confirmation_count(MAX_CONFIRMATIONS);
+    if count == 0 {
+        return;
+    }
+    let Ok(length) = encode_xr819_multi_tx_confirm_header(count, firmware.response_scratch) else {
+        return;
+    };
+    let mut first_release = None;
+    for index in 0..count {
+        let Some(confirmation) = firmware.host_tx_driver.confirmation() else {
+            return;
+        };
+        if encode_xr819_tx_confirm_retry_entry(
+            confirmation.packet_id,
+            confirmation.status,
+            confirmation.tx_rate,
+            confirmation.ack_failures,
+            confirmation.flags,
+            confirmation.rate_try,
+            8 + index * 32,
+            firmware.response_scratch,
+        )
+        .is_err()
+        {
+            return;
+        }
+        unsafe {
+            host_tx_diagnostics::capture_confirmation_identity(
+                confirmation.packet_id,
+                confirmation.context,
+                confirmation.status,
+                confirmation.ack_failures,
+            );
+        }
+        let Some(release) = (unsafe { firmware.host_tx_driver.finish_confirmation() }) else {
+            return;
+        };
+        if first_release.is_none() {
+            first_release = Some(release);
+        } else {
+            firmware.transport.release_request(release);
+        }
+    }
+    if let Some(release) = first_release {
+        unsafe {
+            firmware.transport.publish_request_in_place(
+                release,
+                &firmware.response_scratch[..length],
+                length as u16,
+            );
         }
     }
 }
@@ -523,6 +586,10 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
+        #[cfg(feature = "experimental-fast-loop")]
+        publish_coalesced_host_tx_confirmations(&mut firmware, host_request_waiting);
+
+        #[cfg(not(feature = "experimental-fast-loop"))]
         if let Some(confirmation) = firmware.host_tx_driver.confirmation()
             && !host_request_waiting
             && firmware.transport.response_available()

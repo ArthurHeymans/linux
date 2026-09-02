@@ -924,3 +924,21 @@ outcome census falsifies it as the main remaining throughput fix. With zero
 watchdog rearms in every census, the next experiment moves to confirmation
 coalescing and service-loop latency before implementing a more invasive BA join.
 Recovery firmware was restored and both hashes were verified again.
+
+The feature-gated fast-loop image `1b07950e...f85b8ab` coalesces up to four
+ready confirmations into WSM multi-confirm `0x041e` and skips the one-pass
+batch-fill wait whenever the target pipe is idle. Its first equivalent build
+sustained 5.78 Mbit/s TCP and 7.51 Mbit/s received UDP, completed final ping
+20/20 at 2.71 ms average, and returned 28,319 confirmations through 11,160
+multi-confirm messages. The cleaned final image repeated at 5.92 Mbit/s TCP
+and 7.57 Mbit/s received UDP, completed final ping 20/20 at 4.34 ms average,
+and returned 28,425 confirmations through 11,096 multi-confirm messages. Both
+runs ended with BH alive, WSM idle, no pending TX, zero used buffers, and no
+driver errors; recovery hashes were verified after each. This is the first
+repeatable improvement larger than RF/run variance: TCP is 53% above the Stage
+1 adaptive run and over twice the earlier qualified depth-four baseline. The
+host `TX burst` counter remained near zero, proving it does not measure the
+confirmation-credit bottleneck removed here. Multi-confirm and immediate
+idle-pipe publication are qualified together under `experimental-fast-loop`;
+separating their individual contributions is lower priority than fixing the
+remaining empty selective plans and member requeue path.

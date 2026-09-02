@@ -21,6 +21,7 @@ pub const START_SCAN_REQ_ID: u16 = 0x0007;
 pub const START_SCAN_RESP_ID: u16 = 0x0407;
 pub const TX_REQ_ID: u16 = 0x0004;
 pub const TX_CONFIRM_ID: u16 = 0x0404;
+pub const MULTI_TX_CONFIRM_ID: u16 = 0x041e;
 pub const JOIN_REQ_ID: u16 = 0x000b;
 pub const JOIN_RESP_ID: u16 = 0x040b;
 pub const ADD_KEY_REQ_ID: u16 = 0x000c;
@@ -818,6 +819,57 @@ pub fn encode_xr819_tx_confirm_retry_details(
     Ok(total_len)
 }
 
+pub fn encode_xr819_multi_tx_confirm_header(
+    count: usize,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    const ENTRY_LEN: usize = 32;
+    if count == 0 {
+        return Err(Error::InvalidLength);
+    }
+    let total_len = HEADER_LEN + 4 + count * ENTRY_LEN;
+    if output.len() < total_len || total_len > u16::MAX as usize {
+        return Err(Error::OutputTooSmall);
+    }
+    Header {
+        len: total_len as u16,
+        id: MULTI_TX_CONFIRM_ID,
+    }
+    .encode(output)?;
+    write_u32(output, HEADER_LEN, count as u32);
+    Ok(total_len)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn encode_xr819_tx_confirm_retry_entry(
+    packet_id: u32,
+    status: u32,
+    tx_rate: u8,
+    ack_failures: u8,
+    flags: u16,
+    rate_try: [u32; 3],
+    offset: usize,
+    output: &mut [u8],
+) -> Result<(), Error> {
+    const ENTRY_LEN: usize = 32;
+    let Some(end) = offset.checked_add(ENTRY_LEN) else {
+        return Err(Error::OutputTooSmall);
+    };
+    if output.len() < end {
+        return Err(Error::OutputTooSmall);
+    }
+    output[offset..end].fill(0);
+    write_u32(output, offset, packet_id);
+    write_u32(output, offset + 4, status);
+    output[offset + 8] = tx_rate;
+    output[offset + 9] = ack_failures;
+    write_u16(output, offset + 10, flags);
+    for (index, attempts) in rate_try.into_iter().enumerate() {
+        write_u32(output, offset + 12 + index * 4, attempts);
+    }
+    Ok(())
+}
+
 pub fn encode_join_complete_indication(status: u32, output: &mut [u8]) -> Result<usize, Error> {
     const LEN: usize = HEADER_LEN + 4;
     if output.len() < LEN {
@@ -1110,6 +1162,43 @@ mod tests {
         assert_eq!(read_u16(&output, 8).unwrap(), 0xff00);
         assert_eq!(read_u16(&output, 10).unwrap(), 8);
         assert_eq!(&output[12..20], b"snapshot");
+    }
+
+    #[test]
+    fn xr819_multi_tx_confirm_prefixes_count_and_packs_entries() {
+        let mut output = [0xaa_u8; 72];
+        assert_eq!(encode_xr819_multi_tx_confirm_header(2, &mut output), Ok(72));
+        assert_eq!(&output[..4], &[72, 0, 0x1e, 0x04]);
+        assert_eq!(&output[4..8], &2_u32.to_le_bytes());
+        encode_xr819_tx_confirm_retry_entry(
+            0x1111_2222,
+            0,
+            19,
+            2,
+            1,
+            [3, 4, 5],
+            8,
+            &mut output,
+        )
+        .unwrap();
+        encode_xr819_tx_confirm_retry_entry(
+            0x3333_4444,
+            0x0b,
+            21,
+            6,
+            2,
+            [7, 8, 9],
+            40,
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(&output[8..12], &0x1111_2222_u32.to_le_bytes());
+        assert_eq!(&output[40..44], &0x3333_4444_u32.to_le_bytes());
+        assert_eq!(&output[44..48], &0x0b_u32.to_le_bytes());
+        assert_eq!(output[48], 21);
+        assert_eq!(output[49], 6);
+        assert_eq!(&output[50..52], &2_u16.to_le_bytes());
+        assert_eq!(encode_xr819_multi_tx_confirm_header(0, &mut output), Err(Error::InvalidLength));
     }
 
     #[test]

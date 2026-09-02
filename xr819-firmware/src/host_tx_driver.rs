@@ -460,7 +460,8 @@ impl HostTxDriver {
             }
             ready_count += 1;
         }
-        if ready_count != 0
+        if !cfg!(feature = "experimental-fast-loop")
+            && ready_count != 0
             && ready_count < host_tx_policy::MAX_ORDINARY_BATCH_DEPTH
             && self.scheduler_single_wait == 0
         {
@@ -864,7 +865,10 @@ impl HostTxDriver {
                 break;
             }
         }
-        if ready_count == 1 && self.scheduler_single_wait == 0 {
+        if !cfg!(feature = "experimental-fast-loop")
+            && ready_count == 1
+            && self.scheduler_single_wait == 0
+        {
             // The command lane admits at most one request after this service
             // pass. Give it one pass to supply a partner before falling back
             // to the latency-safe single-frame path.
@@ -1422,6 +1426,14 @@ impl HostTxDriver {
             Some(HostTxState::Confirming { confirmation, .. }) => Some(confirmation),
             _ => None,
         }
+    }
+
+    pub fn confirmation_count(&self, limit: usize) -> usize {
+        self.states
+            .iter()
+            .filter(|state| matches!(state, Some(HostTxState::Confirming { .. })))
+            .count()
+            .min(limit)
     }
 
     /// Finish the same first confirmation returned by `confirmation()` at the
