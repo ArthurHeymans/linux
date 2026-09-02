@@ -797,3 +797,15 @@ and never issues a second GO. Image `26805e09...5a4d84ff` passed hardware
 qualification with 19,174 TX frames, 14,338 aggregates, 2.63 Mbit/s TCP, final
 20/20 ping, BH alive, WSM idle, and zero used buffers. Recovery firmware was
 restored after the run.
+
+Two attempts to replace the qualified depth-two selective tail with one generic
+production tail were rejected. Images `71f2fe0e...086b6026` and
+`e87d0c4b...ea6d9a67` both stopped at the first aggregate-era transition with
+zero completed aggregates, eight host buffers outstanding, and a BH TX-confirm
+timeout. Increasing stack headroom did not change the signature, so the generic
+tail must not replace the exact depth-two sequence while deeper handling is
+under development. `experimental-depth-four-ampdu` now provides a separate
+feature boundary, and the host-only selective planner exhaustively covers all
+16 four-member acknowledgement subsets plus unavailable and mixed-rate retry
+groups. The qualified depth-two image remains byte-identical to
+`26805e09...5a4d84ff`.

@@ -14,6 +14,9 @@ default = []
 vendor-host-tx-diagnostics = []
 # Hardware-only depth-two A-MPDU bring-up. Never enabled in normal firmware.
 experimental-depth-two-ampdu = []
+# Hardware-only depth-three/four A-MPDU bring-up. This keeps the qualified
+# depth-two retry implementation byte-stable while deeper ownership evolves.
+experimental-depth-four-ampdu = ["experimental-depth-two-ampdu"]
 # Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains
 # capped at the previously qualified two-slot transaction.
 experimental-four-slot-ordinary = []

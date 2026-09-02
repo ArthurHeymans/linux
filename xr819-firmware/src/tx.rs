@@ -9917,6 +9917,50 @@ pub(crate) fn plan_planned_block_ack_actions(
     })
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SelectiveAmpduRetryPlan {
+    pub actions: [Option<BlockAckMemberAction>;
+        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    pub retry_members: [Option<u8>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    pub retry_count: u8,
+}
+
+#[cfg(test)]
+pub(crate) fn plan_selective_ampdu_retry(
+    observation: PlannedBlockAck,
+    retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    session_active: bool,
+    effective_retry_rates: [Option<u8>;
+        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+) -> SelectiveAmpduRetryPlan {
+    let member_count = usize::from(observation.member_count)
+        .min(crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH);
+    let mut actions =
+        plan_planned_block_ack_actions(observation, retry_allowed, session_active);
+    let mut retry_members = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    let mut retry_count = 0_usize;
+    let mut selected_rate = None;
+    for index in 0..member_count {
+        if actions[index] != Some(BlockAckMemberAction::Retry) {
+            continue;
+        }
+        let rate = effective_retry_rates[index];
+        if rate.is_none() || selected_rate.is_some_and(|selected| Some(selected) != rate) {
+            actions[index] = Some(BlockAckMemberAction::GiveUp);
+            continue;
+        }
+        selected_rate = rate;
+        retry_members[retry_count] = Some(index as u8);
+        retry_count += 1;
+    }
+    SelectiveAmpduRetryPlan {
+        actions,
+        retry_members,
+        retry_count: retry_count as u8,
+    }
+}
+
 pub(crate) fn planned_whole_retry_allowed(
     observation: PlannedBlockAck,
     retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
@@ -12352,6 +12396,72 @@ mod tests {
         assert_eq!(
             plan_planned_block_ack_actions(merged, [true; 4], true),
             [Some(BlockAckMemberAction::Confirm); 4],
+        );
+    }
+
+    #[test]
+    fn selective_ampdu_plan_covers_every_four_member_ack_subset() {
+        let sequences = [Some(0x0100), Some(0x0101), Some(0x0102), Some(0x0103)];
+        for bitmap in 0_u64..16 {
+            let observation = classify_planned_block_ack(0x0100, bitmap, sequences).unwrap();
+            let plan = plan_selective_ampdu_retry(
+                observation,
+                [true; 4],
+                true,
+                [Some(18); 4],
+            );
+            let expected_retry_count = 4 - bitmap.count_ones() as u8;
+            assert_eq!(plan.retry_count, expected_retry_count, "bitmap {bitmap:#06b}");
+            for index in 0..4 {
+                let expected = if bitmap & (1 << index) != 0 {
+                    Some(BlockAckMemberAction::Confirm)
+                } else {
+                    Some(BlockAckMemberAction::Retry)
+                };
+                assert_eq!(plan.actions[index], expected, "bitmap {bitmap:#06b}, member {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn selective_ampdu_plan_rejects_mixed_or_unavailable_retry_rates() {
+        let observation = PlannedBlockAck {
+            states: [
+                BlockAckMemberState::Missing,
+                BlockAckMemberState::Acknowledged,
+                BlockAckMemberState::Missing,
+                BlockAckMemberState::Missing,
+            ],
+            member_count: 4,
+        };
+        let plan = plan_selective_ampdu_retry(
+            observation,
+            [true; 4],
+            true,
+            [Some(18), None, Some(17), Some(18)],
+        );
+        assert_eq!(plan.retry_count, 2);
+        assert_eq!(plan.retry_members, [Some(0), Some(3), None, None]);
+        assert_eq!(
+            plan.actions,
+            [
+                Some(BlockAckMemberAction::Retry),
+                Some(BlockAckMemberAction::Confirm),
+                Some(BlockAckMemberAction::GiveUp),
+                Some(BlockAckMemberAction::Retry),
+            ],
+        );
+
+        let inactive = plan_selective_ampdu_retry(observation, [true; 4], false, [Some(18); 4]);
+        assert_eq!(inactive.retry_count, 0);
+        assert_eq!(
+            inactive.actions,
+            [
+                Some(BlockAckMemberAction::GiveUp),
+                Some(BlockAckMemberAction::Confirm),
+                Some(BlockAckMemberAction::GiveUp),
+                Some(BlockAckMemberAction::GiveUp),
+            ],
         );
     }
 
