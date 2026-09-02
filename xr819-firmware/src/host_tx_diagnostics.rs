@@ -28,7 +28,15 @@ pub const PRE_GO_SNAPSHOT_WORDS: usize = 38;
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 const STATUS2_RECORD_COUNT: usize = 4;
 
-#[cfg(feature = "vendor-host-tx-diagnostics")]
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-depth-four-ampdu"
+))]
+const FLIGHT_RECORD_COUNT: usize = 192;
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    not(feature = "experimental-depth-four-ampdu")
+))]
 const FLIGHT_RECORD_COUNT: usize = 256;
 
 #[cfg(feature = "vendor-host-tx-diagnostics")]

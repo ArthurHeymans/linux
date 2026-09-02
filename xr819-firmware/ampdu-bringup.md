@@ -809,3 +809,22 @@ feature boundary, and the host-only selective planner exhaustively covers all
 16 four-member acknowledgement subsets plus unavailable and mixed-rate retry
 groups. The qualified depth-two image remains byte-identical to
 `26805e09...5a4d84ff`.
+
+The production selective tail is now present only under
+`experimental-depth-four-ampdu` and is entered only for retained chains deeper
+than two. Depth-two observations continue through the previously qualified
+selective and partial-give-up code. The deeper path recomputes its bounded plan
+from declared retained identities, detaches terminal members once, rewrites a
+same-rate retry subset in original order, converts a one-member subset to an
+ordinary retry, and rebuilds a multi-member subset without a second GO. To fit
+this opt-in diagnostic image inside the observed ITCM envelope, its optional
+flight recorder is reduced from 256 to 192 records; normal diagnostics retain
+256. The combined depth-four feature build has 52 bytes of qualified system
+stack headroom. Deeper publication is still disconnected, so this stage can
+regression-test feature isolation before any depth-three/four frame reaches the
+MAC. The non-depth-four image `bbfa07f7...97397fe9` passed with 19,683 TX
+frames, 14,494 aggregates, 2.70 Mbit/s TCP, final 20/20 ping, BH alive, WSM
+idle, and zero used buffers. The isolated depth-four-feature image
+`68962273...84435ae7` then passed the same depth-two workload with 22,139 TX
+frames, 16,658 aggregates, 3.86 Mbit/s TCP, final 20/20 ping, BH alive, WSM
+idle, and zero used buffers. Recovery firmware was restored after both runs.

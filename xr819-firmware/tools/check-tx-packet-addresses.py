@@ -19,7 +19,7 @@ expected = {
     "packet_ram::RuntimePacketAddress::new(": 8,
     "validated_tx_frame(": 4,
     "validated_context_tx_frame(": 5,
-    "FrameNodeAddress::from_raw(": 4,
+    "FrameNodeAddress::from_raw(": 9,
     "LiveTxSlot::from_pipe_slot(": 4,
     "RetirableTxSlot::from_pipe_slot(": 1,
     "LiveTxSlot::from_mmio(": 3,

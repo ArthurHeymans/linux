@@ -4245,6 +4245,7 @@ unsafe fn prepare_whole_ampdu_retry(
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
+#[cfg_attr(feature = "experimental-depth-four-ampdu", inline(always))]
 unsafe fn rearm_whole_ampdu(
     pipe: u8,
     slot_raw: u32,
@@ -4449,6 +4450,233 @@ unsafe fn convert_depth_two_slot_to_selective_retry(
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+unsafe fn selective_member_retry_rate(frame_node: FrameNodeAddress) -> Option<u8> {
+    unsafe {
+        let context = frame_node.context();
+        let host = context.host()?;
+        let rate = read_u8(context.tx_rate_address());
+        host.rate_try(usize::from(rate >> 3))?;
+        let policy = crate::rate_policy::get(read_u8(context.retry_policy_address()))?;
+        let try_count = read_u16(context.try_count_address());
+        let flags = read_u32(context.control_bits_address());
+        let long_frame = (flags & 0x7ff) >> 9 != 0;
+        let crate::rate_policy::RetryStep::Rearm { rate: next_rate } =
+            crate::rate_policy::retry_step(policy, rate, try_count, long_frame)
+        else {
+            return None;
+        };
+        Some(if next_rate != rate && (flags & 0x20 == 0 || next_rate > 13) {
+            next_rate
+        } else {
+            rate
+        })
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+unsafe fn depth_four_selective_plan_for(
+    first_frame_node: FrameNodeAddress,
+    observation: RetainedAmpduBlockAck,
+) -> Option<(
+    SelectiveAmpduRetryPlan,
+    [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+)> {
+    unsafe {
+        let (contexts, member_count) = collect_ampdu_contexts(first_frame_node)?;
+        if member_count < 3 || member_count != usize::from(observation.observation.member_count) {
+            return None;
+        }
+        let members = contexts.map(|context| context.map_or(0, |context| context.frame_node().raw()));
+        if observation.members != members {
+            return None;
+        }
+        let first = contexts[0]?;
+        let tid = read_u8(first.tid_address());
+        let session_active = tid < 8
+            && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
+        let mut retry_allowed = [false; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        let mut retry_rates = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        for index in 0..member_count {
+            let member = FrameNodeAddress::from_raw(members[index])?;
+            retry_rates[index] = selective_member_retry_rate(member);
+            retry_allowed[index] = retry_rates[index].is_some();
+        }
+        Some((
+            plan_selective_ampdu_retry(
+                observation.observation,
+                retry_allowed,
+                session_active,
+                retry_rates,
+            ),
+            members,
+        ))
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+unsafe fn enqueue_terminal_depth_four_member(frame_node: FrameNodeAddress, status: u16) {
+    unsafe {
+        let context = frame_node.context();
+        write_u32(
+            context.ownership_bits_address(),
+            read_u32(context.ownership_bits_address()) | 0x0c00,
+        );
+        let class_bits = ((read_u32(context.control_bits_address()) >> 18) & 0x0c) as u16;
+        write_u16(
+            context.auxiliary_state_address(),
+            read_u16(context.auxiliary_state_address()) | 1 | class_bits,
+        );
+        write_u16(context.terminal_status_address(), status);
+        write_u32(context.completion_timestamp_address(), read_u32(0x0ac0_0004));
+        enqueue_completion_frame_node(frame_node, || false);
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+unsafe fn rewrite_depth_four_member_table(link: u8, members: &[u32; 4]) {
+    unsafe {
+        if link >= 8 {
+            return;
+        }
+        for index in 0..16 {
+            let value = if index < members.len() && members[index] != 0 {
+                FrameNodeAddress::new(members[index]).context().raw()
+            } else {
+                0
+            };
+            write_u32(
+                crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
+                    .member_unchecked(usize::from(link), index)
+                    .get(),
+                value,
+            );
+        }
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+unsafe fn apply_depth_four_selective_retry(
+    slot_raw: u32,
+    plan: SelectiveAmpduRetryPlan,
+    members: [u32; 4],
+) -> Option<(FrameNodeAddress, usize)> {
+    unsafe {
+        let retry_count = usize::from(plan.retry_count);
+        if retry_count == 0 || retry_count > 4 {
+            return None;
+        }
+        let mut retries = [0_u32; 4];
+        for (position, member_index) in plan
+            .retry_members
+            .iter()
+            .take(retry_count)
+            .copied()
+            .enumerate()
+        {
+            let index = usize::from(member_index?);
+            let member = FrameNodeAddress::from_raw(*members.get(index)?)?;
+            if !prepare_selective_member_retry(member) {
+                return None;
+            }
+            retries[position] = member.raw();
+        }
+        for (index, action) in plan.actions.into_iter().enumerate() {
+            let Some(action) = action else { continue };
+            if action == BlockAckMemberAction::Retry {
+                continue;
+            }
+            let member = FrameNodeAddress::from_raw(members[index])?;
+            write_u32(member.context().next_in_ampdu_address(), 0);
+            let status = if action == BlockAckMemberAction::Confirm {
+                0
+            } else {
+                crate::host_tx_diagnostics::bump(
+                    crate::host_tx_diagnostics::counter::GIVE_UP,
+                );
+                0x0b
+            };
+            enqueue_terminal_depth_four_member(member, status);
+        }
+
+        let head = FrameNodeAddress::new(retries[0]);
+        if retry_count == 1 {
+            write_u32(head.context().next_in_ampdu_address(), 0);
+        } else {
+            for index in 0..retry_count {
+                let member = FrameNodeAddress::new(retries[index]);
+                let next = retries.get(index + 1).copied().unwrap_or(0);
+                write_u32(member.context().next_in_ampdu_address(), next);
+                let flags = read_u32(member.context().control_bits_address());
+                write_u32(
+                    member.context().control_bits_address(),
+                    (flags & !0x40) | if index == 0 { 0x40 } else { 0 },
+                );
+            }
+            let link = read_u8(head.context().link_id_address());
+            rewrite_depth_four_member_table(link, &retries);
+        }
+        write_u32(
+            crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw)
+                .frame()
+                .get(),
+            head.raw(),
+        );
+        Some((head, retry_count))
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+unsafe fn finish_depth_four_selective_actions(
+    slot_raw: u32,
+    plan: SelectiveAmpduRetryPlan,
+    members: [u32; 4],
+) -> bool {
+    unsafe {
+        if plan.retry_count != 0 {
+            return false;
+        }
+        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
+        let descriptor = read_u32(slot.auxiliary().get());
+        if descriptor != 0 {
+            write_u32(descriptor as usize, read_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()));
+            write_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get(), descriptor);
+        }
+        write_u32(slot.frame().get(), 0);
+        let Some(first) = FrameNodeAddress::from_raw(members[0]) else {
+            return false;
+        };
+        rewrite_depth_four_member_table(read_u8(first.context().link_id_address()), &[0; 4]);
+        for (index, action) in plan.actions.into_iter().enumerate() {
+            let Some(action) = action else { continue };
+            let Some(member) = FrameNodeAddress::from_raw(members[index]) else {
+                return false;
+            };
+            write_u32(member.context().next_in_ampdu_address(), 0);
+            let status = if action == BlockAckMemberAction::Confirm {
+                0
+            } else {
+                crate::host_tx_diagnostics::bump(
+                    crate::host_tx_diagnostics::counter::GIVE_UP,
+                );
+                0x0b
+            };
+            enqueue_terminal_depth_four_member(member, status);
+        }
+        write_u8(
+            crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
+            read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
+        );
+        true
+    }
+}
+
 #[cfg(target_arch = "arm")]
 impl SingleTxRetryBackend for SingleProbeMacBackend {
     fn decide_retry(
@@ -4469,6 +4697,21 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         } {
             #[cfg(feature = "experimental-depth-two-ampdu")]
             {
+                #[cfg(feature = "experimental-depth-four-ampdu")]
+                if let Some(observation) = self.depth_two_block_ack[retry_index]
+                    .filter(|observation| observation.observation.member_count > 2)
+                {
+                    let Some((plan, _)) = (unsafe {
+                        depth_four_selective_plan_for(frame_node, observation)
+                    }) else {
+                        return SingleTxRetryDecision::GiveUp;
+                    };
+                    if plan.retry_count != 0 {
+                        self.retry[retry_index].record_rearm();
+                        return SingleTxRetryDecision::Rearm;
+                    }
+                    return SingleTxRetryDecision::CompleteSuccess;
+                }
                 let observation = self.depth_two_block_ack[retry_index].take();
                 if let Some(observation) = observation
                     && observation.observation.member_count > 2
@@ -4643,6 +4886,43 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
                 terminal_probe_backend_fault(pipe)
             };
+            #[cfg(feature = "experimental-depth-four-ampdu")]
+            if let Some(observation) = self.depth_two_block_ack[retry_index]
+                .filter(|observation| observation.observation.member_count > 2)
+            {
+                let Some((plan, members)) = (unsafe {
+                    depth_four_selective_plan_for(frame_node, observation)
+                }) else {
+                    terminal_probe_backend_fault(pipe)
+                };
+                self.depth_two_block_ack[retry_index] = None;
+                let Some((retry_head, retry_count)) =
+                    (unsafe { apply_depth_four_selective_retry(slot, plan, members) })
+                else {
+                    terminal_probe_backend_fault(pipe)
+                };
+                if retry_count == 1 {
+                    let link = unsafe { read_u8(retry_head.context().link_id_address()) };
+                    unsafe {
+                        convert_depth_two_slot_to_selective_retry(link, slot, retry_head)
+                    };
+                    execute_fixed_rate_single_frame_rearm(
+                        &mut VolatileMacPipeMmio,
+                        pipe,
+                        slot,
+                        retry_head,
+                        pending_mask,
+                        self,
+                    );
+                } else if unsafe {
+                    rearm_whole_ampdu(pipe, slot, retry_head, pending_mask)
+                }
+                .is_err()
+                {
+                    terminal_probe_backend_fault(pipe);
+                }
+                return;
+            }
             if let Some(missing) = self.selective_retry[retry_index].take() {
                 let link = unsafe { read_u8(missing.context().link_id_address()) };
                 unsafe { convert_depth_two_slot_to_selective_retry(link, slot, missing) };
@@ -4689,7 +4969,37 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
             terminal_probe_backend_fault(pipe)
         };
-        #[cfg(feature = "experimental-depth-two-ampdu")]
+        #[cfg(feature = "experimental-depth-four-ampdu")]
+        if let Some(observation) = self.depth_two_block_ack[retry_index]
+            .filter(|observation| observation.observation.member_count > 2)
+        {
+            let Some((plan, members)) =
+                (unsafe { depth_four_selective_plan_for(frame_node, observation) })
+            else {
+                terminal_probe_backend_fault(pipe)
+            };
+            self.depth_two_block_ack[retry_index] = None;
+            if !unsafe { finish_depth_four_selective_actions(slot, plan, members) } {
+                terminal_probe_backend_fault(pipe);
+            }
+        } else if let Some((acknowledged, missing)) =
+            self.partial_give_up[retry_index].take()
+        {
+            unsafe {
+                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP);
+                write_u32(acknowledged.context().next_in_ampdu_address(), 0);
+                enqueue_acknowledged_aggregate_member(acknowledged);
+                let link = read_u8(missing.context().link_id_address());
+                convert_depth_two_slot_to_selective_retry(link, slot, missing);
+                complete_tx_pipe_slot(missing, slot, 0x0b, self);
+            }
+        } else {
+            unsafe { complete_tx_pipe_slot(frame_node, slot, 0, self) };
+        }
+        #[cfg(all(
+            feature = "experimental-depth-two-ampdu",
+            not(feature = "experimental-depth-four-ampdu")
+        ))]
         if let Some((acknowledged, missing)) = self.partial_give_up[retry_index].take() {
             unsafe {
                 crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP);
@@ -9917,7 +10227,7 @@ pub(crate) fn plan_planned_block_ack_actions(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SelectiveAmpduRetryPlan {
     pub actions: [Option<BlockAckMemberAction>;
@@ -9926,7 +10236,7 @@ pub(crate) struct SelectiveAmpduRetryPlan {
     pub retry_count: u8,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
 pub(crate) fn plan_selective_ampdu_retry(
     observation: PlannedBlockAck,
     retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
