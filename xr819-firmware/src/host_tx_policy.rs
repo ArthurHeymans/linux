@@ -234,6 +234,104 @@ pub const fn rate_try_for_single_rate(rate: u8, ack_failures: u8) -> [u32; 3] {
 }
 
 #[cfg(test)]
+pub(crate) const MAX_EXPERIMENTAL_AMPDU_DEPTH: usize = 4;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AmpduPlanCandidate {
+    pub interface: u8,
+    pub link: u8,
+    pub tid: u8,
+    pub rate: u8,
+    pub frame_control: u16,
+    pub airtime: u32,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AmpduGroupPlan {
+    len: u8,
+    total_airtime: u32,
+}
+
+#[cfg(test)]
+impl AmpduGroupPlan {
+    pub(crate) const fn len(self) -> usize {
+        self.len as usize
+    }
+
+    pub(crate) const fn total_airtime(self) -> u32 {
+        self.total_airtime
+    }
+}
+
+#[cfg(test)]
+const fn ampdu_candidate_matches(
+    head: AmpduPlanCandidate,
+    candidate: AmpduPlanCandidate,
+    tx_ba_tids: u8,
+    operational_tx_ba_tids: u8,
+) -> bool {
+    let qos_data = candidate.frame_control & 0x008c == 0x0088;
+    let tid_enabled = head.tid < 8
+        && tx_ba_tids & (1 << head.tid) != 0
+        && operational_tx_ba_tids & (1 << head.tid) != 0;
+    qos_data
+        && tid_enabled
+        && head.link < 8
+        && head.rate >= 14
+        && candidate.interface == head.interface
+        && candidate.link == head.link
+        && candidate.tid == head.tid
+        && candidate.rate == head.rate
+}
+
+/// Plan the first bounded slice of one vendor A-MPDU chain.
+///
+/// Candidates are already ordered and mapped to one pipe. A same-pipe
+/// incompatibility closes the aggregate rather than being skipped. A zero
+/// airtime budget is unbounded, matching the vendor convention.
+#[cfg(test)]
+pub(crate) fn plan_ampdu_group(
+    candidates: &[Option<AmpduPlanCandidate>],
+    tx_ba_tids: u8,
+    operational_tx_ba_tids: u8,
+    airtime_budget: u32,
+) -> Option<AmpduGroupPlan> {
+    let head = candidates.first().copied().flatten()?;
+    if !ampdu_candidate_matches(head, head, tx_ba_tids, operational_tx_ba_tids) {
+        return None;
+    }
+    let mut len = 1_usize;
+    let mut total_airtime = head.airtime;
+    for candidate in candidates
+        .iter()
+        .copied()
+        .skip(1)
+        .take(MAX_EXPERIMENTAL_AMPDU_DEPTH - 1)
+    {
+        let Some(candidate) = candidate else {
+            break;
+        };
+        if !ampdu_candidate_matches(head, candidate, tx_ba_tids, operational_tx_ba_tids) {
+            break;
+        }
+        let Some(next_airtime) = total_airtime.checked_add(candidate.airtime) else {
+            break;
+        };
+        if airtime_budget != 0 && next_airtime > airtime_budget {
+            break;
+        }
+        total_airtime = next_airtime;
+        len += 1;
+    }
+    (len >= 2).then_some(AmpduGroupPlan {
+        len: len as u8,
+        total_airtime,
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -292,6 +390,74 @@ mod tests {
         assert_eq!(Class0RuntimeOwners::new().first_in_pipe(4), None);
         assert_eq!(Class0RuntimeOwners::new().slot_owner(0, 4), None);
         assert!(Class0RuntimeOwners::new().is_empty());
+    }
+
+    #[test]
+    fn ampdu_group_plan_caps_at_four_and_preserves_airtime_budget() {
+        let member = AmpduPlanCandidate {
+            interface: 0,
+            link: 1,
+            tid: 3,
+            rate: 19,
+            frame_control: 0x0088,
+            airtime: 400,
+        };
+        let candidates = [Some(member); 5];
+        assert_eq!(
+            plan_ampdu_group(&candidates, 1 << 3, 1 << 3, 0),
+            Some(AmpduGroupPlan {
+                len: 4,
+                total_airtime: 1600,
+            })
+        );
+        assert_eq!(
+            plan_ampdu_group(&candidates, 1 << 3, 1 << 3, 1200),
+            Some(AmpduGroupPlan {
+                len: 3,
+                total_airtime: 1200,
+            })
+        );
+    }
+
+    #[test]
+    fn ampdu_group_plan_stops_at_the_first_incompatible_member() {
+        let member = AmpduPlanCandidate {
+            interface: 0,
+            link: 1,
+            tid: 0,
+            rate: 19,
+            frame_control: 0x0088,
+            airtime: 200,
+        };
+        let candidates = [
+            Some(member),
+            Some(member),
+            Some(AmpduPlanCandidate { rate: 18, ..member }),
+            Some(member),
+        ];
+        assert_eq!(
+            plan_ampdu_group(&candidates, 1, 1, 0),
+            Some(AmpduGroupPlan {
+                len: 2,
+                total_airtime: 400,
+            })
+        );
+        assert_eq!(plan_ampdu_group(&candidates, 0, 1, 0), None);
+        assert_eq!(
+            plan_ampdu_group(
+                &[
+                    Some(member),
+                    Some(AmpduPlanCandidate {
+                        frame_control: 0x0008,
+                        ..member
+                    }),
+                ],
+                1,
+                1,
+                0,
+            ),
+            None
+        );
     }
 
     #[test]

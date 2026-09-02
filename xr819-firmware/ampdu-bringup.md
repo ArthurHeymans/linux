@@ -715,3 +715,22 @@ The combined depth-two plus four-slot image
 frames, 18,650 aggregates, 4.49 Mbit/s TCP, final 20/20 ping, BH alive, WSM
 idle, and zero used buffers. This is the qualified image for continued
 aggregation work; recovery firmware was restored afterwards.
+
+## Depth-four aggregate planning
+
+The next aggregate step is pure and does not alter MMIO publication.
+`host_tx_policy::plan_ampdu_group()` now selects a contiguous same-interface,
+link, TID, and rate QoS-data prefix, requires both configured and operational BA
+policy, applies the vendor zero-means-unbounded airtime budget, and caps the
+first experiment at four members. A same-pipe incompatibility closes the chain
+rather than being skipped.
+
+`tx::build_planned_ampdu_descriptor()` models the corresponding vendor member
+loop for two through four contiguous frame-state records. Every non-final
+member emits the delimiter command and optional spacing transfer, the final
+member emits the terminal command, and aggregate length uses the vendor's
+`(length + 0x0b) & !3` arithmetic. Host tests cover depth caps, rate changes,
+BA-policy gates, airtime limits, holes, spacing, exact opcode order, and PHY
+length publication. The qualified depth-two publisher, BlockAck handling, and
+retry paths remain unchanged until ownership and completion policy are expanded
+for every planned member.

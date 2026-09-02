@@ -9575,6 +9575,90 @@ pub fn prepare_probe(
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlannedAmpduMember {
+    pub frame_state: u32,
+    pub frame_length: u16,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlannedAmpduInput {
+    pub members: [Option<PlannedAmpduMember>;
+        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    pub phy_rate_word: u32,
+    pub phy_control_word: u32,
+    pub hardware_rate: u8,
+    pub spacing_selector: u8,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlannedAmpduDescriptor {
+    pub words: [u32; 11],
+    pub length: u8,
+    pub phy_words: [u32; 3],
+    pub aggregate_length: u16,
+    pub member_count: u8,
+}
+
+/// Build a bounded vendor opcode stream without publishing it to hardware.
+///
+/// Every non-final member contributes its padded delimiter length and optional
+/// spacing transfer. Members must form one contiguous prefix with depth 2..=4.
+#[cfg(test)]
+pub(crate) fn build_planned_ampdu_descriptor(
+    input: PlannedAmpduInput,
+) -> Option<PlannedAmpduDescriptor> {
+    let member_count = input.members.iter().take_while(|member| member.is_some()).count();
+    if !(2..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&member_count)
+        || input.members[member_count..].iter().any(Option::is_some)
+    {
+        return None;
+    }
+
+    let mut words = [0_u32; 11];
+    let mut word_count = 0_usize;
+    let mut aggregate_length = 0_u32;
+    for (index, member) in input.members[..member_count].iter().copied().enumerate() {
+        let member = member?;
+        words[word_count] = ampdu_transfer_word(member.frame_state.wrapping_add(8) as usize);
+        word_count += 1;
+        if index + 1 == member_count {
+            aggregate_length = aggregate_length.checked_add(u32::from(member.frame_length) + 8)?;
+        } else {
+            words[word_count] = 0x6600_0000;
+            word_count += 1;
+            if let Some(spacing) = ampdu_spacing_word(input.spacing_selector) {
+                words[word_count] = spacing;
+                word_count += 1;
+            }
+            let padded = u32::from(member.frame_length).checked_add(0x0b)? & !3;
+            aggregate_length = aggregate_length
+                .checked_add(padded)?
+                .checked_add(u32::from(input.spacing_selector) * 4)?;
+        }
+    }
+    words[word_count] = 0xe400_0000;
+    word_count += 1;
+    let aggregate_length = u16::try_from(aggregate_length).ok()?;
+    let phy_words = [
+        0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff),
+        0x5000_0000 | (input.phy_control_word & 0x00ff_ffff),
+        0x5200_0000
+            | (u32::from(input.hardware_rate) << 16)
+            | u32::from(aggregate_length),
+    ];
+    Some(PlannedAmpduDescriptor {
+        words,
+        length: word_count as u8,
+        phy_words,
+        aggregate_length,
+        member_count: member_count as u8,
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -11997,6 +12081,63 @@ mod tests {
             spaced.words[2],
             ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(2)),
         );
+    }
+
+    #[test]
+    fn planned_depth_four_ampdu_matches_the_vendor_member_loop() {
+        let members = core::array::from_fn(|index| {
+            Some(PlannedAmpduMember {
+                frame_state: 0x0901_0000 + index as u32 * 0x400,
+                frame_length: 1500,
+            })
+        });
+        let input = PlannedAmpduInput {
+            members,
+            phy_rate_word: 0x031407,
+            phy_control_word: 0x06c006,
+            hardware_rate: 0x0c,
+            spacing_selector: 0,
+        };
+        let Some(descriptor) = build_planned_ampdu_descriptor(input) else {
+            panic!("four contiguous members must produce an opcode plan");
+        };
+        assert_eq!(descriptor.member_count, 4);
+        assert_eq!(descriptor.aggregate_length, 0x1790);
+        assert_eq!(descriptor.length, 8);
+        assert_eq!(
+            &descriptor.words[..usize::from(descriptor.length)],
+            &[
+                0x6501_0008,
+                0x6600_0000,
+                0x6501_0408,
+                0x6600_0000,
+                0x6501_0808,
+                0x6600_0000,
+                0x6501_0c08,
+                0xe400_0000,
+            ],
+        );
+        assert_eq!(descriptor.phy_words[2], 0x520c_1790);
+
+        let Some(spaced) = build_planned_ampdu_descriptor(PlannedAmpduInput {
+            spacing_selector: 2,
+            ..input
+        }) else {
+            panic!("spacing must preserve the four-member plan");
+        };
+        assert_eq!(spaced.length, 11);
+        assert_eq!(spaced.aggregate_length, 0x17a8);
+        assert_eq!(spaced.phy_words[2], 0x520c_17a8);
+        assert_eq!(
+            [spaced.words[2], spaced.words[5], spaced.words[8]],
+            [ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(2)); 3],
+        );
+
+        assert!(build_planned_ampdu_descriptor(PlannedAmpduInput {
+            members: [members[0], None, members[2], None],
+            ..input
+        })
+        .is_none());
     }
 
     #[test]
