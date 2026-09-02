@@ -20,6 +20,9 @@ experimental-depth-four-ampdu = [
     "experimental-depth-two-ampdu",
     "experimental-four-slot-ordinary",
 ]
+# Replaces the depth histogram with packed retry-outcome telemetry in the
+# diagnostic counters MIB. Never enabled in normal firmware.
+experimental-ampdu-outcome-telemetry = ["experimental-depth-four-ampdu"]
 # Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains
 # capped at the previously qualified two-slot transaction.
 experimental-four-slot-ordinary = []

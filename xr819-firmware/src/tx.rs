@@ -2441,6 +2441,9 @@ unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
             }
         }
         if aggregate {
+            crate::host_tx_diagnostics::record_ampdu_outcome(
+                crate::host_tx_diagnostics::ampdu_outcome::RETIRED_UNMATCHED,
+            );
             write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
         }
         match cursor {
@@ -4747,6 +4750,13 @@ impl SingleProbeMacBackend {
                 else {
                     terminal_probe_backend_fault(pipe)
                 };
+                unsafe {
+                    crate::host_tx_diagnostics::record_ampdu_outcome(if pending_mask.is_some() {
+                        crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_REARM
+                    } else {
+                        crate::host_tx_diagnostics::ampdu_outcome::WATCHDOG_REARM
+                    })
+                };
                 self.depth_two_block_ack[retry_index] = None;
                 let Some((retry_head, retry_count)) =
                     (unsafe { apply_depth_four_selective_retry(slot, plan, members) })
@@ -4833,12 +4843,27 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     let Some((plan, _)) = (unsafe {
                         depth_four_selective_plan_for(frame_node, observation)
                     }) else {
+                        unsafe {
+                            crate::host_tx_diagnostics::record_ampdu_outcome(
+                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_INVALID,
+                            )
+                        };
                         return SingleTxRetryDecision::GiveUp;
                     };
                     if plan.retry_count != 0 {
+                        unsafe {
+                            crate::host_tx_diagnostics::record_ampdu_outcome(
+                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_REARM,
+                            )
+                        };
                         self.retry[retry_index].record_rearm();
                         return SingleTxRetryDecision::Rearm;
                     }
+                    unsafe {
+                        crate::host_tx_diagnostics::record_ampdu_outcome(
+                            crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_EMPTY,
+                        )
+                    };
                     return SingleTxRetryDecision::CompleteSuccess;
                 }
                 let observation = self.depth_two_block_ack[retry_index].take();
@@ -5019,6 +5044,11 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         if let Some(observation) = self.depth_two_block_ack[retry_index]
             .filter(|observation| observation.observation.member_count > 2)
         {
+            unsafe {
+                crate::host_tx_diagnostics::record_ampdu_outcome(
+                    crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_COMPLETE,
+                )
+            };
             let Some((plan, members)) =
                 (unsafe { depth_four_selective_plan_for(frame_node, observation) })
             else {
@@ -5032,6 +5062,9 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
             self.partial_give_up[retry_index].take()
         {
             unsafe {
+                crate::host_tx_diagnostics::record_ampdu_outcome(
+                    crate::host_tx_diagnostics::ampdu_outcome::PARTIAL_GIVE_UP,
+                );
                 crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP);
                 write_u32(acknowledged.context().next_in_ampdu_address(), 0);
                 enqueue_acknowledged_aggregate_member(acknowledged);
@@ -5088,7 +5121,12 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         };
         unsafe { complete_tx_pipe_slot(frame_node, slot, status, self) };
         if aggregate {
-            unsafe { write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0) };
+            unsafe {
+                crate::host_tx_diagnostics::record_ampdu_outcome(
+                    crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_GIVE_UP,
+                );
+                write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
+            }
         }
     }
 
@@ -6908,6 +6946,18 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
         let Some(observation) = merge_planned_block_ack(previous, current) else {
             return true;
         };
+        #[cfg(feature = "experimental-depth-four-ampdu")]
+        if previous.is_none() && member_count > 2 {
+            let outcome = if observation.states[..member_count]
+                .iter()
+                .all(|state| *state == BlockAckMemberState::Acknowledged)
+            {
+                crate::host_tx_diagnostics::ampdu_outcome::BA_ALL_ACK_RX
+            } else {
+                crate::host_tx_diagnostics::ampdu_outcome::BA_PARTIAL_RX
+            };
+            crate::host_tx_diagnostics::record_ampdu_outcome(outcome);
+        }
         *retained = Some(RetainedAmpduBlockAck {
             members: member_nodes,
             observation,
@@ -6997,6 +7047,9 @@ unsafe fn service_expired_partial_block_ack_retry(
                 continue;
             };
             if backend.decide_retry(pipe, slot.raw(), frame_node) != SingleTxRetryDecision::Rearm {
+                crate::host_tx_diagnostics::record_ampdu_outcome(
+                    crate::host_tx_diagnostics::ampdu_outcome::WATCHDOG_NO_REARM,
+                );
                 continue;
             }
             let slot_state = read_u8(slot.state().get());

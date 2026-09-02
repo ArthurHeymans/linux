@@ -892,3 +892,18 @@ observed transient post-traffic path loss rather than a firmware ownership
 leak. Recovery hashes were verified again. The watchdog retry path is therefore
 qualified for continued feature-gated development, while an earlier trigger
 still requires explicit transaction-generation ownership.
+
+The first outcome-census image `a08eb9f4...84a882f2` replaced the depth
+histogram with sixteen packed saturating outcome counters under the separate
+`experimental-ampdu-outcome-telemetry` feature. It completed 22,711 TX frames
+and 17,870 aggregates, sustained 3.21 Mbit/s TCP and 7.22 Mbit/s received UDP,
+finished ping 19/20, and ended with BH alive, WSM idle, no pending TX, and zero
+used buffers. Of the first deeper BA observations, 80 were already complete and
+54 were partial. Retry-event processing produced 15 non-empty selective plans,
+18 empty plans, 13 rearms, 18 completion dispositions, and one aggregate
+give-up. Crucially, neither watchdog rearm nor watchdog refusal occurred, and no
+unmatched aggregate retired. This falsifies the working assumption that normal
+partial-BA recovery waits 0.6-1.0 seconds for watchdog expiry: the qualified
+watchdog path is a safety net, while the active bottleneck is the large fraction
+of empty selective plans and the one-confirm/one-publication service cadence.
+Recovery firmware was restored and both hashes were verified.

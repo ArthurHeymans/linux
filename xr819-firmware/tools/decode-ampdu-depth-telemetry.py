@@ -3,9 +3,10 @@
 
 Build the image with `experimental-depth-four-ampdu` and
 `vendor-host-tx-diagnostics`. The firmware reuses the final four fields of the
-hardware-CCMP counters snapshot. Each word stores two saturating 16-bit counts.
-Attempted, published, and completed track aggregate depth three/four. Retried
-tracks one-member versus multi-member selective retry groups.
+hardware-CCMP counters snapshot. Normal depth telemetry stores two saturating
+16-bit counts per word. Images built with `experimental-ampdu-outcome-telemetry`
+reuse those same four words for sixteen packed saturating 8-bit outcomes; pass
+`--outcomes` to decode that layout.
 """
 
 import re
@@ -26,7 +27,10 @@ def parse_block(text):
     for field, label in FIELDS:
         match = re.search(rf"^{field}:\s*(-?\d+)$", text, re.MULTILINE)
         if match:
-            values[label] = int(match.group(1)) & 0xFFFFFFFF
+            try:
+                values[label] = int(match.group(1)) & 0xFFFFFFFF
+            except ValueError:
+                continue
     return values
 
 
@@ -41,8 +45,10 @@ def parse(text):
 
 
 def main():
+    outcome_mode = "--outcomes" in sys.argv[1:]
+    paths = [argument for argument in sys.argv[1:] if argument != "--outcomes"]
     try:
-        text = sys.stdin.read() if len(sys.argv) == 1 else open(sys.argv[1]).read()
+        text = sys.stdin.read() if not paths else open(paths[0]).read()
     except OSError as error:
         print(f"cannot read input: {error}")
         return 1
@@ -56,17 +62,42 @@ def main():
         print("  image lacks the depth-four diagnostic layout, or the MIB read failed")
         return 1
 
-    for stage in ("attempted", "published", "completed"):
-        word = values.get(stage, 0)
+    outcome_names = [
+        "ba_all_ack_rx",
+        "ba_partial_rx",
+        "deep_plan_rearm",
+        "deep_plan_empty",
+        "deep_plan_invalid",
+        "deep_whole_rearm",
+        "deep_give_up",
+        "retry_event_rearm",
+        "retry_event_give_up",
+        "retry_event_complete",
+        "watchdog_rearm",
+        "watchdog_no_rearm",
+        "retired_unmatched",
+        "partial_give_up",
+        "depth2_selective",
+        "depth2_whole",
+    ]
+    if outcome_mode:
+        words = [values.get(stage, 0) for stage in ("attempted", "published", "completed", "retried")]
+        print("  outcomes:")
+        for index, name in enumerate(outcome_names):
+            count = (words[index >> 2] >> ((index & 3) * 8)) & 0xFF
+            print(f"    {name:<24} {count:3d}")
+    else:
+        for stage in ("attempted", "published", "completed"):
+            word = values.get(stage, 0)
+            print(
+                f"  {stage:<9} depth3={word & 0xFFFF:5d} "
+                f"depth4={(word >> 16) & 0xFFFF:5d}"
+            )
+        retried = values.get("retried", 0)
         print(
-            f"  {stage:<9} depth3={word & 0xFFFF:5d} "
-            f"depth4={(word >> 16) & 0xFFFF:5d}"
+            f"  retried   single={retried & 0xFFFF:5d} "
+            f"multi={(retried >> 16) & 0xFFFF:5d}"
         )
-    retried = values.get("retried", 0)
-    print(
-        f"  retried   single={retried & 0xFFFF:5d} "
-        f"multi={(retried >> 16) & 0xFFFF:5d}"
-    )
     return 0
 
 

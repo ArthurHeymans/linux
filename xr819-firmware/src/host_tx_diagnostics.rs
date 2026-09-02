@@ -30,7 +30,13 @@ const STATUS2_RECORD_COUNT: usize = 4;
 
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
-    feature = "experimental-depth-four-ampdu"
+    feature = "experimental-ampdu-outcome-telemetry"
+))]
+const FLIGHT_RECORD_COUNT: usize = 32;
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-depth-four-ampdu",
+    not(feature = "experimental-ampdu-outcome-telemetry")
 ))]
 const FLIGHT_RECORD_COUNT: usize = 64;
 #[cfg(all(
@@ -239,6 +245,25 @@ unsafe impl Sync for SharedAmpduDepthTelemetry {}
 static AMPDU_DEPTH_TELEMETRY: SharedAmpduDepthTelemetry =
     SharedAmpduDepthTelemetry(UnsafeCell::new([0; 4]));
 
+pub mod ampdu_outcome {
+    pub const BA_ALL_ACK_RX: usize = 0;
+    pub const BA_PARTIAL_RX: usize = 1;
+    pub const DEEP_PLAN_REARM: usize = 2;
+    pub const DEEP_PLAN_EMPTY: usize = 3;
+    pub const DEEP_PLAN_INVALID: usize = 4;
+    pub const DEEP_WHOLE_REARM: usize = 5;
+    pub const DEEP_GIVE_UP: usize = 6;
+    pub const RETRY_EVENT_REARM: usize = 7;
+    pub const RETRY_EVENT_GIVE_UP: usize = 8;
+    pub const RETRY_EVENT_COMPLETE: usize = 9;
+    pub const WATCHDOG_REARM: usize = 10;
+    pub const WATCHDOG_NO_REARM: usize = 11;
+    pub const RETIRED_UNMATCHED: usize = 12;
+    pub const PARTIAL_GIVE_UP: usize = 13;
+    pub const DEPTH_TWO_SELECTIVE: usize = 14;
+    pub const DEPTH_TWO_WHOLE: usize = 15;
+}
+
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 struct SharedLifecycleCounters(UnsafeCell<[u32; counter::COUNT]>);
 
@@ -293,7 +318,8 @@ pub unsafe fn record_batch_publication(depth: u8) {
 pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
     #[cfg(all(
         feature = "vendor-host-tx-diagnostics",
-        feature = "experimental-depth-four-ampdu"
+        feature = "experimental-depth-four-ampdu",
+        not(feature = "experimental-ampdu-outcome-telemetry")
     ))]
     unsafe {
         if stage < 4 && matches!(depth, 3 | 4) {
@@ -306,9 +332,37 @@ pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
     }
     #[cfg(not(all(
         feature = "vendor-host-tx-diagnostics",
-        feature = "experimental-depth-four-ampdu"
+        feature = "experimental-depth-four-ampdu",
+        not(feature = "experimental-ampdu-outcome-telemetry")
     )))]
     let _ = (stage, depth);
+}
+
+/// Record one feature-gated A-MPDU outcome in four packed saturating words.
+/// Each outcome owns one byte.
+pub unsafe fn record_ampdu_outcome(outcome: usize) {
+    #[cfg(all(
+        feature = "vendor-host-tx-diagnostics",
+        feature = "experimental-ampdu-outcome-telemetry"
+    ))]
+    unsafe {
+        if outcome < 16 {
+            let word = AMPDU_DEPTH_TELEMETRY
+                .0
+                .get()
+                .cast::<u32>()
+                .add(outcome >> 2);
+            let shift = ((outcome & 3) * 8) as u32;
+            let current = word.read_volatile();
+            let count = ((current >> shift) & 0xff).saturating_add(1);
+            word.write_volatile((current & !(0xff << shift)) | (count << shift));
+        }
+    }
+    #[cfg(not(all(
+        feature = "vendor-host-tx-diagnostics",
+        feature = "experimental-ampdu-outcome-telemetry"
+    )))]
+    let _ = outcome;
 }
 
 /// Increments one class-0 lifecycle counter.
