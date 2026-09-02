@@ -769,3 +769,18 @@ qualification with 20,879 TX frames, 15,128 aggregates, 3.22 Mbit/s TCP, final
 run completed 21,246 TX frames with the same clean firmware state but lost its
 final ping check; the clean follow-up classifies that as transient RF/path
 noise. Recovery firmware was restored after both runs.
+
+Production BlockAck retention now walks the exact registered PAS chain, rejects
+cycles, invalid frame-node identities, unregistered members, and chains beyond
+four, and records the full two-to-four member sequence set against one exact
+pipe/slot. Repeated compressed BA observations use the generic sticky merge,
+and successful completion now requires acknowledgement of every retained
+member. The existing missed-completion retry planner still deliberately accepts
+only retained depth-two observations, so deeper publication remains blocked
+until selective and whole-aggregate retry are generalized. Image
+`3b888693...1098def` passed hardware qualification with 21,082 TX frames,
+15,502 aggregates, 3.38 Mbit/s TCP, final 20/20 ping, BH alive, WSM idle, and
+zero used buffers. Two preceding runs completed comparable traffic with the
+same clean firmware state but lost only the final ping replies; the third clean
+run, including a low reported RX bitrate, confirms the documented transient
+RF/path behavior. Recovery firmware was restored after every run.

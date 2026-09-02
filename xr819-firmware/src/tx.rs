@@ -3740,9 +3740,10 @@ fn publication_registration_allowed(
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
 #[derive(Clone, Copy)]
-struct RetainedDepthTwoBlockAck {
-    members: [FrameNodeAddress; 2],
-    states: [BlockAckMemberState; 2],
+struct RetainedAmpduBlockAck {
+    /// Exact CPU-form frame-node identities; zero terminates the member prefix.
+    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    observation: PlannedBlockAck,
 }
 
 #[cfg(target_arch = "arm")]
@@ -3752,7 +3753,7 @@ pub struct SingleProbeMacBackend {
     selective_retry: [Option<FrameNodeAddress>; 16],
     partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 16],
     #[cfg(feature = "experimental-depth-two-ampdu")]
-    depth_two_block_ack: [Option<RetainedDepthTwoBlockAck>; 16],
+    depth_two_block_ack: [Option<RetainedAmpduBlockAck>; 16],
     publications: [Option<PublishedSlotIdentity>; 16],
     completed: BoundedCompletionQueue<HostClass0Completion, HOST_CLASS0_COMPLETION_CAPACITY>,
 }
@@ -4291,9 +4292,12 @@ unsafe fn rearm_depth_two_whole_ampdu(
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
 unsafe fn depth_two_block_ack_actions_for(
     first_frame_node: FrameNodeAddress,
-    observation: RetainedDepthTwoBlockAck,
+    observation: RetainedAmpduBlockAck,
 ) -> Option<([BlockAckMemberAction; 2], [FrameNodeAddress; 2])> {
     unsafe {
+        if observation.observation.member_count != 2 {
+            return None;
+        }
         let first = first_frame_node.context();
         let second_raw = read_u32(first.next_in_ampdu_address());
         if second_raw == 0 {
@@ -4301,14 +4305,21 @@ unsafe fn depth_two_block_ack_actions_for(
         }
         let second_frame_node = FrameNodeAddress::from_raw(second_raw)?;
         let members = [first_frame_node, second_frame_node];
-        if observation.members != members {
+        if observation.members != [first_frame_node.raw(), second_frame_node.raw(), 0, 0] {
             return None;
         }
         let tid = read_u8(first.tid_address());
         let session_active = tid < 8
             && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
         Some((
-            plan_depth_two_block_ack_actions(observation.states, [true; 2], session_active),
+            plan_depth_two_block_ack_actions(
+                [
+                    observation.observation.states[0],
+                    observation.observation.states[1],
+                ],
+                [true; 2],
+                session_active,
+            ),
             members,
         ))
     }
@@ -6312,10 +6323,10 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-/// Consume a received compressed BlockAck for the currently owned depth-two
+/// Consume a received compressed BlockAck for the currently owned bounded
 /// aggregate. Vendor `complete_tx_pipe_slot` copies the BA start sequence and
 /// bitmap into per-link state before `bab_process_ba_bitmap`; the bounded
-/// bring-up path performs the equivalent two-bit decision directly.
+/// bring-up path classifies the exact retained two-to-four member chain.
 ///
 /// Returns true when the frame is a matching BA and therefore belongs to the
 /// low-MAC rather than the host RX indication path.
@@ -6352,41 +6363,68 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
             return false;
         };
 
-        let Some(second_node) = FrameNodeAddress::from_raw(read_u32(
-            publication.context.next_in_ampdu_address(),
-        )) else {
-            return true;
-        };
+        let mut member_nodes = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        let mut sequences = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        let mut current = publication.frame_node;
+        let mut member_count = 0_usize;
+        loop {
+            if member_count == crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
+                || member_nodes[..member_count].contains(&current.raw())
+                || !runtime.backend.publications.iter().flatten().any(|entry| {
+                    entry.pipe == publication.pipe
+                        && entry.slot == publication.slot
+                        && entry.context == current.context()
+                        && entry.frame_node == current
+                })
+            {
+                return true;
+            }
+            member_nodes[member_count] = current.raw();
+            sequences[member_count] = Some(read_u16(current.context().sequence_number_address()));
+            member_count += 1;
+
+            let next_raw = read_u32(current.context().next_in_ampdu_address());
+            if next_raw == 0 {
+                break;
+            }
+            let Some(next) = FrameNodeAddress::from_raw(next_raw) else {
+                return true;
+            };
+            current = next;
+        }
+
         let start = read_u16(frame + 0x12) >> 4;
         let bitmap = u64::from(read_u32(frame + 0x14))
             | (u64::from(read_u32(frame + 0x18)) << 32);
-        let current = classify_depth_two_block_ack(
-            start,
-            bitmap,
-            [
-                read_u16(publication.context.sequence_number_address()),
-                read_u16(second_node.context().sequence_number_address()),
-            ],
-        );
+        let Some(current) = classify_planned_block_ack(start, bitmap, sequences) else {
+            return true;
+        };
+        if usize::from(current.member_count) != member_count {
+            return true;
+        }
         let pipe = publication.pipe;
         let Some(retry_index) = pipe_slot_state_index(pipe, publication.slot) else {
             crate::halt_always!();
         };
-        let member_nodes = [publication.frame_node, second_node];
         let retained = &mut runtime.backend.depth_two_block_ack[retry_index];
         let previous = retained
             .filter(|observation| observation.members == member_nodes)
-            .map(|observation| observation.states);
-        let states = merge_depth_two_block_ack_states(previous, current);
-        *retained = Some(RetainedDepthTwoBlockAck {
+            .map(|observation| observation.observation);
+        let Some(observation) = merge_planned_block_ack(previous, current) else {
+            return true;
+        };
+        *retained = Some(RetainedAmpduBlockAck {
             members: member_nodes,
-            states,
+            observation,
         });
 
         // Compressed BA frames can arrive repeatedly with shifted or growing
         // windows. Acknowledgements are sticky for this exact aggregate; keep
-        // ownership until both members have been observed as acknowledged.
-        if states != [BlockAckMemberState::Acknowledged; 2] {
+        // ownership until every retained member has been observed as acknowledged.
+        if observation.states[..member_count]
+            .iter()
+            .any(|state| *state != BlockAckMemberState::Acknowledged)
+        {
             return true;
         }
         *retained = None;
@@ -6418,7 +6456,6 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
         true
     }
 }
-
 /// Exact matching-payload `txp_pipe_tx_success` at Ghidra `0x9cdc`
 /// (r2 `0x9cb8`).
 ///
@@ -9745,7 +9782,6 @@ pub(crate) fn build_planned_ampdu_descriptor(
     })
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PlannedBlockAck {
     pub states: [BlockAckMemberState;
@@ -9753,7 +9789,6 @@ pub(crate) struct PlannedBlockAck {
     pub member_count: u8,
 }
 
-#[cfg(test)]
 fn planned_member_count<T>(members: &[Option<T>]) -> Option<usize> {
     let count = members.iter().take_while(|member| member.is_some()).count();
     if !(2..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&count)
@@ -9765,7 +9800,6 @@ fn planned_member_count<T>(members: &[Option<T>]) -> Option<usize> {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn classify_planned_block_ack(
     start_sequence: u16,
     bitmap: u64,
@@ -9791,7 +9825,6 @@ pub(crate) fn classify_planned_block_ack(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn merge_planned_block_ack(
     previous: Option<PlannedBlockAck>,
     current: PlannedBlockAck,
@@ -9816,7 +9849,6 @@ pub(crate) fn merge_planned_block_ack(
     Some(merged)
 }
 
-#[cfg(test)]
 pub(crate) fn plan_planned_block_ack_actions(
     observation: PlannedBlockAck,
     retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
@@ -9838,7 +9870,6 @@ pub(crate) fn plan_planned_block_ack_actions(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn planned_whole_retry_allowed(
     observation: PlannedBlockAck,
     retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
