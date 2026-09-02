@@ -413,8 +413,12 @@ pub struct HostClass0Completion {
     pub ack_failures: u8,
 }
 
-/// One service pass can retire a two-context batch on each of four MAC pipes
-/// before the host driver starts draining copied completion identities.
+/// One service pass can retire the configured ordinary batch depth on each of
+/// four MAC pipes before the host driver starts draining copied identities.
+#[cfg(feature = "experimental-four-slot-ordinary")]
+const HOST_CLASS0_COMPLETION_CAPACITY: usize =
+    4 * crate::host_tx_policy::MAX_ORDINARY_BATCH_DEPTH;
+#[cfg(not(feature = "experimental-four-slot-ordinary"))]
 const HOST_CLASS0_COMPLETION_CAPACITY: usize = 4 * 2;
 
 struct BoundedCompletionQueue<T, const N: usize> {
@@ -3688,10 +3692,22 @@ fn publication_registration_allowed(
         return false;
     }
     let count = occupied.into_iter().filter(|occupied| *occupied).count();
+    let prior_slots_are_contiguous =
+        (1..=count).all(|offset| occupied[(usize::from(slot) + 4 - offset) & 3]);
     match batch {
         BatchPosition::Only | BatchPosition::First => count == 0,
-        BatchPosition::Last => count == 1,
-        BatchPosition::Middle => false,
+        BatchPosition::Middle => {
+            cfg!(feature = "experimental-four-slot-ordinary")
+                && (1..=2).contains(&count)
+                && prior_slots_are_contiguous
+        }
+        BatchPosition::Last => {
+            if cfg!(feature = "experimental-four-slot-ordinary") {
+                (1..=3).contains(&count) && prior_slots_are_contiguous
+            } else {
+                count == 1
+            }
+        }
     }
 }
 
@@ -9607,10 +9623,39 @@ mod tests {
             BatchPosition::Last,
             0,
         ));
+        #[cfg(not(feature = "experimental-four-slot-ordinary"))]
         assert!(!publication_registration_allowed(
             [true, false, false, false],
             BatchPosition::Middle,
             1,
+        ));
+        #[cfg(feature = "experimental-four-slot-ordinary")]
+        {
+            assert!(publication_registration_allowed(
+                [true, false, false, false],
+                BatchPosition::Middle,
+                1,
+            ));
+            assert!(publication_registration_allowed(
+                [true, true, false, false],
+                BatchPosition::Middle,
+                2,
+            ));
+            assert!(publication_registration_allowed(
+                [true, true, true, false],
+                BatchPosition::Last,
+                3,
+            ));
+            assert!(publication_registration_allowed(
+                [true, false, false, true],
+                BatchPosition::Middle,
+                1,
+            ));
+        }
+        assert!(!publication_registration_allowed(
+            [true, false, true, false],
+            BatchPosition::Last,
+            3,
         ));
         assert!(!publication_registration_allowed(
             [false; 4],
@@ -9620,7 +9665,7 @@ mod tests {
     }
 
     #[test]
-    fn class_zero_completion_queue_holds_two_members_for_every_pipe() {
+    fn class_zero_completion_queue_holds_the_configured_pipe_depth() {
         let mut completed = BoundedCompletionQueue::<u8, HOST_CLASS0_COMPLETION_CAPACITY>::new();
         for value in 0..HOST_CLASS0_COMPLETION_CAPACITY as u8 {
             assert_eq!(completed.push(value), Ok(()));
@@ -10853,6 +10898,42 @@ mod tests {
             .map(|&(_, value)| value)
             .collect::<std::vec::Vec<_>>();
         assert_eq!(duration_writes, [0x1111, 0x2222]);
+    }
+
+    #[test]
+    fn staged_four_slot_batch_wraps_once_and_triggers_once() {
+        let mut mmio = MockPipeMmio::new();
+        let pipe = 2_u8;
+        let pipe_state = pipe_state_address(pipe);
+        let hardware_ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
+        let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
+        for (slot, duration) in [(2, 0x1111), (3, 0x2222), (0, 0x3333), (1, 0x4444)] {
+            mmio.set(record.slot_unchecked(slot).duration().get() as u32, duration);
+        }
+        mmio.set(pipe_state + 4, 8);
+        mmio.set(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32, 7);
+
+        assert!(finalize_staged_pipe(
+            &mut mmio,
+            pipe,
+            pipe_state,
+            hardware_ring,
+            2,
+            1,
+        ));
+
+        assert_eq!(mmio.get(PIPE_IRQ_TRIGGER), (1_u32 << pipe) << 25);
+        for slot in 0..4 {
+            assert_eq!(mmio.get(record.slot_unchecked(slot).state().get() as u32), 1);
+        }
+        assert_eq!(mmio.get(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32), 11);
+        assert_eq!(mmio.get(hardware_ring + 0x14), 1);
+        let duration_writes = mmio.writes[..mmio.write_count]
+            .iter()
+            .filter(|&&(address, _)| address == hardware_ring)
+            .map(|&(_, value)| value)
+            .collect::<std::vec::Vec<_>>();
+        assert_eq!(duration_writes, [0x1111, 0x2222, 0x3333, 0x4444]);
     }
 
     #[test]

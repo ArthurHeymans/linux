@@ -14,6 +14,9 @@ default = []
 vendor-host-tx-diagnostics = []
 # Hardware-only depth-two A-MPDU bring-up. Never enabled in normal firmware.
 experimental-depth-two-ampdu = []
+# Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains
+# capped at the previously qualified two-slot transaction.
+experimental-four-slot-ordinary = []
 # Captures the initialized DTCM image at three startup checkpoints and exposes
 # it through private paginated read-MIB diagnostics.
 dtcm-contract-diagnostics = []

@@ -69,6 +69,15 @@ impl Class0RuntimeOwners {
         }
     }
 
+    pub fn occupied_slots(self, pipe: u8) -> Option<[bool; 4]> {
+        if pipe >= 4 {
+            return None;
+        }
+        Some(core::array::from_fn(|slot| {
+            self.by_slot[usize::from(pipe) * 4 + slot].is_some()
+        }))
+    }
+
     pub fn slot_mask(self) -> u16 {
         self.by_slot
             .iter()
@@ -264,6 +273,8 @@ mod tests {
         assert_eq!(owners.slot_owner(2, 1), Some(7));
         assert_eq!(owners.slot_owner(2, 3), Some(10));
         assert_eq!(owners.slot_owner(2, 0), None);
+        assert_eq!(owners.occupied_slots(2), Some([false, true, false, true]));
+        assert_eq!(owners.occupied_slots(4), None);
         let mut eligible = owners.slot_mask();
         assert_eq!(eligible, (1 << 2) | (1 << 9) | (1 << 11));
         assert_eq!(owners.next_slot_owner(eligible, 10), Some((11, 10)));

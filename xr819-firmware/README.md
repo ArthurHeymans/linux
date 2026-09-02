@@ -141,8 +141,9 @@ HIF requests use an owning `RequestBuffer`, so payload borrows cannot outlive
 the packet-RAM owner, and a single non-copyable `MacEventQueue` capability is
 passed to every MAC-event consumer. The feature-gated scheduler now permits one
 bounded batch on each MAC pipe, with at most two ordinary slots or one depth-two
-aggregate per pipe; it does not yet implement the vendor's four-slot ordinary
-batch or deeper single-slot aggregate construction.
+aggregate per pipe. The `experimental-four-slot-ordinary` hardware feature
+extends the same pre-GO transaction to the vendor's four ordinary slots; deeper
+single-slot aggregate construction remains unimplemented.
 
 The optional `vendor-host-tx-diagnostics` feature retains the bring-up
 observability without burdening the normal station image. It enables retained stage/frame/descriptor snapshots, HIF request counters,
@@ -297,7 +298,8 @@ Not yet implemented or production-complete:
   (direct literals and direct field-root expressions are already closed; older
   family-local alias arithmetic remains under audit);
 - controlled degraded-RF fallback and long-duration soak qualification;
-- vendor-depth four-slot ordinary batches and deeper single-slot A-MPDUs;
+- production promotion of the qualified feature-gated four-slot ordinary path
+  and deeper single-slot A-MPDUs;
 - CCMP replay protection;
 - production recovery policy for architected CPU exceptions and unrecoverable
   packet-controller faults.

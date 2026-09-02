@@ -685,5 +685,33 @@ first eligible context and producer slot, selects at most four queue-ordered
 contexts mapped to the same pipe, and assigns consecutive modulo-four slots.
 Host tests cover wraparound, the vendor depth cap, other-pipe interleaving,
 stale first-owner selection, invalid cursors, and attempted active-pipe reuse.
-Publication remains at the qualified two-slot limit until this plan is carried
-through reversible reservation and the completion queue is expanded.
+The `experimental-four-slot-ordinary` hardware feature now carries this plan
+through reversible reservation and one pre-GO publication transaction. It
+admits `Middle` registrations only for consecutive planner-approved slots,
+retains the qualified two-slot path when the feature is disabled, and expands
+copied completion capacity from 8 to 16 only in the experiment. A four-slot
+wraparound test proves all duration words are published before one final GO.
+The feature waits at most one additional nonempty service pass for four ready
+contexts, then publishes whatever depth is available so queue filling cannot
+create an unbounded latency regression.
+
+The first ordinary-only hardware run (`7a5a7f6d...028311`) was healthy through
+18,264 TX frames, 3.71 Mbit/s TCP, final 20/20 ping, BH alive, WSM idle, and zero
+used buffers. It did **not** qualify four-slot publication: the diagnostic batch
+word ended at `0x02000d70`, proving that every observed transaction still had
+depth two because publication ran as soon as two contexts became ready. That
+negative result motivated the bounded one-pass fill rule above.
+
+The follow-up ordinary-only image (`3bbbd0f7...a16a43e2`) observed batch words
+`0x03000005` after ping flood and `0x04000d7a` after iperf, proving real depth-
+three and depth-four publications. It completed 18,766 TX frames, sustained
+3.81 Mbit/s TCP, ended with 20/20 ping, and restored BH alive, WSM idle, and
+zero used buffers. The exit trap restored the recovery image. This qualifies
+the feature-gated four-slot ordinary transaction; the normal image remains at
+the prior two-slot limit.
+
+The combined depth-two plus four-slot image
+(`af8bf622...a9e14e9d1`) also passed the same OTA qualification: 23,788 TX
+frames, 18,650 aggregates, 4.49 Mbit/s TCP, final 20/20 ping, BH alive, WSM
+idle, and zero used buffers. This is the qualified image for continued
+aggregation work; recovery firmware was restored afterwards.

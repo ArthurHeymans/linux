@@ -360,6 +360,377 @@ impl HostTxDriver {
     /// Publish one or two ready PAS contexts onto a pipe without a retained
     /// runtime owner. A pair is staged into consecutive slots of the same pipe
     /// and crosses the MAC trigger boundary once.
+    #[cfg(feature = "experimental-four-slot-ordinary")]
+    unsafe fn publish_ready_batch(
+        &mut self,
+        mac_domain: &mut crate::mac_domain::MacDomain,
+        owners: host_tx_policy::Class0RuntimeOwners,
+    ) {
+        let mut candidate_pipes = [None; HOST_CONTEXT_COUNT];
+        let mut first_index = None;
+        let mut ready_count = 0;
+        for (index, state) in self.states.iter().enumerate() {
+            let Some(HostTxState::Owned {
+                retained,
+                hardware: None,
+                ..
+            }) = state
+            else {
+                continue;
+            };
+            if retained.phase() != vendor_host_tx::HostTxPhase::PasQueued {
+                continue;
+            }
+            let pipe = unsafe { vendor_host_tx::scheduler_live_diagnostic(retained) }.pipe;
+            if pipe >= 4 {
+                crate::halt_always!();
+            }
+            if owners.contains_pipe(pipe) {
+                continue;
+            }
+            candidate_pipes[index] = Some(pipe);
+            if first_index.is_none() {
+                first_index = Some(index);
+            }
+            ready_count += 1;
+        }
+        if ready_count != 0
+            && ready_count < host_tx_policy::MAX_ORDINARY_BATCH_DEPTH
+            && self.scheduler_single_wait == 0
+        {
+            // Give the software lane one additional service pass to fill the
+            // vendor's four-slot transaction. The next pass publishes whatever
+            // is ready, preserving the existing bounded latency fallback.
+            self.scheduler_single_wait = 1;
+            return;
+        }
+        self.scheduler_single_wait = 0;
+        let Some(first_index) = first_index else {
+            return;
+        };
+        let Some(HostTxState::Owned {
+            retained: mut first,
+            wait_diagnostic: first_wait,
+            hardware: None,
+        }) = self.states[first_index].take()
+        else {
+            return;
+        };
+
+        let mut guard = mac_domain.enter();
+        if !self.scheduler_phy_started_this_pass {
+            let _ = unsafe { tx::start_phy_operation_1() };
+            self.scheduler_phy_started_this_pass = true;
+        }
+        let first_reservation = match unsafe {
+            vendor_host_tx::reserve_non_aggregate_scheduler(&mut guard, &mut first)
+        } {
+            Ok(reservation) => reservation,
+            Err(vendor_host_tx::SchedulerReserveError::Expired) => {
+                if unsafe { vendor_host_tx::reject_unscheduled_pas(&mut guard, &mut first) }.is_ok()
+                {
+                    let _ = first.transition(vendor_host_tx::HostTxPhase::Completing);
+                    let completion_order = self.allocate_confirmation_order();
+                    self.states[first_index] = Some(Self::confirmation_state(
+                        first,
+                        tx::wsm_status_from_internal(10),
+                        0,
+                        completion_order,
+                    ));
+                } else {
+                    self.states[first_index] = Some(HostTxState::Owned {
+                        retained: first,
+                        wait_diagnostic: first_wait,
+                        hardware: None,
+                    });
+                }
+                return;
+            }
+            Err(_) => {
+                self.states[first_index] = Some(HostTxState::Owned {
+                    retained: first,
+                    wait_diagnostic: first_wait,
+                    hardware: None,
+                });
+                return;
+            }
+        };
+        let pipe = first_reservation.pipe();
+        let first_slot = first_reservation.slot();
+        let Some(occupied_slots) = owners.occupied_slots(pipe) else {
+            crate::halt_always!();
+        };
+        let Some(plan) = host_tx_policy::plan_ordinary_batch(
+            &candidate_pipes,
+            occupied_slots,
+            first_index,
+            pipe,
+            first_slot,
+        ) else {
+            crate::halt_always!();
+        };
+
+        let first_ampdu = unsafe { vendor_host_tx::ampdu_candidate(&first) };
+        let second_ampdu = plan.index(1).and_then(|index| {
+            let Some(HostTxState::Owned {
+                retained,
+                hardware: None,
+                ..
+            }) = self.states[index].as_ref()
+            else {
+                return None;
+            };
+            Some(unsafe { vendor_host_tx::ampdu_candidate(retained) })
+        });
+        let aggregate_pair = second_ampdu
+            .is_some_and(|second| vendor_host_tx::can_form_ampdu_pair(first_ampdu, second));
+        if aggregate_pair {
+            unsafe {
+                host_tx_diagnostics::record_ampdu_candidate(
+                    first_ampdu.key.tid,
+                    first_ampdu.key.rate,
+                );
+            }
+        }
+
+        struct ReservedBatchMember {
+            index: usize,
+            retained: vendor_host_tx::RetainedHostTx,
+            wait_diagnostic: u8,
+            reservation: vendor_host_tx::HostSchedulerReservation,
+            frame_node: u32,
+        }
+
+        let mut members: [Option<ReservedBatchMember>; host_tx_policy::MAX_ORDINARY_BATCH_DEPTH] =
+            [const { None }; host_tx_policy::MAX_ORDINARY_BATCH_DEPTH];
+        let first_frame_node = first.context().frame_node().raw();
+        members[0] = Some(ReservedBatchMember {
+            index: first_index,
+            retained: first,
+            wait_diagnostic: first_wait,
+            reservation: first_reservation,
+            frame_node: first_frame_node,
+        });
+        let ordinary_len = if cfg!(feature = "experimental-four-slot-ordinary") {
+            plan.len()
+        } else {
+            plan.len().min(2)
+        };
+        let target_len = if cfg!(feature = "experimental-depth-two-ampdu") && aggregate_pair {
+            2
+        } else {
+            ordinary_len
+        };
+        let mut member_count = 1;
+        for position in 1..target_len {
+            let (Some(index), Some(slot)) = (plan.index(position), plan.slot(position)) else {
+                crate::halt_always!();
+            };
+            let Some(HostTxState::Owned {
+                retained: mut retained_member,
+                wait_diagnostic,
+                hardware: None,
+            }) = self.states[index].take()
+            else {
+                crate::halt_always!();
+            };
+            let reservation = match unsafe {
+                vendor_host_tx::reserve_non_aggregate_scheduler_in_batch(
+                    &mut guard,
+                    &mut retained_member,
+                    pipe,
+                    slot,
+                    position as u8,
+                )
+            } {
+                Ok(reservation) => reservation,
+                Err(_) => {
+                    self.states[index] = Some(HostTxState::Owned {
+                        retained: retained_member,
+                        wait_diagnostic,
+                        hardware: None,
+                    });
+                    break;
+                }
+            };
+            let frame_node = retained_member.context().frame_node().raw();
+            members[position] = Some(ReservedBatchMember {
+                index,
+                retained: retained_member,
+                wait_diagnostic,
+                reservation,
+                frame_node,
+            });
+            member_count += 1;
+        }
+
+        if member_count == 1 {
+            let Some(member) = members[0].take() else {
+                crate::halt_always!();
+            };
+            let ReservedBatchMember {
+                index,
+                mut retained,
+                wait_diagnostic,
+                reservation,
+                frame_node,
+            } = member;
+            match unsafe { reservation.publish(&mut guard, &mut retained) } {
+                Ok(()) => {
+                    self.states[index] = Some(HostTxState::Owned {
+                        hardware: Some(HardwareOwner {
+                            pipe,
+                            slot: first_slot,
+                            frame_node,
+                        }),
+                        retained,
+                        wait_diagnostic: 3,
+                    });
+                }
+                Err((reservation, _)) => {
+                    self.states[index] = Some(HostTxState::Reserved {
+                        retained,
+                        reservation,
+                        wait_diagnostic,
+                    });
+                }
+            }
+            return;
+        }
+
+        #[cfg(feature = "experimental-depth-two-ampdu")]
+        if aggregate_pair && member_count == 2 {
+            let Some(first_member) = members[0].take() else {
+                crate::halt_always!();
+            };
+            let Some(second_member) = members[1].take() else {
+                crate::halt_always!();
+            };
+            let ReservedBatchMember {
+                index: first_index,
+                retained: mut first,
+                wait_diagnostic: first_wait,
+                reservation: first_reservation,
+                frame_node: first_frame_node,
+            } = first_member;
+            let ReservedBatchMember {
+                index: second_index,
+                retained: mut second,
+                wait_diagnostic: second_wait,
+                reservation: second_reservation,
+                frame_node: second_frame_node,
+            } = second_member;
+            match unsafe {
+                vendor_host_tx::publish_depth_two_ampdu(
+                    &mut guard,
+                    &mut first,
+                    &mut second,
+                    first_reservation,
+                    second_reservation,
+                )
+            } {
+                Ok((aggregate_pipe, aggregate_slot)) => {
+                    self.states[first_index] = Some(HostTxState::Owned {
+                        retained: first,
+                        wait_diagnostic: 3,
+                        hardware: Some(HardwareOwner {
+                            pipe: aggregate_pipe,
+                            slot: aggregate_slot,
+                            frame_node: first_frame_node,
+                        }),
+                    });
+                    self.states[second_index] = Some(HostTxState::Owned {
+                        retained: second,
+                        wait_diagnostic: 3,
+                        hardware: Some(HardwareOwner {
+                            pipe: aggregate_pipe,
+                            slot: aggregate_slot,
+                            frame_node: second_frame_node,
+                        }),
+                    });
+                    return;
+                }
+                Err(vendor_host_tx::AmpduPublishError::Ownership) => crate::halt_always!(),
+                Err(_) => {
+                    self.states[first_index] = Some(HostTxState::Owned {
+                        retained: first,
+                        wait_diagnostic: first_wait,
+                        hardware: None,
+                    });
+                    self.states[second_index] = Some(HostTxState::Owned {
+                        retained: second,
+                        wait_diagnostic: second_wait,
+                        hardware: None,
+                    });
+                    return;
+                }
+            }
+        }
+
+        struct PublishedBatchMember {
+            index: usize,
+            retained: vendor_host_tx::RetainedHostTx,
+            slot: u8,
+            frame_node: u32,
+        }
+        let mut published: [Option<PublishedBatchMember>;
+            host_tx_policy::MAX_ORDINARY_BATCH_DEPTH] =
+            [const { None }; host_tx_policy::MAX_ORDINARY_BATCH_DEPTH];
+        for position in 0..member_count {
+            let Some(member) = members[position].take() else {
+                crate::halt_always!();
+            };
+            let ReservedBatchMember {
+                index,
+                mut retained,
+                reservation,
+                frame_node,
+                ..
+            } = member;
+            let batch = if position == 0 {
+                tx::BatchPosition::First
+            } else if position + 1 == member_count {
+                tx::BatchPosition::Last
+            } else {
+                tx::BatchPosition::Middle
+            };
+            if unsafe { reservation.publish_in_batch(&mut guard, &mut retained, batch) }.is_err() {
+                crate::halt_always!();
+            }
+            let Some(slot) = plan.slot(position) else {
+                crate::halt_always!();
+            };
+            published[position] = Some(PublishedBatchMember {
+                index,
+                retained,
+                slot,
+                frame_node,
+            });
+        }
+        let Some(last_slot) = plan.slot(member_count - 1) else {
+            crate::halt_always!();
+        };
+        unsafe {
+            tx::finalize_staged_host_class0_pipe(&mut guard, pipe, first_slot, last_slot);
+            host_tx_diagnostics::record_batch_publication(member_count as u8);
+        }
+        for position in 0..member_count {
+            let Some(member) = published[position].take() else {
+                crate::halt_always!();
+            };
+            self.states[member.index] = Some(HostTxState::Owned {
+                retained: member.retained,
+                wait_diagnostic: 3,
+                hardware: Some(HardwareOwner {
+                    pipe,
+                    slot: member.slot,
+                    frame_node: member.frame_node,
+                }),
+            });
+        }
+    }
+
+    #[cfg(not(feature = "experimental-four-slot-ordinary"))]
     unsafe fn publish_ready_batch(
         &mut self,
         mac_domain: &mut crate::mac_domain::MacDomain,
