@@ -833,11 +833,11 @@ Depth-three/four publication is now connected only under the same experimental
 feature. The scheduler forms a contiguous policy-approved prefix, reserves all
 members before mutation, builds one generic descriptor and member table, and
 publishes the aggregate through one hardware trigger. Four compact telemetry
-words report the latest attempted, published, completed, and retried depth plus
-a wrapping observation count; `tools/decode-ampdu-depth-telemetry.py` decodes
-the reused counters-MIB fields. The larger publication image reduces the
-optional flight recorder further to 64 records; normal diagnostics remain
-unchanged.
+words report saturating depth-three and depth-four counts for attempted,
+published, completed, and retried aggregates;
+`tools/decode-ampdu-depth-telemetry.py` decodes the reused counters-MIB fields.
+The larger publication image reduces the optional flight recorder further to 64
+records; normal diagnostics remain unchanged.
 
 Image `2ecf814a...edd7552` reached 28,185 TX frames and 22,662 aggregates in its
 first hardware qualification. A follow-up 20-second OTA TCP transfer sustained
@@ -848,3 +848,13 @@ completion observations, and retained twelve observed depth-four retry events.
 This proves real depth-four publication, completion, and retry activity rather
 than only scheduler planning. The image is therefore qualified for continued
 feature-gated depth-four work; the normal depth-two image remains unchanged.
+
+The split depth histogram image `7036b5b8...bd248512` then quantified the
+workload. Its clean repeat reached 18,146 TX frames and 13,489 aggregates,
+sustained 2.43 Mbit/s TCP and 4.79 Mbit/s received UDP, completed final ping
+20/20, and ended with BH alive, WSM idle, no pending TX, and zero used buffers.
+It attempted and published 377 depth-three plus 2,944 depth-four aggregates,
+fully acknowledged 317 depth-three plus 1,674 depth-four aggregates, and
+observed thirteen depth-four retry events. An immediately preceding run had the
+same clean firmware state but severe RF loss; the repeat restored normal traffic
+without changing the image. Recovery firmware was restored after both runs.

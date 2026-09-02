@@ -3,8 +3,8 @@
 
 Build the image with `experimental-depth-four-ampdu` and
 `vendor-host-tx-diagnostics`. The firmware reuses the final four fields of the
-hardware-CCMP counters snapshot. Each word stores the latest observed depth in
-the high byte and a wrapping 24-bit observation count in the low bytes.
+hardware-CCMP counters snapshot. Each word stores saturating 16-bit depth-three
+and depth-four observation counts in its low and high halves.
 """
 
 import re
@@ -57,7 +57,10 @@ def main():
 
     for stage in ("attempted", "published", "completed", "retried"):
         word = values.get(stage, 0)
-        print(f"  {stage:<9} depth={word >> 24} observations={word & 0x00FFFFFF}")
+        print(
+            f"  {stage:<9} depth3={word & 0xFFFF:5d} "
+            f"depth4={(word >> 16) & 0xFFFF:5d}"
+        )
     return 0
 
 

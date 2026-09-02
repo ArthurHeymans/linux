@@ -288,7 +288,7 @@ pub unsafe fn record_batch_publication(depth: u8) {
     let _ = depth;
 }
 
-/// Records the latest aggregate depth and a bounded count for one lifecycle stage.
+/// Records bounded depth-three/four counts for one aggregate lifecycle stage.
 #[inline(always)]
 pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
     #[cfg(all(
@@ -296,10 +296,12 @@ pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
         feature = "experimental-depth-four-ampdu"
     ))]
     unsafe {
-        if stage < 4 {
+        if stage < 4 && matches!(depth, 3 | 4) {
+            let shift = u32::from(depth - 3) * 16;
             let word = AMPDU_DEPTH_TELEMETRY.0.get().cast::<u32>().add(stage);
-            let count = (word.read_volatile() & 0x00ff_ffff).wrapping_add(1) & 0x00ff_ffff;
-            word.write_volatile((u32::from(depth) << 24) | count);
+            let current = word.read_volatile();
+            let count = ((current >> shift) & 0xffff).saturating_add(1);
+            word.write_volatile((current & !(0xffff << shift)) | (count << shift));
         }
     }
     #[cfg(not(all(
