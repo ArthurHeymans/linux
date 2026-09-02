@@ -643,3 +643,10 @@ Depth-two contexts sharing one aggregate slot are coalesced, ordinary staged
 slots remain distinct, and completion routing rejects a pipe-slot with no live
 owner before searching exact context and frame-node identities. Publication is
 still limited to one active batch per pipe.
+
+Hardware-owner servicing now walks the exact slot mask with a persistent
+round-robin cursor and the existing four-context pass budget. Distinct ordinary
+batch slots each receive a bounded service step, aggregate members sharing one
+slot remain coalesced, and owners beyond the current pass resume fairly on the
+next pass. The eight-entry copied-completion bound remains exact while only one
+two-context batch may be active on each of four pipes.

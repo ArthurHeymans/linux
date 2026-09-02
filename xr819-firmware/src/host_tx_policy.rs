@@ -9,9 +9,10 @@
 /// Retained class-0 runtime owners observed at exact MAC pipe-slot identities.
 ///
 /// Multiple contexts may legitimately share one slot owner for a depth-two
-/// aggregate. Distinct staged batch slots remain independently visible, while
-/// `first_in_pipe` preserves the existing one-service-step-per-pipe behavior.
-/// Out-of-range identities are rejected instead of being masked.
+/// aggregate. Distinct staged batch slots remain independently visible;
+/// `slot_mask` and `next_slot_owner` provide bounded round-robin service, while
+/// `first_in_pipe` preserves the pipe-level publication gate. Out-of-range
+/// identities are rejected instead of being masked.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Class0RuntimeOwners {
     first_by_pipe: [Option<u8>; 4],
@@ -66,6 +67,26 @@ impl Class0RuntimeOwners {
         } else {
             None
         }
+    }
+
+    pub fn slot_mask(self) -> u16 {
+        self.by_slot
+            .iter()
+            .enumerate()
+            .fold(0_u16, |mask, (index, owner)| {
+                mask | if owner.is_some() { 1_u16 << index } else { 0 }
+            })
+    }
+
+    pub fn next_slot_owner(self, eligible: u16, cursor: u8) -> Option<(u8, usize)> {
+        (0..16_u8).find_map(|offset| {
+            let slot_index = cursor.wrapping_add(offset) & 15;
+            if eligible & (1_u16 << slot_index) == 0 {
+                return None;
+            }
+            self.by_slot[usize::from(slot_index)]
+                .map(|owner| (slot_index, usize::from(owner)))
+        })
     }
 
     pub fn is_empty(self) -> bool {
@@ -159,6 +180,14 @@ mod tests {
         assert_eq!(owners.slot_owner(2, 1), Some(7));
         assert_eq!(owners.slot_owner(2, 3), Some(10));
         assert_eq!(owners.slot_owner(2, 0), None);
+        let mut eligible = owners.slot_mask();
+        assert_eq!(eligible, (1 << 2) | (1 << 9) | (1 << 11));
+        assert_eq!(owners.next_slot_owner(eligible, 10), Some((11, 10)));
+        eligible &= !(1 << 11);
+        assert_eq!(owners.next_slot_owner(eligible, 12), Some((2, 11)));
+        eligible &= !(1 << 2);
+        assert_eq!(owners.next_slot_owner(eligible, 3), Some((9, 7)));
+        assert_eq!(owners.next_slot_owner(0, 0), None);
         assert!(owners.contains_pipe(0));
         assert!(!owners.contains_pipe(1));
         assert!(!owners.contains_pipe(4));

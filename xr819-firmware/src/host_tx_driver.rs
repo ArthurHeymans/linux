@@ -13,8 +13,9 @@ use crate::{hif, host_tx_diagnostics, host_tx_policy, tx, vendor_host_tx};
 const HOST_CONTEXT_COUNT: usize = crate::host_tx_arena::HOST_CONTEXT_COUNT;
 /// Contexts advanced per service pass.
 ///
-/// At 4 (one hardware owner plus three software owners), queued contexts wait
-/// many passes before publication. Cumulative iperf timing measures ~39.5 ms
+/// At 4, exact hardware slot owners consume the front of the budget and the
+/// remainder advances software owners. Queued contexts can still wait many
+/// passes before publication. Cumulative iperf timing measures ~39.5 ms
 /// admission-to-publication, but that is queue latency behind several frames,
 /// not inverse throughput: the serialized publication-to-confirmation cycle is
 /// ~8.4 ms. Raising this budget was neutral, so keep the bounded vendor-shaped
@@ -24,6 +25,7 @@ const SERVICE_BUDGET: usize = 4;
 pub struct HostTxDriver {
     states: [Option<HostTxState>; HOST_CONTEXT_COUNT],
     service_cursor: usize,
+    hardware_service_cursor: u8,
     next_confirmation_order: u32,
     scheduler_phy_started_this_pass: bool,
     scheduler_single_wait: u8,
@@ -90,6 +92,7 @@ impl HostTxDriver {
         Self {
             states: [const { None }; HOST_CONTEXT_COUNT],
             service_cursor: 0,
+            hardware_service_cursor: 0,
             next_confirmation_order: 0,
             scheduler_phy_started_this_pass: false,
             scheduler_single_wait: 0,
@@ -196,10 +199,15 @@ impl HostTxDriver {
         let Some(owners) = self.hardware_runtime_owners() else {
             crate::halt_always!();
         };
-        for pipe in 0..4 {
-            let Some(index) = owners.first_in_pipe(pipe) else {
-                continue;
+        let mut eligible = owners.slot_mask();
+        while budget != 0 {
+            let Some((slot_index, index)) =
+                owners.next_slot_owner(eligible, self.hardware_service_cursor)
+            else {
+                break;
             };
+            eligible &= !(1_u16 << slot_index);
+            self.hardware_service_cursor = slot_index.wrapping_add(1) & 15;
             let event = unsafe {
                 self.service_index(
                     index,
