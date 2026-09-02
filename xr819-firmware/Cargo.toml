@@ -23,6 +23,9 @@ experimental-depth-four-ampdu = [
 # Replaces the depth histogram with packed retry-outcome telemetry in the
 # diagnostic counters MIB. Never enabled in normal firmware.
 experimental-ampdu-outcome-telemetry = ["experimental-depth-four-ampdu"]
+# Bounded precursor to PAS-ring member requeue: allow deeper aggregate members
+# outside the received BA bitmap window to consume their host retry policy.
+experimental-outside-window-retry = ["experimental-depth-four-ampdu"]
 # Coalesces ready TX confirmations and removes avoidable idle-pipe fill waits.
 experimental-fast-loop = []
 # Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains

@@ -4552,9 +4552,16 @@ unsafe fn depth_four_selective_plan_for(
         {
             reason_mask |= 8;
         }
+        let mut retry_observation = observation.observation;
+        #[cfg(feature = "experimental-outside-window-retry")]
+        for state in retry_observation.states.iter_mut().take(member_count) {
+            if *state == BlockAckMemberState::OutsideWindow {
+                *state = BlockAckMemberState::Missing;
+            }
+        }
         Some((
             plan_selective_ampdu_retry(
-                observation.observation,
+                retry_observation,
                 retry_allowed,
                 session_active,
                 retry_rates,

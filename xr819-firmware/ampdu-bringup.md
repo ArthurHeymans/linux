@@ -957,3 +957,18 @@ retry table and PAS ring. The next bounded experiment treats deeper
 outside-window members as retryable before implementing the larger PAS-ring
 requeue state transition. Recovery firmware was restored and both hashes were
 verified.
+
+The feature-gated outside-window retry image `6d7d96c4...e904b6` converts
+outside-window members to the already-qualified missing-member retry path,
+while preserving the ordinary planner behavior when the feature is disabled.
+A same-AP/channel-13 A/B against the census image eliminated all 29 empty
+plans and reduced host-visible TX failures from 166 to 1. TCP moved from 4.38
+to 4.46 Mbit/s and received UDP from 7.13 to 7.21 Mbit/s; both final ping
+checks completed 20/20 at 3.59 ms average. A second enabled run again reported
+zero empty plans across 90 partial BAs and only three host-visible failures,
+with TCP 3.53 Mbit/s and received UDP 6.72 Mbit/s under different RF variance.
+Both enabled runs ended with BH alive, WSM idle, no pending TX, zero used
+buffers, no watchdog rearm, and no unmatched retirement. Recovery hashes were
+verified after every run. The change is therefore a qualified correctness fix,
+not yet a throughput claim: retransmission still occupies the original MAC
+slot rather than returning missing members to PAS scheduling.
