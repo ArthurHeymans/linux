@@ -19,7 +19,7 @@ expected = {
     "packet_ram::RuntimePacketAddress::new(": 8,
     "validated_tx_frame(": 4,
     "validated_context_tx_frame(": 5,
-    "FrameNodeAddress::from_raw(": 9,
+    "FrameNodeAddress::from_raw(": 10,
     "LiveTxSlot::from_pipe_slot(": 4,
     "RetirableTxSlot::from_pipe_slot(": 1,
     "LiveTxSlot::from_mmio(": 3,
@@ -29,7 +29,7 @@ expected = {
     "TxHardwareRingAddress::for_pipe(": 13,
     "TxHardwareRingAddress::new(": 0,
     "PublishedSlotIdentity::new(": 2,
-    ".live_slot()": 2,
+    ".live_slot()": 3,
     ".mac_offset()": 2,
     ".tx_payload_bus_address(": 2,
 }

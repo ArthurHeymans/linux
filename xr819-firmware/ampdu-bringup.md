@@ -834,8 +834,10 @@ feature. The scheduler forms a contiguous policy-approved prefix, reserves all
 members before mutation, builds one generic descriptor and member table, and
 publishes the aggregate through one hardware trigger. Four compact telemetry
 words report saturating depth-three and depth-four counts for attempted,
-published, completed, and retried aggregates;
-`tools/decode-ampdu-depth-telemetry.py` decodes the reused counters-MIB fields.
+published, and completed aggregates. The retry word reports single-member and
+multi-member selective retry groups so the common small retry subsets remain
+visible; `tools/decode-ampdu-depth-telemetry.py` decodes the reused counters-MIB
+fields.
 The larger publication image reduces the optional flight recorder further to 64
 records; normal diagnostics remain unchanged.
 
@@ -858,3 +860,35 @@ fully acknowledged 317 depth-three plus 1,674 depth-four aggregates, and
 observed thirteen depth-four retry events. An immediately preceding run had the
 same clean firmware state but severe RF loss; the repeat restored normal traffic
 without changing the image. Recovery firmware was restored after both runs.
+
+A first attempt to act on partial BlockAck observations directly from the next
+cooperative service pass was rejected. Accepting only slot state 3 left most
+partial observations waiting and repeatedly ended with a transiently blocked
+TX tail. Expanding that path to state 4 introduced a race with outstanding MAC
+status ownership: image `a7d56f2a...fc51dbfb` stopped after 334 transmitted
+frames with ten confirmations outstanding and the Linux BH reporting a fatal
+TX-confirm timeout. The harness restored recovery firmware after the failure.
+
+Partial BlockAck retry is instead deferred until the existing MAC-pipe watchdog
+proves the transaction inactive. The watchdog-specific path validates the
+retained observation, publication, live slot, and retry plan before rearming,
+and deliberately does not acknowledge `PIPE_IRQ_PENDING`. Image
+`79d20ec4...e7b885` completed 20,161 TX frames and 15,493 aggregates, sustained
+2.62 Mbit/s TCP and 6.32 Mbit/s received UDP, and finished the final ping with
+19/20 replies. It attempted and published 401 depth-three plus 3,309 depth-four
+aggregates, fully acknowledged 341 depth-three plus 2,694 depth-four aggregates,
+and executed seven single-member plus ten multi-member selective retries. The
+firmware ended with BH alive, WSM idle, no pending TX, and zero used buffers.
+Recovery firmware was restored and both recovery hashes were verified.
+
+The unchanged image repeated with 19,821 TX frames and 15,829 aggregates,
+2.12 Mbit/s TCP, and 5.46 Mbit/s received UDP. It attempted and published 372
+depth-three plus 3,478 depth-four aggregates, fully acknowledged 303 plus 2,784,
+and executed twelve single-member plus six multi-member selective retries. The
+final ping path lost all twenty probes, but the firmware again ended with BH
+alive, WSM idle, no pending TX, zero used buffers, and no driver errors; the
+preceding flood delivered 3,586 of 3,605 probes. This matches the previously
+observed transient post-traffic path loss rather than a firmware ownership
+leak. Recovery hashes were verified again. The watchdog retry path is therefore
+qualified for continued feature-gated development, while an earlier trigger
+still requires explicit transaction-generation ownership.

@@ -3,8 +3,9 @@
 
 Build the image with `experimental-depth-four-ampdu` and
 `vendor-host-tx-diagnostics`. The firmware reuses the final four fields of the
-hardware-CCMP counters snapshot. Each word stores saturating 16-bit depth-three
-and depth-four observation counts in its low and high halves.
+hardware-CCMP counters snapshot. Each word stores two saturating 16-bit counts.
+Attempted, published, and completed track aggregate depth three/four. Retried
+tracks one-member versus multi-member selective retry groups.
 """
 
 import re
@@ -55,12 +56,17 @@ def main():
         print("  image lacks the depth-four diagnostic layout, or the MIB read failed")
         return 1
 
-    for stage in ("attempted", "published", "completed", "retried"):
+    for stage in ("attempted", "published", "completed"):
         word = values.get(stage, 0)
         print(
             f"  {stage:<9} depth3={word & 0xFFFF:5d} "
             f"depth4={(word >> 16) & 0xFFFF:5d}"
         )
+    retried = values.get("retried", 0)
+    print(
+        f"  retried   single={retried & 0xFFFF:5d} "
+        f"multi={(retried >> 16) & 0xFFFF:5d}"
+    )
     return 0
 
 
