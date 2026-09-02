@@ -215,20 +215,17 @@ pub const fn completion_matches_owner(
         && owner_slot == completion_slot
 }
 
-/// Per-rate attempt nibbles for a frame transmitted at a single rate.
+/// Per-rate failure nibbles for a frame transmitted at a single rate.
 ///
-/// Mirrors `HostTxDriver::rate_try_for_single_rate`, kept here so the encoding
-/// is testable on the host: `host_tx_driver` is ARM-only and invisible to
-/// `cargo test`. The driver decodes 24 nibbles across 3 words as
-/// `word = rate >> 3`, `nibble = rate & 7`.
+/// XR819 TX confirmations report failed attempts in these 24 nibbles. The
+/// cw1200 driver adds the final successful attempt at `tx_rate`; including it
+/// here would make every first-try success look like one retry to minstrel.
+/// The words use `word = rate >> 3`, `nibble = rate & 7`.
 pub const fn rate_try_for_single_rate(rate: u8, ack_failures: u8) -> [u32; 3] {
     let mut rate_try = [0_u32; 3];
     if rate < 24 {
-        let attempts = {
-            let raw = ack_failures as u32 + 1;
-            if raw > 0xf { 0xf } else { raw }
-        };
-        rate_try[(rate >> 3) as usize] = attempts << ((rate as u32 & 7) * 4);
+        let failures = if ack_failures > 0xf { 0xf } else { ack_failures as u32 };
+        rate_try[(rate >> 3) as usize] = failures << ((rate as u32 & 7) * 4);
     }
     rate_try
 }
@@ -335,26 +332,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rate_try_encodes_one_attempt_at_the_transmitted_rate() {
-        // Index 7 (OFDM 9 Mbit/s), transmitted once with no retries.
-        assert_eq!(rate_try_for_single_rate(7, 0), [0x1000_0000, 0, 0]);
-        // Index 8 starts the second word.
-        assert_eq!(rate_try_for_single_rate(8, 0), [0, 0x0000_0001, 0]);
-        // Index 13 (OFDM 54) with three retries: four attempts total.
-        assert_eq!(rate_try_for_single_rate(13, 3), [0, 0x0040_0000, 0]);
+    fn rate_try_encodes_only_failed_attempts() {
+        // The driver adds the successful attempt itself, so a first-try
+        // success must leave all failure nibbles clear.
+        assert_eq!(rate_try_for_single_rate(7, 0), [0; 3]);
+        assert_eq!(rate_try_for_single_rate(8, 0), [0; 3]);
+        // Index 13 (OFDM 54) with three failed attempts before success.
+        assert_eq!(rate_try_for_single_rate(13, 3), [0, 0x0030_0000, 0]);
     }
 
     #[test]
-    fn rate_try_never_reports_zero_attempts_for_a_valid_rate() {
-        // An all-zero set makes the driver record no attempts at all, which
-        // starves minstrel_ht. Every valid rate must produce a nibble.
-        for rate in 0..24_u8 {
-            assert_ne!(rate_try_for_single_rate(rate, 0), [0; 3], "rate {rate}");
-        }
-        // The nibble saturates rather than wrapping to zero.
+    fn rate_try_saturates_failure_counts() {
         assert_eq!(rate_try_for_single_rate(0, 200), [0xf, 0, 0]);
         // Out-of-range indices report nothing rather than corrupting a word.
-        assert_eq!(rate_try_for_single_rate(24, 0), [0; 3]);
+        assert_eq!(rate_try_for_single_rate(24, 1), [0; 3]);
     }
 
     #[test]

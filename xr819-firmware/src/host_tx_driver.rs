@@ -1362,8 +1362,9 @@ impl HostTxDriver {
         order
     }
 
-    // Encoding lives in `host_tx_policy::rate_try_for_single_rate`, which is
-    // host-testable; see there for why zeros are not harmless.
+    // The context normally contains exact per-rate failure nibbles. The
+    // host-testable fallback reconstructs them from ack_failures only when an
+    // older completion path did not populate those words.
     fn confirmation_state(
         retained: vendor_host_tx::RetainedHostTx,
         status: u32,
