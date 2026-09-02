@@ -678,3 +678,12 @@ from two to four ordinary slots, with copied-completion capacity raised from
 8 to 16, and separately from depth-two toward a deeper single-slot A-MPDU.
 The per-slot owner, retry, BlockAck, and fair-service work above remains required
 for both expansions.
+
+`host_tx_policy::plan_ordinary_batch()` now captures that ordinary transaction
+shape without touching MMIO. It requires an entirely unowned pipe, validates the
+first eligible context and producer slot, selects at most four queue-ordered
+contexts mapped to the same pipe, and assigns consecutive modulo-four slots.
+Host tests cover wraparound, the vendor depth cap, other-pipe interleaving,
+stale first-owner selection, invalid cursors, and attempted active-pipe reuse.
+Publication remains at the qualified two-slot limit until this plan is carried
+through reversible reservation and the completion queue is expanded.

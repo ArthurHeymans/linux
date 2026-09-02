@@ -100,6 +100,90 @@ impl Default for Class0RuntimeOwners {
     }
 }
 
+pub const MAX_ORDINARY_BATCH_DEPTH: usize = 4;
+
+/// Pure vendor-shaped plan for one ordinary pre-GO pipe transaction.
+///
+/// The vendor excludes armed pipes, then fills at most four consecutive slots
+/// for one idle pipe. Candidate entries are retained-context indices annotated
+/// with their queue-mapped pipe; `None` means that the context is not eligible
+/// during this service pass. Any retained slot owner rejects the whole plan
+/// rather than treating an active pipe as appendable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OrdinaryBatchPlan {
+    pipe: u8,
+    len: u8,
+    indices: [usize; MAX_ORDINARY_BATCH_DEPTH],
+    slots: [u8; MAX_ORDINARY_BATCH_DEPTH],
+}
+
+impl OrdinaryBatchPlan {
+    pub const fn pipe(self) -> u8 {
+        self.pipe
+    }
+
+    pub const fn len(self) -> usize {
+        self.len as usize
+    }
+
+    pub const fn index(self, position: usize) -> Option<usize> {
+        if position < self.len as usize {
+            Some(self.indices[position])
+        } else {
+            None
+        }
+    }
+
+    pub const fn slot(self, position: usize) -> Option<u8> {
+        if position < self.len as usize {
+            Some(self.slots[position])
+        } else {
+            None
+        }
+    }
+}
+
+pub fn plan_ordinary_batch(
+    candidates: &[Option<u8>],
+    occupied_slots: [bool; 4],
+    first_index: usize,
+    pipe: u8,
+    first_slot: u8,
+) -> Option<OrdinaryBatchPlan> {
+    if pipe >= 4
+        || first_slot >= 4
+        || candidates.get(first_index).copied().flatten() != Some(pipe)
+        || candidates[..first_index].iter().any(Option::is_some)
+        || occupied_slots.into_iter().any(|occupied| occupied)
+    {
+        return None;
+    }
+
+    let mut indices = [0; MAX_ORDINARY_BATCH_DEPTH];
+    let mut slots = [0; MAX_ORDINARY_BATCH_DEPTH];
+    indices[0] = first_index;
+    slots[0] = first_slot;
+    let mut len = 1;
+    for (index, candidate_pipe) in candidates.iter().copied().enumerate().skip(first_index + 1) {
+        if candidate_pipe != Some(pipe) {
+            continue;
+        }
+        if len == MAX_ORDINARY_BATCH_DEPTH {
+            break;
+        }
+        indices[len] = index;
+        slots[len] = first_slot.wrapping_add(len as u8) & 3;
+        len += 1;
+    }
+
+    Some(OrdinaryBatchPlan {
+        pipe,
+        len: len as u8,
+        indices,
+        slots,
+    })
+}
+
 /// Match completion-ring evidence against the exact slot recorded before GO.
 ///
 /// Context-only routing was measured and reverted because it could release a
@@ -197,6 +281,41 @@ mod tests {
         assert_eq!(Class0RuntimeOwners::new().first_in_pipe(4), None);
         assert_eq!(Class0RuntimeOwners::new().slot_owner(0, 4), None);
         assert!(Class0RuntimeOwners::new().is_empty());
+    }
+
+    #[test]
+    fn ordinary_batch_plan_fills_four_wrapped_slots_without_active_append() {
+        let candidates = [None, Some(2), Some(1), Some(2), Some(2), Some(2), Some(2)];
+        let Some(plan) = plan_ordinary_batch(&candidates, [false; 4], 1, 2, 3) else {
+            panic!("eligible idle pipe must produce a batch plan");
+        };
+
+        assert_eq!(plan.pipe(), 2);
+        assert_eq!(plan.len(), 4);
+        assert_eq!(
+            core::array::from_fn(|position| plan.index(position)),
+            [Some(1), Some(3), Some(4), Some(5)]
+        );
+        assert_eq!(
+            core::array::from_fn(|position| plan.slot(position)),
+            [Some(3), Some(0), Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn ordinary_batch_plan_rejects_occupied_or_stale_ownership() {
+        let candidates = [None, Some(1), Some(1)];
+        assert!(plan_ordinary_batch(&candidates, [false, true, false, false], 1, 1, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 4, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 1, 4).is_none());
+        assert!(plan_ordinary_batch(&candidates, [false; 4], 2, 1, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 0, 0).is_none());
+    }
+
+    #[test]
+    fn ordinary_batch_plan_requires_the_first_eligible_context() {
+        let candidates = [Some(0), Some(1), Some(1)];
+        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 1, 0).is_none());
     }
 
     #[test]
