@@ -734,3 +734,12 @@ BA-policy gates, airtime limits, holes, spacing, exact opcode order, and PHY
 length publication. The qualified depth-two publisher, BlockAck handling, and
 retry paths remain unchanged until ownership and completion policy are expanded
 for every planned member.
+
+The host-only BlockAck model now covers the same four-member shape. It validates
+one contiguous sequence prefix, classifies 12-bit wraparound against the
+compressed 64-bit window, accumulates repeated observations with sticky
+acknowledgements, rejects mismatched aggregate depths, and produces per-member
+confirm/retry/give-up actions. Whole-aggregate rearm is allowed only for a total
+miss when every member may retry at the same next rate and the BA session is
+still active. This closes the pure decision layer; retained identities and MMIO
+publication still remain depth-two.

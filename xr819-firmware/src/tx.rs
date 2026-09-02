@@ -9659,6 +9659,123 @@ pub(crate) fn build_planned_ampdu_descriptor(
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlannedBlockAck {
+    pub states: [BlockAckMemberState;
+        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    pub member_count: u8,
+}
+
+#[cfg(test)]
+fn planned_member_count<T>(members: &[Option<T>]) -> Option<usize> {
+    let count = members.iter().take_while(|member| member.is_some()).count();
+    if !(2..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&count)
+        || members[count..].iter().any(Option::is_some)
+    {
+        None
+    } else {
+        Some(count)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn classify_planned_block_ack(
+    start_sequence: u16,
+    bitmap: u64,
+    sequences: [Option<u16>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+) -> Option<PlannedBlockAck> {
+    let member_count = planned_member_count(&sequences)?;
+    let mut states = [BlockAckMemberState::OutsideWindow;
+        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    for index in 0..member_count {
+        let sequence = sequences[index]?;
+        let delta = (sequence & 0x0fff).wrapping_sub(start_sequence & 0x0fff) & 0x0fff;
+        states[index] = if delta >= 64 {
+            BlockAckMemberState::OutsideWindow
+        } else if bitmap & (1_u64 << delta) != 0 {
+            BlockAckMemberState::Acknowledged
+        } else {
+            BlockAckMemberState::Missing
+        };
+    }
+    Some(PlannedBlockAck {
+        states,
+        member_count: member_count as u8,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn merge_planned_block_ack(
+    previous: Option<PlannedBlockAck>,
+    current: PlannedBlockAck,
+) -> Option<PlannedBlockAck> {
+    if previous.is_some_and(|previous| previous.member_count != current.member_count) {
+        return None;
+    }
+    let mut merged = current;
+    for index in 0..usize::from(current.member_count) {
+        merged.states[index] = match (
+            previous.map(|previous| previous.states[index]),
+            current.states[index],
+        ) {
+            (Some(BlockAckMemberState::Acknowledged), _)
+            | (_, BlockAckMemberState::Acknowledged) => BlockAckMemberState::Acknowledged,
+            (Some(BlockAckMemberState::Missing), _) | (_, BlockAckMemberState::Missing) => {
+                BlockAckMemberState::Missing
+            }
+            _ => BlockAckMemberState::OutsideWindow,
+        };
+    }
+    Some(merged)
+}
+
+#[cfg(test)]
+pub(crate) fn plan_planned_block_ack_actions(
+    observation: PlannedBlockAck,
+    retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    session_active: bool,
+) -> [Option<BlockAckMemberAction>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH] {
+    core::array::from_fn(|index| {
+        if index >= usize::from(observation.member_count) {
+            return None;
+        }
+        Some(match observation.states[index] {
+            BlockAckMemberState::Acknowledged => BlockAckMemberAction::Confirm,
+            BlockAckMemberState::Missing if session_active && retry_allowed[index] => {
+                BlockAckMemberAction::Retry
+            }
+            BlockAckMemberState::Missing | BlockAckMemberState::OutsideWindow => {
+                BlockAckMemberAction::GiveUp
+            }
+        })
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn planned_whole_retry_allowed(
+    observation: PlannedBlockAck,
+    retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    session_active: bool,
+    next_rates: [Option<u8>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+) -> bool {
+    let actions = plan_planned_block_ack_actions(observation, retry_allowed, session_active);
+    let count = usize::from(observation.member_count);
+    if count < 2
+        || actions[..count]
+            .iter()
+            .any(|action| *action != Some(BlockAckMemberAction::Retry))
+    {
+        return false;
+    }
+    let Some(first_rate) = next_rates[0] else {
+        return false;
+    };
+    next_rates[..count]
+        .iter()
+        .all(|rate| *rate == Some(first_rate))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -12031,6 +12148,87 @@ mod tests {
             merge_depth_two_block_ack_states(Some(first_only), shifted),
             [BlockAckMemberState::Acknowledged; 2],
         );
+    }
+
+    #[test]
+    fn planned_block_ack_handles_four_wrapped_members_and_sticky_updates() {
+        let sequences = [Some(0x0ffe), Some(0x0fff), Some(0x0000), Some(0x0001)];
+        let Some(first_half) = classify_planned_block_ack(0x0ffe, 0b0011, sequences) else {
+            panic!("four contiguous wrapped sequences must classify");
+        };
+        assert_eq!(
+            first_half.states,
+            [
+                BlockAckMemberState::Acknowledged,
+                BlockAckMemberState::Acknowledged,
+                BlockAckMemberState::Missing,
+                BlockAckMemberState::Missing,
+            ],
+        );
+        let Some(second_half) = classify_planned_block_ack(0x0ffe, 0b1100, sequences) else {
+            panic!("shifted acknowledgement half must classify");
+        };
+        let Some(merged) = merge_planned_block_ack(Some(first_half), second_half) else {
+            panic!("matching aggregate observations must merge");
+        };
+        assert_eq!(merged.states, [BlockAckMemberState::Acknowledged; 4]);
+        assert_eq!(
+            plan_planned_block_ack_actions(merged, [true; 4], true),
+            [Some(BlockAckMemberAction::Confirm); 4],
+        );
+    }
+
+    #[test]
+    fn planned_block_ack_distinguishes_partial_and_whole_retry() {
+        let observation = PlannedBlockAck {
+            states: [
+                BlockAckMemberState::Acknowledged,
+                BlockAckMemberState::Missing,
+                BlockAckMemberState::OutsideWindow,
+                BlockAckMemberState::Missing,
+            ],
+            member_count: 4,
+        };
+        assert_eq!(
+            plan_planned_block_ack_actions(observation, [true, true, true, false], true),
+            [
+                Some(BlockAckMemberAction::Confirm),
+                Some(BlockAckMemberAction::Retry),
+                Some(BlockAckMemberAction::GiveUp),
+                Some(BlockAckMemberAction::GiveUp),
+            ],
+        );
+
+        let total_miss = PlannedBlockAck {
+            states: [BlockAckMemberState::Missing; 4],
+            member_count: 4,
+        };
+        assert!(planned_whole_retry_allowed(
+            total_miss,
+            [true; 4],
+            true,
+            [Some(18); 4],
+        ));
+        assert!(!planned_whole_retry_allowed(
+            total_miss,
+            [true; 4],
+            true,
+            [Some(18), Some(18), Some(17), Some(18)],
+        ));
+        assert!(!planned_whole_retry_allowed(
+            total_miss,
+            [true; 4],
+            false,
+            [Some(18); 4],
+        ));
+        assert!(merge_planned_block_ack(
+            Some(PlannedBlockAck {
+                member_count: 3,
+                ..total_miss
+            }),
+            total_miss,
+        )
+        .is_none());
     }
 
     #[test]
