@@ -4160,7 +4160,6 @@ impl SingleFrameRearmBackend for SingleProbeMacBackend {
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-const WHOLE_AMPDU_RETRY_LIMIT: u16 = 2;
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
 unsafe fn collect_ampdu_contexts(
@@ -4209,16 +4208,13 @@ unsafe fn prepare_whole_ampdu_retry(
         let session_active = tid < 8
             && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
 
-        let mut next_rates = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        let mut shared_next_rate = None;
         for index in 0..member_count {
             let context = contexts[index]?;
             let host = context.host()?;
             let rate = read_u8(context.tx_rate_address());
             let policy = crate::rate_policy::get(read_u8(context.retry_policy_address()))?;
             let tries = read_u16(context.try_count_address());
-            if tries >= WHOLE_AMPDU_RETRY_LIMIT {
-                return None;
-            }
             let control = read_u32(context.control_bits_address());
             let long_frame = (control & 0x7ff) >> 9 != 0;
             let crate::rate_policy::RetryStep::Rearm { rate: next_rate } =
@@ -4227,15 +4223,12 @@ unsafe fn prepare_whole_ampdu_retry(
                 return None;
             };
             host.rate_try(usize::from(rate >> 3))?;
-            next_rates[index] = Some(next_rate);
+            if index == 0 {
+                shared_next_rate = Some(next_rate);
+            }
         }
-        let shared_next_rate = next_rates[0]?;
-        if !session_active
-            || next_rates
-                .iter()
-                .take(member_count)
-                .any(|rate| *rate != Some(shared_next_rate))
-        {
+        let shared_next_rate = shared_next_rate?;
+        if !session_active {
             return None;
         }
 
@@ -4253,16 +4246,19 @@ unsafe fn prepare_whole_ampdu_retry(
                     (status & !(0x0f << shift)) | ((attempts + 1) << shift),
                 );
             }
-            let next_rate = next_rates[index]?;
             let flags = read_u32(context.control_bits_address());
-            let rate_changed = next_rate != rate && (flags & 0x20 == 0 || next_rate > 13);
-            write_u8(context.tx_rate_address(), if rate_changed { next_rate } else { rate });
+            let rate_changed =
+                shared_next_rate != rate && (flags & 0x20 == 0 || shared_next_rate > 13);
+            write_u8(
+                context.tx_rate_address(),
+                if rate_changed { shared_next_rate } else { rate },
+            );
             write_u32(
                 context.control_bits_address(),
                 flags
                     | 0x10
                     | 0x0008_0000
-                    | if rate_changed && rate > 3 && next_rate < 4 {
+                    | if rate_changed && rate > 3 && shared_next_rate < 4 {
                         0x0004_0000
                     } else {
                         0
@@ -4939,7 +4935,16 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 }
                 // A missing or unusable bitmap retains the already-qualified
                 // conservative whole-aggregate retry path.
-                return if unsafe { prepare_whole_ampdu_retry(frame_node) }.is_some() {
+                return if let Some(contexts) = unsafe { prepare_whole_ampdu_retry(frame_node) } {
+                    unsafe {
+                        crate::host_tx_diagnostics::record_ampdu_outcome(
+                            if contexts[2].is_some() {
+                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_WHOLE_REARM
+                            } else {
+                                crate::host_tx_diagnostics::ampdu_outcome::DEPTH_TWO_WHOLE
+                            },
+                        )
+                    };
                     self.retry[retry_index].record_rearm();
                     SingleTxRetryDecision::Rearm
                 } else {

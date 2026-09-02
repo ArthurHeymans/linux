@@ -907,3 +907,20 @@ partial-BA recovery waits 0.6-1.0 seconds for watchdog expiry: the qualified
 watchdog path is a safety net, while the active bottleneck is the large fraction
 of empty selective plans and the one-confirm/one-publication service cadence.
 Recovery firmware was restored and both hashes were verified.
+
+The policy-budget parity image `10498ade...8e17fe7` removed the artificial
+two-attempt whole-aggregate limit and, like vendor firmware, applied the head
+member's fallback rate to every member after each member's policy admitted a
+retry. Its adaptive run completed 24,203 TX frames and 19,210 aggregates at
+3.87 Mbit/s TCP and 6.20 Mbit/s received UDP, with 84 host-visible failures,
+zero pending/used buffers, and no firmware errors. A fixed-MCS3 qualification
+then sustained 3.50 Mbit/s over 30 seconds, completed final ping 20/20, and
+ended clean. New telemetry proved that whole retry is common rather than
+unexercised: the fixed-MCS3 run recorded 136 deeper and 153 depth-two whole
+rearms. It still recorded 34 empty deeper selective plans and 153 host-visible
+failures, and it did not meet the 4 Mbit/s fixed-MCS3 target. Policy parity is
+therefore a qualified correctness and adaptive-throughput improvement, but the
+outcome census falsifies it as the main remaining throughput fix. With zero
+watchdog rearms in every census, the next experiment moves to confirmation
+coalescing and service-loop latency before implementing a more invasive BA join.
+Recovery firmware was restored and both hashes were verified again.
