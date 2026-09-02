@@ -252,15 +252,17 @@ pub mod ampdu_outcome {
     pub const DEEP_PLAN_EMPTY: usize = 3;
     pub const DEEP_PLAN_INVALID: usize = 4;
     pub const DEEP_WHOLE_REARM: usize = 5;
-    pub const DEEP_GIVE_UP: usize = 6;
+    pub const DEEP_PLAN_NO_SESSION: usize = 6;
     pub const RETRY_EVENT_REARM: usize = 7;
     pub const RETRY_EVENT_GIVE_UP: usize = 8;
     pub const RETRY_EVENT_COMPLETE: usize = 9;
     pub const WATCHDOG_REARM: usize = 10;
     pub const WATCHDOG_NO_REARM: usize = 11;
+    pub const DEEP_PLAN_MIXED_RATE: usize = WATCHDOG_NO_REARM;
     pub const RETIRED_UNMATCHED: usize = 12;
     pub const PARTIAL_GIVE_UP: usize = 13;
-    pub const DEPTH_TWO_SELECTIVE: usize = 14;
+    pub const DEEP_PLAN_OUTSIDE_WINDOW: usize = PARTIAL_GIVE_UP;
+    pub const DEEP_PLAN_NO_RATE: usize = 14;
     pub const DEPTH_TWO_WHOLE: usize = 15;
 }
 

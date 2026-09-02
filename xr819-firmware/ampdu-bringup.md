@@ -942,3 +942,18 @@ confirmation-credit bottleneck removed here. Multi-confirm and immediate
 idle-pipe publication are qualified together under `experimental-fast-loop`;
 separating their individual contributions is lower priority than fixing the
 remaining empty selective plans and member requeue path.
+
+The empty-plan census image `52b42d7a...f9f6b04a` retained fast-loop behavior
+and split empty deeper plans by cause. Under a poor-RF adaptive run that settled
+at MCS0, all 24 empty plans carried an outside-window BlockAck member; none
+carried an unavailable retry rate or mixed next rates, and only one observation
+saw an inactive BA session. The run consequently reported 868 host failures and
+2.28 Mbit/s TCP, but still ended with BH alive, WSM idle, no pending TX, zero
+used buffers, and final ping 20/20. This isolates the current selective-loss
+mechanism: the policy ladder and same-rate constraint are not emptying plans;
+`plan_planned_block_ack_actions` deliberately converts every outside-window
+member to give-up. Vendor instead returns unacknowledged members to its per-link
+retry table and PAS ring. The next bounded experiment treats deeper
+outside-window members as retryable before implementing the larger PAS-ring
+requeue state transition. Recovery firmware was restored and both hashes were
+verified.

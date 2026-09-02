@@ -4514,6 +4514,7 @@ unsafe fn depth_four_selective_plan_for(
 ) -> Option<(
     SelectiveAmpduRetryPlan,
     [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    u8,
 )> {
     unsafe {
         let (contexts, member_count) = collect_ampdu_contexts(first_frame_node)?;
@@ -4528,12 +4529,28 @@ unsafe fn depth_four_selective_plan_for(
         let tid = read_u8(first.tid_address());
         let session_active = tid < 8
             && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
+        let mut reason_mask = if session_active { 0 } else { 1 };
         let mut retry_allowed = [false; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
         let mut retry_rates = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
         for index in 0..member_count {
             let member = FrameNodeAddress::from_raw(members[index])?;
             retry_rates[index] = selective_member_retry_rate(member);
             retry_allowed[index] = retry_rates[index].is_some();
+            match observation.observation.states[index] {
+                BlockAckMemberState::OutsideWindow => reason_mask |= 2,
+                BlockAckMemberState::Missing if retry_rates[index].is_none() => reason_mask |= 4,
+                _ => (),
+            }
+        }
+        let selected_rate = retry_rates.iter().take(member_count).flatten().next().copied();
+        if selected_rate.is_some()
+            && retry_rates
+                .iter()
+                .take(member_count)
+                .flatten()
+                .any(|rate| Some(*rate) != selected_rate)
+        {
+            reason_mask |= 8;
         }
         Some((
             plan_selective_ampdu_retry(
@@ -4543,6 +4560,7 @@ unsafe fn depth_four_selective_plan_for(
                 retry_rates,
             ),
             members,
+            reason_mask,
         ))
     }
 }
@@ -4741,7 +4759,7 @@ impl SingleProbeMacBackend {
             if let Some(observation) = self.depth_two_block_ack[retry_index]
                 .filter(|observation| observation.observation.member_count > 2)
             {
-                let Some((plan, members)) =
+                let Some((plan, members, _)) =
                     (unsafe { depth_four_selective_plan_for(frame_node, observation) })
                 else {
                     terminal_probe_backend_fault(pipe)
@@ -4836,7 +4854,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 if let Some(observation) = self.depth_two_block_ack[retry_index]
                     .filter(|observation| observation.observation.member_count > 2)
                 {
-                    let Some((plan, _)) = (unsafe {
+                    let Some((plan, _, reason_mask)) = (unsafe {
                         depth_four_selective_plan_for(frame_node, observation)
                     }) else {
                         unsafe {
@@ -4858,7 +4876,29 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     unsafe {
                         crate::host_tx_diagnostics::record_ampdu_outcome(
                             crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_EMPTY,
-                        )
+                        );
+                        for (reason, outcome) in [
+                            (
+                                1,
+                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_NO_SESSION,
+                            ),
+                            (
+                                2,
+                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_OUTSIDE_WINDOW,
+                            ),
+                            (
+                                4,
+                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_NO_RATE,
+                            ),
+                            (
+                                8,
+                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_MIXED_RATE,
+                            ),
+                        ] {
+                            if reason_mask & reason != 0 {
+                                crate::host_tx_diagnostics::record_ampdu_outcome(outcome);
+                            }
+                        }
                     };
                     return SingleTxRetryDecision::CompleteSuccess;
                 }
@@ -5054,7 +5094,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_COMPLETE,
                 )
             };
-            let Some((plan, members)) =
+            let Some((plan, members, _)) =
                 (unsafe { depth_four_selective_plan_for(frame_node, observation) })
             else {
                 terminal_probe_backend_fault(pipe)
