@@ -976,6 +976,22 @@ pub struct SchedulerLiveDiagnostic {
 /// # Safety
 /// The retained PAS context must remain mapped and software-owned.
 #[cfg(target_arch = "arm")]
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+pub(crate) unsafe fn ampdu_plan_candidate(
+    retained: &RetainedHostTx,
+) -> crate::host_tx_policy::AmpduPlanCandidate {
+    let candidate = unsafe { ampdu_candidate(retained) };
+    crate::host_tx_policy::AmpduPlanCandidate {
+        interface: candidate.key.interface,
+        link: candidate.key.link,
+        tid: candidate.key.tid,
+        rate: candidate.key.rate,
+        frame_control: candidate.frame_control,
+        airtime: u32::from(unsafe { read_host_u16(retained.context.payload_extended()) }),
+    }
+}
+
+#[cfg(target_arch = "arm")]
 pub(crate) unsafe fn ampdu_candidate(retained: &RetainedHostTx) -> AmpduCandidate {
     let context = retained.context;
     AmpduCandidate {
@@ -1183,6 +1199,151 @@ pub enum AmpduPublishError {
     Grouping,
     DescriptorUnavailable,
     Descriptor(crate::tx::ProbeBuildError),
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+pub unsafe fn publish_planned_ampdu(
+    retained: [*mut RetainedHostTx; 4],
+    reservations: [*const HostSchedulerReservation; 4],
+    member_count: usize,
+) -> Result<(u8, u8), AmpduPublishError> {
+    if !(3..=4).contains(&member_count)
+        || retained[..member_count].iter().any(|member| member.is_null())
+        || reservations[..member_count]
+            .iter()
+            .any(|reservation| reservation.is_null())
+    {
+        return Err(AmpduPublishError::Ownership);
+    }
+    let head = unsafe { &*retained[0] };
+    let head_reservation = unsafe { &*reservations[0] };
+    let pipe = head_reservation.pipe;
+    let slot = head_reservation.slot;
+    let head_candidate = unsafe { ampdu_candidate(head) };
+    for position in 0..member_count {
+        let member = unsafe { &*retained[position] };
+        let reservation = unsafe { &*reservations[position] };
+        if member.phase != HostTxPhase::SchedulerReserved
+            || member.context != reservation.context
+            || reservation.pipe != pipe
+            || reservation.slot != (slot.wrapping_add(position as u8) & 3)
+            || !can_form_ampdu_pair(head_candidate, unsafe { ampdu_candidate(member) })
+        {
+            return Err(AmpduPublishError::Grouping);
+        }
+    }
+
+    let link = usize::from(head_candidate.key.link);
+    let link_state = crate::dtcm::ba_pipe_activity_unchecked(link).get() as u32;
+    let original_link_state = unsafe { read_live_u8(link_state) };
+    let peer = crate::vif::snapshot(head_candidate.key.interface)
+        .map(|snapshot| snapshot.bssid)
+        .unwrap_or([0; 6]);
+    unsafe {
+        for (index, byte) in peer.into_iter().enumerate() {
+            write_live_u8(
+                crate::dtcm::ba_pipe_peer_mac_byte_unchecked(link, index).get() as u32,
+                byte,
+            );
+        }
+        write_live_u8(
+            crate::dtcm::ba_pipe_tid_unchecked(link).get() as u32,
+            head_candidate.key.tid,
+        );
+        write_live_u8(
+            crate::dtcm::ba_pipe_interface_unchecked(link).get() as u32,
+            head_candidate.key.interface,
+        );
+        let sequence = read_host_u16(head.context.sequence_number());
+        write_live_u16(
+            crate::dtcm::ba_pipe_start_sequence_unchecked(link).get() as u32,
+            sequence,
+        );
+        write_live_u16(
+            crate::dtcm::ba_pipe_sequence_unchecked(link).get() as u32,
+            sequence,
+        );
+        write_live_u32(
+            crate::dtcm::pre_vif_link_bitmap().get() as u32,
+            read_live_u32(crate::dtcm::pre_vif_link_bitmap().get() as u32) | (1_u32 << link),
+        );
+        write_live_u8(link_state, 6);
+    }
+
+    let descriptor_head = crate::dtcm::MAC_SOFTWARE_RECORDS.get() as u32;
+    let descriptor_node = unsafe { read_live_u32(descriptor_head) };
+    let Some(descriptor_index) = crate::dtcm::mac_software_record_node_index(descriptor_node)
+    else {
+        unsafe { write_live_u8(link_state, original_link_state) };
+        return Err(AmpduPublishError::DescriptorUnavailable);
+    };
+    let descriptor_next = unsafe { read_live_u32(descriptor_node) };
+    let packet_record = unsafe { read_live_u32(descriptor_node + 4) };
+    if packet_ram::software_record_index(packet_record as usize) != Some(descriptor_index) {
+        unsafe { write_live_u8(link_state, original_link_state) };
+        return Err(AmpduPublishError::DescriptorUnavailable);
+    }
+
+    let mut contexts = [0_u32; 4];
+    let mut original_next = [0_u32; 4];
+    unsafe { write_live_u32(descriptor_head, descriptor_next) };
+    for position in 0..member_count {
+        let member = unsafe { &mut *retained[position] };
+        let reservation = unsafe { &*reservations[position] };
+        contexts[position] = member.context.raw();
+        original_next[position] = unsafe { read_host_u32(member.context.next_in_ampdu()) };
+        if position != 0 {
+            unsafe { reservation.restore_slot_image() };
+        }
+        unsafe {
+            write_host_u32(
+                member.context.control_bits(),
+                (reservation.original_control_bits & !0x8000)
+                    | if position == 0 { 0x60 } else { 0x20 },
+            );
+        }
+    }
+
+    if let Err(error) = unsafe {
+        crate::tx::prepare_host_ampdu(
+            contexts.map(|context| (context != 0).then_some(context)),
+            pipe,
+            slot,
+            head_reservation.slot_record,
+            head_reservation.command,
+            descriptor_node,
+            packet_record,
+        )
+    } {
+        unsafe {
+            write_live_u8(link_state, original_link_state);
+            for position in 0..member_count {
+                write_host_u32((&*retained[position]).context.next_in_ampdu(), original_next[position]);
+            }
+            write_live_u32(descriptor_node, read_live_u32(descriptor_head));
+            write_live_u32(descriptor_head, descriptor_node);
+        }
+        return Err(AmpduPublishError::Descriptor(error));
+    }
+
+    unsafe {
+        for member in 0..16 {
+            write_live_u32(
+                crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
+                    .member_unchecked(link, member)
+                    .get() as u32,
+                contexts.get(member).copied().unwrap_or(0),
+            );
+        }
+        if crate::tx::publish_planned_host_ampdu(contexts, pipe, slot).is_err() {
+            crate::halt_always!();
+        }
+    }
+    for member in retained.iter().take(member_count).copied() {
+        unsafe { (*member).phase = HostTxPhase::Scheduled };
+    }
+    Ok((pipe, slot))
 }
 
 /// Fold two reversible ordinary reservations into one kind-1 pipe slot and

@@ -4901,6 +4901,9 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 else {
                     terminal_probe_backend_fault(pipe)
                 };
+                unsafe {
+                    crate::host_tx_diagnostics::record_ampdu_depth(3, retry_count as u8)
+                };
                 if retry_count == 1 {
                     let link = unsafe { read_u8(retry_head.context().link_id_address()) };
                     unsafe {
@@ -5661,6 +5664,98 @@ pub unsafe fn publish_depth_two_host_ampdu(
         }
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
         crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[inline(never)]
+pub unsafe fn publish_planned_host_ampdu(
+    contexts: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    pipe: u8,
+    slot: u8,
+) -> Result<(), ProbeBuildError> {
+    let member_count = contexts.iter().take_while(|context| **context != 0).count();
+    if pipe >= 4
+        || slot >= 4
+        || !(3..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&member_count)
+        || contexts[member_count..].iter().any(|context| *context != 0)
+    {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
+    let typed = contexts.map(|context| (context != 0).then(|| ContextAddress::new(context)));
+    let pipe_state = pipe_state_address(pipe);
+    let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
+    let Some(ring) = TxHardwareRingAddress::for_pipe(pipe, hardware_ring) else {
+        return Err(ProbeBuildError::PipeStateUnavailable);
+    };
+    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
+    if !runtime
+        .backend
+        .register_ampdu_publications(typed, pipe, slot)
+    {
+        return Err(ProbeBuildError::UnsupportedPublicationShape);
+    }
+    unsafe {
+        if start_phy_operation_1() != 0 {
+            return Err(ProbeBuildError::UnsupportedPublicationShape);
+        }
+        let timestamp = read_u32(0x0ac0_0004);
+        for context in typed.iter().take(member_count).flatten().copied() {
+            write_u32(
+                context.ownership_bits_address(),
+                read_u32(context.ownership_bits_address()) | 0x180,
+            );
+            write_u32(context.scheduler_timestamp_address(), timestamp);
+        }
+        let first = typed[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+        let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
+        write_u8(record.current_slot().get(), slot);
+        write_u8(record.last_slot().get(), slot);
+        write_u32(ring.go() as usize, 0);
+
+        let interface = usize::from(read_u8(first.interface_address()));
+        let pas = crate::dtcm::pas_stride_view_unchecked(interface);
+        let edca_slot_timing = read_u32(pas.packed_aifs().get());
+        let edca_slot_timing_cache = crate::dtcm::mac_edca_slot_timing_ptr() as usize;
+        if read_u32(edca_slot_timing_cache) != edca_slot_timing {
+            write_u32(crate::platform::mac_register(0x0e64), edca_slot_timing);
+            write_u32(edca_slot_timing_cache, edca_slot_timing);
+        }
+        let queue = usize::from(read_u8(
+            crate::dtcm::queue_to_access_category_unchecked(usize::from(pipe)).get(),
+        ));
+        let mut quantum = u32::from(read_u16(pas.txop_limit_unchecked(queue).get()));
+        let airtime = read_u32(first.word_48_address()) & 0xffff;
+        if quantum == 0 {
+            if (read_u32(first.control_bits_address()) & 0x0fff) >> 10 != 0 {
+                quantum = airtime;
+            }
+        } else if quantum <= airtime {
+            write_u16(
+                first.auxiliary_state_address(),
+                read_u16(first.auxiliary_state_address()) | 8,
+            );
+            quantum = airtime;
+        }
+        let quantum_destination = read_u32(
+            crate::dtcm::duration_quantum_pointer_unchecked(usize::from(pipe)).get(),
+        );
+        write_u32(quantum_destination as usize, quantum.wrapping_add(0x1f) >> 5);
+        if !finalize_staged_pipe(
+            &mut VolatileMacPipeMmio,
+            pipe,
+            pipe_state,
+            hardware_ring,
+            slot,
+            slot,
+        ) {
+            return Err(ProbeBuildError::PipeStateUnavailable);
+        }
+        for _ in 0..member_count {
+            crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
+        }
+        crate::host_tx_diagnostics::record_ampdu_depth(1, member_count as u8);
     }
     Ok(())
 }
@@ -6785,6 +6880,10 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
             return true;
         }
         *retained = None;
+        #[cfg(feature = "experimental-depth-four-ampdu")]
+        if member_count > 2 {
+            crate::host_tx_diagnostics::record_ampdu_depth(2, member_count as u8);
+        }
 
         let record = pipe_record_address(pipe);
         let Some(slot) = publication.live_slot() else {

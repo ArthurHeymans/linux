@@ -56,6 +56,15 @@ struct HardwareOwner {
     frame_node: u32,
 }
 
+#[cfg(all(target_arch = "arm", feature = "experimental-four-slot-ordinary"))]
+struct ReservedBatchMember {
+    index: usize,
+    retained: vendor_host_tx::RetainedHostTx,
+    wait_diagnostic: u8,
+    reservation: vendor_host_tx::HostSchedulerReservation,
+    frame_node: u32,
+}
+
 impl HardwareOwner {
     const fn matches(self, owner_context: u32, completion: tx::HostClass0Completion) -> bool {
         host_tx_policy::completion_matches_owner(
@@ -357,6 +366,63 @@ impl HostTxDriver {
         ));
     }
 
+    #[cfg(all(
+        target_arch = "arm",
+        feature = "experimental-four-slot-ordinary",
+        feature = "experimental-depth-four-ampdu"
+    ))]
+    #[inline(never)]
+    unsafe fn publish_depth_four_reserved(
+        &mut self,
+        guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+        members: &mut [Option<ReservedBatchMember>; 4],
+        member_count: usize,
+    ) {
+        let mut retained = [core::ptr::null_mut(); 4];
+        let mut reservations = [core::ptr::null(); 4];
+        for position in 0..member_count {
+            let Some(member) = members[position].as_mut() else {
+                crate::halt_always!();
+            };
+            retained[position] = &mut member.retained;
+            reservations[position] = &member.reservation;
+        }
+        match unsafe {
+            vendor_host_tx::publish_planned_ampdu(retained, reservations, member_count)
+        } {
+            Ok((aggregate_pipe, aggregate_slot)) => {
+                for position in 0..member_count {
+                    let Some(member) = members[position].take() else {
+                        crate::halt_always!();
+                    };
+                    self.states[member.index] = Some(HostTxState::Owned {
+                        retained: member.retained,
+                        wait_diagnostic: 3,
+                        hardware: Some(HardwareOwner {
+                            pipe: aggregate_pipe,
+                            slot: aggregate_slot,
+                            frame_node: member.frame_node,
+                        }),
+                    });
+                }
+            }
+            Err(vendor_host_tx::AmpduPublishError::Ownership) => crate::halt_always!(),
+            Err(_) => {
+                for position in (0..member_count).rev() {
+                    let Some(mut member) = members[position].take() else {
+                        crate::halt_always!();
+                    };
+                    let _ = unsafe { member.reservation.cancel(guard, &mut member.retained) };
+                    self.states[member.index] = Some(HostTxState::Owned {
+                        retained: member.retained,
+                        wait_diagnostic: member.wait_diagnostic,
+                        hardware: None,
+                    });
+                }
+            }
+        }
+    }
+
     /// Publish one or two ready PAS contexts onto a pipe without a retained
     /// runtime owner. A pair is staged into consecutive slots of the same pipe
     /// and crosses the MAC trigger boundary once.
@@ -484,21 +550,45 @@ impl HostTxDriver {
         });
         let aggregate_pair = second_ampdu
             .is_some_and(|second| vendor_host_tx::can_form_ampdu_pair(first_ampdu, second));
-        if aggregate_pair {
+        #[cfg(feature = "experimental-depth-four-ampdu")]
+        let aggregate_len = {
+            let mut candidates = [None; host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+            for (position, candidate) in candidates.iter_mut().enumerate().take(plan.len()) {
+                if position == 0 {
+                    *candidate = Some(unsafe { vendor_host_tx::ampdu_plan_candidate(&first) });
+                    continue;
+                }
+                let Some(index) = plan.index(position) else {
+                    break;
+                };
+                let Some(HostTxState::Owned {
+                    retained,
+                    hardware: None,
+                    ..
+                }) = self.states[index].as_ref()
+                else {
+                    break;
+                };
+                *candidate = Some(unsafe { vendor_host_tx::ampdu_plan_candidate(retained) });
+            }
+            let (tx_ba_tids, _) = crate::configuration::block_ack_policy();
+            host_tx_policy::plan_ampdu_group(
+                &candidates,
+                tx_ba_tids,
+                crate::configuration::operational_tx_ba_tids(),
+                0,
+            )
+            .map_or(1, host_tx_policy::AmpduGroupPlan::len)
+        };
+        #[cfg(not(feature = "experimental-depth-four-ampdu"))]
+        let aggregate_len = if aggregate_pair { 2 } else { 1 };
+        if aggregate_len >= 2 {
             unsafe {
                 host_tx_diagnostics::record_ampdu_candidate(
                     first_ampdu.key.tid,
                     first_ampdu.key.rate,
                 );
             }
-        }
-
-        struct ReservedBatchMember {
-            index: usize,
-            retained: vendor_host_tx::RetainedHostTx,
-            wait_diagnostic: u8,
-            reservation: vendor_host_tx::HostSchedulerReservation,
-            frame_node: u32,
         }
 
         let mut members: [Option<ReservedBatchMember>; host_tx_policy::MAX_ORDINARY_BATCH_DEPTH] =
@@ -516,8 +606,8 @@ impl HostTxDriver {
         } else {
             plan.len().min(2)
         };
-        let target_len = if cfg!(feature = "experimental-depth-two-ampdu") && aggregate_pair {
-            2
+        let target_len = if cfg!(feature = "experimental-depth-two-ampdu") && aggregate_len >= 2 {
+            aggregate_len
         } else {
             ordinary_len
         };
@@ -665,6 +755,15 @@ impl HostTxDriver {
                     return;
                 }
             }
+        }
+
+        #[cfg(feature = "experimental-depth-four-ampdu")]
+        if aggregate_len >= 3 && member_count == aggregate_len {
+            unsafe {
+                host_tx_diagnostics::record_ampdu_depth(0, member_count as u8);
+                self.publish_depth_four_reserved(&mut guard, &mut members, member_count)
+            };
+            return;
         }
 
         struct PublishedBatchMember {

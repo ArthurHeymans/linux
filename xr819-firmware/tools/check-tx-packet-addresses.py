@@ -26,7 +26,7 @@ expected = {
     "release_aggregate_retry_command_mask(": 2,
     "release_retiring_aggregate_command_mask(": 2,
     "retained_hardware_ring(": 6,
-    "TxHardwareRingAddress::for_pipe(": 12,
+    "TxHardwareRingAddress::for_pipe(": 13,
     "TxHardwareRingAddress::new(": 0,
     "PublishedSlotIdentity::new(": 2,
     ".live_slot()": 2,

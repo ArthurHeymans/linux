@@ -235,7 +235,7 @@ pub const fn rate_try_for_single_rate(rate: u8, ack_failures: u8) -> [u32; 3] {
 
 pub(crate) const MAX_EXPERIMENTAL_AMPDU_DEPTH: usize = 4;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AmpduPlanCandidate {
     pub interface: u8,
@@ -246,14 +246,14 @@ pub(crate) struct AmpduPlanCandidate {
     pub airtime: u32,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AmpduGroupPlan {
     len: u8,
     total_airtime: u32,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
 impl AmpduGroupPlan {
     pub(crate) const fn len(self) -> usize {
         self.len as usize
@@ -264,7 +264,7 @@ impl AmpduGroupPlan {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
 const fn ampdu_candidate_matches(
     head: AmpduPlanCandidate,
     candidate: AmpduPlanCandidate,
@@ -290,7 +290,7 @@ const fn ampdu_candidate_matches(
 /// Candidates are already ordered and mapped to one pipe. A same-pipe
 /// incompatibility closes the aggregate rather than being skipped. A zero
 /// airtime budget is unbounded, matching the vendor convention.
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
 pub(crate) fn plan_ampdu_group(
     candidates: &[Option<AmpduPlanCandidate>],
     tx_ba_tids: u8,

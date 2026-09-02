@@ -32,7 +32,7 @@ const STATUS2_RECORD_COUNT: usize = 4;
     feature = "vendor-host-tx-diagnostics",
     feature = "experimental-depth-four-ampdu"
 ))]
-const FLIGHT_RECORD_COUNT: usize = 192;
+const FLIGHT_RECORD_COUNT: usize = 64;
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
     not(feature = "experimental-depth-four-ampdu")
@@ -220,6 +220,25 @@ pub mod counter {
     pub(super) const COUNT: usize = 21;
 }
 
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-depth-four-ampdu"
+))]
+struct SharedAmpduDepthTelemetry(UnsafeCell<[u32; 4]>);
+
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-depth-four-ampdu"
+))]
+unsafe impl Sync for SharedAmpduDepthTelemetry {}
+
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-depth-four-ampdu"
+))]
+static AMPDU_DEPTH_TELEMETRY: SharedAmpduDepthTelemetry =
+    SharedAmpduDepthTelemetry(UnsafeCell::new([0; 4]));
+
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 struct SharedLifecycleCounters(UnsafeCell<[u32; counter::COUNT]>);
 
@@ -267,6 +286,27 @@ pub unsafe fn record_batch_publication(depth: u8) {
     }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
     let _ = depth;
+}
+
+/// Records the latest aggregate depth and a bounded count for one lifecycle stage.
+#[inline(always)]
+pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
+    #[cfg(all(
+        feature = "vendor-host-tx-diagnostics",
+        feature = "experimental-depth-four-ampdu"
+    ))]
+    unsafe {
+        if stage < 4 {
+            let word = AMPDU_DEPTH_TELEMETRY.0.get().cast::<u32>().add(stage);
+            let count = (word.read_volatile() & 0x00ff_ffff).wrapping_add(1) & 0x00ff_ffff;
+            word.write_volatile((u32::from(depth) << 24) | count);
+        }
+    }
+    #[cfg(not(all(
+        feature = "vendor-host-tx-diagnostics",
+        feature = "experimental-depth-four-ampdu"
+    )))]
+    let _ = (stage, depth);
 }
 
 /// Increments one class-0 lifecycle counter.
@@ -866,14 +906,27 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
                     values[15] = counters.add(counter::TX_START).read_volatile();
                     values[16] = counters.add(counter::STATUS).read_volatile();
                     values[17] = counters.add(counter::COMPLETED).read_volatile();
-                    values[18] = (*LEGACY_SNAPSHOT.0.get()).descriptor_length;
+                    #[cfg(not(feature = "experimental-depth-four-ampdu"))]
+                    {
+                        values[18] = (*LEGACY_SNAPSHOT.0.get()).descriptor_length;
+                    }
                 }
-                #[cfg(feature = "experimental-depth-two-ampdu")]
+                #[cfg(all(
+                    feature = "experimental-depth-two-ampdu",
+                    not(feature = "experimental-depth-four-ampdu")
+                ))]
                 {
                     let (count, last, seen) = crate::tx::ineligible_tx_status_snapshot();
                     values[19] = count;
                     values[20] = last;
                     values[21] = seen;
+                }
+                #[cfg(feature = "experimental-depth-four-ampdu")]
+                {
+                    let telemetry = AMPDU_DEPTH_TELEMETRY.0.get().cast::<u32>();
+                    for index in 0..4 {
+                        values[18 + index] = telemetry.add(index).read_volatile();
+                    }
                 }
                 #[cfg(not(feature = "experimental-depth-two-ampdu"))]
                 {

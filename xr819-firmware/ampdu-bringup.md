@@ -828,3 +828,23 @@ idle, and zero used buffers. The isolated depth-four-feature image
 `68962273...84435ae7` then passed the same depth-two workload with 22,139 TX
 frames, 16,658 aggregates, 3.86 Mbit/s TCP, final 20/20 ping, BH alive, WSM
 idle, and zero used buffers. Recovery firmware was restored after both runs.
+
+Depth-three/four publication is now connected only under the same experimental
+feature. The scheduler forms a contiguous policy-approved prefix, reserves all
+members before mutation, builds one generic descriptor and member table, and
+publishes the aggregate through one hardware trigger. Four compact telemetry
+words report the latest attempted, published, completed, and retried depth plus
+a wrapping observation count; `tools/decode-ampdu-depth-telemetry.py` decodes
+the reused counters-MIB fields. The larger publication image reduces the
+optional flight recorder further to 64 records; normal diagnostics remain
+unchanged.
+
+Image `2ecf814a...edd7552` reached 28,185 TX frames and 22,662 aggregates in its
+first hardware qualification. A follow-up 20-second OTA TCP transfer sustained
+2.20 Mbit/s, final ping was 20/20, and the firmware ended with BH alive, WSM
+idle, no pending TX, and zero used buffers. Telemetry moved from a latest
+attempted/published depth of three to depth four, recorded successful deeper
+completion observations, and retained twelve observed depth-four retry events.
+This proves real depth-four publication, completion, and retry activity rather
+than only scheduler planning. The image is therefore qualified for continued
+feature-gated depth-four work; the normal depth-two image remains unchanged.
