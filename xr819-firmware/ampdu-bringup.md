@@ -650,3 +650,31 @@ batch slots each receive a bounded service step, aggregate members sharing one
 slot remain coalesced, and owners beyond the current pass resume fairly on the
 next pass. The eight-entry copied-completion bound remains exact while only one
 two-context batch may be active on each of four pipes.
+
+## Vendor scheduler audit: one transaction per idle pipe
+
+The vendor scheduler does **not** append a second batch to an already armed
+pipe. `txp_scheduler_run()` (`0x0000aa5e`) builds its eligible mask only from
+pipe records whose `+0xa3` armed byte is zero. Active pipes are excluded before
+`txq_build_aggregate_lists()` (`0x0000a2c0`) sees queued PAS contexts.
+
+Within that single scheduler transaction, however, the vendor fills the pipe
+more deeply than the current Rust subset:
+
+- ordinary mode in `txq_try_append_to_aggregate()` (`0x0000a078`) admits up to
+  four contexts for one pipe;
+- aggregate mode chains same-link, same-rate PAS records up to the literal
+  sixteen-member cap, additionally bounded by TXOP/airtime policy;
+- `txp_build_pipe_descriptor()` (`0x0000a712`) records the old producer as the
+  last slot and advances the local producer modulo four for every ordinary
+  descriptor, while one aggregate chain occupies one kind-1 slot;
+- only after every descriptor is built does `txp_scheduler_run()` clear the
+  ring GO word, publish every slot command from the first through the last,
+  set the pipe armed/control/watchdog bytes, and write GO once.
+
+Therefore active-pipe append and a second GO are the wrong next model. The
+vendor-shaped expansion path is to grow the existing pre-GO transaction: first
+from two to four ordinary slots, with copied-completion capacity raised from
+8 to 16, and separately from depth-two toward a deeper single-slot A-MPDU.
+The per-slot owner, retry, BlockAck, and fair-service work above remains required
+for both expansions.

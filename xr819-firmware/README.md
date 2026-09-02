@@ -139,8 +139,10 @@ and class-0 servicing are serialized while either owns the shared MAC runtime.
 ownership as mutually exclusive states, including RESET cancellation. Detached
 HIF requests use an owning `RequestBuffer`, so payload borrows cannot outlive
 the packet-RAM owner, and a single non-copyable `MacEventQueue` capability is
-passed to every MAC-event consumer. This remains a bounded single-outstanding
-non-aggregate implementation, not yet the full production scheduler.
+passed to every MAC-event consumer. The feature-gated scheduler now permits one
+bounded batch on each MAC pipe, with at most two ordinary slots or one depth-two
+aggregate per pipe; it does not yet implement the vendor's four-slot ordinary
+batch or deeper single-slot aggregate construction.
 
 The optional `vendor-host-tx-diagnostics` feature retains the bring-up
 observability without burdening the normal station image. It enables retained stage/frame/descriptor snapshots, HIF request counters,
@@ -295,7 +297,7 @@ Not yet implemented or production-complete:
   (direct literals and direct field-root expressions are already closed; older
   family-local alias arithmetic remains under audit);
 - controlled degraded-RF fallback and long-duration soak qualification;
-- multiple hardware-owned TX frames, then aggregation;
+- vendor-depth four-slot ordinary batches and deeper single-slot A-MPDUs;
 - CCMP replay protection;
 - production recovery policy for architected CPU exceptions and unrecoverable
   packet-controller faults.
