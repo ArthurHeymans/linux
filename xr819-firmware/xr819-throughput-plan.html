@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XR819 open firmware: throughput-improvement plan (vendor TX transaction reconstruction)</title>
+<style>
+:root{--bg:#fbfbf9;--fg:#1c1e21;--muted:#5b6470;--line:#d9dde3;--acc:#0a5c8a;--c:#0f7b3e;--s:#9a6b00;--q:#8a1f4f;--code:#f1f3f6;--warn:#fff4e0;--ok:#eaf7ef;--bad:#fdecec}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg)}
+header{background:#12263a;color:#fff;padding:28px 36px}
+header h1{margin:0 0 6px;font-size:24px}
+header p{margin:0;color:#c9d6e2}
+nav{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--line);padding:8px 36px;font-size:13px;z-index:2}
+nav a{margin-right:14px;color:var(--acc);text-decoration:none}
+main{max-width:1180px;margin:0 auto;padding:24px 36px 80px}
+h2{font-size:21px;border-bottom:2px solid var(--line);padding-bottom:4px;margin-top:44px}
+h3{font-size:17px;margin-top:28px;color:#243b53}
+h4{font-size:15px;margin:18px 0 6px}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}
+th{background:#eef1f5}
+tr:nth-child(even) td{background:#f7f8fa}
+code,pre{font-family:"JetBrains Mono",SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+code{background:var(--code);padding:1px 4px;border-radius:3px}
+pre{background:#0f1720;color:#e6edf3;padding:12px 14px;border-radius:6px;overflow:auto;line-height:1.4}
+pre code{background:none;color:inherit;padding:0}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.03em;padding:1px 7px;border-radius:10px;vertical-align:middle;margin-left:4px}
+.C{background:#dff5e6;color:var(--c);border:1px solid #9fd7b3}
+.S{background:#fff1cc;color:var(--s);border:1px solid #e6c65c}
+.Q{background:#f9dfe9;color:var(--q);border:1px solid #e39ab8}
+.box{border:1px solid var(--line);border-left:5px solid var(--acc);background:#fff;padding:12px 16px;margin:14px 0;border-radius:4px}
+.box.warn{border-left-color:#d48a00;background:var(--warn)}
+.box.ok{border-left-color:#1d8f4a;background:var(--ok)}
+.box.bad{border-left-color:#c0392b;background:var(--bad)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.small{font-size:12.5px;color:var(--muted)}
+.kpi{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0}
+.kpi div{border:1px solid var(--line);background:#fff;border-radius:6px;padding:8px 12px;min-width:150px}
+.kpi b{display:block;font-size:20px}
+ol li,ul li{margin:3px 0}
+.diagram{background:#0f1720;color:#dbe7f3;padding:14px;border-radius:6px;overflow:auto;font-family:SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.35;white-space:pre}
+.rank td:nth-child(1){font-weight:700;text-align:center}
+sup a{color:var(--acc);text-decoration:none}
+</style>
+</head>
+<body>
+<header>
+<h1>XR819 open firmware — throughput-improvement plan</h1>
+<p>Vendor TX transaction reconstruction (publication → MAC status → BlockAck → per-member completion → re-publication) compared with the Rust implementation, with a ranked, staged, falsifiable roadmap. Sources are local only: vendor decompilation/disassembly (Ghidra project <code>xr819-annotated-main / ghidra-fw-main.bin</code>), Ghidra memory reads, and the Rust sources under <code>xr819-firmware/src</code>. No web sources were used.</p>
+</header>
+<nav>
+<a href="#sum">Summary</a><a href="#base">Baseline</a><a href="#gap">Gap</a><a href="#dis">Disassembly</a><a href="#arch">State machines</a><a href="#tcp">UDP vs TCP</a><a href="#rank">Ranked</a><a href="#road">Roadmap</a><a href="#val">Validation</a><a href="#risk">Risks</a><a href="#open">Open questions</a><a href="#exp">Next experiments</a><a href="#ev">Evidence</a>
+</nav>
+<main>
+
+<p class="small">Confidence labels used throughout: <span class="tag C">Confirmed</span> read directly from vendor disassembly/decompilation, Ghidra memory, Rust source, or a hardware run recorded in <code>ampdu-bringup.md</code>; <span class="tag S">Strong inference</span> follows from confirmed facts plus one modelling step; <span class="tag Q">Speculative</span> is a hypothesis with an explicit falsification test. Checkpoint under analysis: <code>b746120d</code> "Retry partial BlockAck after watchdog expiry" (parent <code>70921902</code> "Correct XR819 TX failure feedback"); working copy clean.</p>
+
+<h2 id="sum">1. Executive summary</h2>
+<div class="box">
+<ol>
+<li><b>The vendor TX completion pipeline is one synchronous interrupt/task hop; the open firmware's is a multi-millisecond cooperative loop with two independent lanes.</b> In vendor firmware the MAC event FIFO is drained by <code>mac_irq_handler</code> (<code>0x9eb4</code>, FIQ). The done event (<code>0x37</code>, class <code>0x30000</code>) and the status event (<code>0x39</code>) are consumed in FIFO order; the status handler <code>txp_pipe_tx_status</code> (<code>0x9a32</code>) calls <code>txp_fn_2441</code> (<code>0x91ec</code>), which <em>pulls</em> the compressed BlockAck out of RX packet RAM with <code>rxfifo_find_frame_by_subtype(0x94)</code> (<code>0x8d80</code>) and dispositions every member with <code>bab_process_ba_bitmap</code> (<code>0x7b72</code>) before the handler returns. Only then is event <code>0x200000</code> raised, whose task (<code>task_b88e</code>, <code>0xb88e</code>) re-runs <code>txp_scheduler_run</code> (<code>0xaa5e</code>) and issues the next GO. <span class="tag C">Confirmed</span> The open firmware instead consumes the BA on the RX lane (<code>radio.rs:1109 → tx::consume_depth_two_block_ack</code>), stubs the pull path (<code>SingleProbeMacBackend::find_rx_frame_by_subtype</code> returns <code>None</code>, <code>tx.rs:3964</code>), and acts on partial observations only from a hardware retry event or after the 5×200 ms pipe watchdog. That lane split is the root of both the recorded ownership race (image <code>a7d56f2a…</code>, BH fatal with 10 outstanding) and the ≈0.6–1 s partial-BA retry latency. <span class="tag C">Confirmed</span></li>
+<li><b>Vendor never gives an aggregate up after two attempts.</b> Whole-aggregate retry (<code>txp_pipe_tx_done_retry</code>, <code>0x9550</code>) bumps every member's per-rate 4-bit nibble and walks the host retry-policy ladder (<code>pas_tx_retry_advance</code>, <code>0x8868</code>) up to the policy short/long limit; on a rate fallback it <em>copies the head rate to every member</em> (<code>txp_desc_set_rate</code> loop) instead of requiring a common next rate. Partial BAs release acknowledged members immediately and requeue missing members into the global PAS ring (link states 8→9), where the next scheduler pass may re-aggregate them with fresh frames. <span class="tag C">Confirmed</span> The open firmware has <code>WHOLE_AMPDU_RETRY_LIMIT = 2</code> (<code>tx.rs:4160</code>), gives up on any member-rate divergence (<code>prepare_whole_ampdu_retry</code>), on outside-window members, on watchdog expiry (<code>retire_unmatched_tx_slot</code> → status <code>0x0b</code> for the whole slot), and on any partial deeper observation that the selective tail cannot express. Each of those becomes a host-visible failed confirmation, i.e. packet loss for TCP. <span class="tag C">Confirmed</span> This is the most likely reason "vendor reports thousands of retries while open reports almost none despite failures" and why adaptive minstrel pins to MCS0 (loss at MCS≥1 is reported as failure, not as retries followed by success). <span class="tag S">Strong inference</span></li>
+<li><b>UDP "parity" is not PHY parity.</b> The harness offers UDP at 8 Mbit/s (<code>tools/ota-soak-udp-run.sh:143</code>, <code>iperf -u -b 8M</code>); vendor delivers 6.34 and open 6.32. Both are below the offer and equal, which indicates a path/harness ceiling near 6.3 Mbit/s, not that the open pipeline reaches vendor capacity. <span class="tag S">Strong inference</span> TCP (15.8 vs 2.1–2.65) is the only measurement that currently exercises the firmware's real completion/retry latency, because TCP throughput scales as MSS/(RTT·√loss) and is ACK-clocked. <span class="tag S">Strong inference</span></li>
+<li><b>Near-zero host TX burst is a confirm-return artifact, not missing slot chaining.</b> <code>cw1200_bh</code> counts a burst only when more than one credit is free at write time (<code>bh.c:685,528</code>). Vendor coalesces confirms into WSM <code>0x041e</code> (<code>tx_confirm_build_and_send</code>, <code>0xb3dc</code>; driver enables it at <code>main.c:674</code>), so credits return in groups. The open main loop publishes at most one confirmation per pass (<code>bin/hif_startup.rs</code>), so credits trickle back one at a time and the host writes one frame per wake. <span class="tag C">Confirmed</span> (mechanism) / <span class="tag S">Strong inference</span> (that it explains the counter).</li>
+<li><b>Ranked plan.</b> (1) Pull the BA at MAC status/retry time under a per-slot transaction generation, demoting the RX lane to a record-only mailbox; (2) policy-driven retry budget and vendor head-rate copy, then vendor requeue of missing members; (3) event-driven publication/confirmation with multi-TX-confirm; (4) TALA-style depth scaling bounded by TXOP airtime and the BA window; (5) rate-feedback fidelity checks. Every stage is feature-gated, has a telemetry gate, and an explicit abort/rollback condition, because stack headroom is 52 bytes (deepest chain 6860 of 6912) and ITCM is at its limit.</li>
+</ol>
+</div>
+
+<h2 id="base">2. Measured baseline</h2>
+<div class="kpi">
+<div><span class="small">Vendor TCP</span><b>15.8 Mbit/s</b></div>
+<div><span class="small">Open depth-2 TCP</span><b>2.65 Mbit/s</b></div>
+<div><span class="small">Open depth-4 TCP</span><b>1.93–2.62 Mbit/s</b></div>
+<div><span class="small">UDP received (8M offered)</span><b>6.34 vs 6.32</b></div>
+<div><span class="small">Ping avg vendor / d2 / d4</span><b>5.15 / 6.78 / 8.65 ms</b></div>
+</div>
+<table>
+<tr><th>Run (image)</th><th>TCP</th><th>UDP rx</th><th>TX frames</th><th>Aggregates</th><th>d3/d4 published</th><th>d3/d4 fully acked</th><th>Selective retries</th><th>Ping</th><th>End state</th></tr>
+<tr><td>Watchdog run 1 (<code>79d20ec4…e7b885</code>)</td><td>2.62</td><td>6.32</td><td>20,161</td><td>15,493</td><td>401 / 3,309</td><td>341 / 2,694</td><td>7 single, 10 multi</td><td>19/20</td><td>BH alive, WSM idle, 0 buffers</td></tr>
+<tr><td>Watchdog run 2 (same image)</td><td>2.12</td><td>5.46</td><td>19,821</td><td>15,829</td><td>372 / 3,478</td><td>303 / 2,784</td><td>12 single, 6 multi</td><td>0/20 (transient path loss)</td><td>clean</td></tr>
+<tr><td>Vendor A/B</td><td>15.8</td><td>≈6.34</td><td>—</td><td>—</td><td>—</td><td>—</td><td>"thousands of retries"</td><td>5.15 ms avg</td><td>—</td></tr>
+<tr><td>Fixed MCS1: vendor / open d4 corrected</td><td>4.14 / 2.34</td><td colspan="8">Fixed MCS3 open d4 corrected 3.31; adaptive corrected once stayed at MCS0 ≈1.29 Mbit/s</td></tr>
+</table>
+<p><b>What the numbers already say.</b> In run 1, 615 of 3,309 depth-4 aggregates (18.6%) and 60 of 401 depth-3 aggregates were not fully acknowledged, yet only 17 selective retry groups executed. The remaining ≈650 non-unanimous aggregates therefore ended either in a whole-aggregate rearm (bounded to two attempts) or in a give-up. There is no counter that says which, so Stage 0 below adds one. <span class="tag C">Confirmed</span> (counts) / <span class="tag S">Strong inference</span> (disposition).</p>
+
+<h2 id="gap">3. Vendor-vs-open gap (mechanism level)</h2>
+<table>
+<tr><th>Mechanism</th><th>Vendor (address)</th><th>Open firmware (file:line)</th><th>Consequence</th><th>Label</th></tr>
+<tr><td>Where the BA is consumed</td><td>Pulled from RX packet RAM inside the status handler: <code>txp_fn_2441</code> <code>0x91ec</code> → <code>rxfifo_find_frame_by_subtype(0x94)</code> <code>0x8d80</code> → <code>bab_process_ba_bitmap</code> <code>0x7b72</code></td><td>Pushed by RX lane: <code>radio.rs:1109</code> → <code>tx.rs:6833 consume_depth_two_block_ack</code>; pull stub returns <code>None</code> at <code>tx.rs:3964</code></td><td>Two writers of slot ownership; partial BA acted on only at retry event or watchdog</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Status/BA ordering guard</td><td>FIQ FIFO order + slot state byte (<code>+0xf</code>) + global retry-busy byte (<code>pipe_table+7</code>) checked in <code>txp_pipe_tx_status</code></td><td>Same slot state bytes (<code>plan_ordinary_tx_pipe_status</code>, <code>tx.rs:2252</code>) but the RX lane may complete/rearm between passes</td><td>Race observed (image <code>a7d56f2a…</code>)</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Partial-BA retry latency</td><td>Same interrupt: members requeued, event <code>0x200000</code>, scheduler runs in the next task slot</td><td>Deferred to <code>service_expired_partial_block_ack_retry</code> at watchdog expiry (<code>tx.rs:6966</code>): 3–5 ticks × 200 ms</td><td>Pipe (AC) stalls 0.6–1 s per event → TCP RTO</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Whole-aggregate retry budget</td><td>Host policy short/long limit via <code>pas_tx_retry_advance</code> <code>0x8868</code>, per-member nibble in <code>txp_pipe_tx_done_retry</code></td><td><code>WHOLE_AMPDU_RETRY_LIMIT = 2</code> (<code>tx.rs:4160</code>) then give-up</td><td>Host-visible failures ≈ loss</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Rate on retry</td><td>Head's new rate copied to every member (<code>pxVar9->bRateIdx = pas->bRateIdx</code> loop in <code>0x9550</code>)</td><td>Requires identical next rate for all members else <code>GiveUp</code> (<code>prepare_whole_ampdu_retry</code>, <code>tx.rs:4229</code>)</td><td>Extra give-ups after any earlier per-member retry</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Missing-member retry model</td><td>Requeue to global PAS ring (link state 8 → compaction in <code>txq_build_aggregate_lists</code> <code>0xa2c0</code> → <code>pas_txq_push_global</code> <code>0x81a6</code> → state 9); slot retired at once</td><td>In-place descriptor rebuild keeping slot state 4, one command-mask bit release, never a second GO (<code>rearm_whole_ampdu</code>, <code>apply_depth_four_selective_retry</code>)</td><td>Pipe stays owned during retry; larger stack footprint; cannot merge retries with new frames</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Aggregate depth</td><td>min(TALA <code>vif+0x128</code> ∈[2,16], 16, EDCA TXOP airtime <code>+0x4e0</code>, BA window <code>link+0x14</code>)</td><td>Fixed cap 4 (<code>MAX_EXPERIMENTAL_AMPDU_DEPTH</code>), airtime budget only</td><td>Per-transaction overhead (BA, backoff, loop latency) amortised over ≤4 MPDUs</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Publication trigger</td><td>Event-driven: every completion raises <code>0x200000</code>; <code>task_b88e</code> → <code>txp_scheduler_run</code></td><td>Once per cooperative pass, at most one batch, plus one extra pass wait when &lt;4 ready (<code>scheduler_single_wait</code>, <code>host_tx_driver.rs:465,867</code>)</td><td>Dead air between transactions ≈ one pass</td><td><span class="tag C">C</span></td></tr>
+<tr><td>TX confirmation</td><td>Coalesced <code>0x041e</code> multi-confirm, 32-byte entries, released by <code>hif_confirm_coalesce_hold</code> <code>0xec30</code></td><td>One <code>0x0404</code> per pass via <code>publish_request_in_place</code></td><td>Credit trickle → near-zero TX burst, host BH wakes per frame</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Outside-window member</td><td>Retry nibble + <code>pas_tx_retry_advance_mode0</code> → requeue or free with <code>0x0b</code></td><td>Always <code>GiveUp</code> (in-place retry collapsed the link)</td><td>Rare; vendor path only works because it requeues rather than rearms in place</td><td><span class="tag C">C</span></td></tr>
+</table>
+
+<h2 id="dis">4. Disassembly findings</h2>
+
+<h3>4.1 Q1 — Vendor TX transaction from publication to next publication</h3>
+<p>Addresses are Ghidra addresses in <code>ghidra-fw-main.bin</code>; DTCM literals were read with <code>ghidra memory read</code>. Pipe records live at <code>0x04001680 + pipe*0x6c</code> (<code>DAT_0000ab0c</code>), the software slot ring at <code>pipe+0xa0</code> with 0x18-byte slots; the MAC pipe register block is <code>0x09c00e80</code> (<code>DAT_000098d0</code>) with <code>+0x04</code> = command/pending mask (written inverted) and <code>+0x18</code> = trigger/clear <code>(1&lt;&lt;pipe)&lt;&lt;25</code>; the same register is reached as <code>0x09c00e40+0x58</code> in the scheduler. The Rust constants agree: <code>PIPE_IRQ_PENDING = mac_register(0x0e84)</code>, <code>PIPE_IRQ_TRIGGER = mac_register(0x0e98)</code> (<code>tx.rs:145-146</code>). <span class="tag C">Confirmed</span></p>
+
+<h4>Step A — scheduler transaction (<code>txp_scheduler_run</code> 0xaa5e)</h4>
+<pre><code>idle_mask = { pipe | pipe_rec[pipe].armed(+0xa3) == 0 }          // active pipes are excluded
+txq_build_aggregate_lists(idle_mask, lists, &amp;count)              // 0xa2c0, see Step B
+for each list entry (pipe):
+    pipe_rec.current(+0xa2) = pipe_rec.first(+0xa0)
+    if list.kind == 2 (aggregate):
+        head.flags |= 0x40; link_set_state(head.link, 6)         // link "aggregate armed"
+        if head.flags bit 10: txp_build_pipe_descriptor(kind=2)  // RTS/CTS protection slot
+        txp_build_pipe_descriptor(&amp;idx, head, pipe_rec, kind=1)  // one kind-1 slot for the chain
+        ampdu_counter++                                          // 0xfff02e2c+0
+    else (ordinary):
+        for i in 0..list.count (≤4):
+            if i == 0: retime; flags |= 0x04000000; optional kind 2/3 protection slot
+            else:      flags |= 0x08000000
+            txp_build_pipe_descriptor(&amp;idx, frame, pipe_rec, kind=0)
+    ring.go_word(+0x14) = 0                                      // clear GO
+    program EDCA quantum: *(quantum_ptr[pipe]) = (txop+0x1f)&gt;&gt;5 ; MAC 0x09c00e98 = (1&lt;&lt;pipe)&lt;&lt;25
+    for slot in first..=last: slot.state(+0xf) = 1; ring.command(+0) = slot.command(+0x14)
+    pipe_rec.armed(+0xa3)=1; control(+0xa4)|=1; watchdog(+0xa5)=5; ring.go_word(+0x14) = 1   // GO once
+</code></pre>
+<p>Only idle pipes are refilled; there is no append to an armed pipe and no second GO. <span class="tag C">Confirmed</span> (matches the earlier audit in <code>ampdu-bringup.md</code>).</p>
+
+<h4>Step B — list building and depth (<code>txq_build_aggregate_lists</code> 0xa2c0, <code>txq_try_append_to_aggregate</code> 0xa078)</h4>
+<pre><code>// prologue: per-link housekeeping (link = 0..7, record = 0x04003cc0 + link*0x38, state byte = 0x04003678 + link*0x38 + 0x658)
+state 8  : compact member table 0x04001680+link*0x40+0x490 (16 words), for members with flag bit 28:
+             flags &amp;= 0xefffffdf (clear 28,5); status byte 0x53 = 0; rebuild seq-ctl words (+0x0c/+0x10) with retry bit 0x800;
+             pas_txq_push_global(member); link_set_state(link, 9)
+state 11 : if DTCM 0x04001160 == 0 -&gt; free every member with 0x0b (no retry)
+           else for each member: pas_tx_retry_advance_mode0(); give-up -&gt; 0x0b, else requeue as above; state 9 (or 5 if none)
+// ring walk over the 64-entry global PAS ring (0x04001578 in open naming)
+for each PAS in ring:
+    expired (submit + 8,000,000 ticks &lt; now, DAT_0000a6e8) or status 0x14 -&gt; free with status 10
+    if !txp_program_pipe_hw(pas) continue
+    pipe = ac_to_pipe[pas.ac]; require pipe in idle_mask
+    aggregate eligibility: flags bit 29, rate &gt; 13 (HT), link &lt; 8, link_rec+0x10 &gt; 4 (BA operational),
+        flags bits 20,21 clear, members_on_link &lt; vif[if].ampdu_num (+0x128, TALA),
+        seq &lt; min_seq + link_rec+0x14 (BA window), TID bit set in per-if active mask (+0x648)
+    txq_try_append_to_aggregate(pipe, pas, mode=2 aggregate | 1 ordinary, tbl, order)
+        per-link state gate (u16 at 0x04003e90): states 0,1,3,4,5,9 allowed; 2 action-only; 6,7,8,10 refuse
+        txop_budget_check (+0x430 mediumTime, disabled on mainline)
+        aggregate join requires same link, same rate index, count &lt; 0x10, airtime ≤ EDCA txop (+0x4e0) if nonzero
+        ordinary join requires count &lt; 4
+</code></pre>
+<p>The member cap is therefore <code>min(TALA ampdu_num, 16, TXOP airtime, BA window)</code>. Contrary to a stale comment in the export, <code>vif+0x128</code> <em>is</em> read here (line 12437 of <code>annotated-main.c</code>). <span class="tag C">Confirmed</span></p>
+
+<h4>Step C — descriptor build (<code>txp_build_pipe_descriptor</code> 0xa712)</h4>
+<p>Kind 1 pops a software record (<code>desc_freelist_pop</code>), emits opcode-0 transfers for each member, opcode-1 delimiter + opcode-4 spacing between members, opcode-2 terminal, then the three shared PHY words (opcodes 3,3,5) at the top-level command, sets slot expected status <code>+0xd = 0x0c</code> and special-ack <code>+0xe = 1</code> only if no member has flags bits 20/21, and advances the producer modulo 4 (<code>pipe_tbl[1] = old; *idx = (old+1)&amp;3</code>). <span class="tag C">Confirmed</span> The open builder reproduces this stream (<code>tx::build_planned_ampdu_descriptor</code>, qualified on air).</p>
+
+<h4>Step D — MAC events (<code>mac_irq_handler</code> 0x9eb4, FIQ)</h4>
+<pre><code>loop over event FIFO (0x09c00a00+0x20 read, +0x24 peek):
+  type = (ev &amp; 0x3fff) &gt;&gt; 8
+  if ev bit 25:  class = ev &amp; 0x30000
+     class 0x20000 : txp_pipe_tx_start(pipe)     // slot.state = 2       (type 0x37)
+     class 0x30000 : txp_pipe_tx_success(pipe)   // slot.state = 3, retry_busy(+7)=0, kind-0 with expected 0xff completes here
+  if ev bit 23 &amp;&amp; (MAC 0x09c00e84 &amp; 0xfff00000): mac_pipe_irq_service()   // random backoff reprogram / pending clear
+  if ev bit 24: status = ev &amp; 0x3f; pending = MAC 0x09c00e84 &amp; (0x100&lt;&lt;pipe)
+     if pending &amp;&amp; (status == 0x19 || status == 4): txp_pipe_tx_done_retry(pending)     // RETRY PATH
+     else: unless (type==0x39 &amp;&amp; status==6): mac_irq_tx_status_dispatch(status) -&gt; txp_pipe_tx_status(status)
+           if pending &amp;&amp; slot.expected != status &amp;&amp; ++mismatch[pipe] &gt; 2: txp_pipe_tx_done_retry
+  if ev bit 26: beacon arm; if ev bit 7: TBTT bookkeeping
+</code></pre>
+<p><code>txp_pipe_tx_status</code> (0x9a32) completes only when <code>armed==1 &amp;&amp; slot.expected==status &amp;&amp; slot.state==3</code>; it writes <code>state=5</code> <em>before</em> checking <code>retry_busy(+7)==0</code>, and then calls <code>txp_fn_2441(pas, slot, 0)</code> and advances/recycles the cursor. <code>txp_pipe_tx_done_retry</code> (0x9550) requires <code>slot.state==3</code>, sets <code>state=4</code> and <code>retry_busy=1</code>. <span class="tag C">Confirmed</span></p>
+
+<h4>Step E — completion and BA pull (<code>txp_fn_2441</code> 0x91ec)</h4>
+<pre><code>txp_fn_2441(pas, slot, status):
+  if slot.kind == 1: link_set_state(link, 10); desc_freelist_push(slot.aux)
+  pas_rate_recovery_on_success(pas, status)             // dead in mode 0
+  slot.words[0xc..0x10] = 0
+  for member in chain (pas -&gt; +0x3c):
+      if kind==1: flags2 |= 0x400; aux |= 1
+      aux |= (flags &gt;&gt; 18) &amp; 0xc; member.status(+0x1c) = status; member.t_complete(+0x14) = now
+      if kind==1: status 0 -&gt; evt 0x200000 ; status 0x0b -&gt; final_link_state = 0x0b
+      else: flags2 |= 0x800; tx_ctx_free_inner(member)     // ordinary frames complete right here
+  if kind != 1: return
+  link_set_state(link, final_link_state)
+  if final_link_state != 0x0b:
+      ba = rxfifo_find_frame_by_subtype(0x94)            // scan 0x09400000 from DTCM 0x040016c0 (+0x40) to producer 0x09c00604
+      if ba == NULL:
+          if pipe_rec.current(+0xa2) != pipe_rec.last(+0xa1) or link &gt;= 8: return   // more slots pending: keep state 10
+          link_rec.bitmap(+0x18,+0x1c) = 0
+      else:
+          match ba RA against own MAC of if 0/1; pipe = txpipe_find_by_mac_tid(if, ba.tid, ba.ta?)
+          if pipe == link and link_rec.state(+0x10) &gt; 4:
+              link_rec.bitmap = ba.bitmap; link_rec.start_seq(+0x16) = ba.ssc &gt;&gt; 4
+              bab_process_ba_bitmap(link); return
+      link_set_state(link, 0x0b)                           // no BA visible: whole aggregate missing
+  evt_flags_set(0x200000)
+</code></pre>
+<p>Note the deferral rule: if the BA is not visible yet and this is not the last slot of the transaction, the link stays in state 10 and the next slot completion rescans. <span class="tag C">Confirmed</span></p>
+
+<h4>Step F — per-member disposition (<code>bab_process_ba_bitmap</code> 0x7b72)</h4>
+<pre><code>for i in 0..16: member = table[link][i] (0x04001b10 + link*0x40 + i*4); if !member continue
+   delta = (member.seq(+0x54) - start_seq) mod 0x1000
+   in-window (delta &lt; 0x40) and acknowledged: table[i]=0; flags2 |= 0x1000; tx_ctx_free_locked(member)   // -&gt; confirm to host
+   in-window not acknowledged, or delta &gt;= 0x40:
+        bump nibble at member+0x20+((rate&gt;&gt;3)*4), shift (rate&amp;7)*4, saturate 15
+        flags &amp;= ~0x20; ok = pas_tx_retry_advance_mode0(member); flags &amp;= ~0x80000
+        if !ok or TID no longer in active mask(+0x648): status = 0x0b; flags2 |= 0x2000; free; table[i]=0
+        else: status = 0xfe; flags |= 0x10000010 (DAT_00007e30); requeued++
+link_set_state(link, requeued ? 8 : 5); if no active TIDs: state 1 and clear link bit in 0x04003e90
+evt 0x200000 (scheduler); evt 0x100000 (confirm drain) unless hif_confirm_coalesce_hold()
+</code></pre>
+<p>Acknowledged members are freed (completed toward the host) inside the same handler, while missing members are converted to ring entries; the pipe slot itself was already recycled by <code>txp_pipe_tx_status</code>. <span class="tag C">Confirmed</span> The decompiler's flag polarity on <code>u64_cmp</code> cannot be trusted; the Rust classifier's "bit set = acknowledged" has been validated on hardware. <span class="tag S">Strong inference</span></p>
+
+<h4>Step G — retry path (<code>txp_pipe_tx_done_retry</code> 0x9550), kind 1</h4>
+<pre><code>require pending bit and slot.state == 3; slot.state = 4; retry_busy = 1
+if !(flags bit 4):                                   // first retry of this aggregate
+    flags |= 0x10; for each member: parentQ words +0x0c/+0x10 = seq-ctl | 0x800 (retry bit)
+count give-ups per expected status 0x0c (0x040012a0+0x24/+0x28)
+if slot.expected != 6: for each member: bump per-rate nibble (dwStatus[rate&gt;&gt;3], (rate&amp;7)*4)
+ok = pas_tx_retry_advance(head, is_probe)            // host policy ladder, limit = short/long retries
+if !ok: for each slot: txp_fn_2441(pas, slot, 0x0b); recycle pipe (armed=0, +0xa4=0, +0xa5=5); MAC+4 = ~(0x100&lt;&lt;pipe | 0x10); return
+if !txp_program_pipe_hw(head): requeue after PS (tx_requeue_after_ps), recycle; return
+if flags bit 19 (rate changed): txp_desc_set_rate2(slot.cmd); for each member: member.rate = head.rate; txp_desc_set_rate(member.parentQ)
+   optional RTS/CTS or protection slot rebuild
+tx_build_duration_desc(...); desc_or_flags(slot.cmd, slot.expected)
+ampdu counters: +4 += 1, +8 += member_count
+MAC 0x09c00e98 = (1&lt;&lt;pipe)&lt;&lt;25; ring+0x20 &amp;= ~(1&lt;&lt;current) (or cursor-advance form for multi-slot); MAC+4 = ~(0x100&lt;&lt;pipe | 0x10f00000)
+</code></pre>
+<p>The whole aggregate is re-armed in place, including already-acknowledged members; the BA is <em>not</em> consulted on this path. <span class="tag C">Confirmed</span> Under the hypothesis that the MAC delivers <code>0x0c</code> only when every transmitted MPDU is acknowledged and otherwise raises <code>0x19</code>/<code>4</code>, the vendor's partial handling is: retry event → whole rearm (cheap, immediate) until the policy is exhausted; matching status → BA parse (usually all-ack). <span class="tag S">Strong inference</span> — the open firmware's own observations ("an all-ack retry event completes normally") show retry events also arrive with all-ack bitmaps, so both paths must tolerate either outcome.</p>
+
+<h3>4.2 Q2 — How vendor avoids status/BA races</h3>
+<ul>
+<li><b>Single writer in FIFO order.</b> All slot-state transitions (1→2→3→{4|5}) and the BA pull happen inside <code>mac_irq_handler</code> in event order. The RX handler never touches TX slot state; it only writes link state 7 ("blocked") in <code>rx_handler</code>. <span class="tag C">Confirmed</span></li>
+<li><b>Slot state byte as the guard.</b> <code>txp_pipe_tx_status</code> and <code>txp_pipe_tx_done_retry</code> both require <code>state==3</code>; whichever event arrives first wins and moves the slot to 5 or 4, making the other a no-op. <span class="tag C">Confirmed</span></li>
+<li><b>Retry-busy byte</b> (<code>pipe_table+7</code>, Rust <code>LOW_MAC_PIPE_BUSY</code>): set on retry entry, cleared on the next done event; a status arriving while a retry is being programmed is suppressed after the slot mark. <span class="tag C">Confirmed</span></li>
+<li><b>Mismatch counter</b> (<code>0x04001f8c+pipe</code>): three consecutive unexpected statuses on an armed pipe force the retry path, bounding a stale expected byte. <span class="tag C">Confirmed</span></li>
+<li><b>Link state as a generation.</b> The link byte (state 10 = "completed, BA pending", 8 = "requeue pending", 9 = "requeued", 11 = "no BA") gates the aggregate builder (<code>txq_try_append_to_aggregate</code> refuses 6,7,8,10), so no new aggregate for that link can be built while a previous one's members are undispositioned. This is the vendor's transaction epoch: there is at most one outstanding aggregate per link. <span class="tag C">Confirmed</span></li>
+<li><b>Deferred BA scan cursor.</b> <code>rxfifo_find_frame_by_subtype</code> uses its own cursor (<code>0x040016c0</code>) that advances only across non-BA slots, so a BA that arrives late is found by the next completion on that pipe (the "not last slot → stay in state 10" rule). <span class="tag C">Confirmed</span></li>
+<li>No timer or epoch counter is involved; the 200 ms watchdog (<code>FUN_00003bac</code>) is only a recovery path that aborts the pipe (<code>txp_fn_4155</code> 0x101f4). <span class="tag C">Confirmed</span></li>
+</ul>
+
+<h3>4.3 Q3 — Are acknowledged members released before missing-member ownership is safe?</h3>
+<p>Yes. Ownership is transferred in three steps that never overlap: (1) <code>txp_pipe_tx_status</code> recycles the pipe slot (cursor advance or <code>armed=0</code>) and pushes the software record back to the free list, so the hardware no longer references any member; (2) <code>bab_process_ba_bitmap</code> completes acknowledged members with <code>tx_ctx_free_locked</code> and marks missing ones <code>0xfe</code> with flag <code>0x10000010</code>, leaving them only in the per-link 16-entry table (<code>0x04001b10 + link*0x40</code>); (3) the next scheduler pass compacts that table and pushes the survivors onto the global ring with the retry bit set in their sequence-control descriptor words. The retried member thus becomes an <em>ordinary ring entry</em> again (possibly re-aggregated with new frames, since bits 20/21 stay clear and state 9 permits appending). The open firmware's selective path instead keeps the slot in state 4 and rewrites the descriptor in place, which is why it needs the "never a second GO" and command-mask release rules and why the acknowledged member's completion had to be threaded through <code>partial_give_up</code>/<code>enqueue_acknowledged_aggregate_member</code>. <span class="tag C">Confirmed</span></p>
+
+<h3>4.4 Q4 — How vendor keeps the MAC busy; the near-zero TX burst</h3>
+<ul>
+<li>Up to four pipes armed concurrently, one transaction each; ordinary pipes carry up to four slots per GO, aggregate pipes one kind-1 slot with up to 16 MPDUs. <span class="tag C">Confirmed</span></li>
+<li>Every completion (<code>txp_fn_2441</code>, <code>bab_process_ba_bitmap</code>, <code>task_22bc</code>) raises event <code>0x200000</code>, registered at init to <code>task_b88e</code> (<code>sched_register_task(0x200000, 0x0000b88f)</code>, Thumb). That task walks the pending list and ends with <code>txp_scheduler_run()</code>. Re-arm latency is one scheduler hop, not a polling interval. <span class="tag C">Confirmed</span></li>
+<li>The scheduler also runs from <code>phy_resume_state4</code> and the PS-dequeue task; the MAC-idle event (<code>0x80000000</code>) has its own task. <span class="tag C">Confirmed</span></li>
+<li>Confirms are batched: <code>tx_confirm_build_and_send</code> builds <code>0x041e</code> with a u32 count and 32-byte entries; <code>hif_confirm_coalesce_hold</code> holds the flush while ring depths are ≤ thresholds (10/4/2) for at most 8000 ticks. Credits therefore return to the host in bursts. <span class="tag C">Confirmed</span></li>
+<li><b>Open firmware's near-zero TX burst.</b> <code>tx_burst = input_buffers − hw_bufs_used</code> is evaluated per BH TX; the counter increments only if &gt;1 after a write (<code>bh.c:685,528</code>). With one confirm per main-loop pass and the firmware holding ≈30 buffers under load, at most one credit is free at any write. The cure is not slot chaining (vendor has none either) but faster/batched credit return and shorter firmware queueing. <span class="tag S">Strong inference</span> — falsified if <code>MULTI TXed</code> and <code>TX burst</code> stay near zero after Stage 3.</li>
+<li>Dead air per transaction in the open loop is ≈ one pass. The main-loop comment records ≈5 ms/pass under load with older code (<code>bin/hif_startup.rs:414-420</code>); the depth-4 image's extra +1.9 ms ping over depth-2 matches one added <code>scheduler_single_wait</code> pass, suggesting ≈2 ms today. At MCS1 a 4×1500-byte aggregate is ≈3.7 ms of air, so a 2–5 ms gap alone caps duty cycle near 45–65%. <span class="tag S">Strong inference</span></li>
+</ul>
+
+<h3>4.5 Q5 — Depth and airtime/TXOP logic</h3>
+<table>
+<tr><th>Bound</th><th>Vendor source</th><th>Value / behaviour</th><th>Label</th></tr>
+<tr><td>Hard member cap</td><td><code>txq_try_append_to_aggregate</code>: <code>tbl[pipe+0x428] &lt; 0x10</code>; table has 16 entries per link</td><td>16</td><td><span class="tag C">C</span></td></tr>
+<tr><td>Adaptive cap (TALA)</td><td><code>tx_complete_tala_adapt</code> 0xd254 rewrites <code>vif+0x128</code>; params <code>0x04001fc0 = 0x15020210</code> (max 16, min 2, window 400 frames, 5 good windows → +1), <code>0x04001fc4 = 0x19140f0a</code> (fail% 25/20/15/10 → ×0.5/0.625/0.75/0.875)</td><td>2..16 per link, driven by per-link fail ratio and an exponential penalty above expected tries</td><td><span class="tag C">C</span></td></tr>
+<tr><td>EDCA TXOP airtime</td><td><code>txq_agg_airtime_budget</code> 0xa05e reads <code>g_fw_ctx + if*0x98 + tid_map[pipe]*2 + 0x4e0</code> (WSM 0x0013); join requires <code>Σ dwAirtimeUs ≤ budget</code>; 0 = unbounded</td><td>Live whenever the AP advertises a non-zero TXOP for the AC</td><td><span class="tag C">C</span></td></tr>
+<tr><td>mediumTime budget</td><td><code>txop_budget_check</code> 0x828c (+0x430, WSM 0x0012)</td><td>Disabled on mainline (allowedMediumTime = 0)</td><td><span class="tag C">C</span></td></tr>
+<tr><td>BA window</td><td><code>txq_build_aggregate_lists</code>: <code>seq &lt; min_seq + link_rec+0x14</code></td><td>Keeps members inside the negotiated window relative to the lowest queued sequence</td><td><span class="tag S">S</span> (+0x14 assumed = buffer size)</td></tr>
+<tr><td>Rate uniformity</td><td>same <code>bRateIdx</code> required; a minstrel sample rate closes the aggregate</td><td>same in both firmwares</td><td><span class="tag C">C</span></td></tr>
+</table>
+<p><b>Proposed open policy</b> (<code>host_tx_policy::plan_ampdu_group</code>): <code>depth = min(cap_link, 16, airtime_budget, window)</code> where <code>cap_link</code> starts at 8 for MCS≤2 and 16 for MCS≥3 (frame airtime already accounts for size), and is adapted TALA-style from the per-link fail ratio measured by the Stage-0 outcome counters. First experiment: static 8. Rationale: at MCS1 the per-transaction overhead (backoff + BA + loop gap) is amortised over 8 MPDUs (≈7.4 ms air) instead of 4; at MCS≥3 16 MPDUs still fit a 4 ms TXOP only for short frames, so the airtime bound dominates. <span class="tag S">Strong inference</span></p>
+
+<h3>4.6 Q6 — Rate/retry feedback to Linux</h3>
+<ul>
+<li>Vendor confirm entry: <code>+0x04</code> status, <code>+0x0c</code> ack_failures/rate byte from <code>ctx+0x24/0x25</code>, <code>+0x0d</code> retry count, <code>+0x0e</code> flags, then delay words; per-vif and per-TID counters (<code>vif+0x78/0x7c/0x80/0x84/0x8c</code>) feed MIB 0x100a. <span class="tag C">Confirmed</span></li>
+<li>Mode 0 (<code>policyFlags = 0x0c</code>) means the firmware executes the host's per-frame ladder: <code>pas_rate_for_try_count</code> (0x1b1a8) walks the 24 nibbles from rate 23 downward with <code>tries+1</code>, exactly as <code>rate_policy::rate_for_try_count</code>. Firmware never raises a rate (<code>pas_rate_recovery_on_success</code> is dead in mode 0). <span class="tag C">Confirmed</span></li>
+<li>Per-member try nibbles are bumped on both vendor retry paths; the retried member's own <code>wTryCount</code> and nibble travel with the requeued member, so a member that fails twice in two different aggregates reports two retries at (possibly) two rates. <span class="tag C">Confirmed</span></li>
+<li>Linux: <code>cw1200_xr819_tx_status</code> (<code>txrx.c:936</code>) turns nibbles into <code>status.rates[]</code> and adds the successful attempt; <code>IEEE80211_TX_STAT_AMPDU</code> is deliberately not set (<code>txrx.c:1075</code>), so minstrel_ht sees one MPDU per confirmation. <span class="tag C">Confirmed</span></li>
+<li><b>Remaining mismatches likely pinning minstrel low</b> <span class="tag S">Strong inference</span>: (a) give-ups after two whole rearms, on member-rate divergence, on outside-window, on watchdog expiry, and on deeper partial observations produce <code>status≠0</code> confirmations that minstrel counts as total failure at the attempted MCS; (b) whole-aggregate rearm charges a failed attempt to every member including those already acknowledged (vendor does the same on its retry path, so this is at most a second-order effect); (c) the two-attempt limit truncates the ladder before the policy's lower rates, so minstrel never sees "MCS3 failed, MCS1 succeeded" evidence and only sees failures. (a) and (c) are testable from host debugfs: compare <code>TX failed</code> (status≠0) counts per 1,000 confirms between vendor and open at fixed MCS3.</li>
+</ul>
+
+<h2 id="arch">5. State machines and transition tables</h2>
+
+<h3>5.1 Vendor pipe slot state (byte at <code>pipe+0xa0+slot*0x18+0xf</code>) <span class="tag C">Confirmed</span></h3>
+<div class="diagram">
+ build            publish loop         event 0x37/0x20000        event 0x37/0x30000
+ [0]  ──────────▶ [1] published ────▶ [2] started ─────────────▶ [3] done (awaiting status)
+ txp_build_pipe   txp_scheduler_run   txp_pipe_tx_start          txp_pipe_tx_success (retry_busy=0)
+ _descriptor                                                          │                 │
+                                                                      │status==expected │status 0x19/4 with pending bit,
+                                                                      │&amp;&amp; retry_busy==0 │or 3 mismatches
+                                                                      ▼                 ▼
+                                                        [5] completed            [4] retrying (retry_busy=1)
+                                                        txp_pipe_tx_status        txp_pipe_tx_done_retry
+                                                        → txp_fn_2441 → BA pull   → rearm in place (state stays 4 until
+                                                        → cursor advance/recycle    the next 0x37 done event sets 3 again)
+</div>
+<table>
+<tr><th>From</th><th>Event</th><th>Guard</th><th>To</th><th>Side effects</th></tr>
+<tr><td>3</td><td>status event</td><td>armed ∧ expected==status ∧ retry_busy==0</td><td>5</td><td>kind≠2: <code>txp_fn_2441(…,0)</code>; cursor advance or pipe recycle (<code>armed=0,+0xa4=0,+0xa5=5</code>)</td></tr>
+<tr><td>3</td><td>status event</td><td>armed ∧ expected==status ∧ retry_busy==1</td><td>5</td><td>suppressed (no completion) — the retry owner will complete</td></tr>
+<tr><td>3</td><td>status 0x19/4 with pending</td><td>—</td><td>4</td><td>retry nibble bump, policy step, rebuild, trigger, mask release</td></tr>
+<tr><td>4</td><td>policy exhausted</td><td>—</td><td>recycled</td><td><code>txp_fn_2441(…,0x0b)</code> for every slot</td></tr>
+<tr><td>any</td><td>watchdog (5×200 ms)</td><td>+0xa4 bit0</td><td>abort</td><td><code>txp_fn_4155</code>: link 5, member table cleared, descriptors freed</td></tr>
+</table>
+
+<h3>5.2 Vendor per-link BA state (<code>0x04003678 + link*0x38 + 0x658</code>) <span class="tag C">Confirmed</span></h3>
+<div class="diagram">
+ 1 idle/no TIDs ─▶ 5 BA operational ─▶ 6 aggregate armed (scheduler, before kind-1 build) ─▶ 10 completed, BA pending (txp_fn_2441)
+                                                                                                     │
+        ┌────────────────────────────────────────────────────────────────────────────────────────────┤
+        ▼                                            ▼                                               ▼
+ 5 all acked (bab: requeued==0)         8 some requeued (bab) ──▶ 9 pushed to ring            11 no BA visible (last slot)
+                                        (txq_build_aggregate_lists prologue)                   ──▶ 9 / 5 via mode-0 retry advance
+ append gate (txq_try_append_to_aggregate): allow {0,1,3,4,5,9}; action-only {2}; refuse {6,7,8,10}; 7 = RX-handler "blocked"
+</div>
+
+<h3>5.3 Open firmware today <span class="tag C">Confirmed</span></h3>
+<div class="diagram">
+ publish (one batch / pass) ─▶ slot 1 ─▶ 2 ─▶ 3 ──status 0x0c──▶ complete_tx_pipe_slot(status 0): ALL members confirmed OK
+                                          │                        (find_rx_frame_by_subtype stubbed → the BA parse branch never runs)
+                                          ├──retry event──▶ 4 ──▶ decide_retry: retained RX-lane observation?
+                                          │                        none → whole rearm (≤2) → GiveUp ; partial → selective (d2) / plan (d4)
+                                          └──RX lane (any time)──▶ consume_depth_two_block_ack: all-ack &amp; state∈{3,4} → completes &amp; recycles pipe
+                                                                    partial → retained only; acted on at retry event or watchdog expiry (0.6–1 s)
+</div>
+
+<h3>5.4 Proposed transaction-generation MAC-status/BA join machine <span class="tag S">Strong inference</span></h3>
+<p>Evidence supports the shape (single writer at MAC-event time, BA pulled at that time, link-level epoch). The generation counter is an open-firmware addition that makes the RX lane's early observation safe without letting it own the slot.</p>
+<div class="diagram">
+ per (pipe,slot): Transaction { gen: u16, members: [FrameNode; N], kind, expected }
+ per link:        BaMailbox   { gen_seen: u16, start_seq, bitmap, valid }        // written ONLY by the RX lane
+
+ RX lane (radio.rs):  on subtype 0x94 addressed to us: mailbox[link] = {gen: current_txn(link).gen, ssc, bitmap, valid=1}
+                      NEVER touch slot state, cursors, PIPE_IRQ_*; release the RX slot as usual.
+
+ MAC-event lane (tx.rs, service_txp_pipe_tx_status / execute_single_outstanding_tx_retry):
+   [3] ──status==expected──▶ [Joining]: ba = mailbox.valid &amp;&amp; mailbox.gen==txn.gen ? mailbox : pull_scan_0x94(cursor +0x40)
+                                        ba present  → classify → Confirm acked ; Missing → requeue(members) ; txn.gen++ ; recycle slot
+                                        ba absent   → if slot != last: stay [3-joined-pending] (vendor "not last slot" rule)
+                                                      else whole-missing path: requeue all or give up per policy ; txn.gen++
+   [3] ──retry 0x19/4────────▶ [4]: same join; if ba shows all acked → CompleteSuccess ; partial → requeue missing, complete acked, recycle
+                                    absent → whole rearm in place (policy limit), txn.gen unchanged (same transaction)
+   watchdog expiry: recovery only (abort + confirm 0x0b), never a retry trigger once Stage 2 lands.
+ Invariant: a mailbox entry whose gen != txn.gen is stale and ignored; a slot is mutated by exactly one lane.
+</div>
+<table>
+<tr><th>State</th><th>Owner lane</th><th>Allowed transitions</th><th>Abort/rollback</th></tr>
+<tr><td>Published(gen)</td><td>scheduler (host_tx_driver)</td><td>→Started on 0x37/0x20000</td><td>reservation cancel (existing)</td></tr>
+<tr><td>Started</td><td>MAC lane</td><td>→Done on 0x37/0x30000</td><td>watchdog abort</td></tr>
+<tr><td>Done</td><td>MAC lane</td><td>→Joining on status; →Retrying on 0x19/4</td><td>watchdog abort</td></tr>
+<tr><td>Joining</td><td>MAC lane (synchronous)</td><td>→Recycled(gen+1) after disposition</td><td>none needed: no MMIO between pull and disposition except mask/trigger already qualified</td></tr>
+<tr><td>Retrying</td><td>MAC lane</td><td>→Done on next 0x37 done; →Recycled on policy exhaustion</td><td>existing command-mask release</td></tr>
+</table>
+
+<h2 id="tcp">6. Why UDP can match while TCP stays far behind</h2>
+<ol>
+<li><b>The UDP figure is ceiling-limited by the harness, not by the firmware.</b> Offered 8 Mbit/s, delivered 6.34 (vendor) and 6.32 (open) — identical to within noise and both ≈21% below the offer. A firmware capable of 15.8 Mbit/s TCP does not drop 21% of a 8 Mbit/s UDP stream unless something else in the path (AP/uplink/iperf2 pacing in the netns) drops it. So "UDP parity" bounds the open pipeline from below (≥540 frames/s) and says nothing about the top. <span class="tag S">Strong inference</span> Falsification: offer 20 Mbit/s UDP to vendor; if it delivers ≫6.3, the ceiling was the test.</li>
+<li><b>TCP is loss- and RTT-sensitive; UDP is neither.</b> Every open-firmware give-up (§4.6) is a lost segment. With ≈650 non-unanimous depth-3/4 aggregates in 20,161 frames and only 17 selective retries, even a few-percent give-up rate combined with a queueing RTT inflated by ≈30 buffered frames (≈45 KB, ≈150 ms at 2.5 Mbit/s) yields the observed 2–2.6 Mbit/s via the MSS/(RTT·√p) relation. UDP simply records the loss. <span class="tag S">Strong inference</span></li>
+<li><b>Partial-BA stalls are RTO events.</b> A deferred retry waits for the 200 ms watchdog to count down from 5 (Expired at 0 after Nudge at 1–2), i.e. 0.6–1.0 s during which the AC pipe is owned and nothing else on it transmits. TCP's RTO fires, cwnd collapses to 1 and slow start restarts; UDP just delays. <span class="tag C">Confirmed</span> (mechanism) — the fraction of the 17 selective retries taken via the watchdog vs the retry event is not yet counted (Stage 0).</li>
+<li><b>Bidirectional coupling.</b> TCP needs ACKs on RX; the open RX lane, MAC lane and HIF all share the ≈2–5 ms pass, so ACK delivery and confirm delivery are quantised to the pass. Ping averages (+1.6 ms depth-2, +3.5 ms depth-4 over vendor) are the unloaded signature of that quantisation. <span class="tag S">Strong inference</span></li>
+<li><b>Credit trickle.</b> One confirm per pass keeps the host at ≤1 free credit, so the host BH performs one SDIO write per wake, adding host-side latency per frame; vendor returns credits in coalesced groups. <span class="tag S">Strong inference</span></li>
+</ol>
+
+<h2 id="rank">7. Ranked opportunities</h2>
+<table class="rank">
+<tr><th>#</th><th>Improvement</th><th>Expected impact</th><th>Confidence</th><th>Risk</th><th>RE cost</th><th>Primary evidence</th></tr>
+<tr><td>1</td><td>Pull the BA at MAC status/retry time under a per-slot generation; RX lane becomes record-only (§5.4)</td><td>Removes 0.6–1 s stalls and the ownership race; enables immediate selective disposition. TCP: large (RTO elimination)</td><td>High (vendor mechanism confirmed; open already found the BA at the boundary with the corrected RX filter)</td><td>Medium: touches <code>complete_tx_pipe_slot</code>, <code>decide_retry</code>, RX lane; needs the read-only cursor helpers wired into the production backend</td><td>Low: functions fully decompiled (0x91ec, 0x8d80, 0x7b72)</td><td>§4.1 E/F, §4.2</td></tr>
+<tr><td>2</td><td>Policy-driven whole-aggregate retry budget (+ vendor head-rate copy); stop give-ups on member-rate divergence</td><td>Converts host-visible failures into retries; TCP loss → ≈0; minstrel can climb</td><td>High</td><td>Low: constants and one loop in <code>prepare_whole_ampdu_retry</code></td><td>None</td><td>§4.1 G, <code>tx.rs:4160,4229</code></td></tr>
+<tr><td>3</td><td>Event-driven publication and batched confirmation (multi-confirm 0x041e, N confirms per pass, service pass triggered by MAC/HIF IRQ flags)</td><td>Cuts dead air per transaction and credit trickle; raises duty cycle; ping −1.5…−3 ms</td><td>Medium-high (pass cost measured once at ≈5 ms; needs re-measurement)</td><td>Medium: main loop and HIF publication; output-descriptor accounting</td><td>Low: 0xb3dc/0xec30 decompiled; driver support exists</td><td>§4.4</td></tr>
+<tr><td>4</td><td>Vendor-style missing-member requeue into the PAS ring (link states 8/9, member table compaction) replacing in-place selective rebuild for depth&gt;2</td><td>Frees the pipe immediately; retries merge with new frames; shrinks the deepest stack chain (in-place rebuild path)</td><td>High for correctness, medium for throughput</td><td>Medium-high: HostTxState needs a Scheduled→PasQueued transition with retry metadata; RESET paths</td><td>Low-medium (prologue of 0xa2c0 confirmed)</td><td>§4.3</td></tr>
+<tr><td>5</td><td>Depth scaling 4→8→16 bounded by TXOP airtime, BA window and a TALA-like per-link cap</td><td>Amortises per-transaction overhead; needed to approach vendor at MCS≥3</td><td>Medium (vendor logic confirmed; open builder already generic)</td><td>Medium: member arrays ×2–4 on a 52-byte stack margin; copied-completion queue capacity</td><td>None</td><td>§4.5</td></tr>
+<tr><td>6</td><td>Rate-feedback fidelity: report retried-then-succeeded members with correct nibbles; consider <code>IEEE80211_TX_STAT_AMPDU</code> with ampdu_len/ack_len (driver side)</td><td>Lets minstrel leave MCS0; multiplies the gain of 1–5</td><td>Medium</td><td>Low (driver) / low (firmware)</td><td>None</td><td>§4.6</td></tr>
+<tr><td>7</td><td>Remove the one-pass fill wait when the pipe would otherwise idle (publish immediately if the pipe is idle and nothing is in flight)</td><td>−1 pass latency for small flows (ping, TCP ACK-clocked ramps)</td><td>High</td><td>Low</td><td>None</td><td><code>host_tx_driver.rs:465,867</code></td></tr>
+</table>
+
+<h2 id="road">8. Staged implementation roadmap</h2>
+<p>All stages are feature-gated, land one at a time, and are qualified against the WPA2 HT AP with the OTA harness; recovery firmware is restored after every run. Each stage lists its Rust change areas, host tests, telemetry, success criteria, and abort conditions. Stack (<code>tools/check-rust-main-stack.py</code>) and ITCM size are gates for every stage.</p>
+
+<h3>Stage 0 — Telemetry only (no behaviour change)</h3>
+<ul>
+<li><b>Rust:</b> <code>host_tx_diagnostics.rs</code> (new saturating counters in the existing reused-MIB words; extend <code>tools/decode-ampdu-depth-telemetry.py</code>), hooks in <code>tx.rs</code>: <code>decide_retry</code>, <code>complete_give_up</code>, <code>service_expired_partial_block_ack_retry</code>, <code>retire_unmatched_tx_slot</code>, <code>consume_depth_two_block_ack</code>; loop-pass counter and confirms-per-pass histogram in <code>bin/hif_startup.rs</code>.</li>
+<li><b>Counters:</b> aggregate outcome = {all-ack@status, all-ack@retry, partial@retry, whole-rearm, give-up:limit, give-up:rate-divergence, give-up:outside-window, give-up:watchdog, give-up:plan}; BA-observation-to-rearm latency buckets {same pass, &lt;10 ms, &lt;200 ms, ≥600 ms}; main-loop passes/s; confirms per pass; max PAS ring occupancy; expired-lifetime count.</li>
+<li><b>Host:</b> capture cw1200 debugfs <code>TX failed</code>, <code>MULTI TXed</code>, <code>TX burst</code>, <code>AGG TXed</code> before/after each phase (post-traffic only, per harness note).</li>
+<li><b>Success:</b> counters decode; sum of outcomes equals published aggregates. <b>Abort:</b> any change in TCP/UDP beyond run-to-run noise (telemetry must be free).</li>
+</ul>
+
+<h3>Stage 1 — Retry budget parity (gate: <code>experimental-depth-four-ampdu</code>)</h3>
+<ul>
+<li><b>Rust:</b> <code>tx.rs</code> <code>prepare_whole_ampdu_retry</code>: replace <code>WHOLE_AMPDU_RETRY_LIMIT</code> with <code>rate_policy::retry_step</code> per member (limit = policy short/long retries, already implemented for kind 0); on rate change write the head's next rate to every member (vendor <code>0x9550</code> loop) instead of returning <code>None</code> on divergence; keep outside-window → give-up until Stage 4. <code>rate_policy.rs</code>: no change. Tests: host unit tests for "member with higher try count follows head rate", "policy exhaustion gives up exactly once".</li>
+<li><b>Telemetry gate:</b> give-up:limit and give-up:rate-divergence → ≈0; whole-rearm count rises; host <code>TX failed</code>/1,000 confirms drops toward vendor.</li>
+<li><b>Success:</b> fixed-MCS3 TCP ≥ 4 Mbit/s and adaptive no longer pinned at MCS0 (bitrate ≥ MCS2 after 30 s). <b>Abort:</b> BH TX-confirm timeout, buffers not drained, or stack check fails.</li>
+</ul>
+
+<h3>Stage 2 — BA join at MAC-event time with generation (gate: <code>experimental-ba-join</code>, new)</h3>
+<ul>
+<li><b>Rust:</b> <code>tx.rs</code>: implement <code>SingleProbeMacBackend::find_rx_frame_by_subtype</code> using <code>RxFifoStateAddress::ba_scan_cursor()</code> (0x040016c0) and the existing read-only cursor helpers against producer 0x09c00604 (exact vendor walk: <code>rxfifo_off_to_addr</code>, <code>rxfifo_advance(+0x2f, mask)</code>, <code>rxfifo_slot_valid</code>); add <code>Transaction.gen</code> to the per-(pipe,slot) retained state (<code>depth_two_block_ack</code> array becomes <code>BaMailbox</code> keyed by link with <code>gen</code>); in <code>service_txp_pipe_tx_status</code> for kind 1 call the join before <code>complete_tx_pipe_slot</code> and disposition members (Confirm/Retry) instead of confirming all; in <code>decide_retry</code> perform the same join before choosing whole rearm. <code>radio.rs:1109</code>: <code>consume_depth_two_block_ack</code> becomes record-only (write mailbox, never <code>PIPE_IRQ_TRIGGER</code>/<code>complete_tx_pipe_slot</code>). Remove the watchdog retry trigger (<code>service_expired_partial_block_ack_retry</code>) once the join is qualified; keep watchdog recovery.</li>
+<li><b>Tests:</b> host tests for the generation invariant (stale mailbox ignored; mailbox from the same generation consumed once), for the "not last slot → defer" rule, and for join ordering (status before RX, RX before status, retry event with all-ack).</li>
+<li><b>Telemetry gate:</b> BA latency bucket ≥600 ms → 0; partial@retry and partial@status both non-zero; zero refused statuses on armed pipes (<code>STATUS_INELIGIBLE</code> unchanged).</li>
+<li><b>Success:</b> depth-4 TCP ≥ depth-2 TCP (today it is lower), no BH fatal in 3 consecutive 60 s soaks, 20/20 ping. <b>Abort:</b> any TX-confirm timeout with outstanding frames (the signature of image <code>a7d56f2a…</code>); then keep the mailbox but re-enable watchdog-only action.</li>
+</ul>
+
+<h3>Stage 3 — Event-driven service and batched confirmation (gate: <code>experimental-fast-loop</code>)</h3>
+<ul>
+<li><b>Rust:</b> <code>bin/hif_startup.rs</code>: drain up to N (start 4) confirmations per pass; skip the one-pass fill wait when the target pipe is idle and no owner exists (<code>host_tx_driver.rs</code> <code>publish_ready_batch</code>); <code>wsm.rs</code>: add <code>0x041e</code> encoder (u32 count, 32-byte entries, len 0x28 + 0x20·(n−1)); <code>hif.rs</code>: publish one coalesced message per pass using one request buffer; return credits for all n. Measure pass cost with the existing iteration counter and, if the timer read is affordable at 1/16 passes, a pass-duration histogram.</li>
+<li><b>Tests:</b> encoder layout test against <code>wsm_multi_tx_confirm</code> parsing (count, per-entry offsets), confirmation-order preservation.</li>
+<li><b>Telemetry gate:</b> host <code>MULTI TXed</code> &gt; 0, <code>TX burst</code> &gt; 0; passes/s up; ping avg within 1 ms of vendor.</li>
+<li><b>Success:</b> fixed-MCS1 TCP ≥ 3.5 Mbit/s (vendor 4.14). <b>Abort:</b> host WSM sequence errors, any credit accounting mismatch (<code>hw_bufs_used</code> negative warning), or output-descriptor starvation of the command lane.</li>
+</ul>
+
+<h3>Stage 4 — Vendor requeue of missing members (gate: <code>experimental-member-requeue</code>)</h3>
+<ul>
+<li><b>Rust:</b> <code>tx.rs</code>: on partial join, complete acknowledged members, retire the kind-1 slot, and hand missing members to a new per-link "requeue pending" set (mirror of <code>0x04001b10</code> table + link state 8); <code>vendor_host_tx.rs</code>: reuse the exact PAS-ring compaction/insertion model to push them back with flags <code>|0x10</code>, retry bit <code>0x800</code> in sequence-control words, bits 28/5 cleared; <code>host_tx_driver.rs</code>: allow <code>Scheduled → PasQueued</code> for those contexts (retaining packet id, try count, nibbles) and let <code>plan_ampdu_group</code> re-aggregate them (vendor permits when bits 20/21 are clear). Outside-window members follow the same path (vendor behaviour) instead of give-up. Delete the in-place selective tail for depth&gt;2 once qualified (stack relief).</li>
+<li><b>Tests:</b> ring compaction with mixed fresh/requeued entries, exactly-once completion of acknowledged members, RESET while members are in the requeue set.</li>
+<li><b>Success:</b> selective retry counters replaced by requeue counters; give-up:plan → 0; deepest stack chain shrinks. <b>Abort:</b> duplicate confirmations (host warns unknown packet id) or retained buffers after drain.</li>
+</ul>
+
+<h3>Stage 5 — Depth scaling (gate: <code>experimental-depth-eight-ampdu</code>)</h3>
+<ul>
+<li><b>Rust:</b> <code>host_tx_policy.rs</code>: <code>MAX_EXPERIMENTAL_AMPDU_DEPTH</code> 4→8 with a per-link cap input; BA-window bound (seq &lt; min_seq + 64); EDCA TXOP airtime from <code>configuration.rs</code> (the WSM 0x0013 values already parsed) as the airtime budget; TALA-like adaptation (halve on &gt;25% member failure per 400 completions, +1 after 5 clean windows, floor 2). <code>tx.rs</code>: member arrays sized by the new constant; copied-completion queue 16→32 only under the gate; flight recorder reduced as before to fit ITCM. Later 8→16 only after Stage 4 removes the in-place selective tail.</li>
+<li><b>Success:</b> fixed-MCS3 TCP ≥ 6 Mbit/s, MCS5 ≥ 8; no increase in give-ups. <b>Abort:</b> stack check &lt; 0 headroom, ITCM overflow, or first-member-loss regressions.</li>
+</ul>
+
+<h3>Stage 6 — Rate feedback (driver + firmware)</h3>
+<ul>
+<li>Verify nibble content of retried members after Stage 4 (member carries its own try count); evaluate setting <code>IEEE80211_TX_STAT_AMPDU</code> with <code>ampdu_len = 1, ampdu_ack_len = ACK?1:0</code> (semantically what mac80211 does anyway) or, better, batching per-aggregate status; compare minstrel_ht rate tables (<code>rc_stats</code>) vendor vs open at the same RSSI.</li>
+</ul>
+
+<h2 id="val">9. Validation matrix</h2>
+<table>
+<tr><th>Axis</th><th>Values</th><th>Notes</th></tr>
+<tr><td>AP / security</td><td>WPA2 HT ("Hoeve Luitenant Halleux"); WPA3-SAE/PMF (<code>a2:41:74:2c:f3:9f</code>) when visible</td><td>WPA3 exercises BA teardown/restart and SW management CCMP</td></tr>
+<tr><td>Rate</td><td>fixed MCS1, MCS3, MCS5; adaptive</td><td>MCS1 isolates loop/transaction overhead; MCS5 isolates loss handling</td></tr>
+<tr><td>Traffic</td><td>ping flood −s 512 (25 s); TCP uplink 25 s; UDP 8 M offered 20 s; UDP 20 M offered 20 s (new); 20 spaced pings</td><td>The 20 M UDP run is required to de-alias the 6.3 ceiling</td></tr>
+<tr><td>Depth</td><td>2 (production), 4, 8</td><td>depth-2 image stays byte-identical to the qualified one until Stage 4 lands</td></tr>
+<tr><td>Fault injection</td><td>descriptor-preserving stopped-session; selective exhaustion; delimiter <code>0x67000000</code> second-member loss; RF attenuation via output-power MIB</td><td>all already exist in the bring-up history; re-run at each stage that touches retry</td></tr>
+<tr><td>Pass criteria (every run)</td><td>BH alive, WSM idle, 0 used buffers, no exception, 20/20 or documented transient path loss with clean firmware state; stack check ≥ 0; recovery image restored and hash-verified</td><td></td></tr>
+<tr><td>Throughput signals per stage</td><td>S1: TX failed/1,000 ↓, adaptive ≥ MCS2 · S2: ≥600 ms bucket = 0, d4 TCP ≥ d2 TCP · S3: MULTI TXed &gt; 0, ping ≈ vendor+1 ms, MCS1 TCP ≥ 3.5 · S5: MCS3 TCP ≥ 6</td><td></td></tr>
+</table>
+
+<h2 id="risk">10. Risks</h2>
+<ul>
+<li><b>Stack/ITCM.</b> 52 bytes headroom in the depth-four feature build; the join in Stage 2 adds a scan loop on the status path (small), Stage 4 removes the deepest chain (in-place rebuild). Order Stage 4 before Stage 5. Mitigation: <code>#[inline(never)]</code> on the join, no new arrays on the status path, stack check in CI for every gate combination.</li>
+<li><b>BA scan cursor semantics.</b> The vendor cursor advances across non-BA slots and can lag; earlier open experiments that coupled it to release policy found nothing because the RX filter was wrong at the time. With the corrected filter the BA is in normal RX packet RAM; a stale or wrapped cursor is the main residual failure mode. Mitigation: bound the scan to one FIFO length, validate with <code>rxfifo_slot_valid</code>, fall back to the mailbox.</li>
+<li><b>Double consumption of a BA.</b> The RX lane currently releases the BA slot; if the MAC lane pulls it from packet RAM in the same pass the slot may already be released. The generation-tagged mailbox makes the pull optional whenever the RX lane already observed the frame for the same generation.</li>
+<li><b>Requeued members and sequence order.</b> Re-aggregating a retried member with newer frames is what vendor does, but the receiver's BA window must still cover it; keep the BA-window bound in the planner.</li>
+<li><b>Multi-confirm and HIF credit accounting.</b> The host releases <code>count−1</code> extra credits on 0x041e; the firmware must return exactly one request buffer per confirm regardless of coalescing.</li>
+<li><b>Debugfs during traffic destroys the open firmware</b> (harness note); all telemetry must be post-traffic.</li>
+<li><b>Transient post-traffic ping loss</b> is documented and should not be treated as a firmware regression unless buffers remain owned.</li>
+</ul>
+
+<h2 id="open">11. Unanswered questions</h2>
+<ol>
+<li>Does the MAC deliver <code>0x0c</code> only for an all-acknowledged BA, raising <code>0x19</code>/<code>4</code> otherwise? The forced-duplicate test (both MPDUs seq N) produced matching statuses, consistent with the hypothesis, but the open path also saw "all-ack retry events". Stage 0's partial@status vs partial@retry counters answer this.</li>
+<li>What writes DTCM <code>0x04001160</code> (the vendor state-11 "retry allowed" word; only reader <code>0xa404</code>)? The vendor container image shows a nonzero initial value at the mapped offset if the DTCM mapping in <code>data/README.md</code> holds. Not needed for the plan.</li>
+<li>Exact current main-loop pass cost and its distribution; the only measurement (≈5 ms) predates several changes.</li>
+<li>Why the harness UDP ceiling sits at ≈6.3 Mbit/s for both firmwares (AP uplink, netns pacing, or iperf2 −b implementation).</li>
+<li>Vendor initial <code>vif+0x128</code> (ampdu_num) value before TALA adapts it; the driver never sends MIB 0x000A/0x000B.</li>
+<li>Whether minstrel_ht's sample-rate frames are routed as singletons by vendor as well (rate mismatch closes the aggregate in both), and how much airtime they cost at high depth.</li>
+<li>Whether the AP's BA reorder window tolerates the vendor-style re-aggregation of a retried member behind newer sequences at depth 16 (it must per 802.11, but the specific AP has not been tested).</li>
+</ol>
+
+<h2 id="exp">12. Three recommended next experiments (with falsification criteria)</h2>
+<div class="grid">
+<div class="box ok">
+<h4>E1 — Outcome and latency census (Stage 0)</h4>
+<p>Build the depth-four diagnostics image with the outcome/latency counters; run the standard WPA2 sequence at fixed MCS3 and adaptive; read the counters and host debugfs post-traffic; repeat on vendor for the host counters.</p>
+<p><b>Predicts:</b> give-up outcomes ≥ 5% of non-unanimous aggregates; ≥600 ms latency bucket non-zero; host <code>TX failed</code> per 1,000 confirms ≥ 10× vendor; open <code>MULTI TXed</code> = 0.</p>
+<p><b>Falsified if:</b> give-ups &lt; 1% and the ≥600 ms bucket is empty — then the TCP gap is dominated by loop latency (go to E3 first), not loss.</p>
+</div>
+<div class="box ok">
+<h4>E2 — Retry-budget parity (Stage 1)</h4>
+<p>Replace the two-attempt limit with the policy ladder and copy the head rate to members; same runs as E1.</p>
+<p><b>Predicts:</b> host <code>TX failed</code> drops by ≥ 5×, whole-rearm count rises, adaptive bitrate leaves MCS0 within 30 s, fixed-MCS3 TCP ≥ 4 Mbit/s.</p>
+<p><b>Falsified if:</b> TCP does not improve by ≥ 25% while failures drop — then loss was not the binding constraint and Stage 2/3 latency work must lead.</p>
+</div>
+<div class="box ok">
+<h4>E3 — De-alias the UDP ceiling and the pass cost</h4>
+<p>Run vendor and open with UDP offered at 20 Mbit/s (and 8 Mbit/s as control); log the main-loop iteration counter delta over each 20 s phase (already supported) to derive passes/s; optionally sample the timer 1/16 passes for a duration histogram.</p>
+<p><b>Predicts:</b> vendor delivers ≥ 10 Mbit/s at 20 M offered while open stays ≈6 Mbit/s; open passes/s ≈ 200–500 under load and confirms/pass ≈ 1.</p>
+<p><b>Falsified if:</b> vendor also caps at ≈6.3 — then the harness path, not firmware, sets the UDP ceiling and UDP must be measured on another server; or if passes/s ≫ 1,000 — then loop latency is not the dead-air source and the burst counter must be explained by credit accounting alone.</p>
+</div>
+</div>
+
+<h2 id="ev">13. Evidence appendix (claim → local source)</h2>
+<table>
+<tr><th>Claim</th><th>Local evidence</th></tr>
+<tr><td>Scheduler builds only for idle pipes, one GO per transaction, depth ≤4 ordinary / ≤16 aggregate</td><td><code>xr819-decompilation/annotated-main.c</code> lines 12721–12874 (<code>txp_scheduler_run</code> 0xaa5e), 12077–12233 (<code>txq_try_append_to_aggregate</code> 0xa078); <code>ampdu-bringup.md</code> "Vendor scheduler audit"</td></tr>
+<tr><td>Aggregate eligibility incl. <code>vif+0x128</code> (TALA), BA window, TID mask, link state &gt; 4</td><td><code>annotated-main.c</code> 12234–12503 (<code>txq_build_aggregate_lists</code> 0xa2c0), esp. line 12437; DTCM literals <code>DAT_0000a6f4 = 0x04003e98</code>, <code>DAT_0000a6d0 = 0x04003678</code>, <code>DAT_0000a6c8 = 0x04003cc0</code>, <code>DAT_0000a6d4 = 0x04001680</code> (Ghidra memory reads)</td></tr>
+<tr><td>Kind-1 descriptor stream, expected status 0x0c, producer advance</td><td><code>annotated-main.c</code> 12504–12693 (<code>txp_build_pipe_descriptor</code> 0xa712)</td></tr>
+<tr><td>FIQ event dispatch, retry statuses 0x19/4, mismatch counter, pending mask</td><td><code>annotated-main.c</code> 11950–12053 (<code>mac_irq_handler</code> 0x9eb4); <code>DAT_0000a0e8 = 0x09c00a00</code>, <code>DAT_0000a0f0 = 0x09c00e80</code>, <code>DAT_0000a0f4 = 0xfff00000</code>, <code>DAT_0000a0c4 = 0x04001f8c</code></td></tr>
+<tr><td>Status completion guard (state 3→5, retry_busy)</td><td><code>annotated-main.c</code> 11576–11630 (<code>txp_pipe_tx_status</code> 0x9a32); Rust mirror <code>tx.rs:2252</code> <code>plan_ordinary_tx_pipe_status</code>, <code>tx.rs:2608</code> <code>service_txp_pipe_tx_status</code></td></tr>
+<tr><td>Done handler sets state 3, clears retry_busy, completes only expected-0xff slots</td><td><code>annotated-main.c</code> 11794–11846 (<code>txp_pipe_tx_success</code> 0x9cdc); Rust <code>tx.rs</code> <code>service_pipe_tx_success</code></td></tr>
+<tr><td>BA pull at completion, "not last slot" deferral, state 10/11</td><td><code>annotated-main.c</code> 10997–11108 (<code>txp_fn_2441</code> 0x91ec); <code>DAT_00009474 = 0x04001f90</code>, <code>DAT_0000947c = 0x04003cc0</code>; scan function 10626–10668 (<code>rxfifo_find_frame_by_subtype</code> 0x8d80); Rust stub <code>tx.rs:3964</code>; Rust translation of the branch inside <code>complete_tx_pipe_slot</code> <code>tx.rs:6627-6825</code></td></tr>
+<tr><td>Per-member disposition, requeue flag 0x10000010, link states 8/5/1, events 0x200000/0x100000</td><td><code>annotated-main.c</code> 8723–8885 (<code>bab_process_ba_bitmap</code> 0x7b72); <code>DAT_00007e30 = 0x10000010</code>, <code>DAT_00007e28 = 0x04001680</code>; Rust member table <code>dtcm.rs</code> <code>MAC_AGGREGATE_SLOT_TABLES</code> 0x04001b10..0x04001d10</td></tr>
+<tr><td>State-8 compaction / requeue with retry bit, state-11 handling, DTCM 0x04001160 gate</td><td><code>annotated-main.c</code> 12288–12370; <code>DAT_0000a6dc = 0x04001160</code> (single reader at 0xa404 per <code>x-ref</code>), <code>DAT_0000a6d8 = 0xefffffdf</code>, <code>DAT_0000a6e0 = 0xfffff7ef</code>, <code>DAT_0000a6e8 = 0x007a1200</code>; Rust lifetimes <code>vendor_host_tx.rs:828,1595</code></td></tr>
+<tr><td>Whole-aggregate retry: nibble bump, policy ladder, head-rate copy, no BA consult, in-place rearm</td><td><code>annotated-main.c</code> 11230–11570 (<code>txp_pipe_tx_done_retry</code> 0x9550); policy 10031–10218 (<code>pas_tx_retry_advance</code> 0x8868), 10220–10250 (<code>_mode0</code> 0x8a2c), 34068–34092 (<code>pas_rate_for_try_count</code> 0x1b1a8); Rust <code>tx.rs:4160</code> <code>WHOLE_AMPDU_RETRY_LIMIT = 2</code>, <code>tx.rs:4199</code> <code>prepare_whole_ampdu_retry</code>, <code>rate_policy.rs:132-165</code></td></tr>
+<tr><td>Scheduler re-run is event driven (0x200000 → task_b88e)</td><td><code>annotated-main.c</code> line 809 <code>sched_register_task(0x200000, DAT_0000075c)</code>; Ghidra memory <code>0x75c = 0x0000b88f</code>; 13695–13786 (<code>task_b88e</code>); 2728, 3135 (other callers)</td></tr>
+<tr><td>Multi-TX-confirm 0x041e and coalesce hold</td><td><code>annotated-main.c</code> 13248–13420 (<code>tx_confirm_build_and_send</code> 0xb3dc), 17423–17470 (<code>hif_confirm_coalesce_hold</code> 0xec30); driver <code>drivers/net/wireless/st/cw1200/main.c:674</code>, <code>wsm.c:406</code></td></tr>
+<tr><td>TALA depth adaptation and parameters</td><td><code>annotated-main.c</code> 15497–15745 (<code>tx_complete_tala_adapt</code> 0xd254) incl. <code>0x04001fc0 = 0x15020210</code>, <code>0x04001fc4 = 0x19140f0a</code></td></tr>
+<tr><td>TXOP/airtime budgets</td><td><code>annotated-main.c</code> 9424–9500 (<code>txop_budget_check</code> 0x828c, <code>_consume</code> 0x82f0), 12061–12070 (<code>txq_agg_airtime_budget</code> 0xa05e); Rust <code>host_tx_policy.rs:291</code> <code>plan_ampdu_group</code></td></tr>
+<tr><td>Open firmware: RX-lane BA consumption, all-ack completion, pipe recycle from RX lane</td><td><code>radio.rs:1107-1113</code>; <code>tx.rs:6833-6940</code> <code>consume_depth_two_block_ack</code></td></tr>
+<tr><td>Open firmware: watchdog-deferred partial retry (5×200 ms)</td><td><code>tx.rs:2465-2560</code> (<code>plan_pipe_watchdog</code>, <code>service_pipe_watchdog_tick_runtime</code>), <code>tx.rs:6966-7020</code> (<code>service_expired_partial_block_ack_retry</code>); <code>bin/hif_startup.rs:436-455</code>; <code>ampdu-bringup.md</code> final two sections (race image <code>a7d56f2a…</code>, qualified <code>79d20ec4…</code>)</td></tr>
+<tr><td>Open firmware: decide_retry branches (selective, whole, give-up)</td><td><code>tx.rs:4811-4990</code></td></tr>
+<tr><td>Open firmware: one batch and one confirmation per pass; one-pass fill wait; pass cost note</td><td><code>host_tx_driver.rs:183-260</code> (<code>service</code>, <code>SERVICE_BUDGET = 4</code>), <code>:465-473</code> and <code>:867-874</code> (<code>scheduler_single_wait</code>); <code>bin/hif_startup.rs:414-420</code> (≈5 ms/pass note), <code>:520-560</code> (single confirmation publish)</td></tr>
+<tr><td>Open firmware: confirmation encoding and failure-only nibbles</td><td><code>host_tx_driver.rs:1366-1400</code>, <code>host_tx_policy.rs:224-231</code>; driver <code>txrx.c:936-1000</code> (<code>cw1200_xr819_tx_status</code>), <code>txrx.c:1075</code> (STAT_AMPDU not reported)</td></tr>
+<tr><td>Host TX burst counter semantics</td><td><code>drivers/net/wireless/st/cw1200/bh.c:685-695, 528-531</code>; <code>debug.c:288</code></td></tr>
+<tr><td>UDP offered rate 8 Mbit/s</td><td><code>tools/ota-soak-udp-run.sh:143</code>; vendor script identical line</td></tr>
+<tr><td>Measured runs and images</td><td><code>ampdu-bringup.md</code> (all quoted counts); qualified image SHA <code>79d20ec4ce11e404ef5cff145d6422d2f20b01702d450abdcfb586c6c8e7b885</code></td></tr>
+<tr><td>Register naming parity</td><td><code>tx.rs:145-148</code> (<code>PIPE_IRQ_PENDING</code> 0x0e84, <code>PIPE_IRQ_TRIGGER</code> 0x0e98); <code>dtcm.rs:568-580</code> (<code>MacPipeSlot</code>, <code>MacPipeRecord</code> layout), <code>dtcm.rs:5659</code> (BA scan cursor 0x040016c0)</td></tr>
+</table>
+<p class="small">Tooling note: the Ghidra bridge would not start because <code>~/ghidra_scripts/ForceThumb.java</code> no longer compiles against Ghidra 12.1.2 (<code>ProgramContext.setValue(Address, …)</code> type error) and broke the whole script bundle; it was renamed to <code>ForceThumb.java.disabled</code> (and its symlink in <code>~/.config/ghidra-cli/scripts</code>) to restore <code>ghidra-cli</code>. Nothing in the repository was modified other than this report.</p>
+</main>
+</body>
+</html>
