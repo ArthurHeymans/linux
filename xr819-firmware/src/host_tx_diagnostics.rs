@@ -25,14 +25,22 @@ pub const EVENT_INVARIANT_FAILURE: u16 = 0xff01;
 pub const STATUS2_SNAPSHOT_WORDS: usize = 28;
 pub const PRE_GO_SNAPSHOT_WORDS: usize = 38;
 
-#[cfg(feature = "vendor-host-tx-diagnostics")]
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-member-requeue"
+))]
+const STATUS2_RECORD_COUNT: usize = 1;
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    not(feature = "experimental-member-requeue")
+))]
 const STATUS2_RECORD_COUNT: usize = 4;
 
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
     feature = "experimental-member-requeue"
 ))]
-const FLIGHT_RECORD_COUNT: usize = 8;
+const FLIGHT_RECORD_COUNT: usize = 4;
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
     feature = "experimental-ampdu-outcome-telemetry",

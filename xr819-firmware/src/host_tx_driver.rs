@@ -478,7 +478,6 @@ impl HostTxDriver {
         let mut candidate_pipes = [None; HOST_CONTEXT_COUNT];
         let mut first_index = None;
         let mut ready_count = 0;
-        let mut requeue_priority = false;
         for (index, state) in self.states.iter().enumerate() {
             let Some(HostTxState::Owned {
                 retained,
@@ -522,7 +521,6 @@ impl HostTxDriver {
         }) {
             candidate_pipes[..index].fill(None);
             first_index = Some(index);
-            requeue_priority = true;
         }
         if !cfg!(feature = "experimental-fast-loop")
             && ready_count != 0
@@ -671,9 +669,9 @@ impl HostTxDriver {
         } else {
             plan.len().min(2)
         };
-        let target_len = if requeue_priority {
-            1
-        } else if cfg!(feature = "experimental-depth-two-ampdu") && aggregate_len >= 2 {
+        let target_len = if cfg!(feature = "experimental-depth-two-ampdu")
+            && aggregate_len >= 2
+        {
             aggregate_len
         } else {
             ordinary_len

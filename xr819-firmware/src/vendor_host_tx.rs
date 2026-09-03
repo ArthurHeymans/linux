@@ -717,20 +717,17 @@ pub unsafe fn retry_attempted(retained: &RetainedHostTx) -> bool {
 /// The caller must serialize access to the live PAS ring.
 #[cfg(target_arch = "arm")]
 pub unsafe fn first_live_pas_frame() -> Option<u32> {
-    let mut head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
+    let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
     let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
-    while head != tail {
-        let frame = unsafe {
-            read_live_u32(
-                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get() as u32,
-            )
-        };
-        if frame != 0 {
-            return Some(frame);
-        }
-        head = head.wrapping_add(1) & 0x3f;
+    if head == tail {
+        return None;
     }
-    None
+    let frame = unsafe {
+        read_live_u32(
+            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get() as u32,
+        )
+    };
+    (frame != 0).then_some(frame)
 }
 
 pub(crate) const fn requeued_retry_control_bits(bits: u32) -> u32 {
@@ -1079,6 +1076,10 @@ pub(crate) unsafe fn ampdu_plan_candidate(
         tid: candidate.key.tid,
         rate: candidate.key.rate,
         frame_control: candidate.frame_control,
+        #[cfg(feature = "experimental-member-requeue")]
+        sequence: unsafe { read_host_u16(retained.context.sequence_number()) } & 0x0fff,
+        #[cfg(feature = "experimental-member-requeue")]
+        requeued: unsafe { retry_attempted(retained) },
         airtime: u32::from(unsafe { read_host_u16(retained.context.payload_extended()) }),
     }
 }

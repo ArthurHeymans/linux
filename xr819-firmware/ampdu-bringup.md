@@ -1002,3 +1002,26 @@ available. Member requeue is therefore qualified as a correctness and slot-
 release improvement, not a throughput improvement. Re-aggregation of retries
 with fresh members remains disabled until the planner has an explicit BA-window
 and sequence-order bound.
+
+Retry-headed re-aggregation is now enabled under the same member-requeue gate.
+Each candidate carries its assigned 12-bit sequence number; only a requeued
+head requires subsequent members to advance strictly within a 64-sequence BA
+window, including modulo-4096 wraparound. Fresh-only aggregation remains byte-
+path compatible with the prior planner. An initial build incorrectly applied
+the bound to every aggregate and was rejected after aggregate count collapsed
+to 2,031 despite otherwise clean firmware state. Scoping the bound to requeued
+heads restored 19,052 aggregates, completed with zero host failures, and
+sustained 3.61 Mbit/s TCP plus 5.37 Mbit/s received UDP.
+
+The telemetry repeat recorded 47 retry plans, 47 requeue completions, zero
+requeue give-ups, 19,544 aggregates, one host failure, 4.04 Mbit/s TCP, and
+7.40 Mbit/s received UDP. Exact final image `c9a61357...2cf015` then recorded
+36 retry plans, 35 requeue completions, zero requeue give-ups, 18,423
+aggregates, one host failure, 3.39 Mbit/s TCP, and 7.44 Mbit/s received UDP.
+Both runs retained MCS1, completed final ping 20/20, and ended with BH alive,
+WSM idle, no pending TX, zero used buffers, no watchdog rearm, and no unmatched
+retirement. Recovery hashes were verified after each. The feature's optional
+diagnostics now retain four flight records and one status-2 snapshot to fit the
+6900/6912-byte qualified stack chain; packed outcome counters remain intact.
+This qualifies sequence-bounded retry re-aggregation for continued experimental
+development, but does not establish a repeatable TCP throughput increase.

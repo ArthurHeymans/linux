@@ -240,6 +240,10 @@ pub(crate) struct AmpduPlanCandidate {
     pub tid: u8,
     pub rate: u8,
     pub frame_control: u16,
+    #[cfg(any(test, feature = "experimental-member-requeue"))]
+    pub sequence: u16,
+    #[cfg(any(test, feature = "experimental-member-requeue"))]
+    pub requeued: bool,
     pub airtime: u32,
 }
 
@@ -300,6 +304,8 @@ pub(crate) fn plan_ampdu_group(
     }
     let mut len = 1_usize;
     let mut total_airtime = head.airtime;
+    #[cfg(any(test, feature = "experimental-member-requeue"))]
+    let mut last_sequence_delta = 0_u16;
     for candidate in candidates
         .iter()
         .copied()
@@ -311,6 +317,14 @@ pub(crate) fn plan_ampdu_group(
         };
         if !ampdu_candidate_matches(head, candidate, tx_ba_tids, operational_tx_ba_tids) {
             break;
+        }
+        #[cfg(any(test, feature = "experimental-member-requeue"))]
+        if head.requeued {
+            let sequence_delta = candidate.sequence.wrapping_sub(head.sequence) & 0x0fff;
+            if sequence_delta <= last_sequence_delta || sequence_delta >= 64 {
+                break;
+            }
+            last_sequence_delta = sequence_delta;
         }
         let Some(next_airtime) = total_airtime.checked_add(candidate.airtime) else {
             break;
@@ -390,9 +404,16 @@ mod tests {
             tid: 3,
             rate: 19,
             frame_control: 0x0088,
+            sequence: 100,
+            requeued: false,
             airtime: 400,
         };
-        let candidates = [Some(member); 5];
+        let candidates: [Option<AmpduPlanCandidate>; 5] = core::array::from_fn(|index| {
+            Some(AmpduPlanCandidate {
+                sequence: member.sequence + index as u16,
+                ..member
+            })
+        });
         assert_eq!(
             plan_ampdu_group(&candidates, 1 << 3, 1 << 3, 0),
             Some(AmpduGroupPlan {
@@ -410,6 +431,50 @@ mod tests {
     }
 
     #[test]
+    fn ampdu_group_plan_bounds_requeued_sequence_order_and_ba_window() {
+        let member = AmpduPlanCandidate {
+            interface: 0,
+            link: 1,
+            tid: 0,
+            rate: 19,
+            frame_control: 0x0088,
+            sequence: 0x0ffe,
+            requeued: true,
+            airtime: 100,
+        };
+        let wrapped = [
+            Some(member),
+            Some(AmpduPlanCandidate { sequence: 0x0fff, ..member }),
+            Some(AmpduPlanCandidate { sequence: 0, ..member }),
+            Some(AmpduPlanCandidate { sequence: 1, ..member }),
+        ];
+        assert_eq!(plan_ampdu_group(&wrapped, 1, 1, 0).map(AmpduGroupPlan::len), Some(4));
+
+        let outside = [
+            Some(AmpduPlanCandidate { sequence: 100, ..member }),
+            Some(AmpduPlanCandidate { sequence: 163, ..member }),
+            Some(AmpduPlanCandidate { sequence: 164, ..member }),
+        ];
+        assert_eq!(plan_ampdu_group(&outside, 1, 1, 0).map(AmpduGroupPlan::len), Some(2));
+
+        let reversed = [
+            Some(AmpduPlanCandidate { sequence: 100, ..member }),
+            Some(AmpduPlanCandidate { sequence: 99, ..member }),
+        ];
+        assert_eq!(plan_ampdu_group(&reversed, 1, 1, 0), None);
+        let fresh_reversed = reversed.map(|candidate| {
+            candidate.map(|candidate| AmpduPlanCandidate {
+                requeued: false,
+                ..candidate
+            })
+        });
+        assert_eq!(
+            plan_ampdu_group(&fresh_reversed, 1, 1, 0).map(AmpduGroupPlan::len),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn ampdu_group_plan_stops_at_the_first_incompatible_member() {
         let member = AmpduPlanCandidate {
             interface: 0,
@@ -417,13 +482,15 @@ mod tests {
             tid: 0,
             rate: 19,
             frame_control: 0x0088,
+            sequence: 200,
+            requeued: false,
             airtime: 200,
         };
         let candidates = [
             Some(member),
-            Some(member),
-            Some(AmpduPlanCandidate { rate: 18, ..member }),
-            Some(member),
+            Some(AmpduPlanCandidate { sequence: 201, ..member }),
+            Some(AmpduPlanCandidate { rate: 18, sequence: 202, ..member }),
+            Some(AmpduPlanCandidate { sequence: 203, ..member }),
         ];
         assert_eq!(
             plan_ampdu_group(&candidates, 1, 1, 0),
