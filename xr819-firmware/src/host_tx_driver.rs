@@ -1444,6 +1444,7 @@ impl HostTxDriver {
         let tx_rate = fields.tx_rate;
         unsafe {
             host_tx_diagnostics::capture_retry_feedback(context, status, tx_rate, ack_failures);
+            host_tx_diagnostics::record_rate_feedback(ack_failures, fields.rate_try);
         }
         HostTxState::Confirming {
             confirmation: HostTxConfirmation {

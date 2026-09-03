@@ -38,7 +38,13 @@ const STATUS2_RECORD_COUNT: usize = 4;
 
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
-    feature = "experimental-member-requeue"
+    feature = "experimental-rate-feedback-telemetry"
+))]
+const FLIGHT_RECORD_COUNT: usize = 1;
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-member-requeue",
+    not(feature = "experimental-rate-feedback-telemetry")
 ))]
 const FLIGHT_RECORD_COUNT: usize = 4;
 #[cfg(all(
@@ -267,16 +273,20 @@ pub mod ampdu_outcome {
     pub const DEEP_PLAN_INVALID: usize = 4;
     pub const DEEP_WHOLE_REARM: usize = 5;
     pub const DEEP_PLAN_NO_SESSION: usize = 6;
+    pub const FEEDBACK_ACK_FAILURES: usize = DEEP_PLAN_NO_SESSION;
     pub const RETRY_EVENT_REARM: usize = 7;
     pub const RETRY_EVENT_GIVE_UP: usize = 8;
     pub const RETRY_EVENT_COMPLETE: usize = 9;
     pub const WATCHDOG_REARM: usize = 10;
     pub const WATCHDOG_NO_REARM: usize = 11;
     pub const DEEP_PLAN_MIXED_RATE: usize = WATCHDOG_NO_REARM;
+    pub const FEEDBACK_RATE_TRY: usize = WATCHDOG_NO_REARM;
     pub const RETIRED_UNMATCHED: usize = 12;
     pub const PARTIAL_GIVE_UP: usize = 13;
     pub const DEEP_PLAN_OUTSIDE_WINDOW: usize = PARTIAL_GIVE_UP;
+    pub const FEEDBACK_ACK_WITHOUT_RATE_TRY: usize = PARTIAL_GIVE_UP;
     pub const DEEP_PLAN_NO_RATE: usize = 14;
+    pub const FEEDBACK_COUNT_MISMATCH: usize = DEEP_PLAN_NO_RATE;
     pub const DEPTH_TWO_WHOLE: usize = 15;
 }
 
@@ -379,6 +389,39 @@ pub unsafe fn record_ampdu_outcome(outcome: usize) {
         feature = "experimental-ampdu-outcome-telemetry"
     )))]
     let _ = outcome;
+}
+
+#[cfg(any(test, feature = "experimental-rate-feedback-telemetry"))]
+fn rate_try_failure_count(rate_try: [u32; 3]) -> u8 {
+    let mut failures = 0_u8;
+    for word in rate_try {
+        for nibble in 0..8 {
+            failures = failures.saturating_add(((word >> (nibble * 4)) & 0xf) as u8);
+        }
+    }
+    failures
+}
+
+/// Compare raw per-rate failure nibbles with the confirmation retry count.
+pub unsafe fn record_rate_feedback(ack_failures: u8, rate_try: [u32; 3]) {
+    #[cfg(feature = "experimental-rate-feedback-telemetry")]
+    unsafe {
+        let failures = rate_try_failure_count(rate_try);
+        if ack_failures != 0 {
+            record_ampdu_outcome(ampdu_outcome::FEEDBACK_ACK_FAILURES);
+        }
+        if failures != 0 {
+            record_ampdu_outcome(ampdu_outcome::FEEDBACK_RATE_TRY);
+        }
+        if ack_failures != 0 && failures == 0 {
+            record_ampdu_outcome(ampdu_outcome::FEEDBACK_ACK_WITHOUT_RATE_TRY);
+        }
+        if failures != ack_failures {
+            record_ampdu_outcome(ampdu_outcome::FEEDBACK_COUNT_MISMATCH);
+        }
+    }
+    #[cfg(not(feature = "experimental-rate-feedback-telemetry"))]
+    let _ = (ack_failures, rate_try);
 }
 
 /// Increments one class-0 lifecycle counter.
@@ -1049,5 +1092,12 @@ mod tests {
         assert_eq!(core::mem::size_of::<super::FlightRecord>(), 24);
         assert_eq!(core::mem::size_of::<super::Status2Record>(), 120);
         assert_eq!(core::mem::size_of::<super::PreGoSnapshot>(), 156);
+    }
+
+    #[test]
+    fn retry_feedback_sums_packed_failure_nibbles() {
+        assert_eq!(super::rate_try_failure_count([0, 0, 0]), 0);
+        assert_eq!(super::rate_try_failure_count([0x1000_0021, 0x0000_3000, 0]), 7);
+        assert_eq!(super::rate_try_failure_count([u32::MAX; 3]), u8::MAX);
     }
 }

@@ -29,6 +29,12 @@ experimental-outside-window-retry = ["experimental-depth-four-ampdu"]
 # Retires partial aggregates and returns retryable members to normal PAS
 # scheduling instead of rebuilding the original MAC slot in place.
 experimental-member-requeue = ["experimental-outside-window-retry"]
+# Reuses four low-value outcome bytes to compare raw per-rate failure nibbles
+# with the aggregate failure count returned in each host confirmation.
+experimental-rate-feedback-telemetry = [
+    "experimental-member-requeue",
+    "experimental-ampdu-outcome-telemetry",
+]
 # Coalesces ready TX confirmations and removes avoidable idle-pipe fill waits.
 experimental-fast-loop = []
 # Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains

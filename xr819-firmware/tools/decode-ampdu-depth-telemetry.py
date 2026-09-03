@@ -6,7 +6,8 @@ Build the image with `experimental-depth-four-ampdu` and
 hardware-CCMP counters snapshot. Normal depth telemetry stores two saturating
 16-bit counts per word. Images built with `experimental-ampdu-outcome-telemetry`
 reuse those same four words for sixteen packed saturating 8-bit outcomes; pass
-`--outcomes` to decode that layout.
+`--outcomes` to decode that layout. Pass `--feedback` for images that reuse
+four outcome bytes for the raw retry-feedback census.
 """
 
 import re
@@ -45,8 +46,13 @@ def parse(text):
 
 
 def main():
-    outcome_mode = "--outcomes" in sys.argv[1:]
-    paths = [argument for argument in sys.argv[1:] if argument != "--outcomes"]
+    feedback_mode = "--feedback" in sys.argv[1:]
+    outcome_mode = feedback_mode or "--outcomes" in sys.argv[1:]
+    paths = [
+        argument
+        for argument in sys.argv[1:]
+        if argument not in ("--outcomes", "--feedback")
+    ]
     try:
         text = sys.stdin.read() if not paths else open(paths[0]).read()
     except OSError as error:
@@ -80,9 +86,14 @@ def main():
         "deep_plan_no_rate",
         "depth2_whole",
     ]
+    if feedback_mode:
+        outcome_names[6] = "feedback_ack_failures"
+        outcome_names[11] = "feedback_rate_try"
+        outcome_names[13] = "feedback_ack_without_try"
+        outcome_names[14] = "feedback_count_mismatch"
     if outcome_mode:
         words = [values.get(stage, 0) for stage in ("attempted", "published", "completed", "retried")]
-        print("  outcomes:")
+        print("  feedback:" if feedback_mode else "  outcomes:")
         for index, name in enumerate(outcome_names):
             count = (words[index >> 2] >> ((index & 3) * 8)) & 0xFF
             print(f"    {name:<24} {count:3d}")

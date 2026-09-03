@@ -1025,3 +1025,33 @@ diagnostics now retain four flight records and one status-2 snapshot to fit the
 6900/6912-byte qualified stack chain; packed outcome counters remain intact.
 This qualifies sequence-bounded retry re-aggregation for continued experimental
 development, but does not establish a repeatable TCP throughput increase.
+
+Rate-feedback census image `c9c112a0...018a852` reused four low-value outcome
+bytes to compare each confirmation's raw packed per-rate failure nibbles with
+its `ack_failures` field. Two runs at the established MCS1 operating point
+recorded 57 and 200 confirmations with raw retry history. Neither saw a retry
+without raw rate data or a count mismatch (the apparent extra
+`feedback_ack_failures` event in each run is the intentionally aliased inactive-
+BA-plan counter). The first sustained 3.37 Mbit/s TCP and 7.33 Mbit/s received
+UDP with final ping 20/20; the second sustained 3.16 and 5.41 Mbit/s, but its
+post-traffic ping was lost despite clean BH/WSM/buffer state. Recovery hashes
+were verified. Firmware therefore preserves retry history correctly at the
+qualified rate; Linux's near-zero station retry count originates after the WSM
+confirmation is decoded.
+
+The host cause is mac80211's aggregate-status rule: an skb retaining
+`IEEE80211_TX_CTL_AMPDU` without `IEEE80211_TX_STAT_AMPDU` has all reported rate
+counts discarded, because conventional hardware reports rate status only on an
+aggregate head. A diagnostic 6.18 driver instead cleared `TX_CTL_AMPDU` and
+immediately made feedback visible: Linux reported 3,391 retries and selected
+MCS6. It also eliminated firmware aggregates, raised flood loss to 7.4%, and
+sustained only 2.49 Mbit/s TCP. Trying to skip intervening different-rate PAS
+members did not recover aggregation: the follow-up still recorded zero
+aggregates, 6,884 Linux retries, 287 failures, MCS4, and 1.77 Mbit/s TCP. Both
+firmware runs remained ownership-clean, and the diagnostic driver plus recovery
+firmware were restored and hash-verified afterward. Both changes are rejected.
+The required fix is aggregate-level feedback: preserve `TX_CTL_AMPDU`, mark one
+confirmed member as `TX_STAT_AMPDU`, report aggregate length/ack length and rate
+attempts once, and suppress duplicate rate feedback on the other members. That
+requires explicit aggregate metadata in the currently unused WSM confirmation
+delay words before mixed-rate/TALA aggregation is enabled.
