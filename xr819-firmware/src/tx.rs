@@ -413,6 +413,12 @@ pub struct HostClass0Completion {
     pub ack_failures: u8,
 }
 
+const HOST_CLASS0_REQUEUE_STATUS: u16 = 0xfffd;
+
+pub const fn host_class0_is_requeue(completion: HostClass0Completion) -> bool {
+    completion.status == HOST_CLASS0_REQUEUE_STATUS
+}
+
 /// One service pass can retire the configured ordinary batch depth on each of
 /// four MAC pipes before the host driver starts draining copied identities.
 #[cfg(feature = "experimental-four-slot-ordinary")]
@@ -3912,6 +3918,36 @@ impl SingleProbeMacBackend {
     pub fn take_completion(&mut self) -> Option<HostClass0Completion> {
         self.completed.take()
     }
+
+    #[cfg(feature = "experimental-member-requeue")]
+    fn push_requeue(&mut self, frame_node: FrameNodeAddress) -> bool {
+        let context = frame_node.context();
+        let Some((index, publication)) = self
+            .publications
+            .iter()
+            .enumerate()
+            .find_map(|(index, publication)| {
+                publication
+                    .filter(|publication| {
+                        publication.context == context && publication.frame_node == frame_node
+                    })
+                    .map(|publication| (index, publication))
+            })
+        else {
+            return false;
+        };
+        self.publications[index] = None;
+        self.completed
+            .push(HostClass0Completion {
+                context: context.raw(),
+                frame_node: frame_node.raw(),
+                pipe: publication.pipe,
+                slot: publication.slot,
+                status: HOST_CLASS0_REQUEUE_STATUS,
+                ack_failures: 0,
+            })
+            .is_ok()
+    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -4693,8 +4729,10 @@ unsafe fn finish_depth_four_selective_actions(
     slot_raw: u32,
     plan: SelectiveAmpduRetryPlan,
     members: [u32; 4],
+    backend: &mut SingleProbeMacBackend,
 ) -> bool {
     unsafe {
+        #[cfg(not(feature = "experimental-member-requeue"))]
         if plan.retry_count != 0 {
             return false;
         }
@@ -4711,19 +4749,32 @@ unsafe fn finish_depth_four_selective_actions(
         rewrite_depth_four_member_table(read_u8(first.context().link_id_address()), &[0; 4]);
         for (index, action) in plan.actions.into_iter().enumerate() {
             let Some(action) = action else { continue };
+            if action == BlockAckMemberAction::Retry {
+                continue;
+            }
             let Some(member) = FrameNodeAddress::from_raw(members[index]) else {
                 return false;
             };
             write_u32(member.context().next_in_ampdu_address(), 0);
-            let status = if action == BlockAckMemberAction::Confirm {
-                0
+            if action == BlockAckMemberAction::Confirm {
+                enqueue_terminal_depth_four_member(member, 0);
             } else {
                 crate::host_tx_diagnostics::bump(
                     crate::host_tx_diagnostics::counter::GIVE_UP,
                 );
-                0x0b
-            };
-            enqueue_terminal_depth_four_member(member, status);
+                enqueue_terminal_depth_four_member(member, 0x0b);
+            }
+        }
+        #[cfg(feature = "experimental-member-requeue")]
+        for index in (0..plan.actions.len()).rev() {
+            if plan.actions[index] != Some(BlockAckMemberAction::Retry) {
+                continue;
+            }
+            let member = FrameNodeAddress::new(members[index]);
+            write_u32(member.context().next_in_ampdu_address(), 0);
+            if !prepare_selective_member_retry(member) || !backend.push_requeue(member) {
+                return false;
+            }
         }
         write_u8(
             crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
@@ -4877,8 +4928,13 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                                 crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_REARM,
                             )
                         };
-                        self.retry[retry_index].record_rearm();
-                        return SingleTxRetryDecision::Rearm;
+                        #[cfg(feature = "experimental-member-requeue")]
+                        return SingleTxRetryDecision::CompleteSuccess;
+                        #[cfg(not(feature = "experimental-member-requeue"))]
+                        {
+                            self.retry[retry_index].record_rearm();
+                            return SingleTxRetryDecision::Rearm;
+                        }
                     }
                     unsafe {
                         crate::host_tx_diagnostics::record_ampdu_outcome(
@@ -5107,7 +5163,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 terminal_probe_backend_fault(pipe)
             };
             self.depth_two_block_ack[retry_index] = None;
-            if !unsafe { finish_depth_four_selective_actions(slot, plan, members) } {
+            if !unsafe { finish_depth_four_selective_actions(slot, plan, members, self) } {
                 terminal_probe_backend_fault(pipe);
             }
         } else if let Some((acknowledged, missing)) =
@@ -5927,6 +5983,7 @@ pub unsafe fn take_host_class0_completion() -> Option<HostClass0Completion> {
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     runtime.backend.take_completion()
 }
+
 
 /// Compact read-only snapshot of the bounded class-0 MAC backend.
 ///

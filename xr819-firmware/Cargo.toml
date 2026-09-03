@@ -26,6 +26,9 @@ experimental-ampdu-outcome-telemetry = ["experimental-depth-four-ampdu"]
 # Bounded precursor to PAS-ring member requeue: allow deeper aggregate members
 # outside the received BA bitmap window to consume their host retry policy.
 experimental-outside-window-retry = ["experimental-depth-four-ampdu"]
+# Retires partial aggregates and returns retryable members to normal PAS
+# scheduling instead of rebuilding the original MAC slot in place.
+experimental-member-requeue = ["experimental-outside-window-retry"]
 # Coalesces ready TX confirmations and removes avoidable idle-pipe fill waits.
 experimental-fast-loop = []
 # Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains

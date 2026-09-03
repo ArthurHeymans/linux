@@ -30,7 +30,13 @@ const STATUS2_RECORD_COUNT: usize = 4;
 
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
-    feature = "experimental-ampdu-outcome-telemetry"
+    feature = "experimental-member-requeue"
+))]
+const FLIGHT_RECORD_COUNT: usize = 8;
+#[cfg(all(
+    feature = "vendor-host-tx-diagnostics",
+    feature = "experimental-ampdu-outcome-telemetry",
+    not(feature = "experimental-member-requeue")
 ))]
 const FLIGHT_RECORD_COUNT: usize = 32;
 #[cfg(all(

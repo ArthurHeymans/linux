@@ -972,3 +972,33 @@ buffers, no watchdog rearm, and no unmatched retirement. Recovery hashes were
 verified after every run. The change is therefore a qualified correctness fix,
 not yet a throughput claim: retransmission still occupies the original MAC
 slot rather than returning missing members to PAS scheduling.
+
+The feature-gated member-requeue work now retires a partial deeper aggregate,
+completes acknowledged members, advances each missing member's retained host
+retry policy, transitions it from `Scheduled` back to `PasQueued`, and returns
+it through the global PAS ring. The first append-at-tail implementation stayed
+ownership-clean but was rejected: all 46 requeued plans later gave up, adaptive
+rate fell to MCS0, and host-visible failures rose to 1,225. Moving retries to
+the ring front reduced failures to 249 but retained the same failure mode.
+A subsequent attempt to make all scheduler selection follow PAS-ring order was
+also rejected immediately: it violated `plan_ordinary_batch()`'s arena-order
+contract before any aggregate formed and caused a BH fatal timeout with eight
+confirmations outstanding. The recovery trap restored the qualified image and
+both hashes were verified.
+
+The corrected design leaves fresh-frame scheduling unchanged. Only a PAS-head
+context with a nonzero retained try count receives priority, and it is
+published alone before ordinary batching resumes. Diagnostic image
+`d24f5cba...e7cc0` completed two hardware runs cleanly. The first requeued 58
+selective plans with zero requeue give-ups, one host-visible failure, 3.13
+Mbit/s TCP, and 6.44 Mbit/s received UDP. The repeat requeued 59 plans with zero
+requeue give-ups and zero host-visible failures, sustaining 3.08 Mbit/s TCP and
+5.54 Mbit/s received UDP. Both retained MCS1, completed final ping 20/20 near
+3.8 ms average, and ended with BH alive, WSM idle, no pending TX, zero used
+buffers, no watchdog rearm, and no unmatched retirement. Recovery hashes were
+verified after each. To fit diagnostic qualification, only this feature reduces
+the optional flight recorder from 32 to eight records; outcome counters remain
+available. Member requeue is therefore qualified as a correctness and slot-
+release improvement, not a throughput improvement. Re-aggregation of retries
+with fresh members remains disabled until the planner has an explicit BA-window
+and sequence-order bound.

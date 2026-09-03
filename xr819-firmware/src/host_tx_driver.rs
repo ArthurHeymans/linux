@@ -78,6 +78,7 @@ impl HardwareOwner {
             completion.slot,
         )
     }
+
 }
 
 enum ConfirmationOwner {
@@ -200,6 +201,13 @@ impl HostTxDriver {
         if !owners.is_empty() {
             let mut completion = unsafe { tx::service_host_class0_runtime(events, 32) };
             while let Some(completed) = completion {
+                #[cfg(feature = "experimental-member-requeue")]
+                if tx::host_class0_is_requeue(completed) {
+                    self.route_hardware_requeue(completed, mac_domain);
+                } else {
+                    self.route_hardware_completion(completed);
+                }
+                #[cfg(not(feature = "experimental-member-requeue"))]
                 self.route_hardware_completion(completed);
                 completion = unsafe { tx::take_host_class0_completion() };
             }
@@ -366,6 +374,41 @@ impl HostTxDriver {
         ));
     }
 
+    #[cfg(feature = "experimental-member-requeue")]
+    fn route_hardware_requeue(
+        &mut self,
+        requeue: tx::HostClass0Completion,
+        mac_domain: &mut crate::mac_domain::MacDomain,
+    ) {
+        let Some(context) = crate::dtcm::host_context_from_raw(requeue.context) else {
+            crate::halt_always!();
+        };
+        let index = context.index();
+        if !matches!(
+            self.states[index],
+            Some(HostTxState::Owned {
+                ref retained,
+                hardware: Some(hardware),
+                ..
+            }) if retained.phase() == vendor_host_tx::HostTxPhase::Scheduled
+                && hardware.matches(retained.context().raw(), requeue)
+        ) {
+            crate::halt_always!();
+        }
+        let Some(HostTxState::Owned { mut retained, .. }) = self.states[index].take() else {
+            crate::halt_always!();
+        };
+        let mut guard = mac_domain.enter();
+        if unsafe { vendor_host_tx::requeue_scheduled_retry(&mut guard, &mut retained) }.is_err() {
+            crate::halt_always!();
+        }
+        self.states[index] = Some(HostTxState::Owned {
+            retained,
+            wait_diagnostic: 0,
+            hardware: None,
+        });
+    }
+
     #[cfg(all(
         target_arch = "arm",
         feature = "experimental-four-slot-ordinary",
@@ -435,6 +478,7 @@ impl HostTxDriver {
         let mut candidate_pipes = [None; HOST_CONTEXT_COUNT];
         let mut first_index = None;
         let mut ready_count = 0;
+        let mut requeue_priority = false;
         for (index, state) in self.states.iter().enumerate() {
             let Some(HostTxState::Owned {
                 retained,
@@ -459,6 +503,26 @@ impl HostTxDriver {
                 first_index = Some(index);
             }
             ready_count += 1;
+        }
+        #[cfg(feature = "experimental-member-requeue")]
+        if let Some(index) = unsafe { vendor_host_tx::first_live_pas_frame() }.and_then(|frame_node| {
+            self.states.iter().position(|state| {
+                matches!(
+                    state,
+                    Some(HostTxState::Owned {
+                        retained,
+                        hardware: None,
+                        ..
+                    }) if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
+                        && retained.context().frame_node().raw() == frame_node
+                        && candidate_pipes[retained.context().index()].is_some()
+                        && unsafe { vendor_host_tx::retry_attempted(retained) }
+                )
+            })
+        }) {
+            candidate_pipes[..index].fill(None);
+            first_index = Some(index);
+            requeue_priority = true;
         }
         if !cfg!(feature = "experimental-fast-loop")
             && ready_count != 0
@@ -607,7 +671,9 @@ impl HostTxDriver {
         } else {
             plan.len().min(2)
         };
-        let target_len = if cfg!(feature = "experimental-depth-two-ampdu") && aggregate_len >= 2 {
+        let target_len = if requeue_priority {
+            1
+        } else if cfg!(feature = "experimental-depth-two-ampdu") && aggregate_len >= 2 {
             aggregate_len
         } else {
             ordinary_len

@@ -65,6 +65,7 @@ pub const fn valid_phase_transition(current: HostTxPhase, next: HostTxPhase) -> 
             | (HostTxPhase::PasQueued, HostTxPhase::SchedulerReserved)
             | (HostTxPhase::SchedulerReserved, HostTxPhase::PasQueued)
             | (HostTxPhase::SchedulerReserved, HostTxPhase::Scheduled)
+            | (HostTxPhase::Scheduled, HostTxPhase::PasQueued)
             | (HostTxPhase::Scheduled, HostTxPhase::Completing)
     )
 }
@@ -678,6 +679,97 @@ unsafe fn push_live_pas(
         );
         write_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32, u32::from(next));
     }
+    Ok(())
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn push_live_pas_front(
+    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    context: HostContextAddress,
+) -> Result<(), PendingServiceError> {
+    let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
+    let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
+    let new_head = head.wrapping_sub(1) & 0x3f;
+    if new_head == tail {
+        return Err(PendingServiceError::PasRingFull);
+    }
+    unsafe {
+        write_live_u32(
+            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(new_head)).get() as u32,
+            context.pas().raw(),
+        );
+        write_live_u32(
+            crate::dtcm::HOST_PAS_RING_HEAD.get() as u32,
+            u32::from(new_head),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "arm")]
+pub unsafe fn retry_attempted(retained: &RetainedHostTx) -> bool {
+    unsafe { read_host_u16(retained.context.try_count()) != 0 }
+}
+
+/// First non-empty PAS frame in scheduler order.
+///
+/// # Safety
+/// The caller must serialize access to the live PAS ring.
+#[cfg(target_arch = "arm")]
+pub unsafe fn first_live_pas_frame() -> Option<u32> {
+    let mut head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
+    let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
+    while head != tail {
+        let frame = unsafe {
+            read_live_u32(
+                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get() as u32,
+            )
+        };
+        if frame != 0 {
+            return Some(frame);
+        }
+        head = head.wrapping_add(1) & 0x3f;
+    }
+    None
+}
+
+pub(crate) const fn requeued_retry_control_bits(bits: u32) -> u32 {
+    (bits | 0x10) & !((1 << 28) | (1 << 27) | (1 << 26) | (1 << 5))
+}
+
+/// Return a retryable hardware-owned context to the normal PAS scheduler.
+///
+/// # Safety
+/// The aggregate slot must already be retired, and `retained` must be its
+/// unique scheduled host owner. The MAC-domain guard serializes ring mutation.
+#[cfg(target_arch = "arm")]
+pub unsafe fn requeue_scheduled_retry(
+    guard: &mut crate::mac_domain::MacDomainGuard<'_>,
+    retained: &mut RetainedHostTx,
+) -> Result<(), PendingServiceError> {
+    if retained.phase != HostTxPhase::Scheduled {
+        return Err(PendingServiceError::WrongPhase);
+    }
+    let context = retained.context;
+    unsafe { push_live_pas_front(guard, context)? };
+    unsafe {
+        write_host_u32(
+            context.control_bits(),
+            requeued_retry_control_bits(read_host_u32(context.control_bits())),
+        );
+        write_host_u16(
+            context.frame_control(),
+            read_host_u16(context.frame_control()) | 0x0800,
+        );
+        write_host_u32(
+            context.ownership_bits(),
+            read_host_u32(context.ownership_bits()) & !0x100,
+        );
+        write_host_u32(context.next_in_ampdu(), 0);
+        let scheduler_events = crate::dtcm::scheduler_pending_events().get() as u32;
+        write_live_u32(scheduler_events, read_live_u32(scheduler_events) | 0x0020_0000);
+    }
+    retained.phase = HostTxPhase::PasQueued;
     Ok(())
 }
 
@@ -2697,6 +2789,10 @@ mod tests {
             HostTxPhase::SchedulerReserved,
             HostTxPhase::Scheduled
         ));
+        assert!(valid_phase_transition(
+            HostTxPhase::Scheduled,
+            HostTxPhase::PasQueued
+        ));
         assert!(!valid_phase_transition(
             HostTxPhase::Submitted,
             HostTxPhase::Scheduled
@@ -2873,6 +2969,14 @@ mod tests {
                 ..ready
             }),
             NonAggregateSchedulerDecision::Complete(10)
+        );
+    }
+
+    #[test]
+    fn requeued_retry_clears_scheduler_ownership_bits() {
+        assert_eq!(
+            requeued_retry_control_bits(0x1c08_0030),
+            0x0008_0010
         );
     }
 
