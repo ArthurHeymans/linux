@@ -1052,6 +1052,71 @@ firmware runs remained ownership-clean, and the diagnostic driver plus recovery
 firmware were restored and hash-verified afterward. Both changes are rejected.
 The required fix is aggregate-level feedback: preserve `TX_CTL_AMPDU`, mark one
 confirmed member as `TX_STAT_AMPDU`, report aggregate length/ack length and rate
-attempts once, and suppress duplicate rate feedback on the other members. That
-requires explicit aggregate metadata in the currently unused WSM confirmation
-delay words before mixed-rate/TALA aggregation is enabled.
+attempts once, and suppress duplicate rate feedback on the other members. The
+experimental wire format uses spare WSM TX-status flag bits without changing
+the confirmation size: bit 7 marks open-firmware metadata, bit 8 marks the one
+aggregate head, bits 9--11 encode depth minus one, and bits 12--15 encode the
+acknowledged member count.
+
+The exact source behind qualified recovery module `758a28dc...decddff` was
+subsequently recovered from its DWARF build path at
+`/home/arthur/src/linux-xr819-exact-abi`; the tree's existing module is
+bit-identical. The zero-aggregate rebuild regression reduced to one functional
+difference: the qualified driver lets outgoing BlockAck action frames reach
+mac80211 and the radio, while the rejected rebuild dropped them in
+`cw1200_tx_h_action()`. Restoring the qualified `return 0` behavior and applying
+only the metadata parser produced 15,339 aggregate-member confirmations from
+24,455 TX frames, 3.70 Mbit/s TCP, 7.13 Mbit/s received UDP, 307 Linux-visible
+retries, one failure, MCS2, and final ping 20/20 at 2.87 ms average. BH, WSM,
+and buffer state were clean.
+
+A diagnostic repeat explicitly counted 16,250 aggregate-member confirmations:
+5,502 carried metadata and every one was marked as the aggregate head; the
+remaining 10,748 members carried no metadata. This is exactly one rate report
+per physical aggregate, with mean observed depth 2.95 and no duplicate metadata
+on member confirmations. The run sustained 4.48 Mbit/s TCP and 7.87 Mbit/s
+received UDP, exposed 298 retries and eight failures, and reached MCS6. Its
+2.38% flood loss and one lost final ping make the throughput result diagnostic,
+not a new performance qualification, but firmware ownership remained clean.
+Two immediate attempts to extend the diagnostic with `TX_CTL_AMPDU`, aggregate-
+length, and acknowledged-length sums could not associate with the pinned AP and
+were classified as environmental rather than firmware failures. The successful
+repeat then counted 5,184 metadata heads and 11,430 non-head members. Every head
+still carried `TX_CTL_AMPDU`; summed reported depth was 16,614, exactly matching
+the driver's 16,614 aggregate-member confirmations, and summed acknowledged
+length was also 16,614. No acknowledged count exceeded its depth. The run
+sustained 3.70 Mbit/s TCP and 8.02 Mbit/s received UDP, exposed 706 retries and
+nine failures, reached MCS4 at -77 dBm, and completed final ping 20/20 at 3.68
+ms average. BH, WSM, queue, and buffer state were clean. This proves that
+mac80211 accepts one correctly bounded aggregate report per physical A-MPDU and
+that member confirmations do not duplicate rate feedback. Recovery hashes were
+verified after every completed experiment. Aggregate-only fields are now
+compiled out when the feature is disabled, restoring the default/DTCM image
+budget; the full `tools/check.sh` gate passes. Aggregate feedback remains
+feature-gated pending repeated performance qualification and evaluation with
+shared aggregate-rate selection.
+
+Dynamic-IQ calibration was subsequently isolated as the MCS5--7 decodability
+boundary. The digital DFT, dispatcher controls, and stage-6/stage-12 refinement
+were matched against the vendor binary, but open-firmware captures initially
+contained an almost flat ADC vector. A private debug MIB trace found that mode
+12 read zero from the vendor COPY-data RF-mode table at `0x04000dd0`, because
+the Rust reset path deliberately clears that DTCM region. This programmed
+`0x0abb801c = 0x000000c0` instead of the vendor-derived `0x000070c0` and
+suppressed the calibration tone. Mode 12 now embeds the recovered table value
+`0x001c` directly; reconstructing the complete unused table exceeded the ITCM
+envelope and was rejected.
+
+The corrected trace programmed `0x000070c0`; retained ADC peak-to-peak amplitude
+rose from 110 to 812,660, versus 916,034 under vendor firmware, and the dominant
+step-8 DFT magnitude rose from roughly 52 to 13.32 million, versus 14.91 million.
+Dynamic calibration independently produced correction banks `0x0ef80fdb` and
+`0x0fe60003`; the second matches vendor exactly, while the first differs mainly
+in its second coefficient from vendor `0x0ec80fdc`. Without either board-local
+fixed-IQ override, fixed MCS5 delivered 4.11 Mbit/s TCP and 12.7 Mbit/s UDP at
+3.1% loss, MCS6 delivered 2.11 and 12.4 Mbit/s at 7.6% loss, and MCS7 delivered
+0.963 and 6.61 Mbit/s at 34% loss. All runs retained valid aggregate accounting
+and clean BH/WSM ownership. An unrestricted adaptive run selected MCS6 but
+managed only 1.82 Mbit/s TCP and 6.66 Mbit/s UDP at 31% loss, confirming that
+higher-rate service cadence and rate selection remain distinct from the now
+repaired fundamental decodability failure.

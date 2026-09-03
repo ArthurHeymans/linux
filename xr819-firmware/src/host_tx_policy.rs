@@ -283,7 +283,7 @@ const fn ampdu_candidate_matches(
         && candidate.interface == head.interface
         && candidate.link == head.link
         && candidate.tid == head.tid
-        && candidate.rate == head.rate
+        && (cfg!(feature = "experimental-shared-ampdu-rate") || candidate.rate == head.rate)
 }
 
 /// Plan the first bounded slice of one vendor A-MPDU chain.
@@ -495,8 +495,12 @@ mod tests {
         assert_eq!(
             plan_ampdu_group(&candidates, 1, 1, 0),
             Some(AmpduGroupPlan {
-                len: 2,
-                total_airtime: 400,
+                len: if cfg!(feature = "experimental-shared-ampdu-rate") { 4 } else { 2 },
+                total_airtime: if cfg!(feature = "experimental-shared-ampdu-rate") {
+                    800
+                } else {
+                    400
+                },
             })
         );
         assert_eq!(plan_ampdu_group(&candidates, 0, 1, 0), None);

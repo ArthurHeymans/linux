@@ -54,6 +54,10 @@ struct HardwareOwner {
     pipe: u8,
     slot: u8,
     frame_node: u32,
+    #[cfg(feature = "experimental-aggregate-rate-feedback")]
+    aggregate_head: u32,
+    #[cfg(feature = "experimental-aggregate-rate-feedback")]
+    aggregate_len: u8,
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-four-slot-ordinary"))]
@@ -66,6 +70,50 @@ struct ReservedBatchMember {
 }
 
 impl HardwareOwner {
+    const fn single(pipe: u8, slot: u8, frame_node: u32) -> Self {
+        Self {
+            pipe,
+            slot,
+            frame_node,
+            #[cfg(feature = "experimental-aggregate-rate-feedback")]
+            aggregate_head: frame_node,
+            #[cfg(feature = "experimental-aggregate-rate-feedback")]
+            aggregate_len: 1,
+        }
+    }
+
+    #[cfg(feature = "experimental-aggregate-rate-feedback")]
+    const fn aggregate(
+        pipe: u8,
+        slot: u8,
+        frame_node: u32,
+        aggregate_head: u32,
+        aggregate_len: u8,
+    ) -> Self {
+        Self {
+            pipe,
+            slot,
+            frame_node,
+            aggregate_head,
+            aggregate_len,
+        }
+    }
+
+    #[cfg(not(feature = "experimental-aggregate-rate-feedback"))]
+    const fn aggregate(
+        pipe: u8,
+        slot: u8,
+        frame_node: u32,
+        _aggregate_head: u32,
+        _aggregate_len: u8,
+    ) -> Self {
+        Self {
+            pipe,
+            slot,
+            frame_node,
+        }
+    }
+
     const fn matches(self, owner_context: u32, completion: tx::HostClass0Completion) -> bool {
         host_tx_policy::completion_matches_owner(
             owner_context,
@@ -95,6 +143,10 @@ pub struct HostTxConfirmation {
     pub ack_failures: u8,
     pub flags: u16,
     pub rate_try: [u32; 3],
+    #[cfg(feature = "experimental-aggregate-rate-feedback")]
+    aggregate_head: u32,
+    #[cfg(feature = "experimental-aggregate-rate-feedback")]
+    aggregate_len: u8,
 }
 
 impl HostTxDriver {
@@ -348,7 +400,12 @@ impl HostTxDriver {
             }
             return;
         };
-        let Some(HostTxState::Owned { mut retained, .. }) = self.states[index].take() else {
+        let Some(HostTxState::Owned {
+            mut retained,
+            hardware: Some(hardware),
+            ..
+        }) = self.states[index].take()
+        else {
             return;
         };
         unsafe {
@@ -370,6 +427,7 @@ impl HostTxDriver {
             retained,
             tx::wsm_status_from_internal(completion.status),
             completion.ack_failures,
+            Some(hardware),
             completion_order,
         ));
     }
@@ -434,6 +492,9 @@ impl HostTxDriver {
             vendor_host_tx::publish_planned_ampdu(retained, reservations, member_count)
         } {
             Ok((aggregate_pipe, aggregate_slot)) => {
+                let Some(aggregate_head) = members[0].as_ref().map(|member| member.frame_node) else {
+                    crate::halt_always!();
+                };
                 for position in 0..member_count {
                     let Some(member) = members[position].take() else {
                         crate::halt_always!();
@@ -441,11 +502,13 @@ impl HostTxDriver {
                     self.states[member.index] = Some(HostTxState::Owned {
                         retained: member.retained,
                         wait_diagnostic: 3,
-                        hardware: Some(HardwareOwner {
-                            pipe: aggregate_pipe,
-                            slot: aggregate_slot,
-                            frame_node: member.frame_node,
-                        }),
+                        hardware: Some(HardwareOwner::aggregate(
+                            aggregate_pipe,
+                            aggregate_slot,
+                            member.frame_node,
+                            aggregate_head,
+                            member_count as u8,
+                        )),
                     });
                 }
             }
@@ -564,6 +627,7 @@ impl HostTxDriver {
                         first,
                         tx::wsm_status_from_internal(10),
                         0,
+                        None,
                         completion_order,
                     ));
                 } else {
@@ -635,10 +699,24 @@ impl HostTxDriver {
                 *candidate = Some(unsafe { vendor_host_tx::ampdu_plan_candidate(retained) });
             }
             let (tx_ba_tids, _) = crate::configuration::block_ack_policy();
+            let operational_tx_ba_tids = crate::configuration::operational_tx_ba_tids();
+            #[cfg(feature = "experimental-aggregate-grouping-telemetry")]
+            unsafe {
+                host_tx_diagnostics::record_ampdu_outcome(
+                    host_tx_diagnostics::ampdu_outcome::GROUPING_HEAD,
+                );
+                if first_ampdu.key.tid < 8
+                    && operational_tx_ba_tids & (1 << first_ampdu.key.tid) != 0
+                {
+                    host_tx_diagnostics::record_ampdu_outcome(
+                        host_tx_diagnostics::ampdu_outcome::GROUPING_SESSION,
+                    );
+                }
+            }
             host_tx_policy::plan_ampdu_group(
                 &candidates,
                 tx_ba_tids,
-                crate::configuration::operational_tx_ba_tids(),
+                operational_tx_ba_tids,
                 0,
             )
             .map_or(1, host_tx_policy::AmpduGroupPlan::len)
@@ -647,6 +725,12 @@ impl HostTxDriver {
         let aggregate_len = if aggregate_pair { 2 } else { 1 };
         if aggregate_len >= 2 {
             unsafe {
+                #[cfg(feature = "experimental-aggregate-grouping-telemetry")]
+                host_tx_diagnostics::record_ampdu_outcome(if aggregate_len == 2 {
+                    host_tx_diagnostics::ampdu_outcome::GROUPING_DEPTH_TWO
+                } else {
+                    host_tx_diagnostics::ampdu_outcome::GROUPING_DEEP
+                });
                 host_tx_diagnostics::record_ampdu_candidate(
                     first_ampdu.key.tid,
                     first_ampdu.key.rate,
@@ -733,11 +817,7 @@ impl HostTxDriver {
             match unsafe { reservation.publish(&mut guard, &mut retained) } {
                 Ok(()) => {
                     self.states[index] = Some(HostTxState::Owned {
-                        hardware: Some(HardwareOwner {
-                            pipe,
-                            slot: first_slot,
-                            frame_node,
-                        }),
+                        hardware: Some(HardwareOwner::single(pipe, first_slot, frame_node)),
                         retained,
                         wait_diagnostic: 3,
                     });
@@ -788,20 +868,24 @@ impl HostTxDriver {
                     self.states[first_index] = Some(HostTxState::Owned {
                         retained: first,
                         wait_diagnostic: 3,
-                        hardware: Some(HardwareOwner {
-                            pipe: aggregate_pipe,
-                            slot: aggregate_slot,
-                            frame_node: first_frame_node,
-                        }),
+                        hardware: Some(HardwareOwner::aggregate(
+                            aggregate_pipe,
+                            aggregate_slot,
+                            first_frame_node,
+                            first_frame_node,
+                            2,
+                        )),
                     });
                     self.states[second_index] = Some(HostTxState::Owned {
                         retained: second,
                         wait_diagnostic: 3,
-                        hardware: Some(HardwareOwner {
-                            pipe: aggregate_pipe,
-                            slot: aggregate_slot,
-                            frame_node: second_frame_node,
-                        }),
+                        hardware: Some(HardwareOwner::aggregate(
+                            aggregate_pipe,
+                            aggregate_slot,
+                            second_frame_node,
+                            first_frame_node,
+                            2,
+                        )),
                     });
                     return;
                 }
@@ -885,11 +969,7 @@ impl HostTxDriver {
             self.states[member.index] = Some(HostTxState::Owned {
                 retained: member.retained,
                 wait_diagnostic: 3,
-                hardware: Some(HardwareOwner {
-                    pipe,
-                    slot: member.slot,
-                    frame_node: member.frame_node,
-                }),
+                hardware: Some(HardwareOwner::single(pipe, member.slot, member.frame_node)),
             });
         }
     }
@@ -971,6 +1051,7 @@ impl HostTxDriver {
                         first,
                         tx::wsm_status_from_internal(10),
                         0,
+                        None,
                         completion_order,
                     ));
                 } else {
@@ -1006,11 +1087,11 @@ impl HostTxDriver {
             match unsafe { first_reservation.publish(&mut guard, &mut first) } {
                 Ok(()) => {
                     self.states[first_index] = Some(HostTxState::Owned {
-                        hardware: Some(HardwareOwner {
+                        hardware: Some(HardwareOwner::single(
                             pipe,
-                            slot: first_slot,
-                            frame_node: first.context().frame_node().raw(),
-                        }),
+                            first_slot,
+                            first.context().frame_node().raw(),
+                        )),
                         retained: first,
                         wait_diagnostic: 3,
                     });
@@ -1069,11 +1150,11 @@ impl HostTxDriver {
                 match unsafe { first_reservation.publish(&mut guard, &mut first) } {
                     Ok(()) => {
                         self.states[first_index] = Some(HostTxState::Owned {
-                            hardware: Some(HardwareOwner {
+                            hardware: Some(HardwareOwner::single(
                                 pipe,
-                                slot: first_slot,
-                                frame_node: first.context().frame_node().raw(),
-                            }),
+                                first_slot,
+                                first.context().frame_node().raw(),
+                            )),
                             retained: first,
                             wait_diagnostic: 3,
                         });
@@ -1107,20 +1188,24 @@ impl HostTxDriver {
                     self.states[first_index] = Some(HostTxState::Owned {
                         retained: first,
                         wait_diagnostic: 3,
-                        hardware: Some(HardwareOwner {
-                            pipe: aggregate_pipe,
-                            slot: aggregate_slot,
-                            frame_node: first_frame_node,
-                        }),
+                        hardware: Some(HardwareOwner::aggregate(
+                            aggregate_pipe,
+                            aggregate_slot,
+                            first_frame_node,
+                            first_frame_node,
+                            2,
+                        )),
                     });
                     self.states[second_index] = Some(HostTxState::Owned {
                         retained: second,
                         wait_diagnostic: 3,
-                        hardware: Some(HardwareOwner {
-                            pipe: aggregate_pipe,
-                            slot: aggregate_slot,
-                            frame_node: second_frame_node,
-                        }),
+                        hardware: Some(HardwareOwner::aggregate(
+                            aggregate_pipe,
+                            aggregate_slot,
+                            second_frame_node,
+                            first_frame_node,
+                            2,
+                        )),
                     });
                     return;
                 }
@@ -1162,20 +1247,12 @@ impl HostTxDriver {
             self.states[first_index] = Some(HostTxState::Owned {
                 retained: first,
                 wait_diagnostic: 3,
-                hardware: Some(HardwareOwner {
-                    pipe,
-                    slot: first_slot,
-                    frame_node: first_frame_node,
-                }),
+                hardware: Some(HardwareOwner::single(pipe, first_slot, first_frame_node)),
             });
             self.states[second_index] = Some(HostTxState::Owned {
                 retained: second,
                 wait_diagnostic: 3,
-                hardware: Some(HardwareOwner {
-                    pipe,
-                    slot: second_slot,
-                    frame_node: second_frame_node,
-                }),
+                hardware: Some(HardwareOwner::single(pipe, second_slot, second_frame_node)),
             });
             return;
         };
@@ -1229,11 +1306,7 @@ impl HostTxDriver {
                                 slot,
                             );
                         }
-                        let hardware = HardwareOwner {
-                            pipe,
-                            slot,
-                            frame_node: retained.context().frame_node().raw(),
-                        };
+                        let hardware = HardwareOwner::single(pipe, slot, retained.context().frame_node().raw());
                         HostTxState::Owned {
                             retained,
                             wait_diagnostic: 3,
@@ -1283,6 +1356,7 @@ impl HostTxDriver {
                                 retained,
                                 tx::wsm_status_from_internal(status),
                                 0,
+                                None,
                                 completion_order,
                             ));
                             return None;
@@ -1355,11 +1429,7 @@ impl HostTxDriver {
                                             slot,
                                         );
                                     }
-                                    hardware = Some(HardwareOwner {
-                                        pipe,
-                                        slot,
-                                        frame_node: retained.context().frame_node().raw(),
-                                    });
+                                    hardware = Some(HardwareOwner::single(pipe, slot, retained.context().frame_node().raw()));
                                     self.states[index] = Some(HostTxState::Owned {
                                         retained,
                                         wait_diagnostic: 3,
@@ -1398,6 +1468,7 @@ impl HostTxDriver {
                                     retained,
                                     tx::wsm_status_from_internal(10),
                                     0,
+                                    None,
                                     completion_order,
                                 ));
                                 return event;
@@ -1437,11 +1508,14 @@ impl HostTxDriver {
         retained: vendor_host_tx::RetainedHostTx,
         status: u32,
         ack_failures: u8,
+        hardware: Option<HardwareOwner>,
         completion_order: u32,
     ) -> HostTxState {
         let context = retained.context();
         let fields = unsafe { vendor_host_tx::confirmation_fields(context) };
         let tx_rate = fields.tx_rate;
+        let hardware = hardware
+            .unwrap_or_else(|| HardwareOwner::single(0, 0, retained.context().frame_node().raw()));
         unsafe {
             host_tx_diagnostics::capture_retry_feedback(context, status, tx_rate, ack_failures);
             host_tx_diagnostics::record_rate_feedback(ack_failures, fields.rate_try);
@@ -1462,6 +1536,10 @@ impl HostTxDriver {
                         reported
                     }
                 },
+                #[cfg(feature = "experimental-aggregate-rate-feedback")]
+                aggregate_head: hardware.aggregate_head,
+                #[cfg(feature = "experimental-aggregate-rate-feedback")]
+                aggregate_len: hardware.aggregate_len,
             },
             owner: ConfirmationOwner::Retained(retained),
             completion_order,
@@ -1487,10 +1565,41 @@ impl HostTxDriver {
     /// no ordering meaning and may wrap independently.
     pub fn confirmation(&self) -> Option<HostTxConfirmation> {
         let index = self.confirmation_index()?;
-        match self.states[index] {
-            Some(HostTxState::Confirming { confirmation, .. }) => Some(confirmation),
-            _ => None,
+        let Some(HostTxState::Confirming {
+            mut confirmation, ..
+        }) = self.states[index]
+        else {
+            return None;
+        };
+        #[cfg(feature = "experimental-aggregate-rate-feedback")]
+        {
+            const AGGREGATE_METADATA: u16 = 1 << 7;
+            const AGGREGATE_HEAD: u16 = 1 << 8;
+            if confirmation.aggregate_len == 1 {
+                return Some(confirmation);
+            }
+            confirmation.flags |= AGGREGATE_METADATA;
+            let mut acknowledged = 0_u8;
+            for state in &self.states {
+                let Some(HostTxState::Confirming {
+                    confirmation: member,
+                    ..
+                }) = state
+                else {
+                    continue;
+                };
+                if member.aggregate_head != confirmation.aggregate_head {
+                    continue;
+                }
+                if member.status == 0 {
+                    acknowledged = acknowledged.saturating_add(1);
+                }
+            }
+            confirmation.flags |= AGGREGATE_HEAD
+                | (u16::from(confirmation.aggregate_len.saturating_sub(1) & 0x7) << 9)
+                | (u16::from(acknowledged.min(0xf)) << 12);
         }
+        Some(confirmation)
     }
 
     pub fn confirmation_count(&self, limit: usize) -> usize {
@@ -1509,9 +1618,25 @@ impl HostTxDriver {
     /// Completion accounting must already have removed hardware ownership.
     pub unsafe fn finish_confirmation(&mut self) -> Option<hif::RequestReleaseToken> {
         let index = self.confirmation_index()?;
+        #[cfg(feature = "experimental-aggregate-rate-feedback")]
+        let reported_group = match self.states[index] {
+            Some(HostTxState::Confirming { confirmation, .. })
+                if confirmation.aggregate_len >= 2 => Some(confirmation.aggregate_head),
+            _ => None,
+        };
         let HostTxState::Confirming { owner, .. } = self.states[index].take()? else {
             return None;
         };
+        #[cfg(feature = "experimental-aggregate-rate-feedback")]
+        if let Some(aggregate_head) = reported_group {
+            for state in &mut self.states {
+                if let Some(HostTxState::Confirming { confirmation, .. }) = state
+                    && confirmation.aggregate_head == aggregate_head
+                {
+                    confirmation.aggregate_len = 1;
+                }
+            }
+        }
         unsafe { host_tx_diagnostics::bump(host_tx_diagnostics::counter::CONFIRMED) };
         Some(match owner {
             ConfirmationOwner::Retained(retained) => unsafe { retained.finish() },
@@ -1578,6 +1703,10 @@ impl HostTxDriver {
                 ack_failures: 0,
                 flags: 0,
                 rate_try,
+                #[cfg(feature = "experimental-aggregate-rate-feedback")]
+                aggregate_head: context.frame_node().raw(),
+                #[cfg(feature = "experimental-aggregate-rate-feedback")]
+                aggregate_len: 1,
             },
             completion_order,
         }

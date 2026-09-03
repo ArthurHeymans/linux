@@ -38,13 +38,19 @@ const STATUS2_RECORD_COUNT: usize = 4;
 
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
-    feature = "experimental-rate-feedback-telemetry"
+    any(
+        feature = "experimental-rate-feedback-telemetry",
+        feature = "experimental-aggregate-rate-feedback"
+    )
 ))]
 const FLIGHT_RECORD_COUNT: usize = 1;
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
     feature = "experimental-member-requeue",
-    not(feature = "experimental-rate-feedback-telemetry")
+    not(any(
+        feature = "experimental-rate-feedback-telemetry",
+        feature = "experimental-aggregate-rate-feedback"
+    ))
 ))]
 const FLIGHT_RECORD_COUNT: usize = 4;
 #[cfg(all(
@@ -267,9 +273,13 @@ static AMPDU_DEPTH_TELEMETRY: SharedAmpduDepthTelemetry =
 
 pub mod ampdu_outcome {
     pub const BA_ALL_ACK_RX: usize = 0;
+    pub const GROUPING_HEAD: usize = BA_ALL_ACK_RX;
     pub const BA_PARTIAL_RX: usize = 1;
+    pub const GROUPING_SESSION: usize = BA_PARTIAL_RX;
     pub const DEEP_PLAN_REARM: usize = 2;
+    pub const GROUPING_DEPTH_TWO: usize = DEEP_PLAN_REARM;
     pub const DEEP_PLAN_EMPTY: usize = 3;
+    pub const GROUPING_DEEP: usize = DEEP_PLAN_EMPTY;
     pub const DEEP_PLAN_INVALID: usize = 4;
     pub const DEEP_WHOLE_REARM: usize = 5;
     pub const DEEP_PLAN_NO_SESSION: usize = 6;

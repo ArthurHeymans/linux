@@ -90,7 +90,7 @@ pub(crate) struct AmpduCandidate {
     pub(crate) frame_control: u16,
 }
 
-/// Restrict the first aggregate slice to same-interface/link/TID/rate QoS data.
+/// Restrict the first aggregate slice to compatible same-interface/link/TID QoS data.
 pub(crate) fn can_form_ampdu_pair(first: AmpduCandidate, second: AmpduCandidate) -> bool {
     let first_qos_data = first.frame_control & 0x008c == 0x0088;
     let second_qos_data = second.frame_control & 0x008c == 0x0088;
@@ -104,7 +104,11 @@ pub(crate) fn can_form_ampdu_pair(first: AmpduCandidate, second: AmpduCandidate)
         && tid_enabled
         && first.key.link < 8
         && first.key.rate >= 14
-        && first.key == second.key
+        && first.key.interface == second.key.interface
+        && first.key.link == second.key.link
+        && first.key.tid == second.key.tid
+        && (cfg!(feature = "experimental-shared-ampdu-rate")
+            || first.key.rate == second.key.rate)
 }
 
 /// One borrowed HIF request and its class-0 context identity. The release
@@ -1380,16 +1384,19 @@ pub unsafe fn publish_planned_ampdu(
 
     let mut contexts = [0_u32; 4];
     let mut original_next = [0_u32; 4];
+    let mut original_rates = [0_u8; 4];
     unsafe { write_live_u32(descriptor_head, descriptor_next) };
     for position in 0..member_count {
         let member = unsafe { &mut *retained[position] };
         let reservation = unsafe { &*reservations[position] };
         contexts[position] = member.context.raw();
         original_next[position] = unsafe { read_host_u32(member.context.next_in_ampdu()) };
+        original_rates[position] = unsafe { read_host_u8(member.context.tx_rate()) };
         if position != 0 {
             unsafe { reservation.restore_slot_image() };
         }
         unsafe {
+            write_host_u8(member.context.tx_rate(), head_candidate.key.rate);
             write_host_u32(
                 member.context.control_bits(),
                 (reservation.original_control_bits & !0x8000)
@@ -1413,6 +1420,7 @@ pub unsafe fn publish_planned_ampdu(
             write_live_u8(link_state, original_link_state);
             for position in 0..member_count {
                 write_host_u32((&*retained[position]).context.next_in_ampdu(), original_next[position]);
+                write_host_u8((&*retained[position]).context.tx_rate(), original_rates[position]);
             }
             write_live_u32(descriptor_node, read_live_u32(descriptor_head));
             write_live_u32(descriptor_head, descriptor_node);
@@ -1531,12 +1539,16 @@ pub unsafe fn publish_depth_two_ampdu(
     }
     let first_next = unsafe { read_host_u32(first.context.next_in_ampdu()) };
     let second_next = unsafe { read_host_u32(second.context.next_in_ampdu()) };
+    let first_rate = unsafe { read_host_u8(first.context.tx_rate()) };
+    let second_rate = unsafe { read_host_u8(second.context.tx_rate()) };
     unsafe {
         write_live_u32(descriptor_head, descriptor_next);
         second_reservation.restore_slot_image();
         // Aggregate construction uses PAS flags 0x20 on every member and
         // marks only the head with 0x40. Ordinary scheduler batch bits 26/27
         // are a different descriptor mode and must not survive the fold.
+        write_host_u8(first.context.tx_rate(), first_candidate.key.rate);
+        write_host_u8(second.context.tx_rate(), first_candidate.key.rate);
         write_host_u32(
             first.context.control_bits(),
             (first_reservation.original_control_bits & !0x8000) | 0x60,
@@ -1563,6 +1575,8 @@ pub unsafe fn publish_depth_two_ampdu(
             write_live_u8(link_state, original_link_state);
             write_host_u32(first.context.next_in_ampdu(), first_next);
             write_host_u32(second.context.next_in_ampdu(), second_next);
+            write_host_u8(first.context.tx_rate(), first_rate);
+            write_host_u8(second.context.tx_rate(), second_rate);
             write_live_u32(descriptor_node, read_live_u32(descriptor_head));
             write_live_u32(descriptor_head, descriptor_node);
         }
@@ -3000,13 +3014,16 @@ mod tests {
             first,
             AmpduCandidate { frame_control: 0x0008, ..first },
         ));
-        assert!(!can_form_ampdu_pair(
-            first,
-            AmpduCandidate {
-                key: AmpduGroupingKey { rate: 18, ..first.key },
-                ..first
-            },
-        ));
+        assert_eq!(
+            can_form_ampdu_pair(
+                first,
+                AmpduCandidate {
+                    key: AmpduGroupingKey { rate: 18, ..first.key },
+                    ..first
+                },
+            ),
+            cfg!(feature = "experimental-shared-ampdu-rate")
+        );
         assert!(!can_form_ampdu_pair(
             first,
             AmpduCandidate {

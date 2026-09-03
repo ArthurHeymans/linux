@@ -616,13 +616,8 @@ static int
 cw1200_tx_h_action(struct cw1200_common *priv,
 		   struct cw1200_txinfo *t)
 {
-	struct ieee80211_mgmt *mgmt =
-		(struct ieee80211_mgmt *)t->hdr;
-	if (ieee80211_is_action(t->hdr->frame_control) &&
-	    mgmt->u.action.category == WLAN_CATEGORY_BACK)
-		return 1;
-	else
-		return 0;
+	/* Open firmware delegates BlockAck negotiation to mac80211. */
+	return 0;
 }
 
 /* Add WSM header */
@@ -941,6 +936,17 @@ static void cw1200_xr819_tx_status(struct cw1200_common *priv,
 	int rate_num = 0;
 	int word;
 
+	if ((arg->flags & WSM_TX_STATUS_XR819_AGG_METADATA) &&
+	    (arg->flags & WSM_TX_STATUS_AGGREGATION)) {
+		if (!(arg->flags & WSM_TX_STATUS_XR819_AGG_HEAD))
+			goto done;
+		tx->flags |= IEEE80211_TX_STAT_AMPDU;
+		tx->status.ampdu_len =
+			WSM_TX_STATUS_XR819_AGG_LEN(arg->flags);
+		tx->status.ampdu_ack_len =
+			WSM_TX_STATUS_XR819_AGG_ACK_LEN(arg->flags);
+	}
+
 	for (word = ARRAY_SIZE(arg->rate_try) - 1; word >= 0; word--) {
 		int nibble;
 
@@ -1084,7 +1090,9 @@ void cw1200_tx_confirm_cb(struct cw1200_common *priv,
 				++tx_count;
 		}
 
-		if (cw1200_uses_xr819_wsm(priv)) {
+		if (cw1200_uses_xr819_wsm(priv) &&
+		    (!(arg->flags & WSM_TX_STATUS_AGGREGATION) ||
+		     (arg->flags & WSM_TX_STATUS_XR819_AGG_METADATA))) {
 			cw1200_xr819_tx_status(priv, arg, tx);
 		} else {
 			for (i = 0; i < IEEE80211_TX_MAX_RATES; ++i) {

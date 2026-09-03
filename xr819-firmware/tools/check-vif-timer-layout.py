@@ -55,7 +55,11 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+# At .text+0x66c8 the aligned Thumb instruction pair `ands r1, r4; lsls
+# r0, r0, #16` encodes little-endian word 0x04004021, which numerically falls
+# inside a VIF timer but has no decoded literal xref. Keep the independent xref
+# manifest empty so a real address load still fails this gate.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04004021: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 

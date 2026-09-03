@@ -35,8 +35,29 @@ experimental-rate-feedback-telemetry = [
     "experimental-member-requeue",
     "experimental-ampdu-outcome-telemetry",
 ]
+# Marks one confirmed member with aggregate length and acknowledged-member count
+# so mac80211 consumes rate feedback once per physical A-MPDU.
+experimental-aggregate-rate-feedback = ["experimental-member-requeue"]
+# Aggregate same-link/TID candidates at the head policy's physical rate even
+# when minstrel requested different initial rates for later members.
+experimental-shared-ampdu-rate = ["experimental-aggregate-rate-feedback"]
+# Reuses the first outcome bytes to census candidate, BA-session, and planned
+# aggregate gates while aggregate-level rate feedback is brought up.
+experimental-aggregate-grouping-telemetry = [
+    "experimental-shared-ampdu-rate",
+    "experimental-ampdu-outcome-telemetry",
+]
 # Coalesces ready TX confirmations and removes avoidable idle-pipe fill waits.
 experimental-fast-loop = []
+# Board-local discriminator: replace dynamic-IQ search output with the stable
+# channel-6 correction pair observed under vendor firmware.
+experimental-fixed-iq-correction = []
+# Board-local discriminator: retain the dynamic first pair and replace only the
+# stage-six-derived second correction pair with the vendor channel-6 value.
+experimental-fixed-iq-second-pair = []
+# Records first/final-pass dynamic-IQ controls, candidates, and correlations in
+# the unused tail of the RX FIFO backing allocation for hardware comparison.
+experimental-dynamic-iq-trace = []
 # Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains
 # capped at the previously qualified two-slot transaction.
 experimental-four-slot-ordinary = []

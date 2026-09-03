@@ -45,18 +45,13 @@ OWNER_FILES = {
 ADJACENT_DECLARATIONS = {
     "tools/check-initialized-iq-calibration-gain-indices-layout.py": "(0x04000E18, 0x04000E48)",
 }
-SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {
-    "src/phy.rs": {
-        "crate::dtcm::rf_mode_halfword_unchecked(12)",
-    },
-}
-# The field-derived mode-zero entry still folds to the same aligned literal
-# emitted by the previous root-plus-index expression. Pinning it is inventory
-# of the current build; no additional production operation was added.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04000DE8: 1})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ("_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration", 0x04000DE8): 1,
-})
+SANCTIONED_CONSUMER_LINES: dict[str, set[str]] = {}
+# The Rust reset path clears vendor COPY data, so the translated mode-12 caller
+# embeds recovered entry 12 (`0x001c`) instead of reading the zeroed table.
+# Keep the table layout pinned for future translated consumers, while requiring
+# that the current production image contain no stale literal access.
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter()
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 STRUCT = "#[repr(C, align(2))] struct RfModeHalfwordTable { entries: [SharedU16; 36] }"
 REQUIRED = (
     STRUCT,

@@ -2026,11 +2026,18 @@ unsafe fn run_vendor_dynamic_mode_calibration() {
     // into the halfword table at 0x04000dd0. The DFT phase seeds and all search
     // steps likewise come directly from the stack image built there.
     let control_configuration = 0x07ff_0110_u32;
+    #[cfg(feature = "dtcm-contract-diagnostics")]
     let table_value = unsafe {
         crate::dtcm::rf_mode_halfword_unchecked(12)
             .cast_mut::<u16>()
             .read_volatile() as u32
     };
+    #[cfg(not(feature = "dtcm-contract-diagnostics"))]
+    // The Rust image clears the vendor COPY-data DTCM area at reset. Mode 12
+    // consumes entry 12 (`0x001c`); zero selects gain 0xc0 instead of 0x70c0
+    // and suppresses the dynamic-IQ calibration tone. The DTCM contract image
+    // retains the old read above solely to preserve its exact ITCM envelope.
+    let table_value = 0x001c;
     let sample_width_shift = unsafe { (crate::dtcm::phy_sample_width().get() as *const u16).read_volatile() as u8 };
     let configuration = DynamicIqHardwareCalibrationConfiguration {
         alternate_profile: false,
@@ -2055,6 +2062,25 @@ unsafe fn run_vendor_dynamic_mode_calibration() {
     };
     let mut samples = [0_u32; 64];
     let _ = unsafe { run_vendor_dynamic_iq_hardware_calibration(configuration, &mut samples) };
+
+    #[cfg(feature = "experimental-fixed-iq-correction")]
+    unsafe {
+        // Board-local channel-6 discriminator from two vendor-firmware runtime
+        // dumps. Do not generalize this pair to other boards or channels.
+        let vendor_channel6 = dynamic_iq_correction_plan([-36, -312, 3, -26]);
+        apply_dynamic_iq_correction_plan(vendor_channel6);
+        replicate_dynamic_iq_correction_banks(vendor_channel6);
+    }
+
+    #[cfg(feature = "experimental-fixed-iq-second-pair")]
+    unsafe {
+        // Isolate stage six: preserve the dynamically searched first pair and
+        // replace only the second pair with the stable vendor channel-6 value.
+        let first = unpack_dynamic_iq_pair((0x0abb_8068 as *const u32).read_volatile());
+        let vendor_second = dynamic_iq_correction_plan([first.0, first.1, 3, -26]);
+        apply_dynamic_iq_correction_plan(vendor_second);
+        replicate_dynamic_iq_correction_banks(vendor_second);
+    }
 }
 
 unsafe fn begin_channel_transition(
@@ -2944,8 +2970,19 @@ pub fn refine_dynamic_iq_common_pair(
         .wrapping_mul(2)
         .wrapping_add(m0.wrapping_mul(m1.wrapping_mul(4).wrapping_sub(m0.wrapping_mul(6))));
 
+    // Vendor case 6 scales both sides before division by the bit length of
+    // the common search step. Besides bounding the product, this deliberately
+    // changes integer rounding and suppresses refinement when the shifted
+    // denominator becomes zero.
+    // Search steps are positive powers of two in every vendor caller.
+    let scale_shift = 32 - (step as u32).leading_zeros();
+    let scaled_denominator = denominator >> scale_shift;
+    if scaled_denominator == 0 {
+        return (current_third, current_fourth);
+    }
+
     let mut third = current_third;
-    if m1.wrapping_sub(m0.wrapping_mul(2)).wrapping_add(m2) > 0 && denominator != 0 {
+    if m1.wrapping_sub(m0.wrapping_mul(2)).wrapping_add(m2) > 0 {
         let numerator = m0
             .wrapping_mul(2)
             .wrapping_mul(m2.wrapping_sub(m1))
@@ -2959,11 +2996,14 @@ pub fn refine_dynamic_iq_common_pair(
                         .wrapping_sub(m4),
                 ),
             );
-        third = third.wrapping_sub(step.wrapping_mul(numerator).wrapping_div(denominator));
+        third = third.wrapping_sub(
+            step.wrapping_mul(numerator >> scale_shift)
+                .wrapping_div(scaled_denominator),
+        );
     }
 
     let mut fourth = current_fourth;
-    if m3.wrapping_sub(m0.wrapping_mul(2)).wrapping_add(m4) > 0 && denominator != 0 {
+    if m3.wrapping_sub(m0.wrapping_mul(2)).wrapping_add(m4) > 0 {
         let numerator = m0
             .wrapping_mul(
                 m2.wrapping_sub(m1)
@@ -2978,7 +3018,10 @@ pub fn refine_dynamic_iq_common_pair(
                 ),
             )
             .wrapping_add(m1.wrapping_mul(m3.wrapping_sub(m5)));
-        fourth = fourth.wrapping_sub(step.wrapping_mul(numerator).wrapping_div(denominator));
+        fourth = fourth.wrapping_sub(
+            step.wrapping_mul(numerator >> scale_shift)
+                .wrapping_div(scaled_denominator),
+        );
     }
     (third, fourth)
 }
@@ -3049,7 +3092,7 @@ pub fn dynamic_iq_stage_control(
     let stage_phase = if stage < 7 { phase >> 1 } else { phase };
     let base = (configuration & 0xffff_9fff) | 0x003f_0000;
     let control =
-        ((base & 0x003f_ffff) | stage_phase.wrapping_shl(16)) & !0xff | (stage_phase & 0xff);
+        ((base & 0x003f_ffff) | stage_phase.wrapping_shl(22)) & !0xff | (stage_phase & 0xff);
     let initial = |value: u32| (value & !0xff) | 0xff | 0xffc0_0000;
     let hardware = if first_pass && stage == 0 {
         initial(control)
@@ -3789,6 +3832,153 @@ pub unsafe fn execute_dynamic_iq_hardware_stage(
     }
 }
 
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+const DYNAMIC_IQ_TRACE_HEADER_WORDS: usize = 4;
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+const DYNAMIC_IQ_TRACE_RECORD_WORDS: usize = 12;
+
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+fn dynamic_iq_trace_base() -> *mut u32 {
+    // The typed DTCM research margin is retained no-init storage with no
+    // runtime owner. Reuse its first 640 bytes so the trace is host-readable
+    // after initialization without changing the fixed DTCM layout.
+    crate::dtcm::DTCM_RUNTIME_END.get() as *mut u32
+}
+
+#[cfg(feature = "experimental-dynamic-iq-trace")]
+pub const DYNAMIC_IQ_TRACE_FIRST_MIB: u16 = 0xff80;
+#[cfg(feature = "experimental-dynamic-iq-trace")]
+pub const DYNAMIC_IQ_TRACE_LAST_MIB: u16 = 0xff82;
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+const DYNAMIC_IQ_TRACE_PAGE_BYTES: usize = 320;
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+const DYNAMIC_IQ_TRACE_SAMPLE_BYTES: usize = 316;
+
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+pub unsafe fn write_dynamic_iq_trace_mib(mib_id: u16, output: &mut [u8]) -> Option<usize> {
+    let page = mib_id.checked_sub(DYNAMIC_IQ_TRACE_FIRST_MIB)? as usize;
+    if page > usize::from(DYNAMIC_IQ_TRACE_LAST_MIB - DYNAMIC_IQ_TRACE_FIRST_MIB) {
+        return None;
+    }
+    let length = if mib_id == DYNAMIC_IQ_TRACE_LAST_MIB {
+        DYNAMIC_IQ_TRACE_SAMPLE_BYTES
+    } else {
+        DYNAMIC_IQ_TRACE_PAGE_BYTES
+    };
+    if output.len() < length {
+        return None;
+    }
+    let source = unsafe {
+        dynamic_iq_trace_base()
+            .cast::<u8>()
+            .add(page * DYNAMIC_IQ_TRACE_PAGE_BYTES)
+    };
+    for (index, byte) in output[..length].iter_mut().enumerate() {
+        *byte = unsafe { source.add(index).read_volatile() };
+    }
+    Some(length)
+}
+
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+unsafe fn record_dynamic_iq_analog_trace(
+    configuration: DynamicIqHardwareCalibrationConfiguration,
+    synth_register: u32,
+    snapshot: &DynamicIqBandRegisterSnapshot,
+) {
+    let base = unsafe { dynamic_iq_trace_base().add(224) };
+    let words = [
+        0x414e_4c47, // "ANLG"
+        configuration.table_value,
+        synth_register,
+        configuration.calibration_command as u32,
+        snapshot.abc00b4,
+        unsafe { (0x0abc_0020 as *const u32).read_volatile() },
+        unsafe { (0x0abc_0030 as *const u32).read_volatile() },
+        unsafe { (0x0abb_801c as *const u32).read_volatile() },
+        unsafe { (0x0abc_00b4 as *const u32).read_volatile() },
+        unsafe { (0x0abb_8004 as *const u32).read_volatile() },
+        unsafe { (0x0abb_805c as *const u32).read_volatile() },
+        unsafe { (0x0abb_8060 as *const u32).read_volatile() },
+        unsafe { (0x0abb_8064 as *const u32).read_volatile() },
+        unsafe { (0x0abb_81a4 as *const u32).read_volatile() },
+        unsafe { (0x0abb_81a8 as *const u32).read_volatile() },
+    ];
+    for (index, word) in words.into_iter().enumerate() {
+        unsafe { base.add(index).write_volatile(word) };
+    }
+}
+
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+unsafe fn reset_dynamic_iq_trace(pass_count: u32) {
+    let base = dynamic_iq_trace_base();
+    let word_count = DYNAMIC_IQ_TRACE_HEADER_WORDS + 13 * DYNAMIC_IQ_TRACE_RECORD_WORDS;
+    for index in 0..word_count {
+        unsafe { base.add(index).write_volatile(0) };
+    }
+    unsafe {
+        base.write_volatile(0x4951_5452); // "IQTR"
+        base.add(1).write_volatile(2);
+        base.add(2).write_volatile(pass_count);
+        base.add(3)
+            .write_volatile(DYNAMIC_IQ_TRACE_RECORD_WORDS as u32);
+    }
+}
+
+#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+unsafe fn record_dynamic_iq_trace(
+    pass_index: u32,
+    pass_count: u32,
+    stage: u8,
+    candidate: [i32; 4],
+    control: DynamicIqStageControl,
+    result: DynamicIqHardwareStageResult,
+    samples: &[u32; 64],
+) {
+    if pass_index + 1 != pass_count {
+        return;
+    }
+    let record_index = usize::from(stage);
+    let base = unsafe {
+        dynamic_iq_trace_base().add(
+            DYNAMIC_IQ_TRACE_HEADER_WORDS + record_index * DYNAMIC_IQ_TRACE_RECORD_WORDS,
+        )
+    };
+    let pack = |value: DynamicIqCorrelation| {
+        u32::from(value.real as u16) | (u32::from(value.imaginary as u16) << 16)
+    };
+    let checksum = samples.iter().fold(0_u32, |sum, value| {
+        sum.rotate_left(5).wrapping_add(*value)
+    });
+    let words = [
+        pass_index.wrapping_shl(8) | u32::from(stage),
+        control.hardware,
+        control.correlation,
+        candidate[0] as u32,
+        candidate[1] as u32,
+        candidate[2] as u32,
+        candidate[3] as u32,
+        pack(result.measurement.first),
+        pack(result.measurement.second),
+        pack(result.measurement.third),
+        u32::from(result.capture_ready),
+        checksum,
+    ];
+    for (index, word) in words.into_iter().enumerate() {
+        unsafe { base.add(index).write_volatile(word) };
+    }
+    if stage == 1 {
+        let sample_base = unsafe {
+            dynamic_iq_trace_base()
+                .cast::<u8>()
+                .add(2 * DYNAMIC_IQ_TRACE_PAGE_BYTES)
+                .cast::<u32>()
+        };
+        for (index, sample) in samples.iter().enumerate() {
+            unsafe { sample_base.add(index).write_volatile(*sample) };
+        }
+    }
+}
+
 /// Connect the pass/dispatcher state machine to the detached MMIO acquisition
 /// path. Readiness timeouts are accumulated for diagnostics but retain vendor
 /// behavior by allowing every pass to continue with the copied sample window.
@@ -3809,6 +3999,12 @@ pub unsafe fn run_dynamic_iq_hardware_search(
     dft_configuration: DynamicIqDftConfiguration,
     samples: &mut [u32; 64],
 ) -> DynamicIqHardwareSearchResult {
+    #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+    let pass_count = dynamic_iq_search_pass_count(requested_passes, configuration_flags);
+    #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+    unsafe {
+        reset_dynamic_iq_trace(pass_count);
+    }
     let mut all_captures_ready = true;
     let search = run_dynamic_iq_averaged_search(
         initial,
@@ -3828,6 +4024,18 @@ pub unsafe fn run_dynamic_iq_hardware_search(
             let result = unsafe {
                 execute_dynamic_iq_hardware_stage(candidate, execution, control, stage_dft, samples)
             };
+            #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+            unsafe {
+                record_dynamic_iq_trace(
+                    pass_index,
+                    pass_count,
+                    stage,
+                    candidate,
+                    control,
+                    result,
+                    samples,
+                );
+            }
             all_captures_ready &= result.capture_ready;
             Some(result.measurement)
         },
@@ -3901,6 +4109,10 @@ pub unsafe fn run_dynamic_iq_hardware_calibration(
             configuration.calibration_command,
         )
     };
+    #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
+    unsafe {
+        record_dynamic_iq_analog_trace(configuration, synth_register, &snapshot);
+    }
     let first_saved = unpack_dynamic_iq_pair(snapshot.abb8068);
     let second_saved = unpack_dynamic_iq_pair(snapshot.abb80a8);
     let saved_values = [first_saved.0, first_saved.1, second_saved.0, second_saved.1];
@@ -4039,12 +4251,13 @@ pub fn update_iq_shift_state(mut state: u32, shift: u8) -> u32 {
     state.rotate_right(28)
 }
 
-pub fn iq_calibration_publication(
+fn iq_calibration_publication_from_source(
     gain_index: u32,
     coefficient: IqCalibrationCoefficient,
+    normalization_source: IqCalibrationCoefficient,
     shift_state: u32,
 ) -> Option<IqCalibrationPublication> {
-    let normalized = publish_iq_coefficient(coefficient)?;
+    let normalized = publish_iq_coefficient(normalization_source)?;
     let gain_offset = gain_index.wrapping_mul(4);
     Some(IqCalibrationPublication {
         primary_address: 0x0abb_8118_u32.wrapping_add(gain_offset),
@@ -4054,6 +4267,19 @@ pub fn iq_calibration_publication(
         normalized_value: normalized.packed,
         next_shift_state: update_iq_shift_state(shift_state, normalized.shift),
     })
+}
+
+pub fn iq_calibration_publication(
+    gain_index: u32,
+    coefficient: IqCalibrationCoefficient,
+    shift_state: u32,
+) -> Option<IqCalibrationPublication> {
+    iq_calibration_publication_from_source(
+        gain_index,
+        coefficient,
+        coefficient,
+        shift_state,
+    )
 }
 
 /// Allocation-free twelve-gain arithmetic and publication plan from the main
@@ -4070,12 +4296,28 @@ fn build_iq_calibration_series_in<'a>(
     let mut final_shift_state = initial_shift_state;
     for index in 0..12 {
         let sample = samples[index];
+        let scale_i = sample
+            .target_i
+            .wrapping_sub(sample.baseline_i)
+            .wrapping_mul(-0x100);
+        let scale_q = sample
+            .target_q
+            .wrapping_sub(sample.baseline_q)
+            .wrapping_mul(-0x100);
         let coefficient = primary_iq_calibration(sample);
-        // Annotated `rf_compute_iq_gain_corr` reloads the same profile shift
-        // word for every gain; it does not feed one gain's result into the next.
-        let publication = iq_calibration_publication(
+        // Vendor `rf_compute_iq_gain_corr` normalizes the measurement deltas
+        // at calibration-state offsets +0x14/+0x18. The signed-eight primary
+        // coefficients published later come from the separate +0x114/+0x118
+        // fields. Using the primary coefficients here left most normalized IQ
+        // entries at their reset values whenever one rounded component was 0.
+        // The profile shift word is reloaded for every gain.
+        let publication = iq_calibration_publication_from_source(
             IQ_CALIBRATION_GAIN_INDICES[index],
             coefficient,
+            IqCalibrationCoefficient {
+                i: scale_i,
+                q: scale_q,
+            },
             initial_shift_state,
         );
         if let Some(publication) = publication {
@@ -4085,14 +4327,8 @@ fn build_iq_calibration_series_in<'a>(
             iterations.add(index).write(IqCalibrationIteration {
                 gain_index: IQ_CALIBRATION_GAIN_INDICES[index],
                 sample,
-                scale_i: sample
-                    .target_i
-                    .wrapping_sub(sample.baseline_i)
-                    .wrapping_mul(-0x100),
-                scale_q: sample
-                    .target_q
-                    .wrapping_sub(sample.baseline_q)
-                    .wrapping_mul(-0x100),
+                scale_i,
+                scale_q,
                 coefficient,
                 publication,
             });
@@ -4995,15 +5231,15 @@ mod tests {
         assert_eq!(
             dynamic_iq_stage_control(0x1234_5678, 1, true),
             Some(DynamicIqStageControl {
-                hardware: 0x003f_1624,
+                hardware: u32::from_be_bytes([0x09, 0x3f, 0x16, 0x24]),
                 correlation: 0xffff_16ff,
             })
         );
         assert_eq!(
             dynamic_iq_stage_control(0x1234_5678, 7, false),
             Some(DynamicIqStageControl {
-                hardware: 0x007f_1648,
-                correlation: 0x007f_1648,
+                hardware: 0x123f_1648,
+                correlation: 0x123f_1648,
             })
         );
         assert_eq!(dynamic_iq_stage_control(0, 13, false), None);
@@ -5294,8 +5530,10 @@ mod tests {
                 plan.primary_address,
                 plan.normalized_first_address,
                 plan.normalized_second_address,
+                plan.primary_value,
+                plan.normalized_value,
             )),
-            Some((0x0abb_8180, 0x0abb_8668, 0x0abb_86e8))
+            Some((0x0abb_8180, 0x0abb_8668, 0x0abb_86e8, 0x047f, 0x019a_019a))
         );
         assert_eq!(
             series.iterations[11].publication.map(|plan| (

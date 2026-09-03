@@ -18,7 +18,10 @@ use crate::rate_policy;
 use crate::scan;
 use crate::tx;
 use crate::vif;
-#[cfg(feature = "dtcm-contract-diagnostics")]
+#[cfg(any(
+    feature = "dtcm-contract-diagnostics",
+    feature = "experimental-dynamic-iq-trace"
+))]
 use crate::wsm::encode_read_mib_data_response_in_place;
 use crate::wsm::{
     ADD_KEY_REQ_ID, AddKeyRequest, CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID,
@@ -152,6 +155,27 @@ fn encode_standard_read_mib(
     encode_read_mib_data_response(0, mib_id, &data, output)
 }
 
+#[inline(always)]
+fn encode_extended_read_mib(
+    mib_id: u16,
+    transport: &Transport,
+    output: &mut [u8],
+) -> Result<usize, crate::wsm::Error> {
+    #[cfg(feature = "experimental-dynamic-iq-trace")]
+    if let Some(length) =
+        unsafe { crate::phy::write_dynamic_iq_trace_mib(mib_id, &mut output[12..]) }
+    {
+        return encode_read_mib_data_response_in_place(0, mib_id, length, output);
+    }
+    #[cfg(feature = "dtcm-contract-diagnostics")]
+    if let Some(length) =
+        unsafe { crate::dtcm::write_initialized_image_snapshot_mib(mib_id, &mut output[12..]) }
+    {
+        return encode_read_mib_data_response_in_place(0, mib_id, length, output);
+    }
+    encode_standard_read_mib(mib_id, transport, output)
+}
+
 fn retain_configuration(
     request: ConfigurationRequest<'_>,
 ) -> Option<([u8; 6], [TxPowerRange; 2])> {
@@ -277,20 +301,7 @@ pub unsafe fn service_one(
             .get(..2)
             .map(|value| u16::from_le_bytes([value[0], value[1]]))
             .unwrap_or(0);
-        #[cfg(feature = "dtcm-contract-diagnostics")]
-        {
-            if let Some(length) = unsafe {
-                crate::dtcm::write_initialized_image_snapshot_mib(mib_id, &mut output[12..])
-            } {
-                encode_read_mib_data_response_in_place(0, mib_id, length, output)
-            } else {
-                encode_standard_read_mib(mib_id, &*transport, output)
-            }
-        }
-        #[cfg(not(feature = "dtcm-contract-diagnostics"))]
-        {
-            encode_standard_read_mib(mib_id, &*transport, output)
-        }
+        encode_extended_read_mib(mib_id, &*transport, output)
     } else if request_id == ADD_KEY_REQ_ID {
         let status = AddKeyRequest::parse(request_payload)
             .ok()

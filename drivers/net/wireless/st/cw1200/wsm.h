@@ -208,6 +208,14 @@ struct cw1200_common;
 /* Only valid for WSM_SUCCESS status. */
 #define WSM_TX_STATUS_BLOCK_ACK		(3<<2)
 
+/* XR819 open-firmware aggregate feedback. */
+#define WSM_TX_STATUS_XR819_AGG_METADATA	BIT(7)
+#define WSM_TX_STATUS_XR819_AGG_HEAD	BIT(8)
+#define WSM_TX_STATUS_XR819_AGG_LEN(_flags) \
+	((((_flags) >> 9) & 0x7) + 1)
+#define WSM_TX_STATUS_XR819_AGG_ACK_LEN(_flags) \
+	(((_flags) >> 12) & 0xf)
+
 /* RX status */
 /* Unencrypted */
 #define WSM_RX_STATUS_UNENCRYPTED	(0<<0)
