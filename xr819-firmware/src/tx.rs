@@ -3850,12 +3850,13 @@ impl SingleProbeMacBackend {
     #[cfg(feature = "experimental-depth-two-ampdu")]
     fn register_ampdu_publications(
         &mut self,
-        members: [Option<ContextAddress>; 4],
+        members: [Option<ContextAddress>;
+            crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
         pipe: u8,
         slot: u8,
     ) -> bool {
         let member_count = members.iter().take_while(|member| member.is_some()).count();
-        if members[member_count..].iter().any(Option::is_some) {
+        if member_count > 4 || members[member_count..].iter().any(Option::is_some) {
             return false;
         }
         let Some(indices) = ampdu_publication_indices(slot, member_count) else {
@@ -3902,11 +3903,10 @@ impl SingleProbeMacBackend {
         pipe: u8,
         slot: u8,
     ) -> bool {
-        self.register_ampdu_publications(
-            [Some(first), Some(second), None, None],
-            pipe,
-            slot,
-        )
+        let mut members = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        members[0] = Some(first);
+        members[1] = Some(second);
+        self.register_ampdu_publications(members, pipe, slot)
     }
 
     fn push_completion(&mut self, completion: HostClass0Completion) {
@@ -4401,7 +4401,10 @@ unsafe fn depth_two_block_ack_actions_for(
         }
         let second_frame_node = FrameNodeAddress::from_raw(second_raw)?;
         let members = [first_frame_node, second_frame_node];
-        if observation.members != [first_frame_node.raw(), second_frame_node.raw(), 0, 0] {
+        if observation.members[0] != first_frame_node.raw()
+            || observation.members[1] != second_frame_node.raw()
+            || observation.members[2..].iter().any(|member| *member != 0)
+        {
             return None;
         }
         let tid = read_u8(first.tid_address());
@@ -4544,24 +4547,40 @@ unsafe fn selective_member_retry_rate(frame_node: FrameNodeAddress) -> Option<u8
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
 #[inline(never)]
+#[cfg_attr(feature = "experimental-depth-eight-ampdu", inline(always))]
 unsafe fn depth_four_selective_plan_for(
     first_frame_node: FrameNodeAddress,
-    observation: RetainedAmpduBlockAck,
+    observation: &RetainedAmpduBlockAck,
 ) -> Option<(
     SelectiveAmpduRetryPlan,
     [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
     u8,
 )> {
     unsafe {
-        let (contexts, member_count) = collect_ampdu_contexts(first_frame_node)?;
+        let mut members = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        let mut current = first_frame_node;
+        let mut member_count = 0_usize;
+        loop {
+            if member_count == crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
+                || members[..member_count].contains(&current.raw())
+            {
+                return None;
+            }
+            members[member_count] = current.raw();
+            member_count += 1;
+            let next = read_u32(current.context().next_in_ampdu_address());
+            if next == 0 {
+                break;
+            }
+            current = FrameNodeAddress::from_raw(next)?;
+        }
         if member_count < 3 || member_count != usize::from(observation.observation.member_count) {
             return None;
         }
-        let members = contexts.map(|context| context.map_or(0, |context| context.frame_node().raw()));
         if observation.members != members {
             return None;
         }
-        let first = contexts[0]?;
+        let first = first_frame_node.context();
         let tid = read_u8(first.tid_address());
         let session_active = tid < 8
             && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
@@ -4630,7 +4649,10 @@ unsafe fn enqueue_terminal_depth_four_member(frame_node: FrameNodeAddress, statu
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
 #[inline(never)]
-unsafe fn rewrite_depth_four_member_table(link: u8, members: &[u32; 4]) {
+unsafe fn rewrite_depth_four_member_table(
+    link: u8,
+    members: &[u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+) {
     unsafe {
         if link >= 8 {
             return;
@@ -4656,14 +4678,16 @@ unsafe fn rewrite_depth_four_member_table(link: u8, members: &[u32; 4]) {
 unsafe fn apply_depth_four_selective_retry(
     slot_raw: u32,
     plan: SelectiveAmpduRetryPlan,
-    members: [u32; 4],
+    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
 ) -> Option<(FrameNodeAddress, usize)> {
     unsafe {
         let retry_count = usize::from(plan.retry_count);
-        if retry_count == 0 || retry_count > 4 {
+        if retry_count == 0
+            || retry_count > crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
+        {
             return None;
         }
-        let mut retries = [0_u32; 4];
+        let mut retries = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
         for (position, member_index) in plan
             .retry_members
             .iter()
@@ -4728,7 +4752,7 @@ unsafe fn apply_depth_four_selective_retry(
 unsafe fn finish_depth_four_selective_actions(
     slot_raw: u32,
     plan: SelectiveAmpduRetryPlan,
-    members: [u32; 4],
+    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
     backend: &mut SingleProbeMacBackend,
 ) -> bool {
     unsafe {
@@ -4746,7 +4770,10 @@ unsafe fn finish_depth_four_selective_actions(
         let Some(first) = FrameNodeAddress::from_raw(members[0]) else {
             return false;
         };
-        rewrite_depth_four_member_table(read_u8(first.context().link_id_address()), &[0; 4]);
+        rewrite_depth_four_member_table(
+            read_u8(first.context().link_id_address()),
+            &[0; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+        );
         for (index, action) in plan.actions.into_iter().enumerate() {
             let Some(action) = action else { continue };
             if action == BlockAckMemberAction::Retry {
@@ -4818,7 +4845,7 @@ impl SingleProbeMacBackend {
                 .filter(|observation| observation.observation.member_count > 2)
             {
                 let Some((plan, members, _)) =
-                    (unsafe { depth_four_selective_plan_for(frame_node, observation) })
+                    (unsafe { depth_four_selective_plan_for(frame_node, &observation) })
                 else {
                     terminal_probe_backend_fault(pipe)
                 };
@@ -4913,7 +4940,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     .filter(|observation| observation.observation.member_count > 2)
                 {
                     let Some((plan, _, reason_mask)) = (unsafe {
-                        depth_four_selective_plan_for(frame_node, observation)
+                        depth_four_selective_plan_for(frame_node, &observation)
                     }) else {
                         unsafe {
                             crate::host_tx_diagnostics::record_ampdu_outcome(
@@ -5158,7 +5185,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 )
             };
             let Some((plan, members, _)) =
-                (unsafe { depth_four_selective_plan_for(frame_node, observation) })
+                (unsafe { depth_four_selective_plan_for(frame_node, &observation) })
             else {
                 terminal_probe_backend_fault(pipe)
             };
@@ -5614,8 +5641,14 @@ pub unsafe fn prepare_host_ampdu(
         return Err(ProbeBuildError::UnsupportedPublicationShape);
     }
 
-    let mut hosts = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-    let mut typed = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    let first_raw = contexts[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+    let first_host = crate::dtcm::host_context_from_raw(first_raw)
+        .ok_or(ProbeBuildError::InvalidContextPointer)?;
+    let first = ContextAddress::new(first_raw);
+    let rate = unsafe { read_u8(first.tx_rate_address()) };
+    let mut special_ack = false;
+    let mut word_count = 0_usize;
+    let mut aggregate_length = 0_u32;
     for index in 0..member_count {
         let raw = contexts[index].ok_or(ProbeBuildError::InvalidContextPointer)?;
         let host = crate::dtcm::host_context_from_raw(raw)
@@ -5625,17 +5658,7 @@ pub unsafe fn prepare_host_ampdu(
         {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
-        hosts[index] = Some(host);
-        typed[index] = Some(ContextAddress::new(raw));
-    }
-
-    let first_host = hosts[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
-    let first = typed[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
-    let rate = unsafe { read_u8(first.tx_rate_address()) };
-    let mut members = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-    let mut special_ack = false;
-    for index in 0..member_count {
-        let context = typed[index].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+        let context = ContextAddress::new(raw);
         if unsafe { read_u8(context.tx_rate_address()) } != rate {
             return Err(ProbeBuildError::UnsupportedPublicationShape);
         }
@@ -5643,11 +5666,47 @@ pub unsafe fn prepare_host_ampdu(
         let frame_length = unsafe { read_u16(context.frame_length_address()) };
         unsafe { emit_host_frame_descriptor_at(context.raw(), frame_state)? };
         special_ack |= unsafe { read_u32(context.control_bits_address()) } & 0x0030_0000 == 0;
-        members[index] = Some(PlannedAmpduMember {
-            frame_state,
-            frame_length,
-        });
+        unsafe {
+            write_u32(
+                packet_record as usize + word_count * 4,
+                ampdu_transfer_word(frame_state.wrapping_add(8) as usize),
+            );
+        }
+        word_count += 1;
+        if index + 1 == member_count {
+            aggregate_length = aggregate_length
+                .checked_add(u32::from(frame_length) + 8)
+                .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+        } else {
+            unsafe { write_u32(packet_record as usize + word_count * 4, 0x6600_0000) };
+            word_count += 1;
+            if let Some(spacing) = ampdu_spacing_word(ampdu_spacing_selector(
+                crate::configuration::mpdu_start_spacing(),
+                rate,
+            )) {
+                unsafe { write_u32(packet_record as usize + word_count * 4, spacing) };
+                word_count += 1;
+            }
+            let padded = u32::from(frame_length)
+                .checked_add(0x0b)
+                .ok_or(ProbeBuildError::UnsupportedPublicationShape)?
+                & !3;
+            aggregate_length = aggregate_length
+                .checked_add(padded)
+                .and_then(|length| {
+                    length.checked_add(
+                        u32::from(ampdu_spacing_selector(
+                            crate::configuration::mpdu_start_spacing(),
+                            rate,
+                        )) * 4,
+                    )
+                })
+                .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+        }
     }
+    unsafe { write_u32(packet_record as usize + word_count * 4, 0xe400_0000) };
+    let aggregate_length = u16::try_from(aggregate_length)
+        .map_err(|_| ProbeBuildError::UnsupportedPublicationShape)?;
 
     let tx_flags = unsafe { read_u32(first.control_bits_address()) };
     let request_flag_rate_bits = unsafe { read_u8(first.request_flag_rate_bits_address()) };
@@ -5669,20 +5728,7 @@ pub unsafe fn prepare_host_ampdu(
         request_flag_rate_bits,
         rate_attribute,
     );
-    let first_length = members[0]
-        .ok_or(ProbeBuildError::UnsupportedPublicationShape)?
-        .frame_length;
-    let descriptor = build_planned_ampdu_descriptor(PlannedAmpduInput {
-        members,
-        phy_rate_word: phy.rate,
-        phy_control_word: finalize_phy_control(phy, rate, first_length),
-        hardware_rate,
-        spacing_selector: ampdu_spacing_selector(
-            crate::configuration::mpdu_start_spacing(),
-            rate,
-        ),
-    })
-    .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+    let first_length = unsafe { read_u16(first.frame_length_address()) };
 
     unsafe {
         for index in 0..16_u32 {
@@ -5697,19 +5743,15 @@ pub unsafe fn prepare_host_ampdu(
         if special_ack {
             write_u32(command as usize + 4, read_u32(command as usize + 4) | 0x8c);
         }
-        for (index, word) in descriptor.phy_words.into_iter().enumerate() {
+        let phy_words = [
+            0x5100_0000 | (phy.rate & 0x00ff_ffff),
+            0x5000_0000 | (finalize_phy_control(phy, rate, first_length) & 0x00ff_ffff),
+            0x5200_0000 | (u32::from(hardware_rate) << 16) | u32::from(aggregate_length),
+        ];
+        for (index, word) in phy_words.into_iter().enumerate() {
             write_u32(command as usize + 0x0c + index * 4, word);
         }
         write_u32(command as usize + 0x18, ampdu_transfer_word(packet_record as usize));
-        for (index, word) in descriptor
-            .words
-            .iter()
-            .take(usize::from(descriptor.length))
-            .copied()
-            .enumerate()
-        {
-            write_u32(packet_record as usize + index * 4, word);
-        }
         let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_record);
         write_u8(slot.kind().get(), 1);
         write_u8(slot.retry_rate().get(), if special_ack { 0x0c } else { 0xff });
@@ -5727,12 +5769,16 @@ pub unsafe fn prepare_host_ampdu(
         );
         write_u32(first.word_48_address(), aggregate_airtime);
         for index in 0..member_count {
-            let context = typed[index].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
+            let context = ContextAddress::new(
+                contexts[index].ok_or(ProbeBuildError::UnsupportedPublicationShape)?,
+            );
             let next = if index + 1 == member_count {
                 0
             } else {
-                hosts[index + 1]
-                    .ok_or(ProbeBuildError::UnsupportedPublicationShape)?
+                crate::dtcm::host_context_from_raw(
+                    contexts[index + 1].ok_or(ProbeBuildError::UnsupportedPublicationShape)?,
+                )
+                    .ok_or(ProbeBuildError::InvalidContextPointer)?
                     .pas()
                     .raw()
             };
@@ -5754,8 +5800,11 @@ pub unsafe fn prepare_depth_two_host_ampdu(
     packet_record: u32,
 ) -> Result<(), ProbeBuildError> {
     unsafe {
+        let mut contexts = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+        contexts[0] = Some(first_context);
+        contexts[1] = Some(second_context);
         prepare_host_ampdu(
-            [Some(first_context), Some(second_context), None, None],
+            contexts,
             pipe,
             slot,
             slot_record,
@@ -10432,9 +10481,12 @@ pub(crate) struct PlannedAmpduInput {
     pub spacing_selector: u8,
 }
 
+const MAX_PLANNED_AMPDU_DESCRIPTOR_WORDS: usize =
+    crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH * 3 - 1;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PlannedAmpduDescriptor {
-    pub words: [u32; 11],
+    pub words: [u32; MAX_PLANNED_AMPDU_DESCRIPTOR_WORDS],
     pub length: u8,
     pub phy_words: [u32; 3],
     pub aggregate_length: u16,
@@ -10444,7 +10496,8 @@ pub(crate) struct PlannedAmpduDescriptor {
 /// Build a bounded vendor opcode stream without publishing it to hardware.
 ///
 /// Every non-final member contributes its padded delimiter length and optional
-/// spacing transfer. Members must form one contiguous prefix with depth 2..=4.
+/// spacing transfer. Members must form one contiguous prefix within the active
+/// experimental depth bound.
 pub(crate) fn build_planned_ampdu_descriptor(
     input: PlannedAmpduInput,
 ) -> Option<PlannedAmpduDescriptor> {
@@ -10455,7 +10508,7 @@ pub(crate) fn build_planned_ampdu_descriptor(
         return None;
     }
 
-    let mut words = [0_u32; 11];
+    let mut words = [0_u32; MAX_PLANNED_AMPDU_DESCRIPTOR_WORDS];
     let mut word_count = 0_usize;
     let mut aggregate_length = 0_u32;
     for index in 0..member_count {
@@ -10595,6 +10648,7 @@ pub(crate) struct SelectiveAmpduRetryPlan {
 }
 
 #[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
+#[cfg_attr(feature = "experimental-depth-eight-ampdu", inline(always))]
 pub(crate) fn plan_selective_ampdu_retry(
     observation: PlannedBlockAck,
     retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
@@ -10655,6 +10709,12 @@ pub(crate) fn planned_whole_retry_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pad_ampdu<T: Copy>(first: [T; 4], trailing: T) -> [T;
+        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH]
+    {
+        core::array::from_fn(|index| first.get(index).copied().unwrap_or(trailing))
+    }
 
     #[test]
     fn retry_state_indices_require_an_exact_pipe_slot_identity() {
@@ -13056,18 +13116,24 @@ mod tests {
 
     #[test]
     fn planned_block_ack_handles_four_wrapped_members_and_sticky_updates() {
-        let sequences = [Some(0x0ffe), Some(0x0fff), Some(0x0000), Some(0x0001)];
+        let sequences = pad_ampdu(
+            [Some(0x0ffe), Some(0x0fff), Some(0x0000), Some(0x0001)],
+            None,
+        );
         let Some(first_half) = classify_planned_block_ack(0x0ffe, 0b0011, sequences) else {
             panic!("four contiguous wrapped sequences must classify");
         };
         assert_eq!(
             first_half.states,
-            [
-                BlockAckMemberState::Acknowledged,
-                BlockAckMemberState::Acknowledged,
-                BlockAckMemberState::Missing,
-                BlockAckMemberState::Missing,
-            ],
+            pad_ampdu(
+                [
+                    BlockAckMemberState::Acknowledged,
+                    BlockAckMemberState::Acknowledged,
+                    BlockAckMemberState::Missing,
+                    BlockAckMemberState::Missing,
+                ],
+                BlockAckMemberState::OutsideWindow,
+            ),
         );
         let Some(second_half) = classify_planned_block_ack(0x0ffe, 0b1100, sequences) else {
             panic!("shifted acknowledgement half must classify");
@@ -13075,23 +13141,32 @@ mod tests {
         let Some(merged) = merge_planned_block_ack(Some(first_half), second_half) else {
             panic!("matching aggregate observations must merge");
         };
-        assert_eq!(merged.states, [BlockAckMemberState::Acknowledged; 4]);
         assert_eq!(
-            plan_planned_block_ack_actions(merged, [true; 4], true),
-            [Some(BlockAckMemberAction::Confirm); 4],
+            merged.states,
+            pad_ampdu(
+                [BlockAckMemberState::Acknowledged; 4],
+                BlockAckMemberState::OutsideWindow,
+            ),
+        );
+        assert_eq!(
+            plan_planned_block_ack_actions(merged, pad_ampdu([true; 4], false), true),
+            pad_ampdu([Some(BlockAckMemberAction::Confirm); 4], None),
         );
     }
 
     #[test]
     fn selective_ampdu_plan_covers_every_four_member_ack_subset() {
-        let sequences = [Some(0x0100), Some(0x0101), Some(0x0102), Some(0x0103)];
+        let sequences = pad_ampdu(
+            [Some(0x0100), Some(0x0101), Some(0x0102), Some(0x0103)],
+            None,
+        );
         for bitmap in 0_u64..16 {
             let observation = classify_planned_block_ack(0x0100, bitmap, sequences).unwrap();
             let plan = plan_selective_ampdu_retry(
                 observation,
-                [true; 4],
+                pad_ampdu([true; 4], false),
                 true,
-                [Some(18); 4],
+                pad_ampdu([Some(18); 4], None),
             );
             let expected_retry_count = 4 - bitmap.count_ones() as u8;
             assert_eq!(plan.retry_count, expected_retry_count, "bitmap {bitmap:#06b}");
@@ -13109,87 +13184,114 @@ mod tests {
     #[test]
     fn selective_ampdu_plan_rejects_mixed_or_unavailable_retry_rates() {
         let observation = PlannedBlockAck {
-            states: [
-                BlockAckMemberState::Missing,
-                BlockAckMemberState::Acknowledged,
-                BlockAckMemberState::Missing,
-                BlockAckMemberState::Missing,
-            ],
+            states: pad_ampdu(
+                [
+                    BlockAckMemberState::Missing,
+                    BlockAckMemberState::Acknowledged,
+                    BlockAckMemberState::Missing,
+                    BlockAckMemberState::Missing,
+                ],
+                BlockAckMemberState::OutsideWindow,
+            ),
             member_count: 4,
         };
         let plan = plan_selective_ampdu_retry(
             observation,
-            [true; 4],
+            pad_ampdu([true; 4], false),
             true,
-            [Some(18), None, Some(17), Some(18)],
+            pad_ampdu([Some(18), None, Some(17), Some(18)], None),
         );
         assert_eq!(plan.retry_count, 2);
-        assert_eq!(plan.retry_members, [Some(0), Some(3), None, None]);
+        assert_eq!(plan.retry_members, pad_ampdu([Some(0), Some(3), None, None], None));
         assert_eq!(
             plan.actions,
-            [
-                Some(BlockAckMemberAction::Retry),
-                Some(BlockAckMemberAction::Confirm),
-                Some(BlockAckMemberAction::GiveUp),
-                Some(BlockAckMemberAction::Retry),
-            ],
+            pad_ampdu(
+                [
+                    Some(BlockAckMemberAction::Retry),
+                    Some(BlockAckMemberAction::Confirm),
+                    Some(BlockAckMemberAction::GiveUp),
+                    Some(BlockAckMemberAction::Retry),
+                ],
+                None,
+            ),
         );
 
-        let inactive = plan_selective_ampdu_retry(observation, [true; 4], false, [Some(18); 4]);
+        let inactive = plan_selective_ampdu_retry(
+            observation,
+            pad_ampdu([true; 4], false),
+            false,
+            pad_ampdu([Some(18); 4], None),
+        );
         assert_eq!(inactive.retry_count, 0);
         assert_eq!(
             inactive.actions,
-            [
-                Some(BlockAckMemberAction::GiveUp),
-                Some(BlockAckMemberAction::Confirm),
-                Some(BlockAckMemberAction::GiveUp),
-                Some(BlockAckMemberAction::GiveUp),
-            ],
+            pad_ampdu(
+                [
+                    Some(BlockAckMemberAction::GiveUp),
+                    Some(BlockAckMemberAction::Confirm),
+                    Some(BlockAckMemberAction::GiveUp),
+                    Some(BlockAckMemberAction::GiveUp),
+                ],
+                None,
+            ),
         );
     }
 
     #[test]
     fn planned_block_ack_distinguishes_partial_and_whole_retry() {
         let observation = PlannedBlockAck {
-            states: [
-                BlockAckMemberState::Acknowledged,
-                BlockAckMemberState::Missing,
+            states: pad_ampdu(
+                [
+                    BlockAckMemberState::Acknowledged,
+                    BlockAckMemberState::Missing,
+                    BlockAckMemberState::OutsideWindow,
+                    BlockAckMemberState::Missing,
+                ],
                 BlockAckMemberState::OutsideWindow,
-                BlockAckMemberState::Missing,
-            ],
+            ),
             member_count: 4,
         };
         assert_eq!(
-            plan_planned_block_ack_actions(observation, [true, true, true, false], true),
-            [
-                Some(BlockAckMemberAction::Confirm),
-                Some(BlockAckMemberAction::Retry),
-                Some(BlockAckMemberAction::GiveUp),
-                Some(BlockAckMemberAction::GiveUp),
-            ],
+            plan_planned_block_ack_actions(
+                observation,
+                pad_ampdu([true, true, true, false], false),
+                true,
+            ),
+            pad_ampdu(
+                [
+                    Some(BlockAckMemberAction::Confirm),
+                    Some(BlockAckMemberAction::Retry),
+                    Some(BlockAckMemberAction::GiveUp),
+                    Some(BlockAckMemberAction::GiveUp),
+                ],
+                None,
+            ),
         );
 
         let total_miss = PlannedBlockAck {
-            states: [BlockAckMemberState::Missing; 4],
+            states: pad_ampdu(
+                [BlockAckMemberState::Missing; 4],
+                BlockAckMemberState::OutsideWindow,
+            ),
             member_count: 4,
         };
         assert!(planned_whole_retry_allowed(
             total_miss,
-            [true; 4],
+            pad_ampdu([true; 4], false),
             true,
-            [Some(18); 4],
+            pad_ampdu([Some(18); 4], None),
         ));
         assert!(!planned_whole_retry_allowed(
             total_miss,
-            [true; 4],
+            pad_ampdu([true; 4], false),
             true,
-            [Some(18), Some(18), Some(17), Some(18)],
+            pad_ampdu([Some(18), Some(18), Some(17), Some(18)], None),
         ));
         assert!(!planned_whole_retry_allowed(
             total_miss,
-            [true; 4],
+            pad_ampdu([true; 4], false),
             false,
-            [Some(18); 4],
+            pad_ampdu([Some(18); 4], None),
         ));
         assert!(merge_planned_block_ack(
             Some(PlannedBlockAck {
@@ -13254,7 +13356,7 @@ mod tests {
     #[test]
     fn planned_depth_four_ampdu_matches_the_vendor_member_loop() {
         let members = core::array::from_fn(|index| {
-            Some(PlannedAmpduMember {
+            (index < 4).then_some(PlannedAmpduMember {
                 frame_state: 0x0901_0000 + index as u32 * 0x400,
                 frame_length: 1500,
             })
@@ -13302,10 +13404,34 @@ mod tests {
         );
 
         assert!(build_planned_ampdu_descriptor(PlannedAmpduInput {
-            members: [members[0], None, members[2], None],
+            members: pad_ampdu([members[0], None, members[2], None], None),
             ..input
         })
         .is_none());
+    }
+
+    #[cfg(feature = "experimental-depth-eight-ampdu")]
+    #[test]
+    fn planned_depth_eight_ampdu_fits_the_packet_record_stream() {
+        let members = core::array::from_fn(|index| {
+            Some(PlannedAmpduMember {
+                frame_state: 0x0901_0000 + index as u32 * 0x400,
+                frame_length: 1500,
+            })
+        });
+        let descriptor = build_planned_ampdu_descriptor(PlannedAmpduInput {
+            members,
+            phy_rate_word: 0x031407,
+            phy_control_word: 0x06c006,
+            hardware_rate: 0x0c,
+            spacing_selector: 2,
+        })
+        .expect("eight members must fit the 0x2a0-byte software record");
+        assert_eq!(descriptor.member_count, 8);
+        assert_eq!(descriptor.length, 23);
+        assert_eq!(descriptor.aggregate_length, 0x2f58);
+        assert_eq!(descriptor.words[22], 0xe400_0000);
+        assert_eq!(descriptor.phy_words[2], 0x520c_2f58);
     }
 
     #[test]

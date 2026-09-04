@@ -1382,9 +1382,9 @@ pub unsafe fn publish_planned_ampdu(
         return Err(AmpduPublishError::DescriptorUnavailable);
     }
 
-    let mut contexts = [0_u32; 4];
-    let mut original_next = [0_u32; 4];
-    let mut original_rates = [0_u8; 4];
+    let mut contexts = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    let mut original_next = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    let mut original_rates = [0_u8; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
     unsafe { write_live_u32(descriptor_head, descriptor_next) };
     for position in 0..member_count {
         let member = unsafe { &mut *retained[position] };

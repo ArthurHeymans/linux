@@ -19,7 +19,10 @@ expected = {
     "packet_ram::RuntimePacketAddress::new(": 8,
     "validated_tx_frame(": 4,
     "validated_context_tx_frame(": 5,
-    "FrameNodeAddress::from_raw(": 10,
+    # Depth-eight selective planning performs one additional checked walk of
+    # the aggregate frame-node chain without retaining a duplicate context
+    # array on the constrained system stack.
+    "FrameNodeAddress::from_raw(": 11,
     "LiveTxSlot::from_pipe_slot(": 4,
     "RetirableTxSlot::from_pipe_slot(": 1,
     "LiveTxSlot::from_mmio(": 3,

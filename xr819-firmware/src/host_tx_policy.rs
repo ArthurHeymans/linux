@@ -230,6 +230,9 @@ pub const fn rate_try_for_single_rate(rate: u8, ack_failures: u8) -> [u32; 3] {
     rate_try
 }
 
+#[cfg(feature = "experimental-depth-eight-ampdu")]
+pub(crate) const MAX_EXPERIMENTAL_AMPDU_DEPTH: usize = 8;
+#[cfg(not(feature = "experimental-depth-eight-ampdu"))]
 pub(crate) const MAX_EXPERIMENTAL_AMPDU_DEPTH: usize = 4;
 
 #[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
@@ -397,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn ampdu_group_plan_caps_at_four_and_preserves_airtime_budget() {
+    fn ampdu_group_plan_caps_at_active_depth_and_preserves_airtime_budget() {
         let member = AmpduPlanCandidate {
             interface: 0,
             link: 1,
@@ -408,7 +411,7 @@ mod tests {
             requeued: false,
             airtime: 400,
         };
-        let candidates: [Option<AmpduPlanCandidate>; 5] = core::array::from_fn(|index| {
+        let candidates: [Option<AmpduPlanCandidate>; 9] = core::array::from_fn(|index| {
             Some(AmpduPlanCandidate {
                 sequence: member.sequence + index as u16,
                 ..member
@@ -417,8 +420,8 @@ mod tests {
         assert_eq!(
             plan_ampdu_group(&candidates, 1 << 3, 1 << 3, 0),
             Some(AmpduGroupPlan {
-                len: 4,
-                total_airtime: 1600,
+                len: MAX_EXPERIMENTAL_AMPDU_DEPTH as u8,
+                total_airtime: MAX_EXPERIMENTAL_AMPDU_DEPTH as u32 * 400,
             })
         );
         assert_eq!(

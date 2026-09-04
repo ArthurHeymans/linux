@@ -1120,3 +1120,22 @@ and clean BH/WSM ownership. An unrestricted adaptive run selected MCS6 but
 managed only 1.82 Mbit/s TCP and 6.66 Mbit/s UDP at 31% loss, confirming that
 higher-rate service cadence and rate selection remain distinct from the now
 repaired fundamental decodability failure.
+
+Depth-eight preparation first removed a stack-prohibitive intermediate A-MPDU
+descriptor. `prepare_host_ampdu()` now validates members while streaming the
+vendor transfer/delimiter opcodes directly into the existing 0x2a0-byte packet-
+RAM software record, rather than retaining duplicate host/context/member arrays
+and a complete opcode array on the system stack. The established four-member
+shared-rate/fast-loop call chain fell from roughly 6860 to 6576 bytes. A fixed
+MCS4 regression delivered 9.67 Mbit/s TCP and 13.6 Mbit/s UDP at 2.1% loss with
+38,690 aggregate members; fixed MCS5 delivered 5.87 Mbit/s TCP and 15.3 Mbit/s
+UDP at 0.69% loss with 35,015 aggregate members. Both runs retained exact
+aggregate accounting and clean BH/WSM ownership.
+
+Feature `experimental-depth-eight-ampdu` now extends bounded descriptor and BA
+bookkeeping to eight members. The maximum spaced opcode stream is 23 words and
+fits the vendor software record; feature tests cover the eight-member stream.
+Eliminating a duplicate context array from selective retry keeps the ARM chain
+at 6888/6912 bytes. Hardware publication intentionally remains capped at four
+until members five through eight have aggregate-only PAS reservations and a
+completion registry separate from the four physical pipe-slot identities.

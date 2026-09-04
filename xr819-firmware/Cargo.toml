@@ -20,6 +20,12 @@ experimental-depth-four-ampdu = [
     "experimental-depth-two-ampdu",
     "experimental-four-slot-ordinary",
 ]
+# Extends the software aggregate plan and BA bookkeeping to eight members.
+# Hardware publication must still use the four-slot pipe as one aggregate owner.
+experimental-depth-eight-ampdu = [
+    "experimental-depth-four-ampdu",
+    "experimental-shared-ampdu-rate",
+]
 # Replaces the depth histogram with packed retry-outcome telemetry in the
 # diagnostic counters MIB. Never enabled in normal firmware.
 experimental-ampdu-outcome-telemetry = ["experimental-depth-four-ampdu"]
