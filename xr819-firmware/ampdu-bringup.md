@@ -1154,3 +1154,13 @@ cannot yet be represented by merely removing PAS ownership, linking the PAS
 records, populating the vendor table, and publishing the existing descriptor;
 the attempted runtime path must not be retained until the missing low-MAC owner
 or completion transition is identified.
+
+A stricter discriminator then retained total depth four but gave member four
+(the final member) the proposed aggregate-only reservation while members one
+through three kept physical reservations. It failed before any aggregate
+confirmation: baseline ping was 100% lost, 13 queue-2 buffers remained pending,
+and the same missed-interrupt/TX-confirm/BH-fatal sequence followed. This
+exonerates the beyond-four registry capacity itself and proves the attempted
+aggregate-only PAS admission/ordering is already incorrect within the otherwise
+qualified four-member shape. Further work must reproduce vendor queue-to-
+aggregate admission atomically before revisiting depth five.
