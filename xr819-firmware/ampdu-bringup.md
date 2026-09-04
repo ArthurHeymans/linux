@@ -1139,3 +1139,18 @@ Eliminating a duplicate context array from selective retry keeps the ARM chain
 at 6888/6912 bytes. Hardware publication intentionally remains capped at four
 until members five through eight have aggregate-only PAS reservations and a
 completion registry separate from the four physical pipe-slot identities.
+
+A first aggregate-only reservation implementation was rejected in hardware.
+Both depth eight and a depth-five discriminator stalled at fixed MCS5 on the
+first aggregate requiring a fifth member, eventually producing 9--13 outstanding
+host frames, `Missed interrupt?`, a TX-confirm timeout, and a fatal BH exit.
+Using PAS pointers rather than host-context bases in the 16-entry per-link table
+allowed a few shallow aggregates to complete but did not make depth five safe.
+Mirroring the vendor aggregate index at PAS+0x68, preserving the unrelated
+one-bit duration selector at PAS+0x6a, and removing an erroneous ordinary-slot
+staging bit from aggregate-only members also failed to cross the depth-four
+boundary. Recovery was restored after every run. Therefore members five onward
+cannot yet be represented by merely removing PAS ownership, linking the PAS
+records, populating the vendor table, and publishing the existing descriptor;
+the attempted runtime path must not be retained until the missing low-MAC owner
+or completion transition is identified.
