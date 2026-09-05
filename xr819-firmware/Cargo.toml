@@ -28,6 +28,11 @@ experimental-list-first-depth-four-ampdu = [
 experimental-list-first-depth-five-ampdu = [
     "experimental-list-first-depth-four-ampdu",
 ]
+# Exactly-eight one-slot discriminator. Four identities occupy the aggregate
+# pipe slice and four occupy one otherwise-empty foreign slice.
+experimental-list-first-depth-eight-ampdu = [
+    "experimental-list-first-depth-five-ampdu",
+]
 # Hardware-only depth-three/four A-MPDU bring-up. This keeps the qualified
 # depth-two retry implementation byte-stable while deeper ownership evolves.
 experimental-depth-four-ampdu = [

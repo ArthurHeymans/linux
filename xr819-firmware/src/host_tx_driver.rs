@@ -603,6 +603,11 @@ impl HostTxDriver {
 
         #[cfg(feature = "experimental-list-first-depth-five-ampdu")]
         {
+            let target_depth = if cfg!(feature = "experimental-list-first-depth-eight-ampdu") {
+                8
+            } else {
+                5
+            };
             let Some((first_candidate, first_ring_slot)) = self.states[first_index]
                 .as_ref()
                 .and_then(|state| {
@@ -617,11 +622,11 @@ impl HostTxDriver {
             else {
                 return;
             };
-            let mut indices = [usize::MAX; 5];
+            let mut indices = [usize::MAX; 8];
             indices[0] = first_index;
             let mut member_count = 1;
             let mut last_distance = 0_u8;
-            while member_count < 5 {
+            while member_count < target_depth {
                 let next = self
                     .states
                     .iter()
@@ -653,10 +658,10 @@ impl HostTxDriver {
                 member_count += 1;
                 last_distance = distance;
             }
-            if member_count == 5 {
-                let mut retained = [core::ptr::null_mut(); 5];
-                let mut frames = [0_u32; 5];
-                for position in 0..5 {
+            if member_count == target_depth {
+                let mut retained = [core::ptr::null_mut(); 8];
+                let mut frames = [0_u32; 8];
+                for position in 0..target_depth {
                     let Some(HostTxState::Owned { retained: member, hardware: None, .. }) =
                         self.states[indices[position]].as_mut()
                     else {
@@ -666,10 +671,22 @@ impl HostTxDriver {
                     retained[position] = member;
                 }
                 let _guard = mac_domain.enter();
-                if let Ok((pipe, slot)) =
-                    unsafe { vendor_host_tx::publish_list_first_depth_five(retained) }
-                {
-                    for position in 0..5 {
+                #[cfg(feature = "experimental-list-first-depth-eight-ampdu")]
+                let publication = unsafe {
+                    vendor_host_tx::publish_list_first_depth_eight(retained)
+                };
+                #[cfg(not(feature = "experimental-list-first-depth-eight-ampdu"))]
+                let publication = unsafe {
+                    vendor_host_tx::publish_list_first_depth_five([
+                        retained[0],
+                        retained[1],
+                        retained[2],
+                        retained[3],
+                        retained[4],
+                    ])
+                };
+                if let Ok((pipe, slot)) = publication {
+                    for position in 0..target_depth {
                         let Some(HostTxState::Owned {
                             hardware,
                             wait_diagnostic,
@@ -684,7 +701,7 @@ impl HostTxDriver {
                             slot,
                             frames[position],
                             frames[0],
-                            5,
+                            target_depth as u8,
                         ));
                     }
                 }

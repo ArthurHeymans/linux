@@ -350,8 +350,8 @@ pub unsafe fn record_batch_publication(depth: u8) {
 }
 
 /// Records bounded aggregate-depth counts for one lifecycle stage. The low
-/// halfword is depth three normally and depth five in the isolated member-five
-/// discriminator; the high halfword remains depth four.
+/// halfword is depth three normally, depth five in the member-five image, and
+/// depth eight in the member-eight image; the high halfword remains depth four.
 #[inline(always)]
 pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
     #[cfg(all(
@@ -360,9 +360,11 @@ pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
         not(feature = "experimental-ampdu-outcome-telemetry")
     ))]
     unsafe {
-        let recorded_depth = if cfg!(feature = "experimental-list-first-depth-five-ampdu")
-            && depth == 5
+        let recorded_depth = if cfg!(feature = "experimental-list-first-depth-eight-ampdu")
+            && depth == 8
         {
+            Some(0)
+        } else if cfg!(feature = "experimental-list-first-depth-five-ampdu") && depth == 5 {
             Some(0)
         } else if depth == 3 {
             Some(0)

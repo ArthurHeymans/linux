@@ -9,7 +9,8 @@ reuse those same four words for sixteen packed saturating 8-bit outcomes; pass
 `--outcomes` to decode that layout. Pass `--feedback` for images that reuse
 four outcome bytes for the raw retry-feedback census. Pass `--depth-five` for
 the isolated member-five image, where the low halfword is repurposed from
-depth three to depth five.
+depth three to depth five. Pass `--depth-eight` for the corresponding isolated
+depth-eight layout.
 """
 
 import re
@@ -50,11 +51,12 @@ def parse(text):
 def main():
     feedback_mode = "--feedback" in sys.argv[1:]
     depth_five_mode = "--depth-five" in sys.argv[1:]
+    depth_eight_mode = "--depth-eight" in sys.argv[1:]
     outcome_mode = feedback_mode or "--outcomes" in sys.argv[1:]
     paths = [
         argument
         for argument in sys.argv[1:]
-        if argument not in ("--outcomes", "--feedback", "--depth-five")
+        if argument not in ("--outcomes", "--feedback", "--depth-five", "--depth-eight")
     ]
     try:
         text = sys.stdin.read() if not paths else open(paths[0]).read()
@@ -101,7 +103,7 @@ def main():
             count = (words[index >> 2] >> ((index & 3) * 8)) & 0xFF
             print(f"    {name:<24} {count:3d}")
     else:
-        low_depth = 5 if depth_five_mode else 3
+        low_depth = 8 if depth_eight_mode else 5 if depth_five_mode else 3
         for stage in ("attempted", "published", "completed"):
             word = values.get(stage, 0)
             print(

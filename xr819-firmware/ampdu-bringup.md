@@ -1290,3 +1290,27 @@ RAM checks and the full default `tools/check.sh` gate pass. A full diagnostic
 build exceeded the conservative ITCM envelope by 1,256 bytes, so depth-five
 proof intentionally uses publication-path isolation rather than retaining the
 large flight recorder.
+
+Feature `experimental-list-first-depth-eight-ampdu` reuses the same bounded
+registry design at the prepared software maximum. Members one through four
+occupy the aggregate pipe slice and members five through eight occupy every
+entry of one otherwise-empty foreign slice. One aggregate therefore reserves
+two physical-pipe registry slices without allocating another physical TX slot;
+two simultaneous depth-eight owners exactly fill the existing 16 identities and
+completion entries. Selection remains same-rate, PAS-ring-ordered, and closed
+at the first incompatible same-pipe member. All shallower A-MPDU publishers are
+disabled in the image.
+
+Two fixed-MCS5 runs completed cleanly. The first confirmed 17,824 aggregate
+members, exactly 2,228 groups of eight, at 5.22 Mbit/s TCP and 13.0 Mbit/s
+received UDP with 5.1% loss. The repeat confirmed 18,304 members, exactly 2,288
+groups, at 5.31 Mbit/s TCP and 13.0 Mbit/s UDP with 4.3% loss. Both completed
+final ping 50/50, drained every queue and buffer, and retained alive BH, idle
+WSM, and unlocked datapath state without a missed interrupt or TX-confirm
+timeout. The compiled stack chain is 6680/6912 bytes, and the full default
+validation gate passes. A fixed-MCS6 run then confirmed 15,736 members, exactly
+1,967 groups of eight, at 4.11 Mbit/s TCP and 12.3 Mbit/s received UDP with
+8.1% loss. It also completed final ping 50/50 and drained cleanly without a
+missed interrupt or TX-confirm timeout. This proves the existing streamed
+descriptor, software BlockAck/retry arrays, and global identity lookup can
+complete the full eight-member one-slot shape without a larger DTCM registry.

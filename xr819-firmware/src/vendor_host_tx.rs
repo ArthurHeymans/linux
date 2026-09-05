@@ -1820,6 +1820,196 @@ pub unsafe fn publish_list_first_depth_five(
 }
 
 
+#[cfg(all(
+    target_arch = "arm",
+    feature = "experimental-list-first-depth-eight-ampdu"
+))]
+#[inline(never)]
+pub unsafe fn publish_list_first_depth_eight(
+    retained: [*mut RetainedHostTx; 8],
+) -> Result<(u8, u8), AmpduPublishError> {
+    if retained.iter().any(|member| member.is_null()) {
+        return Err(AmpduPublishError::Ownership);
+    }
+    let members = retained.map(|member| unsafe { &mut *member });
+    if members.iter().any(|member| member.phase != HostTxPhase::PasQueued) {
+        return Err(AmpduPublishError::Ownership);
+    }
+    let first_candidate = unsafe { ampdu_candidate(members[0]) };
+    if members[1..].iter().any(|member| {
+        !can_form_ampdu_pair(first_candidate, unsafe { ampdu_candidate(member) })
+    }) {
+        return Err(AmpduPublishError::Grouping);
+    }
+    if unsafe { read_live_u8(crate::dtcm::mac_retry_hardware_state_mmio_address()) } != 0
+        || unsafe { read_live_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as u32) } != 0
+        || members
+            .iter()
+            .any(|member| !unsafe { program_pipe_eligible(member.context) })
+    {
+        return Err(AmpduPublishError::Ownership);
+    }
+
+    let ac = unsafe { read_host_u8(members[0].context.access_category()) };
+    let pipe = unsafe {
+        read_live_u8(
+            crate::dtcm::access_category_to_queue_unchecked(usize::from(ac)).get() as u32,
+        )
+    };
+    if pipe >= 4
+        || members[1..]
+            .iter()
+            .any(|member| unsafe { read_host_u8(member.context.access_category()) } != ac)
+        || unsafe {
+            read_live_u8(crate::dtcm::mac_pipe_state_unchecked(usize::from(pipe)).get() as u32)
+        } != 0
+        || !crate::tx::host_depth_eight_publication_available(pipe)
+    {
+        return Err(AmpduPublishError::Ownership);
+    }
+
+    let head = unsafe {
+        read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f
+    };
+    let tail = unsafe {
+        read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f
+    };
+    let mut ring_slots = [0_u8; 8];
+    for position in 0..8 {
+        let Some(ring_slot) = (unsafe {
+            queued_pas_ring_slot(members[position].context, head, tail)
+        }) else {
+            return Err(AmpduPublishError::Ownership);
+        };
+        if ring_slots[..position].contains(&ring_slot) {
+            return Err(AmpduPublishError::Ownership);
+        }
+        ring_slots[position] = ring_slot;
+    }
+
+    let pipe_index = usize::from(pipe);
+    let slot = unsafe {
+        read_live_u8(crate::dtcm::mac_pipe_current_slot_unchecked(pipe_index).get() as u32) & 3
+    };
+    let slot_record = crate::dtcm::mac_pipe_slot_state_word_unchecked(
+        pipe_index,
+        usize::from(slot),
+    )
+    .get() as u32;
+    let command = unsafe {
+        read_live_u32(
+            crate::dtcm::mac_pipe_slot_command_unchecked(pipe_index, usize::from(slot)).get()
+                as u32,
+        )
+    };
+    let hardware_ring = unsafe {
+        read_live_u32(crate::dtcm::mac_pipe_hardware_ring_unchecked(pipe_index).get() as u32)
+    };
+    if command == 0 || hardware_ring == 0 {
+        return Err(AmpduPublishError::DescriptorUnavailable);
+    }
+    let descriptor_head = crate::dtcm::MAC_SOFTWARE_RECORDS.get() as u32;
+    let descriptor_node = unsafe { read_live_u32(descriptor_head) };
+    let Some(descriptor_index) = crate::dtcm::mac_software_record_node_index(descriptor_node) else {
+        return Err(AmpduPublishError::DescriptorUnavailable);
+    };
+    let descriptor_next = unsafe { read_live_u32(descriptor_node) };
+    let packet_record = unsafe { read_live_u32(descriptor_node + 4) };
+    if packet_ram::software_record_index(packet_record as usize) != Some(descriptor_index)
+        || unsafe { crate::tx::start_phy_operation_1() } != 0
+    {
+        return Err(AmpduPublishError::DescriptorUnavailable);
+    }
+
+    let mut contexts = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+    for position in 0..8 {
+        contexts[position] = Some(members[position].context.raw());
+    }
+    let link = usize::from(first_candidate.key.link);
+    unsafe {
+        write_live_u32(descriptor_head, descriptor_next);
+        for position in 0..8 {
+            let member = members[position].context;
+            let next = if position == 7 {
+                0
+            } else {
+                members[position + 1].context.pas().raw()
+            };
+            write_host_u32(member.next_in_ampdu(), next);
+            write_host_u32(
+                member.control_bits(),
+                (read_host_u32(member.control_bits()) & !0x8000) | 0x20,
+            );
+            write_host_u32(
+                member.ownership_bits(),
+                read_host_u32(member.ownership_bits()) | 0x80,
+            );
+            write_live_u32(
+                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(ring_slots[position]))
+                    .get() as u32,
+                0,
+            );
+            write_live_u32(
+                crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
+                    .member_unchecked(link, position)
+                    .get() as u32,
+                member.raw(),
+            );
+        }
+        let mut new_head = head;
+        while new_head != tail
+            && read_live_u32(
+                crate::dtcm::host_pas_ring_slot_unchecked(usize::from(new_head)).get() as u32,
+            ) == 0
+        {
+            new_head = new_head.wrapping_add(1) & 0x3f;
+        }
+        write_live_u32(
+            crate::dtcm::HOST_PAS_RING_HEAD.get() as u32,
+            u32::from(new_head),
+        );
+        write_live_u32(
+            crate::dtcm::pre_vif_link_bitmap().get() as u32,
+            read_live_u32(crate::dtcm::pre_vif_link_bitmap().get() as u32) | (1_u32 << link),
+        );
+        write_live_u8(
+            crate::dtcm::ba_pipe_activity_unchecked(link).get() as u32,
+            6,
+        );
+        write_host_u32(
+            members[0].context.control_bits(),
+            read_host_u32(members[0].context.control_bits()) | 0x40,
+        );
+        if crate::tx::prepare_host_ampdu(
+            contexts,
+            pipe,
+            slot,
+            slot_record,
+            command,
+            descriptor_node,
+            packet_record,
+        )
+        .is_err()
+        {
+            crate::halt_always!();
+        }
+        if crate::tx::publish_planned_host_ampdu(
+            contexts.map(|context| context.unwrap_or(0)),
+            pipe,
+            slot,
+        )
+        .is_err()
+        {
+            crate::halt_always!();
+        }
+    }
+    for member in members {
+        member.phase = HostTxPhase::Scheduled;
+    }
+    Ok((pipe, slot))
+}
+
+
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
 #[inline(never)]
 pub unsafe fn publish_planned_ampdu(
