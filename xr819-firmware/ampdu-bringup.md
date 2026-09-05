@@ -1164,3 +1164,23 @@ exonerates the beyond-four registry capacity itself and proves the attempted
 aggregate-only PAS admission/ordering is already incorrect within the otherwise
 qualified four-member shape. Further work must reproduce vendor queue-to-
 aggregate admission atomically before revisiting depth five.
+
+Follow-up one-physical-owner experiments narrowed that missing transition. A
+four-member aggregate with only the head retaining a physical pipe reservation
+failed before its first aggregate confirmation under every tested completion-
+registry and table representation. Rebuilding non-head control flags from the
+pre-reservation values, allowing aggregate member identities to coexist with
+ordinary completion entries, and converting publication errors into complete
+rollback rather than a terminal halt did not change the hardware stall. Live
+APB inspection found that the failing path nevertheless published the same
+seven-word kind-1 pipe-command shape as the qualified four-reservation path and
+pointed it at the expected pipe-zero software record. Therefore the failure is
+not a missing GO, malformed outer pipe command, or aggregate-feedback issue.
+A diagnostic that deliberately aborted after descriptor preparation but before
+`publish_planned_host_ampdu()` still left subsequent ordinary TX wedged after
+aggregate-only members had been admitted and then cancelled. This places the
+first irreversible error before final kind-1 publication, in the attempted
+aggregate-only reservation/admission transaction or its rollback. The vendor's
+queue-to-kind-1 conversion must be recovered as a distinct primitive; an
+ordinary reservation with its physical slot restored, or a software-only PAS
+marker followed by the current cancellation path, is not equivalent.
