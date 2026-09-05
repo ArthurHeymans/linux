@@ -1370,3 +1370,33 @@ acknowledged members, zero invalid reports, 4.33 Mbit/s TCP, 12.5 Mbit/s UDP,
 is the first bounded selective-failure report in these depth-four qualification
 runs rather than an accounting mismatch. The implementation remains
 feature-gated pending promotion.
+
+The next vendor-shaped scheduler step replaced the exact four-member condition
+with a contiguous PAS-ring prefix of two through four same-link, same-TID,
+same-rate members. Selection stops at the first incompatible same-pipe frame,
+and the existing one-slot transaction publishes whatever compatible prefix is
+available. The first fixed-MCS5 run reported 32,703 members across 8,675 heads,
+for mean depth 3.77, with zero invalid aggregate reports, 5.19 Mbit/s TCP, 14.0
+Mbit/s UDP, 1.4% loss, and 50/50 final pings. This improves TCP service cadence
+relative to exact depth four while preserving useful UDP throughput and clean
+ownership.
+
+The variable-depth path now applies the same wrap-safe 8,000,000-tick PAS expiry
+deadline as ordinary vendor scheduling before any list mutation. An initial
+expiry-gated attempt saw no controlled AP and transmitted zero frames, so it was
+classified as environmental. The replacement fixed-MCS5 run reported 30,677
+members across 8,087 heads, for mean depth 3.79, with zero invalid reports, 5.07
+Mbit/s TCP, 13.0 Mbit/s UDP, 2.2% loss, and 50/50 final pings. Compiled stack is
+6408/6912 bytes. The expiry gate therefore preserves the variable transaction;
+The fixed-MCS6 replacement reported 26,450 members across 7,064 heads, for
+mean depth 3.74, with zero invalid reports, 2.07 Mbit/s TCP, 13.1 Mbit/s UDP,
+7.1% loss, and 50/50 final pings. This remains clean but trails exact depth
+four's MCS6 throughput, so variable depth is a latency/service-cadence tool
+rather than a universal throughput win. A diagnostic fixed-MCS5 run then
+reported 34,819 members across 9,136 logical heads, zero invalid reports, 6.08
+Mbit/s TCP, 14.3 Mbit/s UDP, 1.3% loss, and 50/50 final pings. Publication
+telemetry observed 8,125 depth-four and 977 depth-three physical attempts. The
+remaining difference requires at least 34 depth-two attempts, while software
+republication means the existing packed counters cannot reconstruct one exact
+logical histogram. All three bounded depths were therefore exercised, and the
+mean logical depth was 3.81.

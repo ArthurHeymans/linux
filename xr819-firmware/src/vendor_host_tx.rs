@@ -534,6 +534,11 @@ unsafe fn vendor_timer() -> u32 {
     }
 }
 
+#[cfg(any(test, target_arch = "arm"))]
+const fn pas_submission_expired(submitted: u32, now: u32) -> bool {
+    (submitted.wrapping_sub(now).wrapping_add(0x007a_1200) as i32) < 0
+}
+
 #[allow(unused_macros)]
 macro_rules! observe_normal_power_save_release {
     ($sleeping:expr, $frame_control:expr, $link_gate:expr, $link_bit:expr, $policy:expr, $flags:expr) => {{
@@ -1313,7 +1318,7 @@ unsafe fn queued_pas_ring_slot(context: HostContextAddress, head: u8, tail: u8) 
 
 #[cfg(all(
     target_arch = "arm",
-    feature = "experimental-list-first-depth-five-ampdu"
+    feature = "experimental-list-first-depth-four-ampdu"
 ))]
 pub unsafe fn queued_pas_ring_position(retained: &RetainedHostTx) -> Option<u8> {
     let head = unsafe {
@@ -1323,6 +1328,16 @@ pub unsafe fn queued_pas_ring_position(retained: &RetainedHostTx) -> Option<u8> 
         read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f
     };
     unsafe { queued_pas_ring_slot(retained.context, head, tail) }
+}
+
+#[cfg(all(
+    target_arch = "arm",
+    feature = "experimental-list-first-depth-four-ampdu"
+))]
+pub unsafe fn list_first_member_expired(retained: &RetainedHostTx) -> bool {
+    let now = unsafe { vendor_timer() };
+    let submitted = unsafe { read_host_u32(retained.context.submit_timer()) };
+    pas_submission_expired(submitted, now)
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-list-first-ampdu"))]
@@ -1448,39 +1463,46 @@ pub unsafe fn publish_list_first_depth_two(
 #[inline(never)]
 pub unsafe fn publish_list_first_depth_four(
     retained: [*mut RetainedHostTx; 4],
+    member_count: usize,
 ) -> Result<(u8, u8), AmpduPublishError> {
-    if retained.iter().any(|member| member.is_null()) {
+    if !(2..=4).contains(&member_count)
+        || retained[..member_count].iter().any(|member| member.is_null())
+        || retained[member_count..].iter().any(|member| !member.is_null())
+    {
         return Err(AmpduPublishError::Ownership);
     }
-    let members = retained.map(|member| unsafe { &mut *member });
-    if members.iter().any(|member| member.phase != HostTxPhase::PasQueued) {
+    if (0..member_count).any(|position| unsafe {
+        (*retained[position]).phase != HostTxPhase::PasQueued
+            || list_first_member_expired(&*retained[position])
+    }) {
         return Err(AmpduPublishError::Ownership);
     }
-    let first_candidate = unsafe { ampdu_candidate(members[0]) };
-    if members[1..].iter().any(|member| {
-        !can_form_ampdu_pair(first_candidate, unsafe { ampdu_candidate(member) })
+    let first_context = unsafe { (*retained[0]).context };
+    let first_candidate = unsafe { ampdu_candidate(&*retained[0]) };
+    if (1..member_count).any(|position| {
+        !can_form_ampdu_pair(first_candidate, unsafe { ampdu_candidate(&*retained[position]) })
     }) {
         return Err(AmpduPublishError::Grouping);
     }
     if unsafe { read_live_u8(crate::dtcm::mac_retry_hardware_state_mmio_address()) } != 0
         || unsafe { read_live_u8(crate::dtcm::LOW_MAC_RECEIVE_GATE_BITS.get() as u32) } != 0
-        || members
-            .iter()
-            .any(|member| !unsafe { program_pipe_eligible(member.context) })
+        || (0..member_count).any(|position| {
+            !unsafe { program_pipe_eligible((*retained[position]).context) }
+        })
     {
         return Err(AmpduPublishError::Ownership);
     }
 
-    let ac = unsafe { read_host_u8(members[0].context.access_category()) };
+    let ac = unsafe { read_host_u8(first_context.access_category()) };
     let pipe = unsafe {
         read_live_u8(
             crate::dtcm::access_category_to_queue_unchecked(usize::from(ac)).get() as u32,
         )
     };
     if pipe >= 4
-        || members[1..]
-            .iter()
-            .any(|member| unsafe { read_host_u8(member.context.access_category()) } != ac)
+        || (1..member_count).any(|position| unsafe {
+            read_host_u8((*retained[position]).context.access_category()) != ac
+        })
         || unsafe {
             read_live_u8(crate::dtcm::mac_pipe_state_unchecked(usize::from(pipe)).get() as u32)
         } != 0
@@ -1496,9 +1518,9 @@ pub unsafe fn publish_list_first_depth_four(
         read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f
     };
     let mut ring_slots = [0_u8; 4];
-    for position in 0..4 {
+    for position in 0..member_count {
         let Some(ring_slot) = (unsafe {
-            queued_pas_ring_slot(members[position].context, head, tail)
+            queued_pas_ring_slot((*retained[position]).context, head, tail)
         }) else {
             return Err(AmpduPublishError::Ownership);
         };
@@ -1543,27 +1565,27 @@ pub unsafe fn publish_list_first_depth_four(
     }
 
     let mut contexts = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-    for position in 0..4 {
-        contexts[position] = Some(members[position].context.raw());
+    for position in 0..member_count {
+        contexts[position] = Some((*retained[position]).context.raw());
     }
     let link = usize::from(first_candidate.key.link);
     unsafe {
         write_live_u32(descriptor_head, descriptor_next);
-        for position in 0..4 {
-            let member = members[position].context;
-            let next = if position == 3 {
+        for position in 0..member_count {
+            let context = (*retained[position]).context;
+            let next = if position + 1 == member_count {
                 0
             } else {
-                members[position + 1].context.pas().raw()
+                (*retained[position + 1]).context.pas().raw()
             };
-            write_host_u32(member.next_in_ampdu(), next);
+            write_host_u32(context.next_in_ampdu(), next);
             write_host_u32(
-                member.control_bits(),
-                (read_host_u32(member.control_bits()) & !0x8000) | 0x20,
+                context.control_bits(),
+                (read_host_u32(context.control_bits()) & !0x8000) | 0x20,
             );
             write_host_u32(
-                member.ownership_bits(),
-                read_host_u32(member.ownership_bits()) | 0x80,
+                context.ownership_bits(),
+                read_host_u32(context.ownership_bits()) | 0x80,
             );
             write_live_u32(
                 crate::dtcm::host_pas_ring_slot_unchecked(usize::from(ring_slots[position]))
@@ -1574,7 +1596,7 @@ pub unsafe fn publish_list_first_depth_four(
                 crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
                     .member_unchecked(link, position)
                     .get() as u32,
-                member.raw(),
+                context.raw(),
             );
         }
         let mut new_head = head;
@@ -1598,8 +1620,8 @@ pub unsafe fn publish_list_first_depth_four(
             6,
         );
         write_host_u32(
-            members[0].context.control_bits(),
-            read_host_u32(members[0].context.control_bits()) | 0x40,
+            first_context.control_bits(),
+            read_host_u32(first_context.control_bits()) | 0x40,
         );
         if crate::tx::prepare_host_ampdu(
             contexts,
@@ -1624,8 +1646,8 @@ pub unsafe fn publish_list_first_depth_four(
             crate::halt_always!();
         }
     }
-    for member in members {
-        member.phase = HostTxPhase::Scheduled;
+    for retained in retained.iter().take(member_count).copied() {
+        unsafe { (*retained).phase = HostTxPhase::Scheduled };
     }
     Ok((pipe, slot))
 }
@@ -2223,7 +2245,7 @@ unsafe fn reserve_non_aggregate_scheduler_at(
     let now = unsafe { vendor_timer() };
     let submitted = unsafe { read_host_u32(context.submit_timer()) };
     let decision = non_aggregate_scheduler_decision(NonAggregateSchedulerInput {
-        expired: (submitted.wrapping_sub(now).wrapping_add(0x007a_1200) as i32) < 0,
+        expired: pas_submission_expired(submitted, now),
         pipe_allowed: unsafe { program_pipe_eligible(context) },
         pipe,
         idle_pipe_mask,
@@ -3480,6 +3502,13 @@ mod tests {
         assert_eq!(ring.entries[4], 0x3054);
         assert_eq!(ring.head, 3);
         assert_eq!(ring.tail, 5);
+    }
+
+    #[test]
+    fn pas_expiry_preserves_vendor_deadline_and_timer_wrap() {
+        assert!(!pas_submission_expired(100, 100 + 0x007a_1200));
+        assert!(pas_submission_expired(100, 101 + 0x007a_1200));
+        assert!(!pas_submission_expired(u32::MAX - 10, 5));
     }
 
     #[test]
