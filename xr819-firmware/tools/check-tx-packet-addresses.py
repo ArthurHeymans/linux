@@ -31,7 +31,7 @@ expected = {
     "retained_hardware_ring(": 6,
     "TxHardwareRingAddress::for_pipe(": 13,
     "TxHardwareRingAddress::new(": 0,
-    "PublishedSlotIdentity::new(": 4,
+    "PublishedSlotIdentity::new(": 3,
     ".live_slot()": 3,
     ".mac_offset()": 2,
     ".tx_payload_bus_address(": 2,

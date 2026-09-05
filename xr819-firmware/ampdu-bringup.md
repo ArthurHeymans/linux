@@ -1314,3 +1314,59 @@ validation gate passes. A fixed-MCS6 run then confirmed 15,736 members, exactly
 missed interrupt or TX-confirm timeout. This proves the existing streamed
 descriptor, software BlockAck/retry arrays, and global identity lookup can
 complete the full eight-member one-slot shape without a larger DTCM registry.
+
+An adaptive list-first prototype selected the same qualified transaction by
+physical rate: depth eight for hardware rate indices
+19--20 (MCS5--6) and depth four for all other rates, including MCS7. A fixed-MCS4
+run confirmed 30,097 aggregate members at 4.44 Mbit/s TCP and 14.7 Mbit/s
+received UDP with 4.4% loss. A fixed-MCS5 run confirmed 13,896 members, exactly
+1,737 groups of eight, at 3.13 Mbit/s TCP and 10.8 Mbit/s UDP with 12% loss.
+Both completed final connectivity and drained cleanly. The adaptive selector was
+correct but did not by itself restore the best fixed-rate TCP service cadence.
+
+Combining that scheduler with `experimental-aggregate-rate-feedback` then
+enabled member requeue and one mac80211 rate report per physical aggregate.
+The first fixed-MCS5 run produced 1,871 metadata heads for 14,968 confirmed
+members: summed reported depth and acknowledged count were both exactly 14,968,
+every head retained `TX_CTL_AMPDU`, and the driver recorded zero invalid reports.
+It delivered 3.70 Mbit/s TCP and 12.1 Mbit/s received UDP with 6.9% loss,
+followed by 49/50 ping replies and clean BH/WSM ownership. A fixed-MCS4 run then
+reported exactly 25,008 acknowledged members across 6,252 four-member heads,
+with zero invalid reports, 2.95 Mbit/s TCP, 12.6 Mbit/s UDP, and 50/50 final
+pings. After consolidating the depth-five/eight software identity spill and
+publication transaction into one bounded five-to-eight-member path, fixed MCS5
+again completed exactly 15,088 acknowledged members across 1,886 eight-member
+heads, with zero invalid reports, 4.15 Mbit/s TCP, 11.8 Mbit/s UDP, and 50/50
+final pings. The generic path therefore preserves the proven one-slot ownership
+boundary.
+
+An unrestricted-rate run remained ownership-clean, but mac80211 ended at MCS7
+and delivered only 2.87 Mbit/s TCP and 3.17 Mbit/s UDP with 54% application loss.
+All 4,160 aggregate members belonged to exactly 1,040 depth-four heads and all
+aggregate reports were valid. This is further evidence that unrestricted MCS7
+is not a useful throughput endpoint even though the publication transaction is
+correct. A same-image fixed-MCS5 depth-four comparison then confirmed exactly 29,028
+members across 7,257 heads, with zero invalid reports, 4.25 Mbit/s TCP, 14.9
+Mbit/s UDP, 1.9% loss, and 50/50 final pings. Against the generic depth-eight
+run's 4.15 Mbit/s TCP and 11.8 Mbit/s UDP, this rejects depth eight at MCS5 on
+throughput rather than correctness. At MCS6, depth eight delivered 3.84 Mbit/s
+TCP and 11.8 Mbit/s UDP with 9.6% loss, while depth four delivered 2.52 Mbit/s
+TCP and 14.8 Mbit/s UDP with 6.8% loss. Both reported every member exactly and
+drained cleanly, but depth four again sustained substantially more UDP payload
+with lower loss and ended with 50/50 rather than 49/50 pings. No measured rate
+therefore justifies depth eight as the adaptive default. The adaptive feature
+was removed instead of retaining a selector that always chose four. The lean
+list-first depth-four plus aggregate-feedback image uses 6368/6912 bytes of
+compiled stack. Its first fixed-MCS5 qualification reported exactly 30,600
+members across 7,650 heads with zero invalid reports, 4.48 Mbit/s TCP, 15.9
+Mbit/s UDP, 0.92% loss, 50/50 final pings, and clean ownership. This recovers
+most of the best depth-four UDP result while adding bounded aggregate-level
+mac80211 feedback. The lean image also repeated the depth-four MCS6 shape with
+exactly 26,184 members across 6,546 heads, zero invalid reports, 2.50 Mbit/s
+TCP, 14.3 Mbit/s UDP, 7.8% loss, and 50/50 final pings. The final-source MCS5
+image then reported 6,318 heads and aggregate length 25,272, with 25,269
+acknowledged members, zero invalid reports, 4.33 Mbit/s TCP, 12.5 Mbit/s UDP,
+4.3% loss, 50/50 final pings, and clean ownership. The three-member difference
+is the first bounded selective-failure report in these depth-four qualification
+runs rather than an accounting mismatch. The implementation remains
+feature-gated pending promotion.

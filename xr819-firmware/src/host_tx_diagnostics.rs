@@ -62,7 +62,11 @@ const FLIGHT_RECORD_COUNT: usize = 32;
 #[cfg(all(
     feature = "vendor-host-tx-diagnostics",
     feature = "experimental-depth-four-ampdu",
-    not(feature = "experimental-ampdu-outcome-telemetry")
+    not(feature = "experimental-ampdu-outcome-telemetry"),
+    not(any(
+        feature = "experimental-rate-feedback-telemetry",
+        feature = "experimental-aggregate-rate-feedback"
+    ))
 ))]
 const FLIGHT_RECORD_COUNT: usize = 64;
 #[cfg(all(

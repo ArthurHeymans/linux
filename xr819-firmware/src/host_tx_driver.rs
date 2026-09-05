@@ -603,11 +603,6 @@ impl HostTxDriver {
 
         #[cfg(feature = "experimental-list-first-depth-five-ampdu")]
         {
-            let target_depth = if cfg!(feature = "experimental-list-first-depth-eight-ampdu") {
-                8
-            } else {
-                5
-            };
             let Some((first_candidate, first_ring_slot)) = self.states[first_index]
                 .as_ref()
                 .and_then(|state| {
@@ -621,6 +616,11 @@ impl HostTxDriver {
                 })
             else {
                 return;
+            };
+            let target_depth = if cfg!(feature = "experimental-list-first-depth-eight-ampdu") {
+                8
+            } else {
+                5
             };
             let mut indices = [usize::MAX; 8];
             indices[0] = first_index;
@@ -671,19 +671,8 @@ impl HostTxDriver {
                     retained[position] = member;
                 }
                 let _guard = mac_domain.enter();
-                #[cfg(feature = "experimental-list-first-depth-eight-ampdu")]
                 let publication = unsafe {
-                    vendor_host_tx::publish_list_first_depth_eight(retained)
-                };
-                #[cfg(not(feature = "experimental-list-first-depth-eight-ampdu"))]
-                let publication = unsafe {
-                    vendor_host_tx::publish_list_first_depth_five([
-                        retained[0],
-                        retained[1],
-                        retained[2],
-                        retained[3],
-                        retained[4],
-                    ])
+                    vendor_host_tx::publish_list_first_deep(retained, target_depth)
                 };
                 if let Ok((pipe, slot)) = publication {
                     for position in 0..target_depth {
