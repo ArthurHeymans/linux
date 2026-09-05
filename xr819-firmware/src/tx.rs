@@ -5906,7 +5906,25 @@ pub unsafe fn publish_depth_two_host_ampdu(
     Ok(())
 }
 
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
+#[cfg(all(target_arch = "arm", feature = "experimental-list-first-ampdu"))]
+pub fn host_ampdu_publication_available(pipe: u8) -> bool {
+    if pipe >= 4 {
+        return false;
+    }
+    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
+    let start = usize::from(pipe) * 4;
+    runtime.backend.publications[start..start + 4]
+        .iter()
+        .all(Option::is_none)
+}
+
+#[cfg(all(
+    target_arch = "arm",
+    any(
+        feature = "experimental-depth-four-ampdu",
+        feature = "experimental-list-first-ampdu"
+    )
+))]
 #[inline(never)]
 pub unsafe fn publish_planned_host_ampdu(
     contexts: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
@@ -5916,7 +5934,9 @@ pub unsafe fn publish_planned_host_ampdu(
     let member_count = contexts.iter().take_while(|context| **context != 0).count();
     if pipe >= 4
         || slot >= 4
-        || !(3..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&member_count)
+        || !(if cfg!(feature = "experimental-list-first-ampdu") { 2 } else { 3 }
+            ..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH)
+            .contains(&member_count)
         || contexts[member_count..].iter().any(|context| *context != 0)
     {
         return Err(ProbeBuildError::UnsupportedPublicationShape);

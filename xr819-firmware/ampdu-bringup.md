@@ -1200,3 +1200,57 @@ allocating and publishing the physical pipe transaction, while the open path
 still begins from a pre-reserved ordinary head slot. Reproducing the vendor
 ordering now requires a separate aggregate scheduler transaction rather than
 further mutation of `HostSchedulerReservation`.
+
+The feature-gated `experimental-list-first-ampdu` discriminator subsequently
+validated that transaction boundary at depth two. It validates both PAS
+contexts and all scheduler resources while they remain queued, starts the PHY,
+sets A-MPDU admission state including PAS ownership bit `0x80`, builds the PAS
+chain and per-link table, clears both ring entries, and compacts the ring head
+once. Only then does it remove one descriptor from the free list and publish one
+kind-1 physical slot. No ordinary `HostSchedulerReservation` exists for either
+the head or member, and there is no aggregate cancellation path after mutation.
+Descriptor construction later adds the vendor build-time `0x100` ownership bit
+through the qualified common publication tail.
+
+An initial three-run campaign was invalidated after review found that its caller
+had been inserted only in the four-slot scheduler implementation while the test
+feature selected the two-slot implementation. Those runs exercised the
+qualified pre-existing depth-two path and are retained only as controls, not as
+list-first evidence.
+
+The corrected image made the list-first caller reachable and changed both its
+hash and compiled stack report. Its first fixed-MCS5 run confirmed 26,796
+aggregate members with no outstanding buffers or queue entries and clean BH,
+WSM, and datapath state. It delivered 5.46 Mbit/s TCP and 7.93 Mbit/s received
+UDP, followed by 50/50 ping replies. A repeat confirmed another 29,994 aggregate
+members at 6.57 Mbit/s TCP and 11.1 Mbit/s UDP. The repeat's final ping received
+no replies despite clean firmware ownership state, matching an intermittent
+post-UDP connectivity symptom also seen in the control campaign. Across the two
+actual list-first runs, 56,790 aggregate members completed without one missed
+interrupt, TX-confirm timeout, or BH failure. The corrected image's exact
+compiled stack chain is 6608/6912 bytes. This validates one physical slot for a
+depth-two host A-MPDU and proves that list-first ordering must include the head
+itself; no isolated PAS field write repaired the rejected pre-reserved-head
+designs.
+
+Feature `experimental-list-first-depth-four-ampdu` scales the same atomic
+transaction to four members. Its isolation mode disables the qualified reserved
+A-MPDU fallbacks, so all shallower ready groups use ordinary batch publication
+and every aggregate descriptor comes from the four-member list-first path. A
+non-diagnostic fixed-MCS5 run confirmed 34,827 aggregate members, delivered
+6.71 Mbit/s TCP and 15.7 Mbit/s received UDP at 1.5% loss, and completed final
+ping 50/50 with empty queues and clean BH/WSM state. Because selective retries
+retain Linux aggregate classification, the driver member count alone is not an
+exact publication-depth proof.
+
+A diagnostic repeat supplied that proof. Firmware telemetry counted 9,254
+four-member descriptors at the common publication boundary and zero depth-three
+descriptors. The driver confirmed 36,752 aggregate members, exactly 9,188 sets
+of four, while the difference from prepared publications was absorbed by the
+existing retry/failure paths. The run delivered 7.06 Mbit/s TCP and 16.6 Mbit/s
+received UDP at 1.2% loss, completed final ping 50/50 at 2.85 ms average, and
+ended with zero used buffers, empty queues, BH alive, WSM idle, and the datapath
+unlocked. No missed interrupt or TX-confirm timeout occurred. The isolated image
+uses 6328/6912 bytes of compiled stack; adding the diagnostic counters raises it
+to 6360/6912. This removes the old four-physical-reservation requirement and
+makes member five the next direct transaction-scaling discriminator.

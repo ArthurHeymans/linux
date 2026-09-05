@@ -14,6 +14,14 @@ default = []
 vendor-host-tx-diagnostics = []
 # Hardware-only depth-two A-MPDU bring-up. Never enabled in normal firmware.
 experimental-depth-two-ampdu = []
+# Vendor-order depth-two discriminator: form and detach the complete PAS list
+# before claiming the aggregate's single physical pipe slot.
+experimental-list-first-ampdu = ["experimental-depth-two-ampdu"]
+# Scale the proven list-first transaction to four members sharing one slot.
+experimental-list-first-depth-four-ampdu = [
+    "experimental-list-first-ampdu",
+    "experimental-depth-four-ampdu",
+]
 # Hardware-only depth-three/four A-MPDU bring-up. This keeps the qualified
 # depth-two retry implementation byte-stable while deeper ownership evolves.
 experimental-depth-four-ampdu = [
