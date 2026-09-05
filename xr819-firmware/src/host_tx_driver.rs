@@ -601,7 +601,101 @@ impl HostTxDriver {
             return;
         };
 
-        #[cfg(feature = "experimental-list-first-depth-four-ampdu")]
+        #[cfg(feature = "experimental-list-first-depth-five-ampdu")]
+        {
+            let Some((first_candidate, first_ring_slot)) = self.states[first_index]
+                .as_ref()
+                .and_then(|state| {
+                    let HostTxState::Owned { retained, hardware: None, .. } = state else {
+                        return None;
+                    };
+                    Some((
+                        unsafe { vendor_host_tx::ampdu_candidate(retained) },
+                        unsafe { vendor_host_tx::queued_pas_ring_position(retained) }?,
+                    ))
+                })
+            else {
+                return;
+            };
+            let mut indices = [usize::MAX; 5];
+            indices[0] = first_index;
+            let mut member_count = 1;
+            let mut last_distance = 0_u8;
+            while member_count < 5 {
+                let next = self
+                    .states
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, state)| {
+                        if index == first_index
+                            || candidate_pipes[index] != candidate_pipes[first_index]
+                        {
+                            return None;
+                        }
+                        let HostTxState::Owned { retained, hardware: None, .. } = state.as_ref()? else {
+                            return None;
+                        };
+                        let ring_slot = unsafe { vendor_host_tx::queued_pas_ring_position(retained) }?;
+                        let distance = ring_slot.wrapping_sub(first_ring_slot) & 0x3f;
+                        (distance > last_distance).then_some((distance, index, retained))
+                    })
+                    .min_by_key(|(distance, _, _)| *distance);
+                let Some((distance, index, retained)) = next else {
+                    break;
+                };
+                if !vendor_host_tx::can_form_ampdu_pair(
+                    first_candidate,
+                    unsafe { vendor_host_tx::ampdu_candidate(retained) },
+                ) {
+                    break;
+                }
+                indices[member_count] = index;
+                member_count += 1;
+                last_distance = distance;
+            }
+            if member_count == 5 {
+                let mut retained = [core::ptr::null_mut(); 5];
+                let mut frames = [0_u32; 5];
+                for position in 0..5 {
+                    let Some(HostTxState::Owned { retained: member, hardware: None, .. }) =
+                        self.states[indices[position]].as_mut()
+                    else {
+                        crate::halt_always!();
+                    };
+                    frames[position] = member.context().frame_node().raw();
+                    retained[position] = member;
+                }
+                let _guard = mac_domain.enter();
+                if let Ok((pipe, slot)) =
+                    unsafe { vendor_host_tx::publish_list_first_depth_five(retained) }
+                {
+                    for position in 0..5 {
+                        let Some(HostTxState::Owned {
+                            hardware,
+                            wait_diagnostic,
+                            ..
+                        }) = self.states[indices[position]].as_mut()
+                        else {
+                            crate::halt_always!();
+                        };
+                        *wait_diagnostic = 3;
+                        *hardware = Some(HardwareOwner::aggregate(
+                            pipe,
+                            slot,
+                            frames[position],
+                            frames[0],
+                            5,
+                        ));
+                    }
+                }
+                return;
+            }
+        }
+
+        #[cfg(all(
+            feature = "experimental-list-first-depth-four-ampdu",
+            not(feature = "experimental-list-first-depth-five-ampdu")
+        ))]
         {
             let Some(first_candidate) = self.states[first_index].as_ref().and_then(|state| {
                 let HostTxState::Owned { retained, hardware: None, .. } = state else {

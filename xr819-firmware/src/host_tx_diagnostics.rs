@@ -349,7 +349,9 @@ pub unsafe fn record_batch_publication(depth: u8) {
     let _ = depth;
 }
 
-/// Records bounded depth-three/four counts for one aggregate lifecycle stage.
+/// Records bounded aggregate-depth counts for one lifecycle stage. The low
+/// halfword is depth three normally and depth five in the isolated member-five
+/// discriminator; the high halfword remains depth four.
 #[inline(always)]
 pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
     #[cfg(all(
@@ -358,8 +360,18 @@ pub unsafe fn record_ampdu_depth(stage: usize, depth: u8) {
         not(feature = "experimental-ampdu-outcome-telemetry")
     ))]
     unsafe {
-        if stage < 4 && matches!(depth, 3 | 4) {
-            let shift = u32::from(depth - 3) * 16;
+        let recorded_depth = if cfg!(feature = "experimental-list-first-depth-five-ampdu")
+            && depth == 5
+        {
+            Some(0)
+        } else if depth == 3 {
+            Some(0)
+        } else if depth == 4 {
+            Some(16)
+        } else {
+            None
+        };
+        if stage < 4 && let Some(shift) = recorded_depth {
             let word = AMPDU_DEPTH_TELEMETRY.0.get().cast::<u32>().add(stage);
             let current = word.read_volatile();
             let count = ((current >> shift) & 0xffff).saturating_add(1);

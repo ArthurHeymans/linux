@@ -22,6 +22,12 @@ experimental-list-first-depth-four-ampdu = [
     "experimental-list-first-ampdu",
     "experimental-depth-four-ampdu",
 ]
+# Exactly-five one-slot discriminator with one completion identity spilled into
+# an otherwise-empty pipe registry slice. This intentionally excludes the
+# shared-rate and deeper-retry feature graph.
+experimental-list-first-depth-five-ampdu = [
+    "experimental-list-first-depth-four-ampdu",
+]
 # Hardware-only depth-three/four A-MPDU bring-up. This keeps the qualified
 # depth-two retry implementation byte-stable while deeper ownership evolves.
 experimental-depth-four-ampdu = [

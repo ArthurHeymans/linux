@@ -230,9 +230,15 @@ pub const fn rate_try_for_single_rate(rate: u8, ack_failures: u8) -> [u32; 3] {
     rate_try
 }
 
-#[cfg(feature = "experimental-depth-eight-ampdu")]
+#[cfg(any(
+    feature = "experimental-depth-eight-ampdu",
+    feature = "experimental-list-first-depth-five-ampdu"
+))]
 pub(crate) const MAX_EXPERIMENTAL_AMPDU_DEPTH: usize = 8;
-#[cfg(not(feature = "experimental-depth-eight-ampdu"))]
+#[cfg(not(any(
+    feature = "experimental-depth-eight-ampdu",
+    feature = "experimental-list-first-depth-five-ampdu"
+)))]
 pub(crate) const MAX_EXPERIMENTAL_AMPDU_DEPTH: usize = 4;
 
 #[cfg(any(test, feature = "experimental-depth-four-ampdu"))]

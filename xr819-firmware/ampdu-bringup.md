@@ -1254,3 +1254,39 @@ unlocked. No missed interrupt or TX-confirm timeout occurred. The isolated image
 uses 6328/6912 bytes of compiled stack; adding the diagnostic counters raises it
 to 6360/6912. This removes the old four-physical-reservation requirement and
 makes member five the next direct transaction-scaling discriminator.
+
+Two independent static audits agreed that member five first exhausts the open
+completion registry rather than the descriptor, PAS chain, or BlockAck arrays.
+The registry stores four identities per physical pipe and completion routing
+requires one exact identity for every aggregate member. Naively increasing the
+per-pipe count would also raise the four-pipe copied-completion bound from 16 to
+20 and consume unavailable DTCM. The audits additionally identified arena-order
+skipping, mixed-rate admission, missing negotiated-depth/airtime/expiry gates,
+and stale vendor link state as masked parity gaps. The bounded discriminator
+changes only the load-bearing registry and selection contracts; shared-rate,
+outside-window retry, member requeue, PAS ordinal guesses, and vendor BA-table
+consumption remain excluded.
+
+Feature `experimental-list-first-depth-five-ampdu` expands the generic software
+aggregate arrays to eight but admits exactly five members. It selects same-rate
+members in PAS-ring order and closes at the first incompatible same-pipe frame.
+The head and first three members occupy the aggregate pipe's existing four
+publication identities. Member five uses one entry in an otherwise-empty
+foreign pipe slice; that deliberately blocks the foreign pipe until completion,
+so at most two additional four-member physical owners can coexist and the
+existing 16-entry copied-completion queue remains sufficient. All shallower
+A-MPDU publication paths are disabled in the discriminator, making any driver
+aggregate confirmation direct evidence of the five-member path.
+
+The first valid fixed-MCS5 run confirmed 25,003 aggregate members, delivered
+4.67 Mbit/s TCP and 14.0 Mbit/s received UDP at 4.1% loss, and completed final
+ping 50/50 with no outstanding ownership. A repeat confirmed 24,304 aggregate
+members at 3.87 Mbit/s TCP and 14.1 Mbit/s UDP at 2.1% loss, again followed by
+50/50 ping and clean queues, BH, WSM, and datapath state. Neither run produced a
+missed interrupt or TX-confirm timeout. Selective retry means the driver member
+count need not be divisible by five, but no other aggregate publisher exists in
+this image. The exact compiled stack chain is 6688/6912 bytes; DTCM and packet-
+RAM checks and the full default `tools/check.sh` gate pass. A full diagnostic
+build exceeded the conservative ITCM envelope by 1,256 bytes, so depth-five
+proof intentionally uses publication-path isolation rather than retaining the
+large flight recorder.

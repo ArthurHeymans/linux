@@ -3856,24 +3856,69 @@ impl SingleProbeMacBackend {
         slot: u8,
     ) -> bool {
         let member_count = members.iter().take_while(|member| member.is_some()).count();
-        if member_count > 4 || members[member_count..].iter().any(Option::is_some) {
+        if members[member_count..].iter().any(Option::is_some) {
             return false;
         }
-        let Some(indices) = ampdu_publication_indices(slot, member_count) else {
-            return false;
-        };
         let pipe_index = usize::from(pipe & 3);
         let Some(retry_index) = pipe_slot_state_index(pipe, slot) else {
             return false;
         };
-        if self.publications[pipe_index * 4..pipe_index * 4 + 4]
+        let pipe_start = pipe_index * 4;
+        if self.publications[pipe_start..pipe_start + 4]
             .iter()
             .any(Option::is_some)
         {
             return false;
         }
 
-        let mut publications = [None; 4];
+        #[cfg(feature = "experimental-list-first-depth-five-ampdu")]
+        if member_count == 5 {
+            let spill_start = (0..4)
+                .filter(|candidate| *candidate != pipe_index)
+                .map(|candidate| candidate * 4)
+                .find(|start| {
+                    self.publications[*start..*start + 4]
+                        .iter()
+                        .all(Option::is_none)
+                });
+            let Some(spill_start) = spill_start else {
+                return false;
+            };
+            let mut staged = [None; 5];
+            for position in 0..5 {
+                let Some(context) = members[position] else {
+                    return false;
+                };
+                let Some(publication) = PublishedSlotIdentity::new(context, pipe, slot) else {
+                    return false;
+                };
+                staged[position] = Some(publication);
+            }
+            let Some(indices) = ampdu_publication_indices(slot, 4) else {
+                return false;
+            };
+            self.retry[retry_index].reset();
+            self.mismatch[pipe_index] = 0;
+            self.selective_retry[retry_index] = None;
+            self.partial_give_up[retry_index] = None;
+            self.depth_two_block_ack[retry_index] = None;
+            for position in 0..4 {
+                self.publications[pipe_start + indices[position]] = staged[position];
+            }
+            // Occupying an otherwise-empty foreign slice deliberately blocks
+            // that physical pipe until member five completes. This keeps the
+            // existing sixteen-entry completion drain bound valid.
+            self.publications[spill_start] = staged[4];
+            return true;
+        }
+
+        if member_count > 4 {
+            return false;
+        }
+        let Some(indices) = ampdu_publication_indices(slot, member_count) else {
+            return false;
+        };
+        let mut staged = [None; 4];
         for position in 0..member_count {
             let Some(context) = members[position] else {
                 return false;
@@ -3881,7 +3926,7 @@ impl SingleProbeMacBackend {
             let Some(publication) = PublishedSlotIdentity::new(context, pipe, slot) else {
                 return false;
             };
-            publications[position] = Some(publication);
+            staged[position] = Some(publication);
         }
 
         self.retry[retry_index].reset();
@@ -3890,7 +3935,7 @@ impl SingleProbeMacBackend {
         self.partial_give_up[retry_index] = None;
         self.depth_two_block_ack[retry_index] = None;
         for position in 0..member_count {
-            self.publications[pipe_index * 4 + indices[position]] = publications[position];
+            self.publications[pipe_start + indices[position]] = staged[position];
         }
         true
     }
@@ -5916,6 +5961,23 @@ pub fn host_ampdu_publication_available(pipe: u8) -> bool {
     runtime.backend.publications[start..start + 4]
         .iter()
         .all(Option::is_none)
+}
+
+#[cfg(all(
+    target_arch = "arm",
+    feature = "experimental-list-first-depth-five-ampdu"
+))]
+pub fn host_depth_five_publication_available(pipe: u8) -> bool {
+    if !host_ampdu_publication_available(pipe) {
+        return false;
+    }
+    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
+    (0..4).filter(|candidate| *candidate != usize::from(pipe)).any(|candidate| {
+        let start = candidate * 4;
+        runtime.backend.publications[start..start + 4]
+            .iter()
+            .all(Option::is_none)
+    })
 }
 
 #[cfg(all(
