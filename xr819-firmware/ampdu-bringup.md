@@ -1387,7 +1387,7 @@ expiry-gated attempt saw no controlled AP and transmitted zero frames, so it was
 classified as environmental. The replacement fixed-MCS5 run reported 30,677
 members across 8,087 heads, for mean depth 3.79, with zero invalid reports, 5.07
 Mbit/s TCP, 13.0 Mbit/s UDP, 2.2% loss, and 50/50 final pings. Compiled stack is
-6408/6912 bytes. The expiry gate therefore preserves the variable transaction;
+6408/6912 bytes. The expiry gate therefore preserves the variable transaction.
 The fixed-MCS6 replacement reported 26,450 members across 7,064 heads, for
 mean depth 3.74, with zero invalid reports, 2.07 Mbit/s TCP, 13.1 Mbit/s UDP,
 7.1% loss, and 50/50 final pings. This remains clean but trails exact depth
@@ -1400,3 +1400,33 @@ remaining difference requires at least 34 depth-two attempts, while software
 republication means the existing packed counters cannot reconstruct one exact
 logical histogram. All three bounded depths were therefore exercised, and the
 mean logical depth was 3.81.
+
+A subsequent variable-depth-sixteen prototype tested the remaining vendor shape
+without increasing DTCM. It allocated member identities from the existing
+global sixteen-entry completion pool, allowed at most one aggregate deeper than
+four, enforced increasing sequence deltas inside the 64-entry BlockAck window,
+and stopped at the per-interface TXOP/airtime budget. The streamed packet-RAM
+descriptor already had room for sixteen members. Splitting the list-first and
+ordinary scheduler frames kept the compiled call chain at 6664/6912 bytes.
+
+The first run exposed a feedback-transport limit rather than an ownership
+failure: the original flags format has only three aggregate-length bits. An
+experimental extension carried eight-bit length and acknowledgement counts in
+the otherwise-zero `media_delay` word. With that extension, all subsequent
+reports were valid and ownership drained cleanly. A capacity-gated fixed-MCS5
+run nevertheless formed 1,804 depth-two, 447 depth-three, 135 depth-four, 53
+depth-five, 26 depth-six, 18 depth-seven, and two depth-eight groups, with no
+groups above eight. It delivered 6.27 Mbit/s TCP but only 5.37 Mbit/s UDP with
+48% loss.
+
+One bounded fill pass finally crossed the old boundary, proving one depth-ten
+group alongside 1,734 depth-two, 438 depth-three, 117 depth-four, 53 depth-five,
+20 depth-six, eight depth-seven, and two depth-eight groups. The run remained
+ownership-clean with zero invalid aggregate reports and 50/50 final pings, but
+fell to 5.63 Mbit/s TCP and 4.55 Mbit/s UDP with 57% loss. Thus variable depth
+through sixteen is mechanically viable, but the current HIF/service cadence
+naturally presents mostly two-member prefixes and forcing extra fill latency
+makes useful throughput worse. The prototype was removed rather than retaining
+a hardware-regressing path. Its complete patch is archived at
+`/tmp/xr819-variable-depth16-experiment.diff` (SHA-256
+`cdeede17113a4973692005e9fbaab94dd87d8d4d26d9d2369253d470203b30c8`).
