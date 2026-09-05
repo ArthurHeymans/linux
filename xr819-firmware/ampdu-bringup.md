@@ -1184,3 +1184,19 @@ aggregate-only reservation/admission transaction or its rollback. The vendor's
 queue-to-kind-1 conversion must be recovered as a distinct primitive; an
 ordinary reservation with its physical slot restored, or a software-only PAS
 marker followed by the current cancellation path, is not equivalent.
+
+A subsequent direct-admission prototype removed that ordinary scratch
+reservation entirely. Non-head members were detached directly from the host PAS
+ring, had bit 15 cleared and A-MPDU member bit `0x20` set, and received neither
+an ordinary descriptor nor premature hardware ownership. This still stalled
+before the first aggregate confirmation at depth four. Matching the remaining
+visible `txq_build_aggregate_lists()` writes also failed: the per-link 16-member
+table was changed from host-context identities to vendor-style PAS pointers,
+and each PAS received its aggregate ordinal at `+0x68`. Both variants reached
+zero aggregate confirmations and the same 13--15-buffer TX-confirm timeout.
+Thus the missing primitive is larger than ring detachment plus PAS/table field
+updates; vendor scheduling constructs its temporary aggregate list before
+allocating and publishing the physical pipe transaction, while the open path
+still begins from a pre-reserved ordinary head slot. Reproducing the vendor
+ordering now requires a separate aggregate scheduler transaction rather than
+further mutation of `HostSchedulerReservation`.
