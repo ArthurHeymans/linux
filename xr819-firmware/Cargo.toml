@@ -74,6 +74,9 @@ experimental-aggregate-grouping-telemetry = [
 ]
 # Coalesces ready TX confirmations and removes avoidable idle-pipe fill waits.
 experimental-fast-loop = []
+# Records joined RX FIFO pressure and publication blockers in counters MIB words
+# 11 through 19 without changing the normal receive path.
+experimental-rx-path-diagnostics = []
 # Board-local discriminator: replace dynamic-IQ search output with the stable
 # channel-6 correction pair observed under vendor firmware.
 experimental-fixed-iq-correction = []

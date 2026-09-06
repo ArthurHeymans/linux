@@ -90,6 +90,56 @@ static DIAGNOSTICS: SharedDiagnostics = SharedDiagnostics(UnsafeCell::new(Receiv
     last_trailer_word: 0,
 }));
 
+#[cfg(feature = "experimental-rx-path-diagnostics")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RxPathDiagnostics {
+    pub pending_passes: u32,
+    pub blocked_by_host_request: u32,
+    pub blocked_by_control: u32,
+    pub blocked_by_descriptor: u32,
+    pub pending_bytes_max: u32,
+    pub host_transfers_max: u32,
+    pub host_transfer_drops: u32,
+    pub decrypt_drops: u32,
+    pub decrypt_authentication: u32,
+    pub decrypt_missing_key: u32,
+    pub decrypt_malformed: u32,
+    pub decrypt_hardware_timeout: u32,
+    pub decrypt_invalid_dma: u32,
+    pub auth_group: u32,
+    pub auth_unicast: u32,
+    pub auth_retry: u32,
+    pub auth_last_signature: u32,
+}
+
+#[cfg(feature = "experimental-rx-path-diagnostics")]
+struct SharedRxPathDiagnostics(UnsafeCell<RxPathDiagnostics>);
+
+#[cfg(feature = "experimental-rx-path-diagnostics")]
+unsafe impl Sync for SharedRxPathDiagnostics {}
+
+#[cfg(feature = "experimental-rx-path-diagnostics")]
+static RX_PATH_DIAGNOSTICS: SharedRxPathDiagnostics =
+    SharedRxPathDiagnostics(UnsafeCell::new(RxPathDiagnostics {
+        pending_passes: 0,
+        blocked_by_host_request: 0,
+        blocked_by_control: 0,
+        blocked_by_descriptor: 0,
+        pending_bytes_max: 0,
+        host_transfers_max: 0,
+        host_transfer_drops: 0,
+        decrypt_drops: 0,
+        decrypt_authentication: 0,
+        decrypt_missing_key: 0,
+        decrypt_malformed: 0,
+        decrypt_hardware_timeout: 0,
+        decrypt_invalid_dma: 0,
+        auth_group: 0,
+        auth_unicast: 0,
+        auth_retry: 0,
+        auth_last_signature: 0,
+    }));
+
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 struct SharedRxTxBoundaryWatch(UnsafeCell<[u32; 7]>);
 
@@ -157,6 +207,44 @@ pub fn fifo_quiescent() -> bool {
         ring.host_transfer_count() == 0
             && ring.release_offset() == ring.claim_offset()
             && ring.claim_offset() == DMA_PRODUCER.read_volatile() & FIFO_MASK
+    }
+}
+
+#[cfg(feature = "experimental-rx-path-diagnostics")]
+pub fn rx_path_diagnostics() -> RxPathDiagnostics {
+    unsafe { *RX_PATH_DIAGNOSTICS.0.get() }
+}
+
+#[cfg(feature = "experimental-rx-path-diagnostics")]
+pub fn observe_joined_rx_opportunity(
+    host_request_waiting: bool,
+    control_pending: bool,
+    publication_available: bool,
+) {
+    unsafe {
+        let ring = rx_ring();
+        let pending_bytes = available_bytes(
+            ring.claim_offset(),
+            normalize_offset(DMA_PRODUCER.read_volatile()),
+        );
+        let diagnostics = &mut *RX_PATH_DIAGNOSTICS.0.get();
+        diagnostics.host_transfers_max = diagnostics
+            .host_transfers_max
+            .max(ring.host_transfer_count());
+        if pending_bytes == 0 {
+            return;
+        }
+        diagnostics.pending_passes = diagnostics.pending_passes.wrapping_add(1);
+        diagnostics.pending_bytes_max = diagnostics.pending_bytes_max.max(pending_bytes);
+        if host_request_waiting {
+            diagnostics.blocked_by_host_request =
+                diagnostics.blocked_by_host_request.wrapping_add(1);
+        } else if control_pending {
+            diagnostics.blocked_by_control = diagnostics.blocked_by_control.wrapping_add(1);
+        } else if !publication_available {
+            diagnostics.blocked_by_descriptor =
+                diagnostics.blocked_by_descriptor.wrapping_add(1);
+        }
     }
 }
 
@@ -1136,10 +1224,47 @@ unsafe fn poll_indication(
             match crate::crypto::decrypt_rx_frame(frame, if_id) {
                 Ok(true) => indication_flags |= 3,
                 Ok(false) => {}
-                Err(_) => {
+                Err(_error) => {
                     unsafe {
                         let diagnostics = &mut *DIAGNOSTICS.0.get();
                         diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
+                        #[cfg(feature = "experimental-rx-path-diagnostics")]
+                        {
+                            let path_diagnostics = &mut *RX_PATH_DIAGNOSTICS.0.get();
+                            path_diagnostics.decrypt_drops =
+                                path_diagnostics.decrypt_drops.wrapping_add(1);
+                            let counter = match _error {
+                                crate::crypto::CcmpError::Authentication => {
+                                    if frame.get(4).is_some_and(|address| address & 1 != 0) {
+                                        path_diagnostics.auth_group =
+                                            path_diagnostics.auth_group.wrapping_add(1);
+                                    } else {
+                                        path_diagnostics.auth_unicast =
+                                            path_diagnostics.auth_unicast.wrapping_add(1);
+                                    }
+                                    if frame_control & 0x0800 != 0 {
+                                        path_diagnostics.auth_retry =
+                                            path_diagnostics.auth_retry.wrapping_add(1);
+                                    }
+                                    path_diagnostics.auth_last_signature =
+                                        u32::from(slot_length) | (u32::from(frame_control) << 16);
+                                    &mut path_diagnostics.decrypt_authentication
+                                }
+                                crate::crypto::CcmpError::MissingKey => {
+                                    &mut path_diagnostics.decrypt_missing_key
+                                }
+                                crate::crypto::CcmpError::MalformedFrame => {
+                                    &mut path_diagnostics.decrypt_malformed
+                                }
+                                crate::crypto::CcmpError::HardwareTimeout => {
+                                    &mut path_diagnostics.decrypt_hardware_timeout
+                                }
+                                crate::crypto::CcmpError::InvalidDmaAddress => {
+                                    &mut path_diagnostics.decrypt_invalid_dma
+                                }
+                            };
+                            *counter = counter.wrapping_add(1);
+                        }
                         release(ring, token);
                     }
                     return None;
@@ -1154,6 +1279,12 @@ unsafe fn poll_indication(
             unsafe {
                 let diagnostics = &mut *DIAGNOSTICS.0.get();
                 diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
+                #[cfg(feature = "experimental-rx-path-diagnostics")]
+                {
+                    let path_diagnostics = &mut *RX_PATH_DIAGNOSTICS.0.get();
+                    path_diagnostics.host_transfer_drops =
+                        path_diagnostics.host_transfer_drops.wrapping_add(1);
+                }
                 release(ring, token);
             }
             return None;

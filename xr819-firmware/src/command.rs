@@ -148,6 +148,21 @@ fn encode_standard_read_mib(
         },
     ];
     host_tx_diagnostics::populate_counters(&mut values, transport);
+    #[cfg(feature = "experimental-rx-path-diagnostics")]
+    {
+        let diagnostics = radio::rx_path_diagnostics();
+        values[11] = diagnostics.pending_passes;
+        values[12] = diagnostics.blocked_by_host_request;
+        values[13] = diagnostics.pending_bytes_max;
+        values[14] = diagnostics.host_transfers_max;
+        values[15] = diagnostics.decrypt_drops;
+        values[16] = diagnostics.decrypt_authentication;
+        values[17] = diagnostics.decrypt_missing_key;
+        values[18] = diagnostics.auth_group;
+        values[19] = diagnostics.auth_unicast;
+        values[20] = diagnostics.auth_retry;
+        values[21] = diagnostics.auth_last_signature;
+    }
     let mut data = [0_u8; 88];
     for (index, value) in values.into_iter().enumerate() {
         data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());

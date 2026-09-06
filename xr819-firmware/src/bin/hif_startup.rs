@@ -702,6 +702,18 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
+        #[cfg(feature = "experimental-rx-path-diagnostics")]
+        if scan::active_interface().is_none()
+            && vif::active_interface().is_some()
+            && (host_request_waiting || firmware.pending_scan_completion.is_some())
+        {
+            radio::observe_joined_rx_opportunity(
+                host_request_waiting,
+                firmware.pending_scan_completion.is_some(),
+                false,
+            );
+        }
+
         // Control indications and inbound host requests take priority over RX.
         // Otherwise a steady joined RX stream can consume the last firmware-to-
         // host descriptor every pass, preventing `poll_request()` from ever
@@ -718,7 +730,10 @@ extern "C" fn rust_main() -> ! {
                 }
             } else if let Some(if_id) = vif::active_interface() {
                 let channel = vif::snapshot(if_id).map(|state| state.channel).unwrap_or(0);
-                if firmware.transport.publication_available()
+                let publication_available = firmware.transport.publication_available();
+                #[cfg(feature = "experimental-rx-path-diagnostics")]
+                radio::observe_joined_rx_opportunity(false, false, publication_available);
+                if publication_available
                     && let Some(indication) =
                         unsafe { radio::poll_joined_indication(if_id, channel) }
                 {
