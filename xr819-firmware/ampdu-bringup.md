@@ -1454,3 +1454,32 @@ makes useful throughput worse. The prototype was removed rather than retaining
 a hardware-regressing path. Its complete patch is archived at
 `/tmp/xr819-variable-depth16-experiment.diff` (SHA-256
 `cdeede17113a4973692005e9fbaab94dd87d8d4d26d9d2369253d470203b30c8`).
+
+### TCP control path and AP replacement
+
+Fixed-MCS5 TCP controls on the original ath9k_htc AP did not identify a socket
+window limit: the default 16 KiB run reached 6.73 Mbit/s, a requested 256 KiB
+window reached 5.58 Mbit/s, and four streams remained near 6 Mbit/s aggregate.
+A bounded RX-request fairness experiment then serviced one waiting host request
+before permitting one joined RX indication in the same cooperative pass. It
+retained exact aggregate accounting and 15.7 Mbit/s UDP, but reduced TCP to
+5.93 Mbit/s. The feature was removed rather than retaining a negative result.
+
+Repeated missing-BSSID runs then exposed the USB ath9k_htc AP as a measurement
+variable. NetworkManager could report the AP active while an XR819 scan saw no
+controlled beacon. The unused PCIe Intel AX200 was moved to channel 6 HT20 AP
+service instead. Its permanent BSSID is `98:5f:41:18:76:17`; five consecutive
+AP down/up cycles were immediately visible from the independent ath9k adapter.
+The first full fixed-MCS5 run associated in two seconds, returned 50/50 initial
+and final pings, exact 41,226/41,226 aggregate length/ACK accounting, zero
+invalid reports, 8.87 Mbit/s TCP, and 14.7 Mbit/s UDP.
+
+A 30-second sender-side `ss -tin` trace excluded sustained receive-window
+pressure: `rwnd_limited` accumulated only 24 ms. Instead, median RTT was
+19.9 ms with spikes to 142 ms, 76 TCP segment retransmissions, and repeated
+CUBIC congestion-window collapses from a median 22 segments to one. A repeat
+control matrix on the Intel AP reached 8.73 Mbit/s with the default window,
+10.9 Mbit/s with the larger window, and 11.2 Mbit/s across four streams. Thus
+the datapath carries substantially more TCP than the ath9k measurements showed,
+but periodic inbound-ACK latency or loss still prevents one flow from matching
+the roughly 15 Mbit/s UDP capacity.
