@@ -1483,3 +1483,15 @@ control matrix on the Intel AP reached 8.73 Mbit/s with the default window,
 the datapath carries substantially more TCP than the ath9k measurements showed,
 but periodic inbound-ACK latency or loss still prevents one flow from matching
 the roughly 15 Mbit/s UDP capacity.
+
+Repeating stock vendor firmware against the same Intel AP revised the comparison
+target downward from the earlier ath9k-based estimate. An unrestricted vendor
+run delivered 10.7 Mbit/s default-window TCP and 12.1 Mbit/s UDP at 1.6% loss.
+Its matching control matrix delivered 9.88 Mbit/s default-window TCP,
+10.7 Mbit/s with the larger window, and 10.4 Mbit/s across four streams. The
+vendor rate controller incurred 25,759 retries and 1,705 failed packets in the
+first run, then 32,666 retries and 3,712 failures across the matrix; both runs
+still ended alive, idle, and drained. On this stable AP, the open firmware's
+10.9 Mbit/s large-window and 11.2 Mbit/s four-stream results therefore meet or
+slightly exceed the vendor TCP baseline, while its 14.7 Mbit/s UDP result
+exceeds the measured vendor bulk-datagram result.
