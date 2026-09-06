@@ -4,22 +4,23 @@
 //! confirmation handoff point. The current HIF transport then returns request
 //! credit before it enqueues the separately copied confirmation; this module does
 //! not redesign that parent ordering. Pending contexts advance independently.
-//! Retained hardware owners are discovered and serviced independently per MAC
-//! pipe; publication admits at most one new batch per pass and never targets a
-//! pipe that still has a retained runtime owner.
+//! Retained hardware owners are discovered independently per MAC pipe;
+//! publication admits at most one new batch per pass and never targets a pipe
+//! that still has a retained runtime owner. Already-scheduled owners advance
+//! from MAC completion events, so cooperative service budget is reserved for
+//! software contexts and reservations that can still make progress.
 
 use crate::{hif, host_tx_diagnostics, host_tx_policy, tx, vendor_host_tx};
 
 const HOST_CONTEXT_COUNT: usize = crate::host_tx_arena::HOST_CONTEXT_COUNT;
 /// Contexts advanced per service pass.
 ///
-/// At 4, exact hardware slot owners consume the front of the budget and the
-/// remainder advances software owners. Queued contexts can still wait many
-/// passes before publication. Cumulative iperf timing measures ~39.5 ms
-/// admission-to-publication, but that is queue latency behind several frames,
-/// not inverse throughput: the serialized publication-to-confirmation cycle is
-/// ~8.4 ms. Raising this budget was neutral, so keep the bounded vendor-shaped
-/// service loop until hardware concurrency is made ownership-safe.
+/// At 4, reservations that still need publication consume the front of the
+/// budget and the remainder advances software owners. Already-scheduled slots
+/// are completion-driven and are deliberately skipped instead of consuming a
+/// no-op service turn. Queued contexts can still wait many passes before
+/// publication. Keep the bounded vendor-shaped service loop until hardware
+/// concurrency is made ownership-safe.
 const SERVICE_BUDGET: usize = 4;
 
 pub struct HostTxDriver {
@@ -277,6 +278,12 @@ impl HostTxDriver {
             };
             eligible &= !(1_u16 << slot_index);
             self.hardware_service_cursor = slot_index.wrapping_add(1) & 15;
+            // Scheduled contexts cannot advance here: their only transitions
+            // are driven by the completion/requeue drain above. Do not let up
+            // to four inert physical slots starve pending software contexts.
+            if !matches!(self.states[index], Some(HostTxState::Reserved { .. })) {
+                continue;
+            }
             let event = unsafe {
                 self.service_index(
                     index,

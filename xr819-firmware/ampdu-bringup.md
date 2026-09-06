@@ -1401,6 +1401,30 @@ republication means the existing packed counters cannot reconstruct one exact
 logical histogram. All three bounded depths were therefore exercised, and the
 mean logical depth was 3.81.
 
+A service-budget audit then found that `HostTxDriver::service()` spent its
+four-entry cooperative budget on already-scheduled physical slots before it
+advanced software-owned contexts. Those scheduled contexts cannot change phase
+there: completion or requeue events drive their only transitions. An ordinary
+four-slot publication could therefore consume the complete budget with four
+no-op visits and prevent every queued software context from reaching PAS during
+that pass. One-slot aggregates left three budget entries available, explaining
+both their unusually large benefit and the shallow prefixes seen when ordinary
+publication became common.
+
+The scheduler now skips scheduled owners while retaining service for
+`SchedulerReserved` contexts that can still publish. The variable-depth 2-4
+image remained at 6408/6912 bytes of compiled stack. Two fixed-MCS5 runs
+reported 36,723/37,202 and 38,500/39,007 aggregate members/total TX,
+respectively. They sustained 6.59 and 6.68 Mbit/s TCP plus 14.9 and 15.9
+Mbit/s UDP at 0.80% and 0.56% loss. Both returned exact aggregate
+acknowledgement counts, zero invalid reports, final ping 50/50, and clean
+ownership. Fixed MCS4 reached 9.97 Mbit/s TCP and 14.9 Mbit/s UDP at 1.2%
+loss with 43,004 acknowledged aggregate members. Fixed MCS6 remained stable at
+1.90 Mbit/s TCP and 13.5 Mbit/s UDP at 7.5% loss with 26,936 acknowledged
+aggregate members. The change therefore removes a real software-preparation
+priority inversion, repeats the best depth-four MCS5 UDP result while improving
+TCP, and preserves the established MCS4-MCS6 behavior.
+
 A subsequent variable-depth-sixteen prototype tested the remaining vendor shape
 without increasing DTCM. It allocated member identities from the existing
 global sixteen-entry completion pool, allowed at most one aggregate deeper than
