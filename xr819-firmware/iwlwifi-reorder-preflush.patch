@@ -1,0 +1,22 @@
+--- a/drivers/net/wireless/intel/iwlwifi/mvm/rxmq.c
++++ b/drivers/net/wireless/intel/iwlwifi/mvm/rxmq.c
+@@ -895,6 +895,19 @@
+ 		return false;
+ 	}
+ 
++	/* Evict old slots before a new sequence aliases their ring indices. */
++	if (!ieee80211_sn_less(sn,
++			      ieee80211_sn_add(buffer->head_sn,
++					      baid_data->buf_size))) {
++		u16 new_head = ieee80211_sn_sub(sn, baid_data->buf_size - 1);
++
++		iwl_mvm_release_frames(mvm, sta, napi, baid_data,
++				       buffer, new_head);
++		/* A stale NSSN must not undo the eviction below. */
++		if (ieee80211_sn_less(nssn, new_head))
++			nssn = new_head;
++	}
++
+ 	/* put in reorder buffer */
+ 	index = sn % baid_data->buf_size;
+ 	__skb_queue_tail(&entries[index].frames, skb);
