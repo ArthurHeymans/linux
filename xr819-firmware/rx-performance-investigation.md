@@ -595,3 +595,654 @@ Temporary order probes are absent. TCP variability, sporadic association
 delays, and the previously observed TX-confirmation stall remain open.
 Next test: TX TCP first after association, before either bulk RX phase.
 The DTCM redesign remains deferred while that performance work continues.
+
+The TX-first run completed with 4.73 Mbit/s TX TCP, followed by 18.2 Mbit/s
+RX TCP and zero-loss RX UDP at 16.3 Mbit/s. Buffers drained and final ping
+was 50/50. Prior bulk RX is therefore not required for the TX slowdown.
+Log: `/tmp/xr819-clean-fifo-tx-first.log`.
+
+Next, `/tmp/xr819-clean-tcp-sender-observation.log` runs one fresh 30-second
+TX TCP test while sampling the board sender's `ss -tin` once per second over
+Ethernet. Only port-5001 socket metadata is recorded: windows, RTT, retries,
+bytes and timing, not payloads or keys. This is intended to distinguish
+congestion/retransmission/ACK stalls from steady pipeline throughput limits.
+
+The first sampler run saw cwnd 5–10 segments, increasing retransmissions
+(148 by the last shown sample), RTT excursions, a persistently nonempty send
+queue, and roughly 434–438 KiB advertised send window. Receiver-window-limited
+time was negligible. But the actual sample spacing was 3–4 seconds because
+every sample established another SSH connection. The 1.53 Mbit/s throughput
+is potentially observer-disturbed and is not an unbiased performance result.
+
+The sampler was replaced with one persistent SSH connection established
+before starting traffic, with the one-second sampling loop on the board.
+The otherwise identical repeat is running at
+`/tmp/xr819-clean-tcp-persistent-observation.log`. No firmware change.
+
+The persistent sampler collected 30 socket samples. TX throughput was
+2.52 Mbit/s. By the last sample, 157 retransmitted segments were reported
+among 6783 data segments sent, with cwnd repeatedly around 5–11 after its
+initial growth. RTT excursions reached tens of milliseconds and RTO reached
+520 ms; the send queue stayed backlogged and advertised receive capacity
+remained hundreds of KiB. Repeated SSH handshakes are therefore not required
+for these TCP symptoms.
+
+The next diagnostic uses identical clean firmware, patched AP, MCS5 and
+persistent sampler with the previously isolated no-TX-BA host module:
+`/tmp/xr819-clean-tcp-no-ba-observation.log`. This tests whether operational
+TX aggregation is needed for the residual retransmission pattern; it is not
+a proposal to permanently disable aggregation.
+
+The no-TX-BA control completed with aggregate TX zero and only three TCP
+retransmitted segments among 11734 data segments at the final sample. Cwnd
+grew to roughly 61, versus repeated collapse with BA. Throughput was
+4.46 Mbit/s. This strongly associates the residual loss with the aggregation
+path rather than a receive-window limit, although it does not locate the drop.
+
+Prepared a new bounded AP observer for the patched module:
+`/tmp/xr819-ap-patched-pn-trace.sh`. It checks both candidate SHA256 and the
+live module build ID. The release instructions match stock (only a diagnostic
+string relocation differs), and both PN-comparison offsets/register layouts
+were revalidated in the patched disassembly. The observer retains direct and
+reorder PN checks plus slot-mismatch metadata; no payloads or keys. It will
+expire after 420 seconds. This is not an unguarded reuse of stock-module probes.
+
+The correlated TCP run completed at 1.32 Mbit/s with 155 sender retransmissions
+by the last shown sample. AP probes counted 3495 PN comparisons during traffic
+across direct and reorder paths, with zero PN rejects or slot mismatches.
+The host TX-failure counter increased only from 1 to 3. These counters have
+different scopes and are not a one-to-one packet proof, but they justify
+investigating silent loss before PN validation and aggregate success accounting.
+Logs: `/tmp/xr819-clean-tcp-pn-correlated.log` and
+`/tmp/xr819-ap-patched-pn-trace.log`. The observer then expired normally
+(exit 124 from its deliberate 420-second timeout).
+
+A read-only child is reviewing aggregate acknowledgment freshness/identity
+and member retirement; parent remains sole writer/hardware operator. A new
+bounded AP observer additionally counts existing DROP-level diagnostic format
+strings (radio-wide, without formatting arguments) and lab packets reaching
+the common skb drop site after their headers were copied. Empty-skb drops
+remain explicitly unattributed. It retains the guarded PN/slot probes.
+Scripts: `/tmp/xr819-ap-patched-drop-trace.{sh,bt}`. No payload/key capture.
+
+The read-only review identified a concrete possible false-success route:
+`plan_ordinary_tx_pipe_status` permits kind-1 completion when state/status gates
+match; `service_txp_pipe_tx_status` then calls `complete_tx_pipe_slot(..., 0)`.
+With the active depth-two feature, that function enqueues every host aggregate
+member and returns without consulting the retained BA bitmap. Parent verified
+these bodies. Occurrence during the failing workload is not yet established;
+counting kind-1/status-zero generic completions is the minimal discriminator.
+
+Other review findings: accepted BAs do not validate transmitter address or
+compressed/single-TID format, and retained observations lack an enforced
+receive/start freshness boundary. These are potential correctness gaps, not
+measured causes. The sequence-minus-SSN bitmap arithmetic and selective
+requeue interception did not reveal a polarity or false-success error.
+Do not reverse BA bitmap polarity based on unreliable vendor decompilation
+condition-code comments.
+
+The correlated AP-drop run completed at 2.44 Mbit/s with 129 TCP
+retransmissions by the last shown sample. No PN rejects, slot mismatches or
+lab-attributed post-copy common drops were recorded. Radio-wide diagnostic
+formats reported duplicate drops and BAR-release notifications, not crypto
+errors; the empty-skb drop counts matched the duplicate-format counts in the
+traffic bins. These scoped counters do not prove absence of every receive
+loss. Logs: `/tmp/xr819-clean-tcp-drop-correlated.log` and
+`/tmp/xr819-ap-patched-drop-trace.log`. The observer expired normally after
+its bounded run.
+
+A temporary aggregate-completion counter build is being qualified without
+changing completion behavior. MIB words: 0 generic host kind-1/status-zero
+calls; 1 successful host-member enqueues through that path; 2 nonzero-status
+generic host aggregate calls; 3 ordinary-status kind-1 caller entries; 4 last
+incoming/expected MAC status packed in low/next byte; 5 last generic status;
+6 last first-frame-node address. Remaining probe words are zero; RX diagnostic
+words 11–21 remain intact. Logs/artifacts: `/tmp/xr819-aggregate-completion*`.
+The counter build passed 300/301 tests and stack/layout checks. Its TCP run
+completed at 2.40 Mbit/s with 145 retransmissions by the last shown sample.
+During traffic, generic successful aggregate calls increased by 1911,
+successful member enqueues by 5577, and ordinary-status aggregate completions
+by 1515. The last incoming/expected status was 0x0c/0x0c. Thus the suspected
+ordinary-status route is heavily exercised; this alone does not prove which
+individual completions lacked valid acknowledgment.
+
+A candidate now returns `AwaitBlockAck` for matched host aggregate statuses,
+before the slot-state write or global-busy suppression. It leaves slot state,
+MAC ownership and cursors unchanged for existing BA and bounded retry/timeout
+handling. Non-host and ordinary-frame policy is retained. A focused planner
+test covers host/non-host, busy and unmatched-status cases. Probe word 7 counts
+these deferrals; word 3 should no longer grow for host aggregates.
+
+The candidate passed 301 default / 302 diagnostic tests, unchanged stack
+6736/6912, packing and DTCM layout. ELF/BIN:
+`/tmp/xr819-ba-owned-status.{elf,bin}`; exception 0x1a4e0, size 0x58. Updated
+postmortem installed before testing. Hardware run:
+`/tmp/xr819-ba-owned-status-tcp.log`. No improvement or checkpoint is claimed
+until the TCP and retirement behavior is measured.
+
+Rejected: the deferral run delivered only 58.7 kbit/s, with 36% initial and
+62% final ping loss. During traffic, deferrals increased by 38, ordinary-status
+aggregate completions stayed zero, generic successes increased by 19 and
+nonzero-status completions by 29. Buffers eventually drained, but this is not
+acceptable retirement behavior. The deferral and its test were removed;
+source archive: `/tmp/xr819-ba-owned-status-rejected.patch`. Original completion
+policy is restored with temporary observation counters retained.
+
+Vendor `rxfifo_find_frame_by_subtype` at 0x8d80 scans from the TX-start cursor
+to the RX producer for subtype 0x94; the Rust backend method is a `None` stub.
+A new non-consuming probe tests whether a same-TID BA is present at ordinary
+aggregate completion. It scans at most 16 slots, checking magic, stride,
+producer bounds and packet-RAM bounds. It does not establish peer identity or
+acknowledgment validity, and changes neither FIFO cursors nor completion policy.
+MIB word 7 now counts scan hits; words 8–10 contain the last BA control/SSN
+and bitmap. No payload or key capture. Artifacts: `/tmp/xr819-status-ba-scan*`.
+
+## Completion-time BA lookup probes
+
+The non-consuming scan passed 300/301 tests, stack 6744/6912, packing and
+layout. Exception record 0x1a5b8/0x58 was installed in the postmortem script
+before deployment. `/tmp/xr819-status-ba-scan-tcp.log` completed at 1.32 Mbit/s
+with 165 sender retransmissions. Both ping checks were 50/50 and buffers
+drained. During traffic, 702 ordinary aggregate completions included 281
+same-TID scan hits. This establishes availability in some completions, not
+identity or acknowledgment of the retiring members.
+
+The next observational build additionally requires matching BA RA/interface
+and TA/current TX receiver, plus single-TID compressed format. Word 7 counts
+these stricter scan hits. Words 8/9/10 now count current aggregate members
+classified acknowledged/missing/outside-window by that BA, rather than storing
+the last BA header. Member walking is bounded and detects repeated nodes.
+Completion policy and RX FIFO ownership remain unchanged. This probe still
+does not prove BA freshness or account for acknowledgments in earlier BAs.
+Artifacts: `/tmp/xr819-status-ba-members*`.
+
+The stricter probe passed 300/301 tests, stack 6776/6912, packing and layout.
+Postmortem exception address was updated to 0x1a6f8/0x58 before deployment;
+the live patched AP build ID was verified. Hardware run completed at
+1.26 Mbit/s with 156 sender retransmissions. Both ping checks were 50/50 and
+buffers drained. During traffic, 649 ordinary aggregate completions included
+245 matching BA scan hits; member classifications were 641 acknowledged,
+16 missing and 22 outside-window. Those completions still took generic success.
+This is an accounting discrepancy worth resolving, not proof that all 38
+non-acknowledged members were falsely confirmed: earlier retained/sticky
+acknowledgments and freshness are not included in this probe.
+
+A read-only adversarial review now checks safe completion-time BA integration,
+including early all-ACK observations cleared before slot state becomes 3/4,
+selective member requeue and no-BA recovery. Parent remains sole writer and
+hardware operator. No new behavior or checkpoint yet; do not fabricate retry
+IRQ ownership to reuse the retry dispatcher.
+
+The review recommends a terminal ordinary-completion hook: preserve state-5
+and existing cursor retirement, but merge admissible BA evidence and resolve
+members individually, software-requeueing unresolved members under bounded
+per-member retry policy. Do not import state-4 command-mask cleanup or retry
+IRQ writes. The selective planner currently excludes depth two; integration
+must cover both two- and deeper-member batches. The global scan cursor does
+not yet prove freshness for the current command, so the diagnostic scan must
+not simply be promoted to acknowledgment authority.
+
+Parent verified the early all-ACK evidence loss. A prerequisite candidate now
+clears the retained observation only after actual completion, not before the
+slot-state check. It does not change ordinary status disposition or use FIFO
+scan results for completion. Probe word 6 now counts all-ACK observations that
+cannot yet retire (instead of recording the last frame-node address). This
+counts observations, not necessarily distinct aggregates. Build qualification:
+`/tmp/xr819-retain-early-ba*`. No hardware improvement or checkpoint claimed.
+
+The retention candidate passed 300/301 tests, stack 6776/6912, packing and
+layout; postmortem exception 0x1a708/0x58 was installed before testing and
+patched AP identity verified. `/tmp/xr819-retain-early-ba-tcp.log` completed
+at 3.02 Mbit/s with 128 sender retransmissions, both ping checks 50/50 and
+buffers drained. During traffic, word 6 increased by 609: the early all-ACK
+retention case is exercised. There were 1840 ordinary aggregate completions,
+1223 strict BA scan hits, and 3926/35/27 acknowledged/missing/outside-window
+member observations. These counters are not a one-to-one packet correlation.
+
+Throughput variability prevents attributing this run's improvement yet.
+An immutable pre-retention control is running with otherwise the same harness:
+`/tmp/xr819-early-ba-retention-control.log`. Its original 0x1a6f8 postmortem
+is restored before deployment. Initial SCP met the harness's asynchronous
+recovery reboot (connection refused); the managed control has bounded SSH
+readiness retries and will not proceed without uploading the correct script.
+The two images differ in early retention and word-6 instrumentation; this is
+not a perfectly instrumentation-identical comparison. No checkpoint yet.
+
+The control completed at 2.27 Mbit/s with 139 retransmissions, both ping checks
+50/50 and buffers drained. During traffic: 1405 ordinary completions, 863 BA
+scan hits and 2518/32/26 acknowledged/missing/outside-window members. The
+candidate's 3.02 Mbit/s and 128 retransmissions remain inconclusive against
+this variable baseline. A repeat of the immutable retention image is running:
+`/tmp/xr819-retain-early-ba-repeat.log`, with its correct postmortem restored
+and patched AP identity checked before deployment.
+
+The retention repeat delivered 1.78 Mbit/s with 152 retransmissions; both ping
+checks were 50/50 and buffers drained. Early all-ACK observations increased
+by 429. There were 1054 ordinary completions, 573 scan hits, and 1608/39/21
+acknowledged/missing/outside-window member observations. The candidate/control/
+candidate sequence does not establish a TCP improvement from retention alone.
+
+## Retained-BA ordinary completion candidate
+
+The next candidate adds a terminal `TxStatusPolicy::complete_ordinary_status`
+hook while preserving the ordinary state-5 transition and existing cursor
+retirement. With an already-retained exact-batch BA, it checks current slot,
+command and member publication identities, preflights software requeue capacity,
+and uses the existing selective finisher. That planner now accepts depth two
+as well as deeper aggregates; a focused policy test covers wrapped two/four
+member batches with allowed/exhausted retries. Reverse retry insertion remains
+unchanged. Failed integrity checks are terminal, never an all-success fallback.
+No retry IRQ is fabricated or acknowledged, and no in-place rearm is added.
+
+This is intentionally partial: without a retained observation, existing generic
+completion remains unchanged. The FIFO scanner is still diagnostic-only, and
+the RX consumer's existing BA identity/freshness limitations remain unresolved.
+This candidate does not claim to eliminate all false-success routes.
+
+Probe words 4/5 now count members software-requeued by this hook / hook batch
+resolutions. Words 0–3 and 6–10 retain their previous meanings (word 6 counts
+early all-ACK observations). Artifacts: `/tmp/xr819-retained-status*`. No
+checkpoint until demonstrated improvement and probe-free qualification.
+
+Build qualification passed 301/302 tests, stack 6800/6912, packing and layout;
+postmortem exception is 0x1a8c8/0x58. The first hardware run initially sustained
+5–6.64 Mbit/s, but collapsed near the end: overall 4.63 Mbit/s, 94 sender
+retransmissions, final ping 0/50. Initial ping was 50/50. BH stayed alive,
+station remained associated and buffers drained; these facts do not establish
+link health. Hook counters recorded 2161 batch resolutions and 3066 software
+member retries. This candidate is NOT qualified and must not be checkpointed.
+
+The harness incorrectly returned success because `ping | tail` hid ping's
+exit status. It now checks ping explicitly and captures metadata plus the
+existing postmortem before recovery on total connectivity failure. The prior
+run had already rebooted, so its failed-state RAM was not captured. Verbose
+supplicant dumps were also inconsistent with metadata-only logging: debug
+verbosity was removed, recovery output now selects state/event metadata, and
+hexdump lines in `/tmp/xr819-retained-status-tcp.log` were redacted. SSH now
+uses passwordless batch mode rather than an unnecessary legacy password.
+
+The same immutable candidate is being reproduced with the corrected harness:
+`/tmp/xr819-retained-status-failure-capture.log`. AP identity is guarded and
+the matching postmortem is uploaded before deployment. No further firmware
+behavior changes were made for this reproduction.
+
+The reproduction completed at 5.13 Mbit/s with 105 retransmissions among
+13640 sender data segments at the final sample. Both ping checks were 50/50
+and buffers drained; the late connectivity failure did not recur, so no RAM
+postmortem was triggered. Hook counters recorded 2147 batch resolutions and
+2788 software member retries. This supports further testing, not qualification
+or a claim that the earlier connectivity loss is resolved.
+
+The same image is now running a 120-second transfer with failure capture:
+`/tmp/xr819-retained-status-long-tcp.log`. The persistent metadata sampler now
+accepts bounded `XR819_TCP_SECONDS` (default 30) and runs five extra samples;
+no firmware changes. Patched AP identity and ELF-specific postmortem remain
+guarded. No checkpoint.
+
+The 120-second candidate run completed at 4.35 Mbit/s, with 443 retransmissions
+among 45361 sender data segments at the final sample (approximately 0.98%).
+Both ping checks were 50/50 and buffers drained. The prior total connectivity
+loss did not recur; no postmortem was triggered. The hook resolved 7252 batches
+and software-requeued 8701 members. These firmware counters have a different
+scope from TCP segment statistics.
+
+A duration-matched control now uses the immutable early-retention image without
+the ordinary completion hook, with the same corrected harness and 120-second
+sampler: `/tmp/xr819-retained-status-long-control.log`. Its postmortem address
+0x1a708 is restored before deployment. This separates the hook from early
+retention, though their diagnostic words 4/5 differ. The earlier unexplained
+connectivity failure remains a qualification blocker; no checkpoint.
+
+The duration-matched pre-hook control completed at 2.42 Mbit/s, with 604
+retransmissions among 25819 sender data segments (approximately 2.34%). Both
+ping checks were 50/50 and buffers drained. Compared with the candidate's
+4.35 Mbit/s and approximately 0.98% retransmitted/sent ratio, this supports a
+sustained benefit from retained-BA member resolution in this pair of runs.
+The ratio is a TCP segment statistic, not measured radio packet loss, and a
+single matched pair is not a reliability qualification. Control counters:
+5837 ordinary completions, 2323 early all-ACK observations, 3367 scan hits,
+and 9854/122/121 acknowledged/missing/outside-window member observations.
+
+No performance-only repetition can explain the earlier 0/50 connectivity
+failure. That failure still needs attribution/capture; the no-retained-BA
+fallback and BA identity/freshness gaps also remain open. Temporary probes
+and candidate changes remain uncheckpointed.
+
+## Live TCP-stall capture
+
+The metadata sampler now triggers after ten seconds of unchanged `bytes_acked`
+while the sampled sender has unacked or unsent data and local iperf remains
+running. Progress, idle queues and counter resets reset the timer. Ten synthetic
+checks cover these cases without hardware access; Python and shell syntax
+checks passed. This detects a backlogged TCP stall, not necessarily a radio
+failure, and does not cover stalls before a sender socket is observed.
+
+On trigger, `/tmp/xr819-capture-live-failure.sh` gathers AP neighbor/route and
+station metadata, board neighbor/station/driver status and kernel messages,
+then a short diagnostic ping and the existing ELF-specific RAM postmortem.
+Each stage is bounded. Capture occurs before terminating traffic or allowing
+harness recovery; the sampler returns 22, which the harness propagates. Recovery
+skips further HIF counter queries after this destructive capture attempt.
+No new packet capture or verbose supplicant logging is enabled.
+
+A five-minute run is active at `/tmp/xr819-live-stall-capture-soak.log`, using
+the unchanged retained-status image, SHA256
+`5dc105d7d1b5ab78ff385c800324cb6175a598e29df42f08cf2da250f124557f`.
+Patched AP identity and postmortem exception 0x1a8c8/0x58 are guarded before
+deployment. No firmware edits or checkpoint for this diagnostic step.
+
+The trigger fired around 97 seconds into traffic, after more than ten seconds
+without ACK progress. Sender had 16 unacked/lost segments and 249056 unsent
+bytes; diagnostic ping failed 3/3 before destructive capture. AP neighbor was
+REACHABLE and the route correct. Both stations remained authorized/associated;
+board BH was alive with empty driver queues and zero used buffers. These are
+live observations, not proof that firmware or the radio remained functional.
+
+Capture completed and the harness deliberately exited 22, then recovered.
+However, memory-read success was NOT valid TCM capture: both exception reads
+and the entire foreground range were all 0xff. The purported DTCM dump did
+not match the ELF's pipe/cursor layout and contained apparent network-frame
+data. Do not interpret those values as firmware corruption, and do not print
+or broadly analyze that data as metadata. Copies are restricted to mode 600
+inside `/tmp/xr819-live-stall-capture-ram` (directory mode 700).
+
+The debug driver's first read sets CPU reset/access mode, then forwards raw
+addresses to AHB/APB. CPU-visible ELF addresses have not been demonstrated to
+be host-visible TCM addresses under that mapping. The next prerequisite is
+validating a marker-backed capture/export path on healthy firmware, not another
+broad blind memory dump. The live failure metadata is useful; the intended
+foreground/exception/DTCM state was not reliably obtained. No checkpoint.
+
+## CPU-assisted control-state export
+
+Direct host access to CPU TCM is no longer assumed. A temporary diagnostic
+schema makes the firmware read selected typed control fields itself and return
+them through existing MIB 0x100c. No memory copying to guessed bus addresses,
+CPU reset, packet bytes or key bytes. Reads are sequential, not an atomic
+snapshot with respect to hardware/IRQs.
+
+Words 0–10: STM1 marker 0x53544d31, hardware timer, pending scheduler events,
+packed busy/active-TX/current-pipe/PHY-state bytes, RX release cursor, RX claim
+cursor, RX producer, then four pipe headers (producer/last/current/state).
+Words 11–21 remain RX diagnostics. Earlier aggregate-probe meanings for the
+first eleven words DO NOT apply to this image.
+
+The build passed 301/302 tests, stack 6800/6912, packing/layout, and primary LSP
+on command.rs. `/tmp/xr819-cpu-state-export.bin` SHA256:
+`86988c90c1801dc2c019abe336d688d4fca5b381ac2d268c2786c88c3d122eae`.
+Healthy validation reads two MIB responses, checks the marker and pipe-header
+bounds, and requires the timer to advance. Decoder checks reject all-ff,
+zero-marker and invalid-index samples. Hardware validation is running at
+`/tmp/xr819-cpu-state-healthy-validation.log`; no traffic soak until validated.
+
+Automatic failure capture now uses this cooperative export instead of direct
+TCM reads. It preserves passive metadata and a pre-HIF ping first, then records
+a post-HIF ping because sending a command can wake the device or disturb the
+failure. If HIF does not respond, that is recorded as a capture failure; there
+is no blind-address fallback. This cannot capture a CPU that cannot service
+commands. Retained-BA completion policy is otherwise unchanged; no checkpoint.
+
+Healthy validation succeeded: both STM1 markers matched, timer advanced from
+0x01a14106 to 0x01b0dd65, busy/active bytes were zero, all pipes inactive, and
+RX release/claim/producer agreed while advancing from 0x3724 to 0x43f4.
+BH was alive and buffers empty. This validates the CPU-assisted path, not any
+host-bus mapping for TCM.
+
+The validated image is now running a five-minute transfer with live stall
+capture: `/tmp/xr819-cpu-state-stall-soak.log`. Healthy snapshot validation is
+repeated before traffic. On a failure, passive metadata and pre-HIF ping come
+before the cooperative request; post-HIF ping tests for an intervention effect.
+No new firmware changes for this run.
+
+The five-minute run completed at 4.28 Mbit/s, with 1113 retransmissions among
+111964 sender data segments (approximately 0.99%). Both ping checks were
+50/50, buffers drained, and no sustained-stall trigger fired. Healthy STM1
+validation passed before traffic. This does not explain or resolve the prior
+intermittent connectivity loss; no failed-state CPU snapshot was obtained.
+
+One bounded ten-minute repeat is running with unchanged firmware/export and
+the same ten-second progress trigger:
+`/tmp/xr819-cpu-state-ten-minute-soak.log`. No checkpoint or new behavior.
+
+The repeat stalled at about 60 seconds and exited intentionally with 22.
+Pre-HIF ping failed 3/3, but both cooperative STM1 responses were valid: timer
+0x07de2f1f -> 0x07edbe26; RX release/claim/producer remained equal and advanced
+0x1f9c -> 0x2c6c; busy/active bytes zero and all TX pipes inactive. PHY operation
+state was 3. Post-HIF ping still failed 3/3: the request did not restore observed
+connectivity. Driver had one pending/used TX buffer, BH alive, device awake;
+association and AP neighbor resolution remained intact. This rules out a
+completely unresponsive firmware command path at capture time, not every
+scheduler or radio failure.
+
+Scheduler 0x002c0000 is NOT independently diagnostic: the healthy post-TCP
+snapshot also had that value (PHY state 2 then, versus 5 before traffic).
+Bit 21 is also raised by completion/task handling. Do not infer the cause from
+a comparison to pre-traffic idle state alone.
+
+The next diagnostic schema STM2 (0x53544d32) retains words 1–10 and adds:
+11 internal-context count [7:0], PAS-context count [23:8], published/host-published/
+completion-pending flags [26:24]; 12 publication/copy-completion counts in low/high
+16 bits; 13–16 validated per-pipe hardware cursor/mask words (ffffffff if ring
+validation fails); 17 filtered RX frames; 18 RX indications; 19 valid RX slots;
+20 PHY command/output/dispatch-output/dispatch-flags bytes; 21 wake mode.
+It exports metadata only and changes no scheduling/completion behavior.
+Artifacts: `/tmp/xr819-cpu-ownership-export*`. Healthy validation must precede
+traffic. No checkpoint.
+
+STM2 passed 301/302 tests, stack 6800/6912, packing/layout and primary LSP.
+Image SHA256: `8e75a5ad04e7a176296b50076d7ca580cdafd0bd8a7a50ec749abc0cacb16d69`.
+Healthy validation passed in `/tmp/xr819-cpu-ownership-healthy-validation.log`:
+internal/PAS counts, publication flags/count and copied completions were zero.
+Hardware cursor/mask baseline was 0000000f/0000000f/0000000f/000f0f0f, stable
+across both reads. Nonzero mask words alone are therefore not a stuck-owner
+indicator. RX slots/indications advanced, with filtered count unchanged at 15.
+PHY command/output/dispatch/flags was 02050501; wake-mode raw value 07ebbadd
+is recorded without assuming an enum interpretation.
+
+A bounded ten-minute reproduction is running on this image:
+`/tmp/xr819-cpu-ownership-stall-soak.log`, with healthy validation before
+traffic and the same live progress trigger. No behavior changes or checkpoint.
+
+STM2 reproduced the stall at approximately 283 seconds, exiting intentionally
+22. Both pre/post-HIF pings failed 3/3. Firmware responses remained live, with
+all software context/ownership/publication/completion counts zero and all pipes
+inactive. Driver queues and used buffers were also zero. This capture does not
+support a stranded software TX owner. Hardware words were stable at
+c00f0000/0000000f/0000000f/090f0f0f. RX slots and indications each advanced by
+10 between requests, while filtered count stayed 1292. PHY bytes were 02050301,
+wake-mode unchanged at 07ebbadd. Do not equate a difference from startup ring
+words with corruption; healthy post-aggregation baseline is still needed.
+
+The next unchanged-image run adds a single CPU snapshot after 15 seconds of
+recently progressing traffic, then leaves only the existing stall trigger.
+Failure metadata additionally includes mac80211 agg_status and AP station
+counters after diagnostic pings. This tests loaded ring state and host BA
+state without speculative register writes. HIF sampling is an intervention
+and will be explicit in the log. Harness syntax checks passed.
+
+The loaded comparison stalled around 515 seconds. Progressing snapshots showed
+pipe-0 hardware words 090f0f0f (inactive) and 410f0e0e (active with four
+publications). Failed snapshots showed db0f0000, stable while a single PAS/
+publication retired between reads. All other owners were empty afterward.
+Thus this run does not show a permanently stranded software owner either.
+
+AP neighbor was FAILED in this capture, unlike earlier REACHABLE captures.
+AP station TX/RX counters did not advance between pre- and post-HIF diagnostic
+pings, so those pings do not establish a failed over-air unicast receive path.
+No agg_status files were returned: host BA session state remains unavailable,
+not proven inactive. The kernel log contained four MMC data errors; their
+presence alone does not establish causality or alignment with stall onset.
+
+Next, the same firmware will receive a reverse-direction probe after the
+existing passive/HIF capture. The board has a permanent AP neighbor, so its
+ICMP requests do not depend on AP neighbor resolution. AP RX counter deltas
+can distinguish those requests reaching the AP even if replies cannot return.
+The capture includes before/after AP counters and board status. This generates
+only diagnostic ping traffic after failure and changes no firmware/registers.
+The outer capture timeout is now 150 seconds to accommodate bounded stages.
+
+Directional capture reproduced the failure (`/tmp/xr819-directional-failure-capture.log`).
+AP RX stayed 219978 packets through both ping directions; TX stayed 61518.
+Board station TX increased 220970 -> 220979 and failed 24 -> 32; these deltas
+include concurrent TCP attempts, not just the three ICMP requests. The board's
+permanent AP neighbor therefore did not restore delivery. AP neighbor failure
+is not a sufficient explanation. STM2 stayed live with empty software owners,
+pipe-0 db0f0000 and RX cursor/indication progress. This does not distinguish
+failure to transmit from over-air rejection before AP station accounting.
+
+Read-only review found matching hardware cursors, not demonstrated corruption,
+and no missing ordinary-retirement PHY write relative to generic completion.
+Selective completion omits bit 21, but its already-set failed-state value
+weakens causality. Direct BA retirement can bypass the TX-success PHY tail;
+we will measure transitions rather than force command 3 or clear registers.
+
+STM3 (53544d33) retains control words 1–10. Tail words 11–20 are five
+(sequence, packed-transition) pairs: PHY operation 1, TX-start handler,
+TX-success handler, actual ordinary completion including cursor retirement,
+and actual direct BA retirement. Word 21 is the global wrapping sequence.
+Each category retains its last completed invocation independently, not a full
+history. Packed nibbles 0/4/8 and 12/16/20 are before/after operation state,
+retained PHY state and dispatch output; bits 24–25 identify the pipe,
+26/27 are before/after pipe-active flags, bit 30 marks unknown pipe (op1),
+and bit 31 rejects truncated out-of-range states. Zero sequence means unseen
+unless the sequence has wrapped. No packet/key data, event-policy changes,
+or new Cargo features. Typed 44-byte BSS storage; foreground-serialized writes.
+
+`/tmp/xr819-phy-transition-export.bin` SHA256:
+`eb6b838db0d2f0399e05ebab77c27bc75c19fc835d6db771692f79a37b759e8d`.
+Build passed 301/302 tests, stack 6808/6912, packing/layout and primary LSP.
+Reader recognizes STM1/2/3 and rejects unknown markers and truncated states.
+Healthy validation must precede the next soak. All probes remain temporary;
+no behavioral fix or checkpoint is claimed.
+
+STM3 healthy validation passed, with op1/start/success/ordinary records in
+sequence and timer/RX progress. The next soak failed before the requested
+15-second progressing baseline. Failed records were TX-start 8219, TX-success
+8220 and direct BA retirement 8221, all preserving [operation, retained,
+dispatch] = [5,5,5]. Ordinary retirement was last seen at 8216. Op1 reached
+8233 with [3,3,5] before and after; no newer start/success handlers appeared.
+Thus repeated PHY requests followed the last successful sequence, while the
+retained state had changed elsewhere. Direct BA retirement is temporally
+adjacent, not thereby proven causal. Log: `/tmp/xr819-phy-transition-stall-soak.log`.
+
+A concrete source mismatch exists in `phy::advance_awake_station_tx`: it
+explicitly writes retained state 5 -> 3 despite its comment prohibiting that
+write. Vendor `phy_state_advance` (annotated-main.c, 0x820a) reads this retained
+state in its awake branch but does not directly change it. Rust calls this
+from `claim_pas_accounting` when active PAS ownership is zero, during
+`release_pending_to_pas`. The next candidate removes only this three-line
+write, retaining the same STM3 probe and completion/retry policies. It is
+not yet a demonstrated reliability fix.
+
+`/tmp/xr819-preserve-phy-state.bin` SHA256:
+`ab194714a85b16589c4f5870792060cbfb6a9e1d416965143209f5efb0df0b31`.
+Build passed 301/302 tests, stack 6808/6912, packing/layout and primary PHY LSP.
+A bounded ten-minute soak will validate STM3 before traffic, sample progressing
+traffic at 15 seconds if available, and retain the same directional failure
+capture. No checkpoint.
+
+The preserve-state candidate also stalled (`/tmp/xr819-preserve-phy-state-soak.log`).
+Both healthy loaded and failed transitions remained [5,5,5]. This falsifies
+state 3 as a necessary condition for the observed failure. The last start and
+success were 213298/213299, direct BA retirement 213300, and op1 then reached
+213313 without another start/success. AP RX did not advance through the
+reverse probe. Removing the forced state write is insufficient; no reliability
+claim or checkpoint.
+
+Next candidate: RX BA handling only updates retained member evidence; it no
+longer triggers TX IRQ acknowledgement, writes the hardware completion word,
+recycles cursors or directly completes contexts. Existing ordinary status and
+retry completion remain enabled, including the retained-BA ordinary hook.
+This is NOT the rejected global status-deferral experiment. Relative to the
+preserve-state image, only RX-side retirement is removed; PHY preservation
+and STM3 instrumentation remain. The STM3 direct-BA-retirement category should
+now remain unseen. Other BA identity/freshness limitations remain unresolved.
+Artifacts: `/tmp/xr819-ba-evidence-only.{elf,bin}`, build log with the same prefix.
+
+Evidence-only candidate passed 301/302 tests, stack 6808/6912 and packing/layout.
+SHA256: `a22e2748b4fd5ecff4a59d4c634dc65be340b9af3df3015f07f5eee326c43ce3`.
+The first ten-minute soak completed at 6.13 Mbit/s (439 MiB reported), with
+50/50 initial/final pings and no stall trigger. Last sender sample: 1649
+retransmissions / 318765 data segments (~0.52%, not a radio-loss measure).
+Loaded STM3 showed advancing start/success/ordinary sequences and no direct BA
+retirement, as intended. Log: `/tmp/xr819-ba-evidence-only-soak.log`.
+This supports the RX-retirement removal but does not yet qualify reliability.
+An unchanged ten-minute repeat precedes probe cleanup and broader validation.
+
+The repeat passed at 5.84 Mbit/s (418 MiB reported), again with 50/50 initial
+and final pings and no stall. Last sender sample: 1752 retransmissions among
+304456 data segments (~0.58%). Log: `/tmp/xr819-ba-evidence-only-repeat.log`.
+Two consecutive passes support broader qualification, not universal reliability.
+
+Temporary aggregate/PHY probes, CPU MIB schemas and the non-consuming BA scan
+were removed. Full probed patch archived at
+`/tmp/xr819-ba-evidence-only-with-probes.patch`; diagnostic binaries remain.
+Normal MIB RX diagnostics are restored. Only behavioral TX/PHY changes and
+this ledger remain modified; no new Cargo features. Clean build passed
+301/302 tests, stack 6752/6912, packing/layout and primary TX/PHY LSP.
+`/tmp/xr819-clean-ba-evidence.bin` SHA256:
+`df9596e00a6d44a8b984c0cc58bab44d559f08493a40afac9081a782d23f4cc3`.
+
+Next clean-image run combines 600s board TX TCP, 60s board RX TCP and 20s
+UDP phases at 5/10 Mbit/s in each direction. Pings and status checks separate
+phases. STM validation/loaded sampling are disabled for this image; failure
+capture explicitly skips CPU-export decoding, with no blind TCM fallback.
+No checkpoint; BA peer/format/freshness and no-evidence fallback remain open.
+
+Clean-image bidirectional validation passed (`/tmp/xr819-clean-ba-bidirectional.log`):
+600s board TX TCP 6.83 Mbit/s; 60s board RX TCP 20.9 Mbit/s. Last TX sender
+sample: 1337 retransmissions / 355111 data segments (~0.38%, not radio loss).
+Board TX UDP received 5.24 Mbit/s with 1/8919 lost (0.011%), then 10.5 Mbit/s
+with 49/17835 lost (0.27%). Board RX UDP achieved only 3.89/5.99 Mbit/s at
+requested 5/10 rates, with 0/6615 and 1/10242 lost: these phases do not prove
+reception at the requested offered rates. All seven 50-ping checks passed;
+no progress-stall trigger, and recovery was installed at exit.
+
+Three consecutive ten-minute TX passes now include a probe-free build,
+followed by bidirectional traffic. This is evidence of improvement after
+removing RX-side retirement, not proof of the precise hardware race or of
+unbounded reliability. Changes remain uncheckpointed pending the outstanding
+BA evidence-validity and no-evidence-policy review.
+
+## Matched vendor/Rust comparison after RX-retirement removal
+
+Four serial runs used the same patched Intel AP, board TX MCS5, 120s TX TCP,
+60s RX TCP and 20s UDP phases at requested 5/10 Mbit/s in each direction.
+Each firmware pair shared the exact host module; enabled module adds BA action
+logging, disabled module rejects host AMPDU_TX_START. Source differences were
+checked against the same base driver. Manifest/hashes:
+`/tmp/xr819-matched-comparison-plan.md`. Logs:
+`/tmp/xr819-matched-{vendor,rust}-{ba-enabled,no-ba}.log`.
+
+| Firmware / host TX BA | TX TCP Mbit/s | RX TCP Mbit/s | Last TX retrans/data segments |
+| --- | ---: | ---: | ---: |
+| Vendor / enabled | 11.5 | 22.0 | 304/120407 |
+| Rust / enabled | 8.53 | 18.0 | 178/88299 |
+| Vendor / disabled | 15.0 | 30.9 | 31/155301 |
+| Rust / disabled | 5.38 | 16.5 | 13/55670 |
+
+Vendor repeatedly started/stopped host TX BA without TX_OPERATIONAL. Rust
+logged TX_OPERATIONAL tid0, window64, result0. Disabled Rust recorded zero
+host aggregate TX/metadata/reports throughout. Disabling host negotiation does
+not prove vendor firmware performs no internal aggregation; no over-air
+aggregation-parity claim is made. These are individual serial runs, not
+randomized repeated estimates of the BA-toggle effect.
+
+TX UDP at requested 10M: vendor enabled 10.4 Mbit/s, 21/17835 lost (0.12%);
+Rust enabled 10.5, 35/17835 (0.20%); vendor disabled 10.5, 6/17835 (0.034%);
+Rust disabled 6.02, 5745/16022 (36%). Rust RX UDP achieved only 3.89/7.35
+(enabled) and 3.71/6.74 (disabled) Mbit/s with zero reported loss, versus
+vendor 5.24/10.5 in both runs. Therefore zero RX UDP loss does not establish
+Rust reception at requested offered rates. All 28 sets of 50 pings passed,
+with no sustained-stall capture and recovery installed after each run.
+
+The TX performance deficit is reproducible in this comparison: about 26%
+below vendor with host BA enabled, 64% below with it disabled. Rust aggregation
+helps, rather than being the sole source of the remaining deficit. Very low
+TCP retransmission counts in the disabled run plus its high-offer UDP loss
+make service capacity/latency a stronger next investigation than simply
+retrying more aggregate members. This is a hypothesis, not localization to
+CPU, HIF, MAC or air time. Next discriminator: bounded admission-to-TX-start,
+completion and host-credit timing under no-BA traffic, alongside packet/rate
+metadata to resolve the vendor internal-aggregation caveat. No firmware code
+was changed for these comparisons; BA correctness review remains necessary.

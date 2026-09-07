@@ -2603,12 +2603,22 @@ fn hardware_pipe_cursor<M: MacPipeMmio>(
 /// It cannot reject, defer, or return an error after event FIFO consumption.
 pub trait TxStatusPolicy: PipeSlotCompletionEffects {
     fn reset_status_backoff(&mut self, link: u8, queue: u8, pas_state: u32, queue_table: u32);
+
+    /// Complete member disposition before the caller advances ordinary cursors.
+    ///
+    /// # Safety
+    /// The caller exclusively owns the live, state-5 slot and its frame chain.
+    unsafe fn complete_ordinary_status(&mut self, _pipe: u8, frame: FrameNodeAddress, slot: u32)
+    where Self: Sized,
+    {
+        unsafe { complete_tx_pipe_slot(frame, slot, 0, self) };
+    }
 }
 
 /// Exact inactive executor for ordinary `txp_pipe_tx_status`.
 ///
 /// It performs the mandatory slot/pipe ownership transitions and delegates
-/// the completion boundary to [`complete_tx_pipe_slot`]. It is not wired to
+/// the completion boundary to [`TxStatusPolicy::complete_ordinary_status`]. It is not wired to
 /// destructive event FIFO reads, descriptor publication, or hardware GO.
 ///
 /// # Safety
@@ -2699,7 +2709,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                 );
                 let pas_address = pas as usize;
                 write_u32(pas_address + 0x2c, read_u32(pas_address + 0x2c) | 0x200);
-                complete_tx_pipe_slot(FrameNodeAddress::new(pas), slot.raw(), 0, backend);
+                backend.complete_ordinary_status(pipe, FrameNodeAddress::new(pas), slot.raw());
                 match cursor {
                     OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current } => {
                         write_u8(record.current_slot().get(), next_current);
@@ -4062,6 +4072,53 @@ impl PipeSlotCompletionEffects for SingleProbeMacBackend {
 #[cfg(target_arch = "arm")]
 impl TxStatusPolicy for SingleProbeMacBackend {
     fn reset_status_backoff(&mut self, _link: u8, _queue: u8, _pas_state: u32, _queue_table: u32) {}
+
+    #[cfg(all(feature = "experimental-depth-four-ampdu", feature = "experimental-member-requeue"))]
+    unsafe fn complete_ordinary_status(&mut self, pipe: u8, frame: FrameNodeAddress, slot_raw: u32) {
+        unsafe {
+            let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
+            if read_u8(slot.kind().get()) == 1 && frame.context().host().is_some() {
+                let Some(index) = retained_slot_state_index(pipe, slot_raw) else {
+                    terminal_probe_backend_fault(pipe);
+                };
+                if let Some(observation) = self.depth_two_block_ack[index] {
+                    let slot_index = (index & 3) as u8;
+                    let Some(live) = LiveTxSlot::from_mmio(
+                        &mut VolatileMacPipeMmio, pipe, slot_index, slot_raw, Some(frame),
+                    ) else { terminal_probe_backend_fault(pipe); };
+                    let record = pipe_record_address(pipe);
+                    if read_u8(slot.state().get()) != 5
+                        || read_u8(record.state().get()) != 1
+                        || read_u8(record.current_slot().get()) != slot_index
+                    { terminal_probe_backend_fault(pipe); }
+                    let Some((plan, members, _)) = depth_four_selective_plan_for(frame, &observation)
+                    else { terminal_probe_backend_fault(pipe); };
+                    let member_count = usize::from(observation.observation.member_count);
+                    let identities_match = members[..member_count].iter().all(|member| {
+                        self.publications.iter().flatten().any(|entry| {
+                            entry.pipe == pipe && entry.slot == slot_index
+                                && entry.frame_node.raw() == *member
+                                && entry.command == live.command
+                        })
+                    });
+                    let capacity = self.completed.entries.iter().filter(|entry| entry.is_none()).count();
+                    if !identities_match || usize::from(plan.retry_count) > capacity {
+                        terminal_probe_backend_fault(pipe);
+                    }
+                    // This is ordinary state-5 retirement, not a retry IRQ.
+                    // The finisher requeues in reverse insertion order and does
+                    // not acknowledge IRQs or advance the caller's cursors.
+                    if !finish_depth_four_selective_actions(slot_raw, plan, members, self) {
+                        terminal_probe_backend_fault(pipe);
+                    }
+                    self.depth_two_block_ack[index] = None;
+                    return;
+                }
+            }
+            // Preserve the existing completion policy without retained evidence.
+            complete_tx_pipe_slot(frame, slot_raw, 0, self);
+        }
+    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -4618,7 +4675,7 @@ unsafe fn depth_four_selective_plan_for(
             }
             current = FrameNodeAddress::from_raw(next)?;
         }
-        if member_count < 3 || member_count != usize::from(observation.observation.member_count) {
+        if member_count < 2 || member_count != usize::from(observation.observation.member_count) {
             return None;
         }
         if observation.members != members {
@@ -7099,6 +7156,7 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
 /// aggregate. Vendor `complete_tx_pipe_slot` copies the BA start sequence and
 /// bitmap into per-link state before `bab_process_ba_bitmap`; the bounded
 /// bring-up path classifies the exact retained two-to-four member chain.
+/// Receipt only updates retained evidence; TX status/retry handling owns retirement.
 ///
 /// Returns true when the frame is a matching BA and therefore belongs to the
 /// low-MAC rather than the host RX indication path.
@@ -7202,46 +7260,9 @@ pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
             observation,
         });
 
-        // Compressed BA frames can arrive repeatedly with shifted or growing
-        // windows. Acknowledgements are sticky for this exact aggregate; keep
-        // ownership until every retained member has been observed as acknowledged.
-        if observation.states[..member_count]
-            .iter()
-            .any(|state| *state != BlockAckMemberState::Acknowledged)
-        {
-            return true;
-        }
-        *retained = None;
-
-        #[cfg(feature = "experimental-depth-four-ampdu")]
-        if member_count > 2 {
-            crate::host_tx_diagnostics::record_ampdu_depth(2, member_count as u8);
-        }
-
-        let record = pipe_record_address(pipe);
-        let Some(slot) = publication.live_slot() else {
-            return true;
-        };
-        if !matches!(read_u8(slot.state().get()), 3 | 4) {
-            return true;
-        }
-
-        let Some(ring) = TxHardwareRingAddress::for_pipe(
-            pipe,
-            read_u32(record.hardware_ring().get()),
-        ) else {
-            crate::halt_always!();
-        };
-        write_u32(PIPE_IRQ_TRIGGER as usize, (1_u32 << pipe) << 25);
-        complete_tx_pipe_slot(publication.frame_node, slot.raw(), 0, &mut runtime.backend);
-        write_u32(ring.completion_word() as usize, 1);
-        let next = publication.slot.wrapping_add(1) & 3;
-        write_u8(record.current_slot().get(), next);
-        write_u8(record.producer_slot().get(), next);
-        write_u8(record.state().get(), 0);
-        write_u8(record.control().get(), 0);
-        write_u8(record.watchdog().get(), 5);
-        write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
+        // RX supplies evidence, not hardware-command retirement authority.
+        // Keep even all-ACK observations for the existing status/retry paths;
+        // do not acknowledge a TX IRQ or recycle command/cursor ownership here.
         true
     }
 }
@@ -13113,6 +13134,35 @@ mod tests {
             }),
             Err(ProbeBuildError::PacketRamMismatch),
         );
+    }
+
+    #[test]
+    fn selective_retirement_preserves_acks_at_two_and_four_member_depth() {
+        for count in [2_usize, 4] {
+            let mut sequences = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
+            for (index, sequence) in sequences[..count].iter_mut().enumerate() {
+                *sequence = Some((0x0fff + index as u16) & 0x0fff);
+            }
+            let observation = classify_planned_block_ack(0x0fff, 1, sequences).unwrap();
+            for retry_allowed in [true, false] {
+                let plan = plan_selective_ampdu_retry(
+                    observation,
+                    [retry_allowed; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+                    true,
+                    [Some(4); crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+                );
+                assert_eq!(plan.actions[0], Some(BlockAckMemberAction::Confirm));
+                assert!(plan.actions[1..count].iter().all(|action| *action == Some(
+                    if retry_allowed { BlockAckMemberAction::Retry } else { BlockAckMemberAction::GiveUp }
+                )));
+                assert!(plan.actions[count..].iter().all(Option::is_none));
+                assert_eq!(usize::from(plan.retry_count), if retry_allowed { count - 1 } else { 0 });
+                if retry_allowed {
+                    assert!(plan.retry_members[..count - 1].iter().enumerate()
+                        .all(|(index, member)| *member == Some((index + 1) as u8)));
+                }
+            }
+        }
     }
 
     #[test]

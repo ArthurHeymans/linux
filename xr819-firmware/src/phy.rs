@@ -1954,9 +1954,6 @@ pub unsafe fn advance_awake_station_tx() -> bool {
         // the accepted class-6 publication versus the refused class-0 one shows
         // the working path publishes with retained state 5, so forcing it to 3
         // here put the PHY into a configuration the MAC does not accept.
-        if retained_state == 5 {
-            write_u8(crate::dtcm::phy_retained_state().get(), 3);
-        }
         if retained_state != 0 {
             crate::mac::reprogram_after_channel();
         }
