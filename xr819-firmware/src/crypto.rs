@@ -252,13 +252,23 @@ fn tx_key(if_id: u8, receiver: &[u8]) -> Option<(usize, KeyRecord)> {
     }
 }
 
-fn rx_key(if_id: u8, transmitter: &[u8], key_id: u8) -> Option<KeyRecord> {
+fn rx_key(
+    if_id: u8,
+    transmitter: &[u8],
+    key_id: u8,
+    group_addressed: bool,
+) -> Option<KeyRecord> {
     unsafe {
         (*KEYS.0.get()).iter().copied().find(|key| {
             key.active
                 && key.if_id == if_id
-                && ((key.key_type == AES_PAIRWISE && key_id == 0 && key.peer == transmitter)
-                    || (key.key_type == AES_GROUP && key.key_id == key_id))
+                // Key ID zero is valid for a GTK too. Choose the key class from
+                // Address 1 before lookup, rather than letting table order decide.
+                && if group_addressed {
+                    key.key_type == AES_GROUP && key.key_id == key_id
+                } else {
+                    key.key_type == AES_PAIRWISE && key_id == 0 && key.peer == transmitter
+                }
         })
     }
 }
@@ -896,7 +906,9 @@ pub fn decrypt_rx_frame(frame: &mut [u8], if_id: u8) -> Result<bool, CcmpError> 
     let transmitter: [u8; 6] = frame[10..16]
         .try_into()
         .map_err(|_| CcmpError::MalformedFrame)?;
-    let key = rx_key(if_id, &transmitter, key_id).ok_or(CcmpError::MissingKey)?;
+    let group_addressed = frame[4] & 1 != 0;
+    let key = rx_key(if_id, &transmitter, key_id, group_addressed)
+        .ok_or(CcmpError::MissingKey)?;
     let (aad, aad_length) = build_aad(frame, control)?;
     #[cfg(target_arch = "arm")]
     {
@@ -1014,6 +1026,85 @@ mod tests {
             decrypt_rx_frame(&mut bad_mic, 0),
             Err(CcmpError::Authentication)
         );
+    }
+
+    // Seal a From-DS frame with the specified key, independently of TX key lookup.
+    fn sealed_rx_frame(receiver: [u8; 6], key_id: u8, key: &[u8; 16]) -> [u8; 52] {
+        let mut frame = [0; 52];
+        frame[..2].copy_from_slice(&0x4208_u16.to_le_bytes());
+        frame[4..10].copy_from_slice(&receiver);
+        frame[10..16].copy_from_slice(&[0x02; 6]);
+        frame[16..22].copy_from_slice(&[0x04; 6]);
+        frame[24..32].copy_from_slice(&[1, 0, 0, 0x20 | (key_id << 6), 0, 0, 0, 0]);
+        frame[32..44].copy_from_slice(b"hello world!");
+        let pn = [0, 0, 0, 0, 0, 1];
+        let nonce = build_nonce(&frame, 0x4208, pn).unwrap();
+        let (aad, aad_length) = build_aad(&frame, 0x4208).unwrap();
+        let tag = AesCcmp::new_from_slice(key)
+            .unwrap()
+            .encrypt_in_place_detached(
+                GenericArray::from_slice(&nonce),
+                &aad[..aad_length],
+                &mut frame[32..44],
+            )
+            .unwrap();
+        frame[44..].copy_from_slice(&tag);
+        frame
+    }
+
+    #[test]
+    fn rx_key_class_is_selected_by_receiver_not_table_order() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let pairwise = KeyRecord {
+            active: true,
+            key_type: AES_PAIRWISE,
+            peer: [0x02; 6],
+            key: [0x11; 16],
+            ..KeyRecord::EMPTY
+        };
+        for group_id in 0..4 {
+            let group = KeyRecord {
+                active: true,
+                key_type: AES_GROUP,
+                key_id: group_id,
+                key: [0x22; 16],
+                ..KeyRecord::EMPTY
+            };
+            for records in [[pairwise, group], [group, pairwise]] {
+                unsafe {
+                    *KEYS.0.get() = [KeyRecord::EMPTY; MAX_KEYS];
+                    (&mut *KEYS.0.get())[..2].copy_from_slice(&records);
+                }
+                for (receiver, key_id, key) in [
+                    ([0x06; 6], 0, pairwise.key),
+                    ([0xff; 6], group_id, group.key),
+                    ([0x01, 0, 0x5e, 0, 0, 1], group_id, group.key),
+                ] {
+                    let mut frame = sealed_rx_frame(receiver, key_id, &key);
+                    assert_eq!(decrypt_rx_frame(&mut frame, 0), Ok(true));
+                    assert_eq!(&frame[32..44], b"hello world!");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rx_does_not_fall_back_to_the_other_key_class() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        for (key_type, receiver) in [(AES_GROUP, [0x06; 6]), (AES_PAIRWISE, [0xff; 6])] {
+            unsafe {
+                *KEYS.0.get() = [KeyRecord::EMPTY; MAX_KEYS];
+                (*KEYS.0.get())[0] = KeyRecord {
+                    active: true,
+                    key_type,
+                    peer: [0x02; 6],
+                    key: [0x11; 16],
+                    ..KeyRecord::EMPTY
+                };
+            }
+            let mut frame = sealed_rx_frame(receiver, 0, &[0x11; 16]);
+            assert_eq!(decrypt_rx_frame(&mut frame, 0), Err(CcmpError::MissingKey));
+        }
     }
 
     #[test]
