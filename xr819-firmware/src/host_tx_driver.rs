@@ -25,7 +25,8 @@ const SERVICE_BUDGET: usize = 4;
 
 pub struct HostTxDriver {
     states: [Option<HostTxState>; HOST_CONTEXT_COUNT],
-    service_cursor: usize,
+    admission_orders: [u32; HOST_CONTEXT_COUNT],
+    next_admission_order: u32,
     hardware_service_cursor: u8,
     next_confirmation_order: u32,
     scheduler_phy_started_this_pass: bool,
@@ -154,7 +155,8 @@ impl HostTxDriver {
     pub const fn new() -> Self {
         Self {
             states: [const { None }; HOST_CONTEXT_COUNT],
-            service_cursor: 0,
+            admission_orders: [0; HOST_CONTEXT_COUNT],
+            next_admission_order: 0,
             hardware_service_cursor: 0,
             next_confirmation_order: 0,
             scheduler_phy_started_this_pass: false,
@@ -219,6 +221,8 @@ impl HostTxDriver {
                 retained.phase() as u32,
             );
         }
+        self.admission_orders[index] = self.next_admission_order;
+        self.next_admission_order = self.next_admission_order.wrapping_add(1);
         self.states[index] = Some(HostTxState::Owned {
             retained,
             wait_diagnostic: 0,
@@ -228,8 +232,8 @@ impl HostTxDriver {
     }
 
     /// Advance a bounded subset of contexts. A reserved/scheduled context is
-    /// always serviced first; remaining budget walks software-owned contexts
-    /// round-robin.
+    /// always serviced first; remaining budget visits pending contexts in
+    /// admission order, at most once each per pass. Arena reuse is not FIFO.
     ///
     /// # Safety
     /// This driver must be the sole class-0 owner of pending/PAS/scheduler and
@@ -299,10 +303,12 @@ impl HostTxDriver {
             budget -= 1;
         }
 
+        let mut software_visited = [false; HOST_CONTEXT_COUNT];
         while budget != 0 {
-            let Some(index) = self.next_software_owner() else {
+            let Some(index) = self.next_software_owner(&software_visited) else {
                 break;
             };
+            software_visited[index] = true;
             let event = unsafe {
                 self.service_index(
                     index,
@@ -354,19 +360,17 @@ impl HostTxDriver {
         Some(owners)
     }
 
-    fn next_software_owner(&mut self) -> Option<usize> {
-        for _ in 0..HOST_CONTEXT_COUNT {
-            let index = self.service_cursor;
-            self.service_cursor = (self.service_cursor + 1) % HOST_CONTEXT_COUNT;
-            if matches!(
-                &self.states[index],
-                Some(HostTxState::Owned { retained, .. })
-                    if retained.phase() != vendor_host_tx::HostTxPhase::Scheduled
-            ) {
-                return Some(index);
-            }
-        }
-        None
+    fn next_software_owner(&self, visited: &[bool; HOST_CONTEXT_COUNT]) -> Option<usize> {
+        let pending = self.states.iter().enumerate().filter_map(|(index, state)| {
+            let Some(HostTxState::Owned { retained, hardware: None, .. }) = state else {
+                return None;
+            };
+            (!visited[index] && matches!(retained.phase(),
+                vendor_host_tx::HostTxPhase::PostCryptoQueued
+                    | vendor_host_tx::HostTxPhase::PendingEligible
+            )).then_some((index, self.admission_orders[index]))
+        });
+        host_tx_policy::oldest_pending_context(pending, self.next_admission_order)
     }
 
     fn route_hardware_completion(&mut self, completion: tx::HostClass0Completion) {
@@ -546,7 +550,7 @@ impl HostTxDriver {
         owners: host_tx_policy::Class0RuntimeOwners,
     ) {
         let mut candidate_pipes = [None; HOST_CONTEXT_COUNT];
-        let mut first_index = None;
+        let mut fifo_distances = [u8::MAX; HOST_CONTEXT_COUNT];
         let mut ready_count = 0;
         for (index, state) in self.states.iter().enumerate() {
             let Some(HostTxState::Owned {
@@ -567,31 +571,25 @@ impl HostTxDriver {
             if owners.contains_pipe(pipe) {
                 continue;
             }
+            let Some(distance) = (unsafe { vendor_host_tx::queued_pas_ring_distance(retained) }) else {
+                continue;
+            };
             candidate_pipes[index] = Some(pipe);
-            if first_index.is_none() {
-                first_index = Some(index);
-            }
+            fifo_distances[index] = distance;
             ready_count += 1;
         }
-        #[cfg(feature = "experimental-member-requeue")]
-        if let Some(index) = unsafe { vendor_host_tx::first_live_pas_frame() }.and_then(|frame_node| {
-            self.states.iter().position(|state| {
-                matches!(
-                    state,
-                    Some(HostTxState::Owned {
-                        retained,
-                        hardware: None,
-                        ..
-                    }) if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
-                        && retained.context().frame_node().raw() == frame_node
-                        && candidate_pipes[retained.context().index()].is_some()
-                        && unsafe { vendor_host_tx::retry_attempted(retained) }
-                )
-            })
-        }) {
-            candidate_pipes[..index].fill(None);
-            first_index = Some(index);
-        }
+        // Context indices are reusable storage, not transmission order. Preserve
+        // PAS order for the head and every member, including ordinary batches.
+        let candidate_order: [usize; HOST_CONTEXT_COUNT] = core::array::from_fn(|_| {
+            let next = fifo_distances.iter().enumerate()
+                .filter(|(_, distance)| **distance != u8::MAX)
+                .min_by_key(|(_, distance)| **distance)
+                .map(|(index, _)| index);
+            if let Some(index) = next {
+                fifo_distances[index] = u8::MAX;
+            }
+            next.unwrap_or(usize::MAX)
+        });
         if !cfg!(feature = "experimental-fast-loop")
             && ready_count != 0
             && ready_count < host_tx_policy::MAX_ORDINARY_BATCH_DEPTH
@@ -604,7 +602,7 @@ impl HostTxDriver {
             return;
         }
         self.scheduler_single_wait = 0;
-        let Some(first_index) = first_index else {
+        let Some(&first_index) = candidate_order[..ready_count].first() else {
             return;
         };
 
@@ -858,6 +856,7 @@ impl HostTxDriver {
         };
         let Some(plan) = host_tx_policy::plan_ordinary_batch(
             &candidate_pipes,
+            &candidate_order[..ready_count],
             occupied_slots,
             first_index,
             pipe,

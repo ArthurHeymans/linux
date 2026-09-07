@@ -1303,7 +1303,7 @@ pub enum AmpduPublishError {
     Descriptor(crate::tx::ProbeBuildError),
 }
 
-#[cfg(all(target_arch = "arm", feature = "experimental-list-first-ampdu"))]
+#[cfg(target_arch = "arm")]
 unsafe fn queued_pas_ring_slot(context: HostContextAddress, head: u8, tail: u8) -> Option<u8> {
     let pas = context.pas().raw();
     let mut slot = head;
@@ -1316,10 +1316,15 @@ unsafe fn queued_pas_ring_slot(context: HostContextAddress, head: u8, tail: u8) 
     None
 }
 
-#[cfg(all(
-    target_arch = "arm",
-    feature = "experimental-list-first-depth-four-ampdu"
-))]
+#[cfg(target_arch = "arm")]
+/// FIFO distance from the live PAS head, independent of context arena reuse.
+pub unsafe fn queued_pas_ring_distance(retained: &RetainedHostTx) -> Option<u8> {
+    let position = unsafe { queued_pas_ring_position(retained) }?;
+    let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
+    Some(position.wrapping_sub(head) & 0x3f)
+}
+
+#[cfg(target_arch = "arm")]
 pub unsafe fn queued_pas_ring_position(retained: &RetainedHostTx) -> Option<u8> {
     let head = unsafe {
         read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f

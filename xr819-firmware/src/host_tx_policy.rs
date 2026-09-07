@@ -152,8 +152,21 @@ impl OrdinaryBatchPlan {
     }
 }
 
+/// Select the oldest live admission, even across ticket wrap and arena reuse.
+/// Callers exclude owners already visited in this bounded service pass.
+/// Pending lifetimes must remain shorter than a full u32 admission cycle.
+pub fn oldest_pending_context(
+    candidates: impl IntoIterator<Item = (usize, u32)>,
+    next_order: u32,
+) -> Option<usize> {
+    candidates.into_iter()
+        .max_by_key(|(_, order)| next_order.wrapping_sub(*order))
+        .map(|(index, _)| index)
+}
+
 pub fn plan_ordinary_batch(
     candidates: &[Option<u8>],
+    candidate_order: &[usize],
     occupied_slots: [bool; 4],
     first_index: usize,
     pipe: u8,
@@ -162,7 +175,11 @@ pub fn plan_ordinary_batch(
     if pipe >= 4
         || first_slot >= 4
         || candidates.get(first_index).copied().flatten() != Some(pipe)
-        || candidates[..first_index].iter().any(Option::is_some)
+        || candidate_order.first().copied() != Some(first_index)
+        || candidate_order.iter().enumerate().any(|(position, index)| {
+            candidates.get(*index).copied().flatten().is_none()
+                || candidate_order[..position].contains(index)
+        })
         || occupied_slots.into_iter().any(|occupied| occupied)
     {
         return None;
@@ -173,8 +190,8 @@ pub fn plan_ordinary_batch(
     indices[0] = first_index;
     slots[0] = first_slot;
     let mut len = 1;
-    for (index, candidate_pipe) in candidates.iter().copied().enumerate().skip(first_index + 1) {
-        if candidate_pipe != Some(pipe) {
+    for &index in candidate_order.iter().skip(1) {
+        if candidates[index] != Some(pipe) {
             continue;
         }
         if len == MAX_ORDINARY_BATCH_DEPTH {
@@ -533,7 +550,7 @@ mod tests {
     #[test]
     fn ordinary_batch_plan_fills_four_wrapped_slots_without_active_append() {
         let candidates = [None, Some(2), Some(1), Some(2), Some(2), Some(2), Some(2)];
-        let Some(plan) = plan_ordinary_batch(&candidates, [false; 4], 1, 2, 3) else {
+        let Some(plan) = plan_ordinary_batch(&candidates, &[1, 2, 3, 4, 5, 6], [false; 4], 1, 2, 3) else {
             panic!("eligible idle pipe must produce a batch plan");
         };
 
@@ -552,17 +569,37 @@ mod tests {
     #[test]
     fn ordinary_batch_plan_rejects_occupied_or_stale_ownership() {
         let candidates = [None, Some(1), Some(1)];
-        assert!(plan_ordinary_batch(&candidates, [false, true, false, false], 1, 1, 0).is_none());
-        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 4, 0).is_none());
-        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 1, 4).is_none());
-        assert!(plan_ordinary_batch(&candidates, [false; 4], 2, 1, 0).is_none());
-        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 0, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, &[1, 2], [false, true, false, false], 1, 1, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, &[1, 2], [false; 4], 1, 4, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, &[1, 2], [false; 4], 1, 1, 4).is_none());
+        assert!(plan_ordinary_batch(&candidates, &[1, 2], [false; 4], 2, 1, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, &[1, 2], [false; 4], 1, 0, 0).is_none());
     }
 
     #[test]
     fn ordinary_batch_plan_requires_the_first_eligible_context() {
         let candidates = [Some(0), Some(1), Some(1)];
-        assert!(plan_ordinary_batch(&candidates, [false; 4], 1, 1, 0).is_none());
+        assert!(plan_ordinary_batch(&candidates, &[0, 1, 2], [false; 4], 1, 1, 0).is_none());
+    }
+
+    #[test]
+    fn pending_order_survives_arena_reuse_and_ticket_wrap() {
+        let candidates = [(0, 0), (3, u32::MAX - 1), (1, u32::MAX)];
+        assert_eq!(oldest_pending_context(candidates, 1), Some(3));
+        assert_eq!(oldest_pending_context(candidates.into_iter().filter(|(i, _)| *i != 3), 1), Some(1));
+        assert_eq!(oldest_pending_context([(0, 0)], 1), Some(0));
+        assert_eq!(oldest_pending_context([], 1), None);
+    }
+
+    #[test]
+    fn ordinary_batch_preserves_fifo_across_reused_context_indices() {
+        let candidates = [Some(2), Some(2), Some(1), Some(2), Some(2)];
+        let plan = plan_ordinary_batch(&candidates, &[3, 1, 2, 0, 4], [false; 4], 3, 2, 2)
+            .expect("FIFO head need not have the lowest context index");
+        assert_eq!(core::array::from_fn(|i| plan.index(i)), [Some(3), Some(1), Some(0), Some(4)]);
+        assert_eq!(core::array::from_fn(|i| plan.slot(i)), [Some(2), Some(3), Some(0), Some(1)]);
+        assert!(plan_ordinary_batch(&candidates, &[3, 3], [false; 4], 3, 2, 2).is_none());
+        assert!(plan_ordinary_batch(&candidates, &[3, 99], [false; 4], 3, 2, 2).is_none());
     }
 
     #[test]
