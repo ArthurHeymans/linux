@@ -1246,3 +1246,223 @@ CPU, HIF, MAC or air time. Next discriminator: bounded admission-to-TX-start,
 completion and host-credit timing under no-BA traffic, alongside packet/rate
 metadata to resolve the vendor internal-aggregation caveat. No firmware code
 was changed for these comparisons; BA correctness review remains necessary.
+
+## Temporary SVC1 service-capacity discriminator
+
+Three independent read-only reviews favor admission/refill granularity,
+request-priority blocking of confirmations/RX, and synchronous crypto payload
+waits as hypotheses, not proven bottlenecks. The historical 5 ms/pass comment
+cannot describe current steady throughput: one 1632-byte input per 5 ms is
+at most 2.61 Mbit/s even before protocol overhead. No-BA already supports
+four ordinary members per publication; vendor also selects idle pipes.
+Removing pipe ownership or request priority is not an established safe fix.
+
+A separate disposable working change adds observation-only `service_probe.rs`
+under the existing RX diagnostics feature. No new feature, timer read,
+descriptor read, scheduling change, or hardware ownership change is added.
+The earlier clean candidate remains byte-for-byte unchanged. Ordinary
+publication sizes and PAS eligibility/busy observations are counted at the
+existing decision sites. Once per 64 foreground passes, software-only reads
+sample pending confirmations, request priority and shared-response capacity.
+These are systematic samples, potentially phase-aliased, not time-weighted
+probabilities. Busy observations count owners seen, not unique frames or
+MAC idle duration. Publication counts cover successful ready-batch paths,
+not all possible retry/reserved fallbacks. No latency claim follows yet.
+
+MIB 0x100c carries schema SVC1 (`0x53564331`) in word 0, not real Linux named
+statistics: 1 loops; 2 successful class-0 admissions; 3 samples; 4 pending
+confirmation samples; 5 pending+request-priority samples; 6 those also having
+response capacity; 7..10 ordinary publication depths 1..4. Words 11..16 keep
+RX pending passes, host-request-blocked passes, lifetime max pending bytes,
+lifetime max host transfers, decrypt drops and authentication drops. Words
+17..21 are PAS busy-owner observations, no-eligible-PAS publisher passes,
+eligible-PAS publisher passes, request-priority samples and response-capacity
+samples. Counters wrap modulo 2^32; RX maxima must not be differenced.
+Export runs cooperatively, with no interrupt writers. No packet/key bytes.
+
+Validation: 301 default / 303 feature tests pass (one focused probe test),
+primary LSP clean, stack 6768/6912, packing and DTCM layout pass. Probe image
+`/tmp/xr819-service-probe.bin`, SHA256
+`32e89bf1736b798b5af8cfdcaf76d31abe116c7658d7fc64c4c21d43cc906fd8`.
+Build log `/tmp/xr819-service-probe-build.log`. Saved-log decoder
+`/tmp/xr819-decode-service-probe.py` requires SVC1 and all 22 fields, rejects
+invalid pass/sample relationships, and reports snapshot intervals including
+setup/pings rather than pretending to measure exact traffic durations.
+
+Planned serial no-host-BA control/probe comparison repeats the prior 120s TX
+TCP, 60s RX TCP and 20s UDP 5/10M phases using the unchanged no-BA module,
+patched Intel AP, fixed board MCS5 and recovery harness. All CPU-state/PHY
+capture modes stay disabled; only normal metadata counters are read between
+phases. Stop on failure. First establish whether observation perturbs traffic;
+then use occupancy/blocking evidence to decide if sparse qualified timing is
+needed. Do not checkpoint or retain temporary probes as a production fix.
+
+First serial control/probe pair completed (`/tmp/xr819-service-no-ba-{control,probe}.log`,
+1050s harness exit 0, recovery requested after each). It does NOT establish
+probe neutrality. Clean TX/RX TCP was only 1.00/5.07 Mbit/s versus probe
+3.66/15.0; the clean run degraded to very slow but nonzero TCP progress.
+Last sender retrans/data segments were 319/10855 clean and 381/38582 probe,
+versus 13/55670 in the earlier clean no-BA run. Board station TX failures
+over primary TCP grew by 323/397 respectively. This comparison no longer
+has the earlier near-zero retransmission conditions. No RF or firmware
+cause is established. One MMC data error was logged in the probe run,
+without proven causal relation. Clean had one 49/50 ping set, all others
+50/50; probe all seven sets 50/50. Exit 0 does not mean zero packet loss.
+Both retained zero host aggregate TX counters.
+
+At requested UDP 10M board TX, clean received 3.03 Mbit/s, loss 6406/11597
+(55%); probe 5.19 Mbit/s, loss 6258/15111 (41%). At requested 5M, clean
+3.18 Mbit/s with 3004/8471 loss (35%), probe 4.76 with 814/8919 (9.1%).
+RX UDP achieved only 3.89/7.28 clean and 2.76/6.59 probe at requested 5/10M,
+zero reported loss: still not requested-rate RX qualification.
+
+SVC1 decoded successfully (`/tmp/xr819-service-no-ba-probe-summary.jsonl`).
+Primary TCP snapshot interval (142s, including setup/reads) counted 808750
+passes, 38587 admissions (4.77% of passes), 10758 ordinary publications,
+mean depth 3.587, and 3243539 busy-PAS-owner observations. Of 12637 sparse
+samples, 825 had pending confirmations and 240 were request-blocked; all
+240 also had response capacity. Thus 29.1% of pending-confirmation samples,
+but only 1.90% of all samples, were blocked. RX pending passes 44332,
+request-blocked 9026 (20.4%), no decrypt/authentication drops.
+High-offer TX UDP's snapshot interval counted 176786 passes, 8965 admissions,
+2314 ordinary publications (2192 full depth four), mean depth 3.874, 707511
+busy-PAS-owner observations. Confirmation overlap was 48/159 (30.2%), or
+48/2762 (1.74%) of all samples; response capacity existed in all 48. RX
+request-blocking was only 16/722 pending passes. These are not time shares.
+The global admission-per-pass ceiling is not saturated over either full
+interval, and high-offer UDP batches are already nearly full. Neither fact
+excludes expensive active passes, completion/refill latency, or airtime.
+Busy PAS counts cannot identify MAC idle time or unique stalled owners.
+
+Next: reverse the order (probe then unchanged clean), using identical image
+hashes and configuration, before attributing rate differences to observation
+or changing scheduling. Original runner archived as
+`/tmp/xr819-service-probe-comparison-first.sh`; repeat logs receive `-repeat`.
+
+Reversed pair completed, exit 0 after 1031s; recovery requested and all 14
+50-ping sets passed. Probe TX/RX TCP 2.95/11.5 Mbit/s, clean 4.18/14.3.
+Last sender retrans/data segments 489/31129 probe, 151/43782 clean. Thus
+neither pair establishes a consistent probe advantage or neutrality.
+At requested TX UDP 5M: probe 4.80 Mbit/s with 720/8919 lost (8.1%), clean
+4.71 with 868/8919 (9.7%). At requested 10M: probe 4.50 with 7977/15663
+(51%), clean 4.79 with 6275/14448 (43%). Probe RX UDP achieved 4.16/5.71
+Mbit/s, zero reported loss. These current runs do not recreate the earlier
+near-zero no-BA TCP retransmission conditions.
+
+Repeat SVC1 primary-TCP interval: 845371 loops, 31213 admissions (3.69%),
+mean ordinary depth 3.619; confirmation blocked/capacity-present 183/646
+pending samples (28.3%), or 183/13209 total samples (1.39%). High-offer TX
+UDP: 179264 loops, 7808 admissions (4.36%), mean depth 3.888 (1916/2008
+batches full); confirmation overlap 27/162 (16.7%) pending samples, or
+27/2801 (0.96%) total. No exported decrypt/authentication drops. Occupancy
+findings repeat, but request-priority overlap is variable and not a duration.
+Do not infer throughput limits or remove gates from these counts alone.
+
+SVC1 source/diff archived in `/tmp/xr819-service-probe-svc1.{rs,patch}`.
+Next temporary schema SVC2 (`0x53564332`) reuses existing AES timeout-loop
+timer deltas to count setup-status and TX/RX payload waits. No new timer
+MMIO read, interrupt change, or crypto/replay behavior change is introduced.
+For each completed or timed-out wait, record call count, last timeout-loop
+elapsed sum, lifetime elapsed maximum and total polling iterations. A wait
+already satisfied at its first condition check records zero elapsed. Setup
+figures exclude FIFO writes and initial timer reads; payload figures exclude
+the tail after the last timer read and DMA setup before the timeout origin.
+These are observed polling spans, not total function latency. Iteration
+increments and end-of-wait accumulation may perturb execution, so this too
+requires qualification; do not assume no added MMIO implies no timing effect.
+
+SVC2 words 0 marker, 1 loop count, 2 admissions; 3..6 TX payload calls/sum/
+max/iterations; 7..10 RX payload same; 11..16 unchanged RX diagnostics;
+17..20 AES setup-status waits (both directions) calls/sum/max/iterations;
+21 sparse service sample count (for loop/schema consistency validation).
+All sums/counts wrap modulo 2^32; maxima are lifetime, not interval maxima.
+No raw packet or key bytes are exported.
+
+SVC2 validation: 301 default / 303 feature tests, stack 6768/6912, primary
+LSP and edited-source diagnostics clean, packing/DTCM checks pass. Image
+`/tmp/xr819-service-crypto-probe.bin`, SHA256
+`20c6445e82e3c9b348971e86e548c3175cecf92a7c09bab14c70b3815af8e5e3`.
+`/tmp/xr819-decode-service-crypto-probe.py` validates the distinct schema,
+pass/sample consistency and wait sums/maxima; synthetic valid/invalid tests
+passed. Runner `/tmp/xr819-service-crypto-run.sh` uses the same no-BA driver,
+fixed MCS5 and bidirectional phases. Its purpose is polling-span localization,
+not a claim of performance improvement or instrument neutrality.
+
+SVC2 run completed, exit 0 after 511s; recovery requested. TX/RX TCP
+1.70/17.5 Mbit/s, last sender retrans/data 719/18392. TX UDP at requested
+5/10M received 2.07/1.97 Mbit/s, lost 4912/8468 (58%) and 7116/10490 (68%).
+One ping set was 49/50; another took 24s despite 50/50 replies. RX UDP 5M
+had a long receiver tail: sender 1.30 Mbit/s over 20.61s, receiver 535 kbit/s
+over 49.11s, lost 45/2280 = 1.97% (iperf incorrectly printed 0%). RX UDP
+10M received 4.93 Mbit/s, 0/8411 loss. This is not a neutral instrumentation
+qualification, nor requested-rate RX reception.
+
+`/tmp/xr819-service-crypto-no-ba-summary.jsonl` validates SVC2. Using the
+existing vendor timer's microsecond convention: primary-TCP interval 144s
+had 18528 TX payload waits averaging 130.424 ticks (335.85 iterations),
+13794 RX waits averaging 7.166 ticks, and 258576 setup waits averaging
+0.108 ticks. Recorded sums: TX 2416499, RX 98843, setup 27957 ticks,
+total 2.543299 seconds (1.77% of the whole snapshot interval). RX TCP's
+69s interval had 96145 RX payload waits averaging 130.669 ticks, TX ACK
+waits averaging 6.884 ticks, total recorded waits 12.739956 seconds
+(18.46%). Setup wait lifetime maximum 1 tick, payload maximum 131 ticks;
+no 50000-tick timeout spans or exported RX decrypt/authentication drops.
+Setup calls equal eight times total TX+RX payload calls in every interval,
+consistent with the eight status waits per successful AES transaction.
+High-offer TX UDP payload wait mean 129.421 ticks, total 0.553908 seconds
+of recorded crypto waits over its 31s snapshot interval. No full-function
+CPU utilization follows from these spans; programming/memory work and
+unobserved tails remain excluded. The result weakens synchronous waiting
+as the dominant TX bottleneck, while showing a meaningful RX wait cost.
+
+All SVC1/SVC2 code was archived then removed from the working source by
+restoring `src/` from the preserved clean parent. SVC2 archive:
+`/tmp/xr819-service-probe-svc2.{patch,rs}`. No diagnostic feature was added,
+no scheduling/crypto ownership fix or checkpoint is claimed. The working
+change now contains the investigation ledger only. Next discriminator is a
+fresh stock-vendor no-host-BA run under the same current AP conditions:
+today's clean and probed Rust runs have worse TX retransmissions than the
+earlier matched pair, so a stale vendor rate is an insufficient control.
+
+Post-removal validation: 301 default / 302 feature tests, stack 6752/6912,
+LSP and packing/layout pass. `/tmp/xr819-post-service-clean.bin` matches
+`/tmp/xr819-clean-ba-evidence.bin` byte-for-byte (SHA256 `df9596e0...`);
+full build log `/tmp/xr819-post-service-clean-build.log`.
+
+## Fresh vendor control also loses TCP progress
+
+The fresh stock-vendor no-host-BA run failed the deliberate backlog-progress
+guard with exit 22 after 157s of harness time. This is a detected TCP stall,
+not evidence that the test process or firmware crashed. Exact firmware/boot/
+module hashes and patched AP build ID were checked before deployment.
+Log `/tmp/xr819-service-fresh-vendor-no-ba.log`; runner
+`/tmp/xr819-service-fresh-vendor-control.sh`. No CPU-state export or direct
+memory capture was attempted. Recovery files and reboot were subsequently
+verified over Ethernet SSH with byte comparisons to the recovery artifacts.
+
+At the trigger (about 30s into TCP), bytes_acked remained 1390080 for more
+than 10s with 75296 bytes notsent, three unacked segments and growing RTO.
+Last sender data/retrans segments 1063/100. The aborted run's receiver
+summary was only 295 kbit/s over 37.81s, not a completed 120s benchmark.
+Pre-capture AP station had 1020 RX packets, 663 TX packets, 18 TX retries,
+zero TX failures and 11.4s inactivity. Board reported 1120 TX packets,
+1133 retries, 102 TX failures, zero beacon loss. Driver BH was alive,
+used input buffers zero, no pending TX/RX, WSM idle. These counters do not
+localize where the TCP retransmissions stopped succeeding.
+
+Crucially, all three forward pings before HIF capture, all three afterward,
+and all three reverse pings succeeded. The link was not globally dead.
+AP RX/TX packet counters advanced to 1029/672 after those probes. The
+no-host-BA vendor still reported AGG TXed 451 (members without host head
+metadata); this reinforces the distinction between disabling host BA and
+proving absence of firmware-side aggregation, without establishing over-air
+aggregation behavior. No claim that this is the same race as Rust's former
+RX-side retirement stall is justified.
+
+This control demonstrates that the current TCP-progress failure does not
+require Rust firmware or the temporary probes. It does NOT erase the earlier
+matched Rust/vendor performance deficit, prove an AP defect, or exonerate
+Rust's remaining service latency. Pause speculative Rust scheduling changes:
+the next useful discriminator is synchronized AP receive/drop and station
+retry/confirmation metadata during the reproducible vendor TCP failure,
+including its aggregation state, before interpreting throughput comparisons.
