@@ -1466,3 +1466,50 @@ Rust's remaining service latency. Pause speculative Rust scheduling changes:
 the next useful discriminator is synchronized AP receive/drop and station
 retry/confirmation metadata during the reproducible vendor TCP failure,
 including its aggregation state, before interpreting throughput comparisons.
+
+## AP-observed stock-vendor TCP repeat
+
+After local sudo authentication was found to be terminal-specific, the user
+started the bounded existing AP observer in their terminal. No credentials
+were copied into commands or files. Six probes attached successfully before
+the parent started `/tmp/xr819-vendor-ap-observed-run.sh`, a TCP-only 120s
+repeat with the exact stock vendor/no-host-BA inputs and patched AP. Module
+SHA256 `8139310b...`, live build ID `ac263b65...`, and disassembly offsets
+were checked: release+0x201 and MPDU+0xc74 are the two PN memcmp calls;
+MPDU+0x358 is the common skb drop path. No module swap, replay change,
+firmware modification, or packet/key dump. The observer prints bounded
+header/reorder/PN metadata and radio-wide debug format strings, not their
+payload arguments. It expires automatically after seven minutes.
+
+Run completed after 266s with exit 0, no 10s TCP-progress stall reproduced.
+TX TCP 1.89 Mbit/s over 121.76s; last sender retrans/data segments
+593/20355. Initial ping 49/50, final 50/50. Three MMC data errors were logged
+at board uptime 139.397676, 151.929042 and 169.972158 seconds; timing and
+causality relative to individual failed transmissions remain unresolved.
+Recovery files were subsequently byte-verified over Ethernet SSH. Log
+`/tmp/xr819-vendor-ap-observed.log`. Observer expiry was confirmed and its
+full output saved as `/tmp/xr819-vendor-ap-observed-drop-full.log`; the
+counts below remain scoped to the earlier preserved prefix.
+
+Trace prefix copied at harness completion to
+`/tmp/xr819-vendor-ap-observed-drop-prefix.log`, before observer expiry.
+Its printed intervals include association and pings, not exclusively TCP;
+a final partial 10s interval may be absent. Total lab-transmitter-filtered
+PN comparisons: 2679 reorder-release and 17260 direct-path. No recorded PN
+reject, slot mismatch, or lab-attributed common drop. These scoped negatives
+do not establish absence of all AP drops or explain the earlier stall.
+
+Radio-wide debug-format counters reported 415 BAR notifications and 210
+duplicate notifications; 210 common drops had an empty skb and could not be
+attributed by transmitter. Do NOT relabel these as 210 proven board drops.
+Lab-filtered reorder samples show TID0/window16 active despite host TX BA
+being disabled: AP reorder/BA state for this peer exists. This strengthens
+the warning that the host toggle is not aggregation parity, without proving
+that every vendor data frame was aggregated. PN gaps alone are not replay
+rejects or proof of where packet loss occurred.
+
+The traced low-throughput repeat weakens PN-replay rejection/modulo-slot
+alias as explanations for THIS run, not for the unobserved prior stall.
+Remaining discriminators include pre-allocation duplicate classification,
+BAR/reorder release behavior and synchronized board MMC/confirmation timing.
+No Rust scheduling optimization follows from this capture.
