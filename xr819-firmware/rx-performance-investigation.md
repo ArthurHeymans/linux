@@ -1661,3 +1661,105 @@ classification versus board transmission; it does not identify which side
 lost the frames. No firmware/replay/scheduling fix follows. Any board-side
 confirmation timing must avoid the rejected ARM dynamic probes; use safe
 static tracepoints or a separately qualified diagnostic host driver.
+
+### Early AP receive trace: short run passes with a slow tail
+
+Added `/tmp/xr819-ap-early-flow.bt`, SHA256
+`52cf569dce3a52e706dd15d395f7313478d81e8e3b8fae65eb72bcc00fdf14ef`.
+Exact patched MPDU+0x118 is after descriptor/MPDU length validation, before
+skb allocation and crypto/duplicate handling: rbx is the RX packet, r9 the
+48/64-byte descriptor size, saved len at sp+0x10 and queue at sp+0xc.
+Header at packet+8+size is accessed only with sufficient declared length;
+only board TA, frame type/subtype, QoS TID, sequence-control, Retry, length
+and descriptor status are exported, with bounded samples. Status is at
+packet+0x14; cumulative status keys mask 0xf63 (CRC/FIFO, ICV/MIC, cipher,
+decrypted). Frames discarded by AP firmware or before this length check
+remain invisible; bad-CRC transmitter matching is necessarily tentative.
+
+MPDU entry/return depth-one per-CPU context attributes the existing common
+drop at +0x358 even before skb population; nested calls are excluded and
+entry/exit/nesting counters qualify attribution. Synchronous __iwl_dbg
+DROP calls with function name iwl_mvm_rx_crypto record only static format
+strings, never payload arguments. Source shows these crypto messages before
+rejection. Existing duplicate/BAR/TCP-entry/ACK-queue probes remain. No PN
+probe or board kprobe added. Thirteen AP probes attached successfully.
+
+`/tmp/xr819-vendor-early-flow.log` completed in 267s harness time, exit0:
+TCP receiver 6.89 Mbit/s over 123.18s, sender last retrans/data525/73796;
+initial/final pings both50/50. This did not reproduce the >=10s backlogged
+stall. It did end badly: 115–120s only62.6 kbit/s and the trailing3.18s
+40.1 kbit/s. Do not turn completion into a sustained-health qualification.
+MMC error uptime169.386458 maps approximately to08:52:10.201 UTC from the
+board association clock pair, near the late slowdown, not proof of cause.
+Recovery images/module and absence of board probes verified after reboot.
+
+AP prefix `/tmp/xr819-vendor-early-flow-ap-prefix.log` ends with main queue6
+73718 board QoS-data indications, all masked status0xa43: CRC/FIFO OK,
+CCMP/CCM cipher, MIC OK, hardware-decrypted. Common-drop73 matches the
+board duplicate count73; no crypto-rejection-format hits. Radio-wide MPDU
+entries/exits73905/73905, no nested calls; BAR entries/exits182/182.
+TCP-entry39695 and ACK-queued27999 are handler counts, not directly
+comparable to wire segments or RX descriptors. This run supports working
+attribution and no observed crypto-status failure, not a negative finding
+for an unobserved stall. RX queue6 versus prior queue12 is not itself an
+error. Prior flow's completed full AP log was archived as
+`/tmp/xr819-vendor-ap-flow-only-ap-full.log`; this short early observer also
+expired and its full log is `/tmp/xr819-vendor-early-flow-ap-full.log`.
+
+Prepared a longer repeat using exactly the same BPF source: launcher
+`/tmp/xr819-ap-early-flow-long.sh` expires after1200s; ordinary-harness
+wrapper `/tmp/xr819-vendor-early-flow-long-run.sh` requests600s TCP with the
+same10s stall guard, vendor/no-host-BA/fixed-MCS5 inputs, fresh readiness
+<=90s, no board probes or CPU reads. Separate `early-flow-long` logs preserve
+short-run evidence. Shell syntax checked; fresh privileged AP launch needed.
+Firmware and replay/ownership behavior remain unchanged.
+
+### Long early-AP trace catches a recoverable progress gap
+
+`/tmp/xr819-vendor-early-flow-long.log` exited22 after466s harness time,
+not a kernel crash. Requested600s TCP was aborted on the10s no-progress
+guard; receiver summary4.58 Mbit/s over333.56s is not a completed benchmark.
+Last sender bytes_acked189676416, notsent686352, three unacked, cwnd1,
+RTO8576ms/backoff4, retrans/data1287/132282. Driver BH alive, used buffers0;
+board TX132382, retries48368, failures1175, no beacon loss. All three
+failure-capture ping sets passed3/3. Recovery files and absence of board
+probes subsequently verified over Ethernet.
+
+The distinguishing evidence is in
+`/tmp/xr819-vendor-early-flow-long-ap-prefix.log`, correlated with its
+bracketing AP wall/monotonic pair (times below UTC):
+
+- First observed TCP payload sequence3744390578. At09:11:59.957875 the AP
+  queued ACK3934066994; their difference is exactly189676416, the board's
+  frozen bytes_acked. The receiver and sender therefore agreed on progress
+  immediately before the gap; this is not evidence of that ACK going missing.
+- During09:12:00–09:12:11, sender data_segs_out increased132278→132282 and
+  bytes_retrans1857784→1863576 while acknowledged bytes stayed fixed. These
+  are TCP transmission attempts, NOT proof of SDIO delivery or radio emission.
+- AP main-queue8 early indications remained133742 from09:12:04 through
+  09:12:14; TCP-entry86545, ACK-queued60614 and duplicate1032 were also flat.
+  Radio-wide MPDU entries/exits moved only133893/133893→133894/133894, then
+  remained flat. This points upstream of the AP MPDU handler, rather than
+  active rejection by its traced crypto/duplicate paths. AP transport or
+  firmware discards remain possible; absence at this hook is not absence
+  on the air.
+- Capture pings produced queue1 indications starting09:12:14.379. TCP resumed
+  at09:12:17.230041, BEFORE recovery/reboot: first TCP sequence3934066994 was
+  precisely the missing next byte; ACK advanced immediately. The interval
+  without TCP entries was about17.27s. This recovery is also compatible with
+  the next exponentially backed-off retransmission. Do not claim that pings
+  unwedged firmware, or label the guard trigger a permanent firmware stall.
+
+Final prefix main-queue data indications134753 all masked status0xa43;
+common drops1048 (1047 queue8, one queue1) equal duplicate count1048.
+No crypto-rejection-format hits, nested calls or lost-event warnings.
+MPDU entries/exits134920/134920; BAR entries/exits471/471. These final counts
+include resumed traffic and capture pings and must not replace the frozen
+stall-window counts. No rejection by other untraced stages is ruled out.
+
+Numerous MMC errors occurred, but the last, uptime334.861021, maps roughly
+to09:11:11.469—about48s before the gap. Thus there is again no time-coincident
+reported MMC error establishing its cause. Next useful boundary is board
+submission/transport/confirmation timing using static tracepoints or a
+separately qualified host driver; do not reintroduce ARM dynamic probes or
+make another speculative firmware/AP change.
