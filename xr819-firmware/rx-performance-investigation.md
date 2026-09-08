@@ -2039,3 +2039,65 @@ This is one serial pair, not proof of a fixed40% deficit or probe neutrality.
 Next use the existing synchronized timing evidence to compare service gaps,
 then a bounded reverse-order confirmation if needed; avoid new firmware
 instrumentation or speculative scheduling changes without a concrete lead.
+
+### Negotiated-BA Rust, automatic rates, packet tracing disabled
+
+Following the static review, reused the qualified clean Rust image (SHA256
+`df9596e00a6d44a8b984c0cc58bab44d559f08493a40afac9081a782d23f4cc3`)
+and previously tested BA-enabled diagnostic host module (SHA256
+`a237a79ed4c141ec0a3d66a961aba1cef183c4e3e8a89f110bf672b78b6f0626`).
+No firmware changes, forced BA flags, depth increases, packet tracing, or
+CPU-state dumps. Automatic rates, existing patched Intel AP. Socket polling
+and before/after diagnostic snapshots remain, so this is not observer-free.
+
+The first launch stopped before deployment because global tracing_on was1;
+events were disabled, tracer was nop, no instances existed, and recovery
+files matched. Turned the idle global switch off and relaunched. Log:
+`/tmp/xr819-rust-ba-enabled-untraced-retry.log`; wrapper:
+`/tmp/xr819-rust-ba-enabled-untraced-run.sh`.
+
+Completed601.7964s at4.70 Mbit/s, no10s stall guard, both50-ping sets50/50,
+BH alive. TID0 reached TX_OPERATIONAL with MIB result0. Idle aggregate
+counters were zero; after TCP:184012 AGG TXed,51153 aggregate heads,
+132859 members without metadata, reports187819 length/183992 ACK/0 invalid.
+These are host-reported aggregation/completion counters, not independent
+on-air delivery or aggregate-depth measurements. Last TCP socket sample:
+843 retransmissions/244852 data segments (about0.344%).
+
+Recovery file comparisons and trace-instance absence independently verified;
+wrapper exit0. The4.70 result is higher than the earlier traced no-BA Rust
+3.24, but driver BA mode, tracing, and run time all differ: it does not isolate
+aggregation benefit or establish vendor parity. It does establish that the
+existing negotiated-BA path is operational and sustained this10-minute run.
+A matched untraced control/repeat is needed before attributing the difference.
+
+Independent follow-up also confirmed the watchdog only retires the current
+ordinary slot before recycling the pipe. This was already recorded above,
+including zero watchdog expiries during a sustained-loss run. Expiry alone
+is not hardware-quiescence proof; do not implement a blind batch-retirement
+loop or treat this latent recovery concern as the throughput explanation.
+
+### Matched untraced vendor control after negotiated-BA Rust
+
+`/tmp/xr819-vendor-ba-enabled-untraced.log` completed600.3473s at8.19 Mbit/s
+versus Rust4.70 over601.7964s. Same BA-enabled diagnostic host module,
+automatic rates, patched Intel AP,600s request and socket-only observer;
+stock vendor boot/firmware hashes checked before deployment. No packet
+traces or CPU-state dumps. Vendor baseline pings49/50, final50/50; BH alive,
+no10s stall guard, wrapper exit0 and recovery file comparisons/absence of
+trace instances verified.
+
+Vendor again never reached host TX_OPERATIONAL: repeated TX_START/STOP_CONT
+callbacks, no operational result. AGG TXed changed11->21, with no aggregate
+head metadata or aggregate reports. These host counters cannot establish
+vendor's internal/on-air aggregation mode or depth. Rust did reach
+TX_OPERATIONAL and reported aggregation, so matched host configuration is
+not equivalent negotiated/internal BA behavior.
+
+Last socket sample vendor7410 retransmissions/431612 data segments (1.717%),
+versus Rust843/244852 (0.344%). These are TCP attempts, not radio failures.
+Vendor was1.74x faster (Rust42.6% lower) in this serial pair despite the higher
+TCP retransmission fraction. The deficit therefore persists without packet
+tracing and with Rust negotiated aggregation enabled; neither observation
+localizes its cause or establishes a repeatable fixed magnitude. No firmware
+fix or aggregate-depth change made.
