@@ -1513,3 +1513,151 @@ alias as explanations for THIS run, not for the unobserved prior stall.
 Remaining discriminators include pre-allocation duplicate classification,
 BAR/reorder release behavior and synchronized board MMC/confirmation timing.
 No Rust scheduling optimization follows from this capture.
+
+## Prepared board-specific flow discriminator
+
+Next observation scripts are isolated in `/tmp`; firmware/module images and
+normal harness are unchanged. `/tmp/xr819-ap-flow.bt` probes the duplicate
+branch at MPDU+0x34e, where rax still addresses the original 802.11 header,
+before the skb becomes attributable. It filters the board TA and records
+TID/sequence-control/Retry metadata. Release-function entry filters the
+board's ieee80211_sta address; BAR entry/return CPU markers classify nested
+releases and expose entry/exit balance so missing returns invalidate that
+classification. Verified release ABI/disassembly and raw private offsets:
+BA tid at +20, window at +24, buffer head/stored/queue at +0/+2/+4.
+
+Additional header-only probes count board-port-5001 TCP entry at the AP and
+AP ACKs queued toward the board. Neither means application acceptance or
+successful over-air ACK delivery. Sequence/ACK samples are bounded per 5s;
+event counts are cumulative, avoiding print/clear count races. Wall/monotonic
+pairs provide clock correlation. This focused observer does not repeat the
+previous PN-check probes, so their scoped negatives cannot be carried over.
+Module/image guards remain mandatory; root compilation/attachment of this
+new AP script remains pending (unprivileged codegen requires CAP_DAC_READ_SEARCH).
+User launcher `/tmp/xr819-ap-flow.sh` expires after 600s and rejects another
+active bpftrace observer. Trace log is pre-created user-owned mode 600.
+
+Board kernel supports dynamic kprobes but NOT CONFIG_HIST_TRIGGERS. A failed
+histogram preflight was cleaned up; no triggers or instance remain. The
+replacement `/tmp/xr819-board-flow.sh` preflight successfully registered ARM
+EABI probes for wsm_txed headers and caller-decoded cw1200_tx_confirm_cb
+fields, then removed them. It uses an isolated trace instance and only
+CMD53 error events, not unsafe bh_rx_trace (whose last column contains data).
+`/tmp/xr819-board-flow-monitor.py` continuously drains the bounded trace ring,
+aggregates submissions by raw WSM id and confirmations by status/rate/ACK
+failures/flags, and reports firmware delay sums/log2 bins without assuming
+their timing semantics are qualified. It emits projected MMC error fields,
+not raw trace lines, register-response words, or packet bytes. It reports
+parse failures and ring overruns; either weakens completeness claims.
+
+Counts are emitted beside socket samples over one passwordless SSH session;
+the flow-specific observer/harness are `/tmp/xr819-tcp-observe-flow.py` and
+`/tmp/xr819-tcp-flow-run.sh`. Tracing setup occurs only after deployment and
+association, before iperf starts. Exit traps remove the board trace instance
+and its probes; recovery reboot remains the final guard. This is more work
+than the earlier counters and may perturb performance. Submission/confirmation
+counts are not packet-by-packet matching, and AP samples are not full traces.
+Synthetic aggregation, malformed-event and metadata-projection checks passed;
+board preflight cleanup verified. Hardware traffic test awaits AP attachment.
+Runner ready: `/tmp/xr819-vendor-flow-run.sh` (stock vendor, unchanged no-host-
+BA driver, fixed board MCS5, TCP-only 120s, existing stall capture/recovery).
+
+### Setup corrections and rejected ARM kprobe experiment
+
+Initial AP launch failed before attachment: this bpftrace rejects `nsecs(wall)`
+and cannot resolve the split-BTF ieee80211_sta type automatically. Also,
+root tee could not create/open the user-owned log directly in sticky /tmp
+(fs.protected_regular). Corrected to explicit `nsecs(monotonic)` with
+userspace bracketing wall/monotonic pairs; decoded loaded mac80211 split BTF
+confirmed ieee80211_sta.addr offset 0 (type size 600). BTF SHA256
+`2ef07a82bca14893bbad75195ede2fa8e1fb055dc53e2fedb73b84a7166e72a8`
+is now guarded. Log moved into private, non-sticky
+`/tmp/xr819-flow-capture/ap-flow.log`. Corrected AP source SHA256
+`b41fbb31a852248682c6a6bf153d3786148ae7088bff01705a36d888e9f6d2d9`.
+Eight probes attached and emitted readiness successfully.
+
+The subsequent synchronized run is DISQUALIFIED. At the very first traced
+wsm_txed call, board uptime about 57.65s, the ARM Thumb kprobe single-step
+path caused a kernel execute fault. Stack attribution: wsm_txed ->
+t16_emulate_push -> thumb16_singlestep -> kprobe_trap_handler. The wireless
+BH worker terminated. Only one submission and zero confirmation events
+were observed; socket stayed SYN-RECV. Thus there was no valid steady-state
+TCP experiment, and this failure must NOT be attributed to vendor/Rust
+firmware, AP reorder, or missing TX confirmations. Registration-only preflight
+was insufficient to establish probe-hit safety on this kernel.
+
+Harness eventually exited 21 after final ping 0/50; initial ping had passed
+50/50. The final snapshot showed BH `terminated`, which the ordinary harness's
+`dead`-only snapshot check did not catch; its sender progress detector also
+does not cover SYN-RECV/no bytes_acked. These are diagnostic-guard limitations,
+not evidence of a second hardware failure. Log `/tmp/xr819-vendor-flow.log`
+contains an unexpected kernel Oops register/stack dump from the generic
+failure dmesg capture; restricted to mode 600, not packet-data evidence and
+not for public upload or further raw-memory interpretation.
+
+Recovery boot/firmware/module files, absence of the flow instance and removal
+of both kprobes were verified over Ethernet SSH after reboot. Archived
+rejected scripts have `-rejected` names. `/tmp/xr819-board-flow.sh` and
+`/tmp/xr819-tcp-flow-run.sh` now refuse execution; no more ARM function-kprobe
+runs. Firmware source/images remain unchanged. Any future board-side detailed
+instrumentation needs safe static tracepoints or a separately qualified driver
+build, not another arbitrary instruction-offset probe.
+
+AP observer expired normally; full log preserved privately as
+`/tmp/xr819-vendor-flow-rejected-ap-full.log`. Disabled bpftrace `-k` for the
+next run: it floods normal missing-map-element lookups with warnings and can
+itself perturb timing. Cumulative counts and BAR-entry/exit balance remain.
+`/tmp/xr819-vendor-flow-run.sh` now invokes ONLY the unchanged ordinary harness,
+with new `vendor-ap-flow-only` log names, fresh-observer age <=90s guard,
+stock vendor/no-host-BA inputs and 120s TCP. This next AP-only run cannot
+provide per-second board submission/confirmation timing; do not imply that
+it can. Await a fresh AP observer before starting it.
+
+### AP-only flow run reproduces vendor stall without board probes
+
+Fresh AP observer attached eight probes without `-k`. Ordinary vendor TCP
+run exited 22 after 218s harness time on backlogged no-progress detection;
+no host Oops or board kprobes. Recovery files and probe absence subsequently
+verified over Ethernet. Log `/tmp/xr819-vendor-ap-flow-only.log`; AP prefix
+`/tmp/xr819-vendor-ap-flow-only-ap-prefix.log`. This is a valid observation
+of the stall under AP instrumentation, not a completed throughput benchmark.
+Aborted TCP summary 2.72 Mbit/s over 97.29s; last sender retrans/data
+370/23202, bytes_acked 33033224, notsent 286704, 19 unacked, RTO 5792ms.
+Initial pings 47/50. During failure forward pings 0/3 before and 0/3 after
+capture; reverse board->AP pings 3/3. Link state was therefore asymmetric,
+not uniformly dead. Driver BH alive, zero used input buffers.
+
+Board-filtered AP duplicate count settled at 30 and did not increase during
+the sustained stall. At AP monotonic 653989005943983 ns (08:10:01.352 UTC),
+cumulative TCP-entry count was 17814, ACK-queued 11548, BAR entries/exits
+180/180; these remained flat through 08:10:16.352. Thus the AP was not
+continuing to process TCP data or emit TCP ACKs during that interval, nor
+was the traced duplicate branch repeatedly rejecting the board's retries.
+Counts are skb/handler invocations, not TCP segment counts (GRO and batching
+prevent direct equality with sender segment counters). Bounded sequence
+samples cannot reconstruct every frame/ACK or prove absence of earlier drops.
+
+BAR-triggered releases were on RX queue0/TID0/window16; ordinary releases
+predominantly used queue12, reaching 2656. This is a real queue distinction,
+not by itself a bug: release_frames_from_notif selects the notification's
+queue, and firmware may separately notify other queues. At 08:10:17.925,
+a further board BAR release on queue0 moved head2779 toward NSSN2795 with
+one stored frame. Later one TCP ACK was queued, without another TCP-entry
+hit. Do not treat these late capture-era events as recovered bulk traffic.
+All observed BAR entry/exit counts balanced, with no persistent nesting marker.
+
+Pre-capture AP station RX22895/TX11606, 370 TX retries, zero TX failures,
+about 11s inactivity; board TX23272, retries11214, failures381, no beacon
+loss. These counters cannot distinguish failure to transmit, failure before
+AP accounting, or earlier receiver drops inducing retransmission/backoff.
+MMC errors at board uptime62.460915 and91.817575 map approximately to
+08:08:48.675 and08:09:18.032 UTC using the board association wall/uptime
+pair, roughly70s and41s before the final loss of TCP progress near08:09:59.
+They are not time-coincident evidence for that stop, but delayed effects
+are not excluded. Mapping is approximate, not hardware-clock synchronization.
+
+This run narrows the next capture toward early AP MPDU admission/drop
+classification versus board transmission; it does not identify which side
+lost the frames. No firmware/replay/scheduling fix follows. Any board-side
+confirmation timing must avoid the rejected ARM dynamic probes; use safe
+static tracepoints or a separately qualified diagnostic host driver.
