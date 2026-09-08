@@ -1763,3 +1763,279 @@ reported MMC error establishing its cause. Next useful boundary is board
 submission/transport/confirmation timing using static tracepoints or a
 separately qualified host driver; do not reintroduce ARM dynamic probes or
 make another speculative firmware/AP change.
+
+### Static host TX tracing builds and passes an actual-hit short test
+
+Created separate `/tmp/xr819-static-flow-driver` from the preserved no-host-BA
+host driver. Original module remains SHA256
+`d7d9f42188e40942314c2e19ee8befbf479315d94f099834530e519079b9b9c2`.
+Diagnostic module SHA256
+`5e41292b44d3813ea71a6ad93d56fbe71111b2aa5bfa5264974a7951b47f7cb4`;
+patch `/tmp/xr819-static-flow-driver.patch`. Kernel6.18.0-xr819-test+ ARMv7
+Thumb2 cross-build with its GCC15.3 toolchain succeeded without warnings.
+Standalone LSP lacks the kernel include/build configuration and is not a
+valid type-check here; the actual kernel module build is the validation.
+
+Three static events in group cw1200_flow, defined in flow_trace.{c,h}:
+
+- cw1200_queued records numeric queue cookie/previous cookie, length, queue,
+  requeue marker at admission and requeue. Cookies are not kernel pointers.
+- cw1200_transport records before/after cw1200_data_write, preserving its
+  single call and existing error handling. Records cookie only for guarded
+  data requests, raw WSM header ID, aligned length, data/command classification,
+  phase and return code. A successful call does not prove radio transmission.
+- cw1200_confirmed copies caller-decoded cookie/status/rate/ACK-failures/flags
+  and firmware delay fields before existing completion handling. No payload,
+  key, hardware register read, arbitrary instruction offset or kprobe.
+
+`/tmp/xr819-board-static-flow.sh` owns isolated xr819_static_flow trace
+instance, mono clock,256KiB per CPU. Enables those events plus static
+wlan0-filtered net_dev_queue and errored CMD53 completion events. Cleanup
+stops/disables events and removes instance before normal recovery reboot.
+`/tmp/xr819-board-static-monitor.py` emits one-second numeric aggregates,
+eight metadata samples per event kind (64 for MMC errors), parser/loss
+counters, and periodic/final ring stats. Samples are bounded, not complete
+packet histories. Netdev skb counts and WSM frame counts differ with GSO
+and segmentation; do not interpret their difference as packet loss.
+
+`/tmp/xr819-tcp-observe-static.py` continuously drains the projected remote
+stream into an exclusive mode600 file, even while the main thread captures
+a stall. Bounded console-forwarding queue overflow does NOT stop the full
+metadata log; overflow/failure/end status is reported. Synthetic projection,
+malformed/lost events, sample limits and forwarding-overflow preservation
+passed. The dedicated harness also recognizes BH terminated, not just dead.
+
+Actual-hit test `/tmp/xr819-static-flow-smoke.log` exited0 after171s; receiver
+6.48 Mbit/s over32.80s, both50-ping sets50/50. Complete projected log:
+`/tmp/xr819-static-metadata-1788861158185027630.log` (36 intervals).
+Counts18433 queue admissions,18433 data write attempts,18433 successful write
+returns,18433 confirmations;1155 netdev queue events, one MMC error. Status6
+(WSM_STATUS_RETRY_EXCEEDED) appeared68 times; other confirmations status0.
+No parser errors, lost notices, ring overruns/commit overruns/dropped events,
+or console-forwarding losses. Drain finished successfully. This qualifies
+actual static event hits and collection, NOT probe neutrality or reliability.
+
+Recovery SSH initially timed out during reboot; subsequent boot/firmware/
+module comparisons and static-instance/kprobe absence passed. No permanent
+installation or firmware change. Added and synthetically checked only CMD53
+argument bit31 as a future error sample's write/read indicator; raw argument
+and address remain excluded. The smoke log cannot retroactively identify
+the direction of its one MMC error.
+
+Prepared `/tmp/xr819-static-flow-long-run.sh`: same vendor firmware, diagnostic
+host module,600s TCP/10s progress guard, simultaneous existing early AP trace,
+separate static-flow-long log names and continuous private board metadata.
+Needs a fresh `/tmp/xr819-ap-early-flow-long.sh` observer. Prior vendor-only
+long AP full log preserved as `/tmp/xr819-vendor-early-flow-long-ap-full.log`.
+No performance/ownership fix inferred from this instrumentation.
+
+### Synchronized static run interrupted by loss of board reachability
+
+`/tmp/xr819-static-flow-long.log` exited1 after560s. TCP was progressing
+(12.8 Mbit/s in415–420s) when Ethernet SSH closed remotely near board
+uptime476s, wall10:50:34 UTC. No10s progress-guard capture fired. Observer
+then timed out waiting15s for still-running iperf; this exception masked
+reporting the SSH monitor's exit status. Aborted TCP summary10.2 Mbit/s over
+438.35s is not a completed600s result or evidence of improved reliability.
+
+Board became unreachable on both wireless and Ethernet. Subsequent SSH
+returned No route to host; br0 neighbor192.168.0.104 FAILED. Recovery trap
+printed INSTALLING_RECOVERY but its SSH command could not be verified; that
+marker does not establish recovery. Diagnostic module/stock firmware may
+remain installed. Need power/network/serial-console inspection before
+another hardware run; preserve panic output before resetting if available.
+No board panic/Oops was captured, so do not infer one from loss of SSH alone.
+
+Private log `/tmp/xr819-static-metadata-1788864214520542879.log` has418
+intervals,385777 queue events,771554 transport phase events,385768
+confirmations (384508 status0,1260 status6),30069 netdev events. It ends
+abruptly without BOARD_STATIC_PARTIAL_TAIL_BYTES or final ring stats.
+No reported ring overruns/commit overruns/dropped events through the last
+periodic report; no lost-event notices. Local drain reached EOF with no
+forwarding drops, but that does not establish completeness of the remote
+trace at disappearance. End-count differences are not stranded-owner proof.
+AP prefix is `/tmp/xr819-static-flow-long-ap-prefix.log`.
+
+There are21 parser errors. Source inspection identified a collector defect
+introduced after the smoke test: mmc_request_done's TP_printk does NOT
+include cmd_arg (only mmc_request_start does). Requiring it to infer CMD53
+direction rejected otherwise valid completion errors. Their details were
+not persisted and cannot be recovered from this projected log; zero decoded
+MMC errors is NOT zero actual errors. Removed the requirement, explicitly
+reporting unknown direction, and tested a fixture matching the real kernel
+completion format while excluding response words. Earlier fabricated
+argument-bearing fixtures were insufficient. Driver module is unchanged.
+Also moved the SSH-exit-status check before waiting for iperf, so future
+observer failures report their primary cause rather than a secondary wait
+timeout. Neither collector fix explains the board's disappearance.
+
+**Subsequent user clarification:** power was accidentally cut during that
+run. The board disappearance is therefore an externally interrupted test,
+not evidence of a kernel/firmware/network failure. No serial-console capture
+is required for the repeat. After power returned, recovery files initially
+did not match; `/tmp/xr819-restore-after-disconnect.sh` restored all three,
+rebooted, and verified a changed boot ID, matching recovery files and no
+static trace instance. Later nmap/SSH confirmed orangepizero remains at
+192.168.0.104, Ethernet interface end0. Full interrupted AP log archived as
+`/tmp/xr819-static-flow-power-cut-ap-full.log`. Repeat wrapper
+`/tmp/xr819-static-flow-long-repeat-run.sh` uses separate logs and the
+corrected collector, same static module and firmware. Fresh AP observer
+needed because the previous bounded observer expired.
+
+### Synchronized repeat resolves the late TX requests into retry failures
+
+First repeat exited10 during authentication, before TCP/static board tracing;
+excluded from performance evidence. Recovery verified. Unchanged retry2
+(`/tmp/xr819-static-flow-long-repeat2.log`) exited22 after273s harness time.
+Initial ping50/50; failure pings3/3,1/3,2/3. BH alive, used buffers0.
+Aborted TCP29.6 kbit/s over61.51s; not a600s benchmark. Final sender
+bytes_acked224440, notsent123080, three unacked, cwnd1, RTO10000ms,
+53 retransmissions/211 data segments. Recovery files/trace-instance absence
+verified over Ethernet afterward.
+
+Private stream `/tmp/xr819-static-metadata-1788874753369477186.log` contains
+60 intervals,228 queue events,228 successful data-write attempts/results,
+228 confirmations and167 netdev events. Firmware reported status6
+(RETRY_EXCEEDED)57 times;171 confirmations status0. Zero parser errors or
+lost notices; all available periodic ring-overrun/drop counters zero. No MMC
+error events observed with the corrected completion parser. No final remote
+footer after intentional observer termination, so do not assert complete
+kernel drain at teardown. The sparse failure window itself is covered.
+
+At board mono187.628195, cookie33685508 entered queue2; write started at
+187.628527 and returned0 at187.628668; confirmation at187.631847 reported
+status6/rate19/ack_failures4/flags0. At192.732301 the same numeric cookie
+was reused for another admission, write returned0 at192.732812, and another
+status6/ack4 confirmation arrived at192.736326. Cookie reuse is explicit:
+these are separate completed requests, not one owner persisting across time.
+Admission→write-return about0.47/0.51ms; write-return→confirmation3.18/3.51ms.
+Two preceding failures also had successful writes and confirmations within
+about4.14/6.70ms. Counts in these sparse intervals fit the sample caps.
+
+Synchronized AP prefix `/tmp/xr819-static-flow-long-repeat2-ap-prefix.log`:
+main queue11 indications161, TCP-entry128, duplicate1 remained flat from
+13:39:54 through13:40:09 UTC, including the final retries. All observed main
+queue status bits were0xa43; no crypto-rejection hits. This localizes these
+requests past host admission/SDIO acceptance into firmware-reported transmit
+retry exhaustion, not missing host submissions or indefinite confirmations.
+It does NOT prove actual radio emission or exclude AP firmware/transport
+loss before host RX. Status6 is firmware's report, not independent air capture.
+Strong reported signals (~-37dBm AP, -42dBm board) are not proof of a reliable
+radio link. Do not weaken replay checks or change Rust scheduling from this.
+
+Next controlled run `/tmp/xr819-static-flow-mcs0-run.sh` changes only board
+fixed TX rate5→0, retaining600s request/10s guard, same vendor firmware,
+static host module and AP trace. Compare retry failures and progress before
+making a rate-dependent claim; ideally repeat MCS5 afterward to distinguish
+run-to-run variation. Separate mcs0 logs preserve prior evidence.
+
+### MCS0 completes; MCS5 return control pending
+
+Initial MCS0 launch never passed Ethernet wait_ready (exit3, empty traffic
+log); no deployment or rate change occurred. SSH and ARP discovery could not
+find the board then. User subsequently reported the network fixed; SSH and
+all recovery-file comparisons passed. Do not count that failed launch as a
+wireless result.
+
+Resumed `/tmp/xr819-static-flow-mcs0.log` exited0 after746s harness time:
+TCP3.06 Mbit/s over602.21s, initial/final pings50/50, no progress stall.
+Private metadata `/tmp/xr819-static-metadata-1788881400104585837.log`:
+159769 admissions, successful data writes and confirmations, plus one
+successful command write. All confirmations rate14 (MCS0); status0=159695,
+status6=74 (0.0463%). No parsed MMC errors, parser errors, loss notices,
+reported ring overruns or forwarding losses; final remote footer present.
+Last TCP sample770 retransmissions/159818 data segments, cwnd319 and RTT
+about1.70s: completion does not imply low latency or no TCP loss. Firmware
+retry exhaustion and TCP retransmissions remain different measurements.
+Recovery files and trace-instance removal verified after reboot.
+
+This is healthier than the prior MCS5 stall, but the intervening network
+repair and historical run variability prevent attributing it solely to rate.
+Prepared same600s/10s-guard MCS5 return control in
+`/tmp/xr819-static-flow-mcs5-return-run.sh`, using identical vendor firmware,
+static driver and tracing with new log names. No firmware behavior change.
+
+### MCS5 return reproduces retry-exhaustion stall
+
+`/tmp/xr819-static-flow-mcs5-return.log` exited22 after525s harness time,
+with backlogged TCP stopping around385s. Aborted receiver2.85 Mbit/s over
+397.51s is not a completed600s result. Initial pings50/50; failure sets3/3,
+2/3,2/3. Last sender1316 retransmissions/99153 data segments, cwnd1,
+RTO7360ms, bytes_acked141662184, notsent590784 and three unacked.
+Recovery files and static-instance absence verified over Ethernet.
+
+Private metadata `/tmp/xr819-static-metadata-1788882295020516473.log`:
+99270 admissions, successful data-write calls and confirmations. Firmware
+status6=1293/99270 (1.3025%), versus74/159769 (0.0463%) in the preceding
+MCS0 run. All remaining confirmations status0. Sparse late requests again
+received status6/rate19/ACK-failures4/flags0, rather than being stranded in
+host queues or waiting indefinitely for completion. Zero parser errors,
+lost notices or reported periodic ring overruns/drops; continuous local
+metadata drain ended without forwarding losses.
+
+AP queue8 indications99154, TCP-entry71257, ACK-queued48399 and duplicate689
+remained flat from15:51:10 through15:51:30 UTC; capture pings appeared on
+queue1. One CMD53 timeout (cmd_err/data_err=-110, zero bytes) was observed
+near15:47:28 UTC, roughly224s before the final pause. Direction unknown
+by design. Every traced data-write call still returned0, so that isolated
+completion error cannot establish a failed outgoing submission at the stall.
+
+MCS0 success followed by MCS5 failure after the network repair strengthens
+rate-dependent delivery/retry behavior as the lead. It does not establish a
+universal MCS5 defect, an RF-only cause, or a firmware fix; earlier MCS5 runs
+were much faster. Next inspect the actual configured retry/fallback policy
+and test automatic rate selection rather than treating forced-MCS5 failures
+as a Rust scheduler defect or leaving MCS0 as the final performance solution.
+
+### Automatic-rate vendor run completes; matched Rust comparison prepared
+
+Static host-driver review: tx_policy_build_xr819 constructs 24-rate nibble
+policies from mac80211 control rates; tx_policy_upload supplies the policy
+and retry limits to firmware; max_tx_rate comes from the sorted leading rate.
+MCS0–7 map to hardware IDs14–21. This verifies the configuration path,
+not every runtime fallback attempt. Existing empty FIXED_MCS harness mode
+skips the forced-rate command after fresh boot/association. Driver unchanged.
+
+`/tmp/xr819-static-flow-auto-rate.log` exited0 after748s harness time:
+5.37 Mbit/s over602.20s, no10s progress stall; pings49/50 then50/50.
+Private metadata `/tmp/xr819-static-metadata-1788886130537630677.log`:
+280643 admissions/data-write successes/confirmations,1651 command-write
+successes; statuses0=279510,6=1133 (0.404%). Completion-rate distribution:
+15:2,16:27,17:869,18:23833,19:31212,20:164251,21:60449. Mostly MCS6/7,
+not simply selection of MCS0. These are confirmation rates, not per-attempt
+fallback histories.26 MMC error events parsed; all traced data and command
+write returns0. Direction is unknown; do not equate MMC events to TX failures.
+Zero parser errors/lost notices, periodic overruns/drops and forwarding losses;
+final remote footer present. Last sender1259 retransmissions/280164 data
+segments, cwnd1,21 lost/unacked: successful bounded run is not loss-free or
+proof of a permanent fix. Recovery comparisons/trace absence passed after
+one transient post-reboot SSH timeout.
+
+Prepared `/tmp/xr819-static-flow-rust-auto-rate-run.sh`: same static no-host-BA
+driver, AP observer,600s/10s guard, unrestricted rates; switches to qualified
+clean Rust image df9596e0 and matching open boot51cbe9ec, both hash-guarded.
+No Rust code or completion/replay behavior changed. Preserve vendor full AP
+log before restarting the bounded observer for the matched comparison.
+
+### Automatic-rate Rust comparison: stable, still slower in this pair
+
+`/tmp/xr819-static-flow-rust-auto-rate.log` exited0 after748s harness time:
+3.24 Mbit/s over601.34s versus vendor5.37 Mbit/s, about40% lower. Both
+Rust ping sets50/50; no10s stall. Private metadata
+`/tmp/xr819-static-metadata-1788887061312710043.log`:168528 admissions,
+successful data writes and confirmations,1346 successful command writes.
+Status0=167998, status6=530 (0.3145% versus vendor0.4037%). Completion
+rates16:26,17:851,18:8126,19:16074,20:120516,21:22935, mostly MCS6;
+these are not a per-attempt rate history. No parsed MMC error events.
+Zero parser/loss notices, reported ring overruns/drops and forwarding losses;
+final remote footer present. Last TCP sample585 retransmissions/168394 data
+segments, cwnd66 and RTT61.3ms; compare distributions, not isolated final
+samples, before attributing performance to latency or congestion behavior.
+
+Recovery comparisons and trace-instance absence verified after a transient
+post-reboot SSH timeout. Lower retry-exhaustion fraction does not explain
+away the throughput gap or exclude different burst timing/ACK behavior.
+This is one serial pair, not proof of a fixed40% deficit or probe neutrality.
+Next use the existing synchronized timing evidence to compare service gaps,
+then a bounded reverse-order confirmation if needed; avoid new firmware
+instrumentation or speculative scheduling changes without a concrete lead.
