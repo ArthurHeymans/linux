@@ -2137,3 +2137,33 @@ restored host_tx_driver.rs to its exact parent; no behavioral fix retained.
 This weakens the specific extra-drain placement hypothesis, not all cooperative
 service/FIQ latency hypotheses: the extra pass also adds work and may alter
 batch formation. Do not reinterpret this as proof FIQ cannot improve performance.
+
+### Ordinary backoff discriminator exposed HIF response-availability panic
+
+Narrow experiment grew the existing per-interface/AC contention window on
+ordinary host retries (every other retry, clamped to CWmax), resetting on
+ordinary success/retry-exhaustion. Aggregate retry policy and ownership were
+unchanged; nonzero vendor backoff-override mode was deliberately untouched.
+303 tests, ARM stack6752/6912 and exception224/256, packing and layout passed.
+Image `/tmp/xr819-ordinary-backoff.bin` SHA256
+`978df375d9d7d900524022d4c5947ce1882614d04068b4dc4b47d8083d31cfb6`;
+ELF and build log share that prefix. Candidate patch archived as
+`/tmp/xr819-ordinary-backoff-candidate.patch`; tx.rs restored to exact parent.
+
+Untraced automatic-rate BA-enabled600s request failed guard exit22, log
+`/tmp/xr819-ordinary-backoff-run.log`. Initial50/50 pings, TID0 operational,
+then TCP stopped progressing around517s; aborted result4.65 Mbit/s/539.1713s
+is not a successful throughput measurement. BH errcode1, five used buffers,
+four pending in one queue; failure pings0/3. Recovery files and absence of
+trace instances independently verified.
+
+Kernel received a firmware exception indication: kind0x100, line1123,
+column9, file hash0xf0ce8142. The firmware's FNV-1a file hash resolves exactly
+to `src/hif.rs`; line1123 is `assert!(self.response_available())` immediately
+after reclaim_tx in publish_request_in_place. This is a concrete HIF response
+storage availability failure, not evidence of RF retry exhaustion or a
+watchdog leak. One earlier MMC data error was not time-coincident. Last TCP
+sample856/217416 retrans/data. No CPU-state dump was attempted. Candidate
+not retained; traffic perturbation may have exposed a pre-existing HIF bug,
+but causation by the backoff modification is not established. Next inspect
+caller availability accounting and coalesced-confirmation publication.
