@@ -2101,3 +2101,39 @@ TCP retransmission fraction. The deficit therefore persists without packet
 tracing and with Rust negotiated aggregation enabled; neither observation
 localizes its cause or establishes a repeatable fixed magnitude. No firmware
 fix or aggregate-depth change made.
+
+### Pre-publication completion-drain discriminator: not retained
+
+Tested a second bounded32-event MAC service and existing completion/requeue
+routing pass immediately before publication, after software context service.
+Recomputed runtime owners afterward; no FIQ enable, FIFO/replay changes, RX-BA
+retirement, or new features. The deliberate underfill wait is already disabled
+by experimental-fast-loop, so this tests completion-service placement instead.
+302 library tests passed; ARM call-chain6680/6912, exception224/256, packet-RAM,
+packing and DTCM checks passed. Build log `/tmp/xr819-prepublish-drain-build.log`;
+candidate ELF/image `/tmp/xr819-prepublish-drain.{elf,bin}`, image SHA256
+`a05ca29d4849afc7e198f231a279baea22f7fd02a84bdf584ab4bee900df5680`.
+
+Same automatic-rate BA-enabled driver and untraced600s harness:
+
+| Run | TCP Mbit/s | Duration s | Last TCP retrans/data |
+| --- | ---: | ---: | ---: |
+| Earlier clean baseline | 4.70 | 601.7964 | 843/244852 |
+| Extra pre-publication drain | 3.73 | 600.7471 | 1020/194543 |
+| Clean baseline return | 4.28 | 600.1239 | 1135/222761 |
+
+Candidate and return both reached TID0 TX_OPERATIONAL, passed100/100 pings,
+kept BH alive, avoided the10s stall guard, and exited0. Recovery file comparisons
+and absence of trace instances verified after each. Candidate aggregate reports:
+39476 heads,143274 length,140726 ACK,0 invalid; return46719 heads,171245 length,
+166384 ACK,0 invalid. These are host reports, not on-air depth measurements.
+Logs `/tmp/xr819-prepublish-drain-run.log` and
+`/tmp/xr819-prepublish-baseline-return.log`.
+
+Candidate was12.9% below the return baseline and20.6% below the earlier baseline.
+One candidate run does not establish a fixed regression, but there is no benefit
+supporting retention. Archived `/tmp/xr819-prepublish-drain-candidate.patch` and
+restored host_tx_driver.rs to its exact parent; no behavioral fix retained.
+This weakens the specific extra-drain placement hypothesis, not all cooperative
+service/FIQ latency hypotheses: the extra pass also adds work and may alter
+batch formation. Do not reinterpret this as proof FIQ cannot improve performance.
