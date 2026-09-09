@@ -2167,3 +2167,35 @@ sample856/217416 retrans/data. No CPU-state dump was attempted. Candidate
 not retained; traffic perturbation may have exposed a pre-existing HIF bug,
 but causation by the backoff modification is not established. Next inspect
 caller availability accounting and coalesced-confirmation publication.
+
+### HIF response-capacity gate: first hardware qualification passed
+
+Source inspection found a concrete admission mismatch: command::service_one
+checks publication_available (output queue space only), whereas synchronous
+response publication additionally requires a free shared output buffer and no
+prepared shared slot. poll_request previously consumed the pending invocation
+and detached the descriptor without checking those additional requirements.
+The coalesced-confirmation caller already checks response_available; this is
+not evidence that its batching caused the panic.
+
+Candidate hif.rs reclaims completed output and checks response_available before
+consuming an invocation/descriptor. A blocked request remains pending until
+storage is available. Shared response-capacity logic has a focused test for
+full buffers despite queue space, full queue, prepared storage, and wraparound.
+No backoff, FIQ, FIFO, replay, or RX-BA policy changes.303 tests passed; ARM
+stack6752/6912 and exception224/256; packing, packet-RAM and DTCM gates passed.
+Image `/tmp/xr819-response-capacity.bin` SHA256
+`ee76be8ff39b40e08374a71f6f1c37d1bb52ca06cb90d2d65e7bd12557a22fe2`;
+ELF/build log share that prefix.
+
+Untraced automatic-rate BA-enabled run completed600.7371s at5.01 Mbit/s,
+100/100 pings, TID0 operational, BH alive, no stall guard or firmware assertion,
+exit0. Aggregate reports54819 heads/203332 length/199384 ACK/0 invalid. Last
+TCP sample822 retransmissions/260640 data segments. Recovery comparisons and
+absence of trace instances verified. Log `/tmp/xr819-response-capacity-run.log`.
+
+Retain as a concrete capacity-precondition correction with one successful
+hardware qualification, not a proven throughput gain or proof all HIF stalls
+are fixed. Earlier clean samples4.70 and4.28 are serial, variable conditions;
+this run does not reproduce the same buffer pressure as the rejected backoff
+candidate. No new firmware feature introduced.

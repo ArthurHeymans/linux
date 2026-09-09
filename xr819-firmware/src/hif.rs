@@ -109,6 +109,17 @@ const fn output_queue_has_capacity(producer: u32, consumer: u32) -> bool {
     producer.wrapping_sub(consumer) < 64
 }
 
+fn response_storage_available(
+    producer: u32,
+    consumer: u32,
+    shared_slots_in_use: &[bool],
+    prepared_shared_slot: Option<u8>,
+) -> bool {
+    output_queue_has_capacity(producer, consumer)
+        && shared_slots_in_use.iter().any(|used| !*used)
+        && prepared_shared_slot.is_none()
+}
+
 const fn descriptor_sequence(header_id: u16) -> u32 {
     ((header_id >> 13) & 3) as u32
 }
@@ -911,9 +922,12 @@ impl Transport {
     /// Whether one command response can be copied into independent output
     /// storage without consuming a request buffer first.
     pub fn response_available(&self) -> bool {
-        output_queue_has_capacity(self.state.tx_queued, self.state.tx_reclaimed)
-            && self.shared_slots_in_use.iter().any(|used| !*used)
-            && self.prepared_shared_slot.is_none()
+        response_storage_available(
+            self.state.tx_queued,
+            self.state.tx_reclaimed,
+            &self.shared_slots_in_use,
+            self.prepared_shared_slot,
+        )
     }
 
     pub fn poll_request(&mut self) -> Option<ReceivedRequest> {
@@ -921,7 +935,11 @@ impl Transport {
         {
             self.request_polls = self.request_polls.wrapping_add(1);
         }
-        if !self.rx_request_pending {
+        self.reclaim_tx();
+        // Every request may need an immediate response. Queue space alone is
+        // insufficient: RX output can occupy all shared response buffers.
+        // Preserve the pending invocation and descriptor until both are free.
+        if !self.rx_request_pending || !self.response_available() {
             return None;
         }
         // Consume exactly one scheduled invocation. A ready successor below
@@ -1156,6 +1174,15 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_capacity_requires_queue_and_unreserved_shared_storage() {
+        assert!(!response_storage_available(1, 0, &[true, true], None));
+        assert!(!response_storage_available(64, 0, &[false, false], None));
+        assert!(!response_storage_available(1, 0, &[false, true], Some(0)));
+        assert!(response_storage_available(1, 0, &[true, false], None));
+        assert!(response_storage_available(0, u32::MAX, &[false], None));
+    }
 
     #[test]
     fn descriptor_ownership_survives_odd_message_lengths() {
