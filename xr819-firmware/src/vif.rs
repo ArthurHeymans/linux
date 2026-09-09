@@ -373,31 +373,30 @@ impl PasOperationIo for VolatilePasOperationIo {
     }
 }
 
+/// Adapter presenting a [`PasOperationIo`] as the shared backoff bank I/O, so
+/// the VIF reset-all runs the same production arithmetic as the TX hooks.
+#[cfg(test)]
+struct PasOperationBackoffIo<'a, I: PasOperationIo>(&'a mut I);
+
+#[cfg(test)]
+impl<I: PasOperationIo> crate::backoff::BackoffBankIo for PasOperationBackoffIo<'_, I> {
+    fn read_u16(&mut self, address: usize) -> u16 {
+        self.0.read_u16(address, PasOperationBranch::BackoffReset)
+    }
+
+    fn read_u32(&mut self, address: usize) -> u32 {
+        self.0.read_u32(address, PasOperationBranch::BackoffReset)
+    }
+
+    fn write_u32(&mut self, address: usize, value: u32) {
+        self.0
+            .write_u32(address, value, PasOperationBranch::BackoffReset);
+    }
+}
+
 #[cfg(test)]
 fn reset_pas_backoff_with_io<I: PasOperationIo>(interface: u8, io: &mut I) {
-    let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
-    let override_enabled = io.read_u32(crate::dtcm::pas_backoff_override_enabled().get(), PasOperationBranch::BackoffReset) != 0;
-    let override_window = io.read_u32(crate::dtcm::pas_backoff_override_window().get(), PasOperationBranch::BackoffReset);
-    for queue in 0..4 {
-        io.write_u32(
-            pas.retry_count_unchecked(queue).get(),
-            0,
-            PasOperationBranch::BackoffReset,
-        );
-        let window = if override_enabled {
-            override_window
-        } else {
-            u32::from(io.read_u16(
-                pas.cw_min_unchecked(queue).get(),
-                PasOperationBranch::BackoffReset,
-            ))
-        };
-        io.write_u32(
-            pas.contention_window_unchecked(queue).get(),
-            window,
-            PasOperationBranch::BackoffReset,
-        );
-    }
+    let _ = crate::backoff::reset_all_queues(&mut PasOperationBackoffIo(io), interface);
 }
 
 #[cfg(target_arch = "arm")]
@@ -406,19 +405,8 @@ unsafe fn reset_pas_backoff(interface: u8) -> Result<(), JoinStateError> {
     if interface >= VIF_COUNT as u8 {
         return Err(JoinStateError::InvalidInterface);
     }
-    let pas = crate::dtcm::pas_stride_view_unchecked(usize::from(interface));
-    let override_enabled = read_u32(crate::dtcm::pas_backoff_override_enabled().get()) != 0;
-    let override_window = read_u32(crate::dtcm::pas_backoff_override_window().get());
-    for queue in 0..4 {
-        unsafe { write_u32(pas.retry_count_unchecked(queue).get(), 0) };
-        let window = if override_enabled {
-            override_window
-        } else {
-            u32::from(read_u16(pas.cw_min_unchecked(queue).get()))
-        };
-        unsafe { write_u32(pas.contention_window_unchecked(queue).get(), window) };
-    }
-    Ok(())
+    crate::backoff::reset_all_queues(&mut crate::backoff::VolatileBackoffBankIo, interface)
+        .map_err(|_| JoinStateError::InvalidInterface)
 }
 
 #[cfg(any(target_arch = "arm", test))]

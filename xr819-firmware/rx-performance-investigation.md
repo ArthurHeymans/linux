@@ -2319,3 +2319,164 @@ this ledger only; no new feature, airtime correction, or improvement checkpoint.
 303 tests and the6744/6912,224/256 stack/layout qualification above apply to the
 archived candidate. They do not prove absence of every command/security/owner
 regression; reverted source restores the prior qualified scheduling exactly.
+
+### Vendor-faithful contention-window correction: implementation and gating
+
+Started a new jj change on the retained response-capacity parent; hif.rs and
+hif_startup.rs are untouched by this work. Sole writer and sole hardware owner.
+
+Implements the instruction-verified spec (`/tmp/xr819-backoff-event-spec.md`),
+not the archived `/tmp/xr819-ordinary-backoff-candidate.patch`, which grew only
+on the ordinary tail, reset from `complete_tx_pipe_slot`, dropped vendor gates
+and halted on `interface >= 2`.
+
+New `src/backoff.rs` holds the single production bank implementation behind a
+mockable `BackoffBankIo`: growth (even counter -> `2W+1`, clamp on **both**
+parities, wrapping counter advance), per-AC reset (counter 0, window CWmin) and
+the interface-wide reset-all. Bounds are checked against the three real PAS
+banks and four ACs and rejected without a write - no halt and no spin, because
+every caller is past the destructive MAC event read. Override arithmetic is
+supported without enabling override mode: `0x04002088+4` supplies the reset
+window and `+8` the growth clamp, so dtcm's `opaque_18` is now named
+`override_maximum_window` (`0x04002090`) with offset and address asserts.
+
+Placement follows event provenance, which `SingleTxRetryBackend::decide_retry`
+now carries explicitly as `RetryEvent`:
+
+- One growth per qualified physical retry event in
+  `execute_single_outstanding_tx_retry`, after the mask/slot-state/inactive-pipe
+  and status-6 gates and **before** the ordinary and aggregate branches, so a
+  four-member aggregate, a BlockAck-driven early `CompleteSuccess` and an
+  `AwaitBlockAck` all mutate exactly once. Scope is host mode-0: internal frames
+  (vendor policy `0xf`, mode 2) are skipped. The bank is the head frame's
+  interface/AC - the same entry `TxPolicy::program_random_backoff` draws the
+  random backoff from.
+- The head policy-exhaustion reset (`0x8a20`) sits in a shared
+  `resolve_head_retry_step` used by the ordinary tail, and runs only for
+  `RetryEvent::PhysicalRetry`. Structural rejections, member give-ups, session
+  failures, watchdog `decide_retry` and generic status `0x0b` retirement do not
+  reach it.
+- The two existing vendor-mapped hooks (`reset_status_backoff` at `0x9a8c`,
+  `reset_backoff` at `0x9d2c`) now call the shared reset. Their executor gates
+  are unchanged: the status hook still only fires on the `Complete` plan (kind 2
+  advances without completion), and the success marker keeps pipe state 1,
+  retry rate `0xff` and PAS bit 15 clear, now expressed as the tested
+  `success_marker_resets_backoff` predicate with no slot-kind exclusion.
+- `prepare_selective_member_retry`, `prepare_whole_ampdu_retry`,
+  `complete_tx_pipe_slot` and the watchdog remain free of bank mutations.
+
+VIF JOIN/EDCA reset-all delegates to the same shared implementation, preserving
+the existing access order.
+
+Offline: 318 library tests pass (303 before). The new vectors drive the
+production executor and hooks through mock I/O rather than duplicate models:
+growth once per event including the BA-driven early decision, `(0,15)->(1,31)`
+then `(1,31)->(2,31)`, zero bank writes for absent mask, wrong slot state,
+inactive pipe, internal frames and out-of-range interface/AC, watchdog
+provenance mutating nothing, exhaustion resetting only on a physical retry,
+override reset 7 and clamp 63, odd-parity clamping, counter wraparound, bank
+isolation across interfaces 0/1/2, and a real 44-byte EDCA payload fed through
+the parser into the production reset path. Nightly thumbv5te-none-eabi release
+build passes with stack 6752/6912 and exception 224/256; packet-RAM, packing and
+DTCM checks pass. Features unchanged.
+
+Candidate `/tmp/xr819-backoff-qualified-candidate.bin` SHA256
+`40e4399d30c315bd33c15c38d9f6094234beee103104676c5c62c9b43a3777e2`, ELF
+`4d8ef6ee93f3c4ee72af4e63634b8414f8edbfd7a0223dcae0e61d5aca2b4d9c`, patch
+`/tmp/xr819-backoff-qualified-candidate.patch`. The parent revision rebuilt in a
+separate jj workspace reproduces the baseline image bit-exactly
+(`ee76be8ff39b40e08374a71f6f1c37d1bb52ca06cb90d2d65e7bd12557a22fe2`), so the
+candidate differs from the baseline only by this correction.
+
+Unresolved facts carried from the spec, not invented here: the runtime
+W/CWmin/CWmax before the first data TX, whether vendor `txp_pipe_tx_success`
+resets for aggregate pipes in the tested BA path, and whether
+`g_backoff_ctrl[2]` is ever written by a WSM MIB in this driver.
+
+### Independent board-side recovery timeout qualified before deployment
+
+The previous series died with its local runner and its EXIT trap never restored
+the board. A host-side trap cannot be the only recovery path, so recovery now
+also runs from the board itself.
+
+`/root/xr819-restore-recovery.sh` takes `/run/xr819-restore.lock` under flock,
+requires the `/root/xr819-deadman-armed` flag, clears that flag first so it can
+fire at most once per arm, copies the three recovery files, runs `depmod -a`,
+syncs, re-compares all three, logs to `/root/xr819-restore.log` and reboots.
+`/etc/systemd/system/xr819-deadman.{service,timer}` run it at `OnBootSec=1200`
+with `AccuracySec=1s`; arming is `touch` plus `systemctl enable`, so the timer
+survives the reboots each phase performs - the property a transient
+`systemd-run --on-active` timer lacks.
+
+Qualified independently, every step observed from the board's own state after
+the host session was closed:
+
+| Check | Evidence |
+| --- | --- |
+| Timer fires without the host | marker written by the board at 14:36:26Z after arming at 14:35:11Z |
+| Real script restores and reboots | RESTORE_START 14:37:42Z, RESTORE_FILES_OK 14:37:53Z, boot_id changed, three-file cmp OK |
+| Disarm suppresses the fire | armed then stopped: no restore entry, boot_id unchanged |
+| Survives a reboot | armed and enabled, board rebooted; fired 90s into the new boot, restored, rebooted again |
+| No reboot loop | next boot logged SKIP_NOT_ARMED with the flag cleared |
+
+Logs `/tmp/xr819-deadman-qualify-{armed,fired,disarm,persistent}.log` and
+`/tmp/xr819-deadman-qualified-final.log`. The 1200s production deadline leaves
+roughly 400s of margin over the ~750-800s boot-to-phase-end path, so it fires
+several minutes after a hung 600s phase rather than during a healthy one. The
+series arms before each phase, verifies the armed state in its preflight, and
+disarms only after the phase's independent three-file/trace verification.
+
+### Backoff correction: hardware qualification not obtained; host unfit today
+
+The first baseline phase of the series failed and the single approved retry never
+started, so **this correction has no hardware qualification**. It is qualified on
+code and tests only.
+
+Baseline phase (image `ee76be…`, the retained-HIF parent with **no** backoff
+change) exited 22 on the 10s stall guard at ~509s of a 600s board-TX run;
+aborted result 200 MB over 523.33s is not a throughput measurement. Ping at
+failure 0/3. Board side showed no firmware fault: BH alive, datapath unlocked,
+all four TX queues queued 0 / pending 0, TX miss 636, no assertion or exception.
+Board dmesg carried `sunxi-mmc 1c10000.mmc: data error, sending stop command` at
+t=387s and BA add/stop churn every ~2s between t=103s and t=155s. Intervals were
+2-6 Mbit/s throughout, against 5.84 and 5.01 Mbit/s on the same image earlier the
+same day. Logs `/tmp/xr819-backoff-attempt1-{series,baseline-first-run,baseline-first-recovery}.log`.
+
+**A ~500s-class stall therefore reproduces on the unmodified baseline image.**
+That is the direct reason the earlier 517s abort must not be attributed to the
+backoff work, independent of the HIF fix having changed that failure surface.
+
+Environment audit before the retry found the board and AP in exactly the morning
+configuration - channel 6, EDCA 3/7/2/1504/200, 7/15/2/3008/200, 15/1023/3,
+15/1023/7, Rates 0x3FCF, basic 0xF, HT on, AMPDU dens/spcn 5, long 4 / short 7,
+powersave off, AP module build-id `ac263b6586ba1a801696b8764f74fda11ebb2ac6`,
+20 MHz, 22 dBm, no observers, no trace instances, no iperf - but the **host** at
+load 20.9/21.1/15.4 on 16 cores from an unrelated coreboot build. The host is
+simultaneously the AP and the TCP receiver for a board-TX (`-R`) run, and the
+failure signature fits a starved receiver rather than a firmware fault: the board
+had empty queues while the socket sat at unacked 139, notsent 385168, rtt 10.4s,
+rto 23s. The owner's build was left alone.
+
+The retry was therefore gated on host quiescence instead of being run blind:
+25 one-minute samples between 17:08 and 17:33 never produced two consecutive
+one-minute loads below 4.0 (values ranged 2.95 to 27.43), so the gate aborted
+with `HOST_NEVER_QUIET_ABORT` and no further attempt was made. Today's outcome is
+**host/link fitness, not a firmware regression**; nothing about the candidate's
+on-air behaviour was measured. Log `/tmp/xr819-backoff-series.log`.
+
+Board left recovered and idle: three-file cmp OK, zero trace instances, events 0,
+nop tracer, no iperf, deadman disabled and unarmed (`/tmp/xr819-backoff-final-board-state.log`).
+The deadman never had to fire during the phases; its last board-log entries are
+still from its own qualification. The units stay installed but disabled for the
+deferred qualification run.
+
+Archived: `/tmp/xr819-backoff-qualified-{candidate,baseline}.{bin,elf}`,
+`/tmp/xr819-backoff-qualified-candidate.patch`,
+`/tmp/xr819-backoff-qualified-build.log`, hashes in
+`/tmp/xr819-backoff-qualified-hashes.txt`, phase and deadman logs as listed above.
+
+Decision: the change is **kept in the working revision on code/test merit only**,
+explicitly labelled not hardware-qualified. It must not be treated as a verified
+improvement checkpoint, and the deferred qualification (baseline -> candidate ->
+baseline, deadman armed per phase, host quiet) is still owed. Reverting is one
+`jj abandon` of this revision; the archived patch reproduces it exactly.

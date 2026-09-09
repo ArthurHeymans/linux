@@ -600,7 +600,7 @@ struct SchedulerExclusionState { exclusion_mask: SharedU32, secondary_exclusion:
 struct SchedulerEventIsland { pending_events: SharedU32, runtime_flags: SharedU32, opaque_08: OpaqueBytes<0x0a>, startup_mode: SharedU16, opaque_14: OpaqueBytes<0x08>, analog_enabled: SharedU16, opaque_1e: OpaqueBytes<0x02>, remap_primary: SharedU32, opaque_24: OpaqueBytes<0x04>, remap_secondary: SharedU32, analog_words: [SharedU32; 3], opaque_38: OpaqueBytes<0x08>, timer_list_head: SharedU32 }
 
 #[repr(C, align(4))]
-struct RuntimeRegisterBackoffState { register_context: [SharedU32; 4], override_enabled: SharedU32, override_window: SharedU32, opaque_18: SharedU32 }
+struct RuntimeRegisterBackoffState { register_context: [SharedU32; 4], override_enabled: SharedU32, override_window: SharedU32, override_maximum_window: SharedU32 }
 #[repr(C, align(4))]
 struct DebugConsoleState { input_length: SharedU32, flags: SharedU32, timer: TimerEntry, memory_address: SharedU32, memory_value: SharedU32, command_count: SharedU32, commands: [SharedU32; 32], line_buffer: [SharedU8; 80] }
 #[repr(C, align(4))]
@@ -3141,6 +3141,9 @@ pub(crate) const fn runtime_register_context(index: usize) -> Option<DtcmAddress
 pub(crate) const fn runtime_register_context_unchecked(index: usize) -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, register_context) + index * core::mem::size_of::<SharedU32>()) }
 pub(crate) const fn pas_backoff_override_enabled() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_enabled)) }
 pub(crate) const fn pas_backoff_override_window() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window)) }
+/// Growth clamp consulted while override mode is enabled (`0x04002088 + 8`).
+/// The vendor growth path (`0xff64..0xffc8`) uses it instead of the bank CWmax.
+pub(crate) const fn pas_backoff_override_maximum_window() -> DtcmAddress { runtime_register_backoff_field(core::mem::offset_of!(RuntimeRegisterBackoffState, override_maximum_window)) }
 pub(crate) const DEBUG_CONSOLE_STATE: DtcmAddress = DtcmAddress::from_offset(0x2094);
 pub(crate) const fn debug_console_command(index: usize) -> Option<DtcmAddress> { if index < 32 { Some(DtcmAddress::from_offset(DEBUG_CONSOLE_STATE.offset() + core::mem::offset_of!(DebugConsoleState, commands) + index * core::mem::size_of::<SharedU32>())) } else { None } }
 pub(crate) const fn debug_console_line_byte(index: usize) -> Option<DtcmAddress> { if index < 80 { Some(DtcmAddress::from_offset(DEBUG_CONSOLE_STATE.offset() + core::mem::offset_of!(DebugConsoleState, line_buffer) + index)) } else { None } }
@@ -3968,6 +3971,7 @@ const _: () = {
     assert_type_layout!(RuntimeRegisterBackoffState, 0x1c, 4);
     assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_enabled) == 0x10);
     assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_window) == 0x14);
+    assert!(core::mem::offset_of!(RuntimeRegisterBackoffState, override_maximum_window) == 0x18);
     assert_type_layout!(DebugConsoleState, 0xf8, 4);
     assert!(core::mem::offset_of!(DebugConsoleState, timer) == 0x08);
     assert!(core::mem::offset_of!(DebugConsoleState, memory_address) == 0x1c);
@@ -5296,6 +5300,7 @@ mod tests {
         assert!(runtime_register_context(4).is_none());
         assert_eq!(pas_backoff_override_enabled().get(), 0x0400_2088);
         assert_eq!(pas_backoff_override_window().get(), 0x0400_208c);
+        assert_eq!(pas_backoff_override_maximum_window().get(), 0x0400_2090);
         assert_eq!(pas_backoff_override_window().get() + 8, 0x0400_2094);
     }
 

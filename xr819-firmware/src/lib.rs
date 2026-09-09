@@ -3,6 +3,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub(crate) mod backoff;
 #[cfg(target_arch = "arm")]
 pub mod command;
 pub mod configuration;

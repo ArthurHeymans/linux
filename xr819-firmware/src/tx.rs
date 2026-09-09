@@ -2799,6 +2799,19 @@ pub enum SingleTxRetryDecision {
     GiveUp,
 }
 
+/// Why [`SingleTxRetryBackend::decide_retry`] is running.
+///
+/// Vendor grows the contention window once per **qualified physical** retry
+/// event (`0x957e..0x9594` gates, single head call `0x967e`) and resets it when
+/// the head retry policy is exhausted (`0x8a20..0x8a26`). A software watchdog
+/// reusing the same decision function proves nothing about the air interface,
+/// so it must not touch the bank.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryEvent {
+    PhysicalRetry,
+    WatchdogExpiry,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SingleTxRetryOutcome {
     MaskNotOwned,
@@ -2854,6 +2867,7 @@ impl BoundedSingleTxRetry {
 pub trait SingleTxRetryBackend {
     fn decide_retry(
         &mut self,
+        event: RetryEvent,
         pipe: u8,
         slot: u32,
         frame_node: FrameNodeAddress,
@@ -2891,6 +2905,71 @@ pub trait SingleTxRetryBackend {
 pub enum SingleFrameRearmOutcome {
     CommandMaskAcknowledged,
     HardwareSentinelAcknowledged,
+}
+
+/// Adapter presenting pipe MMIO as the shared backoff bank I/O.
+struct MacPipeBackoffIo<'a, M: MacPipeMmio>(&'a mut M);
+
+impl<M: MacPipeMmio> crate::backoff::BackoffBankIo for MacPipeBackoffIo<'_, M> {
+    fn read_u16(&mut self, address: usize) -> u16 {
+        self.0.read_u16(address as u32)
+    }
+
+    fn read_u32(&mut self, address: usize) -> u32 {
+        self.0.read_u32(address as u32)
+    }
+
+    fn write_u32(&mut self, address: usize, value: u32) {
+        self.0.write_u32(address as u32, value);
+    }
+}
+
+/// One head growth for a qualified physical retry event.
+///
+/// Scope is the supported host mode-0 path: internal frames run vendor policy
+/// `0xf`/mode-2 rules that are deliberately not implemented here, so they leave
+/// the bank alone. The bank is the one the random backoff is actually drawn
+/// from in [`TxPolicy::program_random_backoff`] - the head frame's interface and
+/// access category. Out-of-range selections are rejected without a write; this
+/// site is past the destructive MAC event read and must never halt or spin.
+fn grow_head_backoff_for_retry_event<M: MacPipeMmio>(mmio: &mut M, frame_node: FrameNodeAddress) {
+    let context = frame_node.context();
+    if context.host().is_none() {
+        return;
+    }
+    let interface = mmio.read_u8(context.interface_address() as u32);
+    let queue = mmio.read_u8(context.access_category_address() as u32);
+    let _ = crate::backoff::grow(&mut MacPipeBackoffIo(mmio), interface, queue);
+}
+
+/// Head retry-policy step, with the vendor exhaustion reset at `0x8a20`.
+///
+/// Only an actual policy exhaustion for a physical retry event resets the bank.
+/// Structural rejections, member give-ups, session failures and watchdog
+/// decisions reach `GiveUp` through other paths and must not masquerade as this
+/// reset.
+fn resolve_head_retry_step<I: crate::backoff::BackoffBankIo>(
+    io: &mut I,
+    event: RetryEvent,
+    policy: crate::rate_policy::TxRatePolicy,
+    rate: u8,
+    try_count: u16,
+    long_frame: bool,
+    interface: u8,
+    queue: u8,
+) -> crate::rate_policy::RetryStep {
+    let step = crate::rate_policy::retry_step(policy, rate, try_count, long_frame);
+    if step == crate::rate_policy::RetryStep::GiveUp && event == RetryEvent::PhysicalRetry {
+        let _ = crate::backoff::reset(io, interface, queue);
+    }
+    step
+}
+
+/// TX-success marker reset gate (`0x9d06..0x9d2c`): active pipe, slot retry
+/// rate `0xff` and PAS bit 15 clear. There is deliberately no slot-kind
+/// exclusion, so a kind-1 aggregate that keeps retry rate `0xff` resets here.
+const fn success_marker_resets_backoff(pipe_state: u8, retry_rate: u8, control_bits: u32) -> bool {
+    pipe_state == 1 && retry_rate == 0xff && control_bits & (1 << 15) == 0
 }
 
 fn next_retry_random24<M: MacPipeMmio>(_mmio: &mut M) -> u32 {
@@ -3191,7 +3270,14 @@ where
         mmio.write_u8(record.watchdog().get() as u32, 1);
     }
 
-    match backend.decide_retry(pipe, slot.raw(), frame_node) {
+    // Vendor `0x967e`: exactly one contention-window growth per qualified
+    // physical retry event, on the head interface/AC, before the ordinary and
+    // aggregate decision branches. The returned decision - including a
+    // BlockAck-driven early success or an await - does not change the event
+    // provenance, so the growth happens here and nowhere else.
+    grow_head_backoff_for_retry_event(mmio, frame_node);
+
+    match backend.decide_retry(RetryEvent::PhysicalRetry, pipe, slot.raw(), frame_node) {
         SingleTxRetryDecision::Rearm => {
             backend.rearm_and_ack(pipe, slot.raw(), frame_node, owned_mask);
             SingleTxRetryOutcome::Rearmed
@@ -4071,7 +4157,11 @@ impl PipeSlotCompletionEffects for SingleProbeMacBackend {
 
 #[cfg(target_arch = "arm")]
 impl TxStatusPolicy for SingleProbeMacBackend {
-    fn reset_status_backoff(&mut self, _link: u8, _queue: u8, _pas_state: u32, _queue_table: u32) {}
+    fn reset_status_backoff(&mut self, link: u8, queue: u8, _pas_state: u32, _queue_table: u32) {
+        // Vendor `0x9a8c`. `link` is the completing frame's PAS interface byte
+        // (`+0x69`); the executor gates already excluded slot kind 2.
+        let _ = crate::backoff::reset(&mut crate::backoff::VolatileBackoffBankIo, link, queue);
+    }
 
     #[cfg(all(feature = "experimental-depth-four-ampdu", feature = "experimental-member-requeue"))]
     unsafe fn complete_ordinary_status(&mut self, pipe: u8, frame: FrameNodeAddress, slot_raw: u32) {
@@ -4125,7 +4215,10 @@ impl TxStatusPolicy for SingleProbeMacBackend {
 impl PipeSuccessEffects for SingleProbeMacBackend {
     fn set_frame_lifetime(&mut self, _frame_node: FrameNodeAddress) {}
 
-    fn reset_backoff(&mut self, _link: u8, _queue: u8) {}
+    fn reset_backoff(&mut self, link: u8, queue: u8) {
+        // Vendor `0x9d2c`, reached only through the success-marker gates.
+        let _ = crate::backoff::reset(&mut crate::backoff::VolatileBackoffBankIo, link, queue);
+    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -5020,6 +5113,7 @@ impl SingleProbeMacBackend {
 impl SingleTxRetryBackend for SingleProbeMacBackend {
     fn decide_retry(
         &mut self,
+        event: RetryEvent,
         pipe: u8,
         slot: u32,
         frame_node: FrameNodeAddress,
@@ -5217,7 +5311,18 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         let try_count = unsafe { crate::dtcm::shared_ptr::<u16>(context.try_count()).read_volatile() };
         let flags = unsafe { crate::dtcm::shared_ptr::<u32>(context.control_bits()).read_volatile() };
         let long_frame = (flags & 0x7ff) >> 9 != 0;
-        match crate::rate_policy::retry_step(policy, rate, try_count, long_frame) {
+        let interface = unsafe { read_u8(context.interface().get()) };
+        let queue = unsafe { read_u8(context.access_category().get()) };
+        match resolve_head_retry_step(
+            &mut crate::backoff::VolatileBackoffBankIo,
+            event,
+            policy,
+            rate,
+            try_count,
+            long_frame,
+            interface,
+            queue,
+        ) {
             crate::rate_policy::RetryStep::GiveUp => SingleTxRetryDecision::GiveUp,
             crate::rate_policy::RetryStep::Rearm { rate: next_rate } => {
                 let rate_changed = next_rate != rate && (flags & 0x20 == 0 || next_rate > 13);
@@ -7306,7 +7411,13 @@ unsafe fn service_expired_partial_block_ack_retry(
             let Some(slot) = publication.live_slot() else {
                 continue;
             };
-            if backend.decide_retry(pipe, slot.raw(), frame_node) != SingleTxRetryDecision::Rearm {
+            if backend.decide_retry(
+                RetryEvent::WatchdogExpiry,
+                pipe,
+                slot.raw(),
+                frame_node,
+            ) != SingleTxRetryDecision::Rearm
+            {
                 crate::host_tx_diagnostics::record_ampdu_outcome(
                     crate::host_tx_diagnostics::ampdu_outcome::WATCHDOG_NO_REARM,
                 );
@@ -7349,15 +7460,15 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
         write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
         write_u8(current_slot.address.state().get(), 3);
 
-        if read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get()) == 1
-            && read_u8(current_slot.address.retry_rate().get()) == 0xff
-        {
+        let pipe_state = read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get());
+        let retry_rate = read_u8(current_slot.address.retry_rate().get());
+        if pipe_state == 1 && retry_rate == 0xff {
             let frame = current_frame.context();
             let flags = read_u32(frame.control_bits_address());
             if flags & (1 << 4) == 0 {
                 backend.set_frame_lifetime(current_frame);
             }
-            if flags & (1 << 15) == 0 {
+            if success_marker_resets_backoff(pipe_state, retry_rate, flags) {
                 backend.reset_backoff(
                     read_u8(frame.interface_address()),
                     read_u8(
@@ -11067,7 +11178,7 @@ mod tests {
 
     struct MockRetryBackend {
         decision: SingleTxRetryDecision,
-        decided: Option<(u8, u32, FrameNodeAddress)>,
+        decided: Option<(RetryEvent, u8, u32, FrameNodeAddress)>,
         rearmed: Option<(u8, u32, FrameNodeAddress, u32)>,
         completed: Option<(u8, FrameNodeAddress, u32, u16)>,
     }
@@ -11086,11 +11197,12 @@ mod tests {
     impl SingleTxRetryBackend for MockRetryBackend {
         fn decide_retry(
             &mut self,
+            event: RetryEvent,
             pipe: u8,
             slot: u32,
             frame_node: FrameNodeAddress,
         ) -> SingleTxRetryDecision {
-            self.decided = Some((pipe, slot, frame_node));
+            self.decided = Some((event, pipe, slot, frame_node));
             self.decision
         }
 
@@ -11730,6 +11842,304 @@ mod tests {
             Some((2, slot, FrameNodeAddress::new(0x0400_9248), 0x400))
         );
         assert_eq!(backend.completed, None);
+    }
+
+    /// Arm one host-owned, state-3 slot on an active pipe with a seeded bank.
+    fn seed_host_retry_event(
+        mmio: &mut MockPipeMmio,
+        pipe: u8,
+        interface: u8,
+        queue: u8,
+        window: u32,
+        count: u32,
+    ) -> FrameNodeAddress {
+        mmio.set(crate::dtcm::MAC_CURRENT_PIPE.get() as u32, u32::from(pipe));
+        let pipe_state = pipe_state_address(pipe);
+        mmio.set(pipe_state + 2, 0);
+        mmio.set(pipe_state + 3, 1);
+        mmio.set(pipe_state + 5, 1);
+        mmio.set(
+            pipe_state + 8,
+            crate::platform::tx_ring_register(usize::from(pipe), 0) as u32,
+        );
+        let slot = current_slot_address(mmio, pipe);
+        mmio.set(slot + 1, 4);
+        mmio.set(slot + 3, 3);
+        let frame_node = crate::dtcm::host_context(0).unwrap().frame_node();
+        let frame_node = FrameNodeAddress::new(frame_node.raw());
+        mmio.set(slot + 0x0c, frame_node.raw());
+        let context = frame_node.context();
+        mmio.set(context.interface_address() as u32, u32::from(interface));
+        mmio.set(context.access_category_address() as u32, u32::from(queue));
+        let bank = crate::dtcm::pas_stride_view(usize::from(interface)).unwrap();
+        mmio.set(bank.cw_min(usize::from(queue)).unwrap().get() as u32, 15);
+        mmio.set(bank.cw_max(usize::from(queue)).unwrap().get() as u32, 1023);
+        mmio.set(bank.contention_window(usize::from(queue)).unwrap().get() as u32, window);
+        mmio.set(bank.retry_count(usize::from(queue)).unwrap().get() as u32, count);
+        frame_node
+    }
+
+    fn bank_state(mmio: &MockPipeMmio, interface: u8, queue: u8) -> (u32, u32) {
+        let bank = crate::dtcm::pas_stride_view(usize::from(interface)).unwrap();
+        (
+            mmio.get(bank.retry_count(usize::from(queue)).unwrap().get() as u32),
+            mmio.get(bank.contention_window(usize::from(queue)).unwrap().get() as u32),
+        )
+    }
+
+    fn bank_write_count(mmio: &MockPipeMmio, interface: u8, queue: u8) -> usize {
+        let bank = crate::dtcm::pas_stride_view(usize::from(interface)).unwrap();
+        let count = bank.retry_count(usize::from(queue)).unwrap().get() as u32;
+        let window = bank.contention_window(usize::from(queue)).unwrap().get() as u32;
+        mmio.writes[..mmio.write_count]
+            .iter()
+            .filter(|(address, _)| *address == count || *address == window)
+            .count()
+    }
+
+    #[test]
+    fn qualified_physical_retry_grows_the_head_bank_once_per_event() {
+        // A BlockAck-driven early success is still one physical retry event.
+        let mut mmio = MockPipeMmio::new();
+        seed_host_retry_event(&mut mmio, 2, 0, 1, 15, 0);
+        let mut backend = MockRetryBackend::new(SingleTxRetryDecision::CompleteSuccess);
+
+        let outcome = execute_single_outstanding_tx_retry(
+            &mut mmio,
+            SchedulerWord::new(0x0400),
+            &mut backend,
+        );
+
+        assert_eq!(outcome, SingleTxRetryOutcome::Completed);
+        assert_eq!(bank_state(&mmio, 0, 1), (1, 31));
+        assert_eq!(bank_write_count(&mmio, 0, 1), 2);
+        assert_eq!(
+            backend.decided.map(|decided| decided.0),
+            Some(RetryEvent::PhysicalRetry)
+        );
+
+        // The next event on the now-odd counter keeps the window.
+        let mut next = MockPipeMmio::new();
+        seed_host_retry_event(&mut next, 2, 0, 1, 31, 1);
+        let mut awaiting = MockRetryBackend::new(SingleTxRetryDecision::AwaitBlockAck);
+        let outcome = execute_single_outstanding_tx_retry(
+            &mut next,
+            SchedulerWord::new(0x0400),
+            &mut awaiting,
+        );
+        assert_eq!(outcome, SingleTxRetryOutcome::AwaitingBlockAck);
+        assert_eq!(bank_state(&next, 0, 1), (2, 31));
+        assert_eq!(bank_write_count(&next, 0, 1), 2);
+    }
+
+    #[test]
+    fn unqualified_retry_events_leave_every_bank_untouched() {
+        // Mask absent.
+        let mut absent = MockPipeMmio::new();
+        seed_host_retry_event(&mut absent, 1, 0, 1, 15, 0);
+        let mut backend = MockRetryBackend::new(SingleTxRetryDecision::Rearm);
+        assert_eq!(
+            execute_single_outstanding_tx_retry(
+                &mut absent,
+                SchedulerWord::new(0x0400),
+                &mut backend,
+            ),
+            SingleTxRetryOutcome::MaskNotOwned
+        );
+        assert_eq!(bank_write_count(&absent, 0, 1), 0);
+
+        // Slot not started.
+        let mut unstarted = MockPipeMmio::new();
+        let frame = seed_host_retry_event(&mut unstarted, 1, 0, 1, 15, 0);
+        let slot = current_slot_address(&mut unstarted, 1);
+        let _ = frame;
+        unstarted.set(slot + 3, 5);
+        assert_eq!(
+            execute_single_outstanding_tx_retry(
+                &mut unstarted,
+                SchedulerWord::new(0x0200),
+                &mut backend,
+            ),
+            SingleTxRetryOutcome::SlotNotStarted
+        );
+        assert_eq!(bank_write_count(&unstarted, 0, 1), 0);
+
+        // Inactive pipe.
+        let mut inactive = MockPipeMmio::new();
+        seed_host_retry_event(&mut inactive, 1, 0, 1, 15, 0);
+        inactive.set(pipe_state_address(1) + 3, 0);
+        assert_eq!(
+            execute_single_outstanding_tx_retry(
+                &mut inactive,
+                SchedulerWord::new(0x0200),
+                &mut backend,
+            ),
+            SingleTxRetryOutcome::InactivePipeAcknowledged
+        );
+        assert_eq!(bank_write_count(&inactive, 0, 1), 0);
+    }
+
+    #[test]
+    fn internal_frames_keep_vendor_policy_out_of_the_host_growth_scope() {
+        let mut mmio = MockPipeMmio::new();
+        seed_host_retry_event(&mut mmio, 0, 0, 1, 15, 0);
+        let slot = current_slot_address(&mut mmio, 0);
+        // An internal (non-host) frame node runs vendor policy 0xf / mode 2.
+        mmio.set(slot + 0x0c, 0x0400_90d8);
+        let mut backend = MockRetryBackend::new(SingleTxRetryDecision::Rearm);
+
+        assert_eq!(
+            execute_single_outstanding_tx_retry(
+                &mut mmio,
+                SchedulerWord::new(0x0100),
+                &mut backend,
+            ),
+            SingleTxRetryOutcome::Rearmed
+        );
+        assert_eq!(bank_write_count(&mmio, 0, 1), 0);
+    }
+
+    #[test]
+    fn out_of_range_head_selections_never_halt_or_write() {
+        let mut mmio = MockPipeMmio::new();
+        seed_host_retry_event(&mut mmio, 0, 0, 1, 15, 0);
+        let frame_node = crate::dtcm::host_context(0).unwrap().frame_node();
+        let context = FrameNodeAddress::new(frame_node.raw()).context();
+        mmio.set(context.interface_address() as u32, 3);
+        mmio.set(context.access_category_address() as u32, 4);
+        let mut backend = MockRetryBackend::new(SingleTxRetryDecision::Rearm);
+
+        assert_eq!(
+            execute_single_outstanding_tx_retry(
+                &mut mmio,
+                SchedulerWord::new(0x0100),
+                &mut backend,
+            ),
+            SingleTxRetryOutcome::Rearmed
+        );
+        assert_eq!(bank_write_count(&mmio, 0, 1), 0);
+    }
+
+    #[test]
+    fn only_physical_head_policy_exhaustion_resets_the_bank() {
+        let terminating = terminating_head_policy();
+        let mut io = crate::backoff::tests::MockBankIo::new();
+        io.limits(0, 2, 15, 1023);
+        io.bank(0, 2, 511, 5);
+
+        assert_eq!(
+            resolve_head_retry_step(
+                &mut io,
+                RetryEvent::PhysicalRetry,
+                terminating,
+                13,
+                6,
+                false,
+                0,
+                2,
+            ),
+            crate::rate_policy::RetryStep::GiveUp
+        );
+        assert_eq!(io.state(0, 2), (0, 15));
+
+        // The same exhausted policy through a watchdog decision changes nothing.
+        let mut watchdog = crate::backoff::tests::MockBankIo::new();
+        watchdog.limits(0, 2, 15, 1023);
+        watchdog.bank(0, 2, 511, 5);
+        assert_eq!(
+            resolve_head_retry_step(
+                &mut watchdog,
+                RetryEvent::WatchdogExpiry,
+                terminating,
+                13,
+                6,
+                false,
+                0,
+                2,
+            ),
+            crate::rate_policy::RetryStep::GiveUp
+        );
+        assert_eq!(watchdog.write_count, 0);
+
+        // A rearm never resets, whatever the provenance.
+        let mut rearming = crate::backoff::tests::MockBankIo::new();
+        rearming.limits(0, 2, 15, 1023);
+        rearming.bank(0, 2, 511, 5);
+        assert_eq!(
+            resolve_head_retry_step(
+                &mut rearming,
+                RetryEvent::PhysicalRetry,
+                terminating,
+                13,
+                0,
+                false,
+                0,
+                2,
+            ),
+            crate::rate_policy::RetryStep::Rearm { rate: 13 }
+        );
+        assert_eq!(rearming.write_count, 0);
+    }
+
+    #[test]
+    fn success_marker_gate_ignores_slot_kind_but_not_its_own_conditions() {
+        assert!(success_marker_resets_backoff(1, 0xff, 0));
+        // Bit 4 (lifetime) is a different gate and must not block the reset.
+        assert!(success_marker_resets_backoff(1, 0xff, 1 << 4));
+        assert!(!success_marker_resets_backoff(0, 0xff, 0));
+        assert!(!success_marker_resets_backoff(1, 0x0c, 0));
+        assert!(!success_marker_resets_backoff(1, 0xff, 1 << 15));
+    }
+
+    #[test]
+    fn status_hook_reset_follows_the_completion_gates_only() {
+        let input = OrdinaryTxPipeStatusInput {
+            pipe_active: true,
+            expected_status: 4,
+            slot_kind: 1,
+            slot_state: 3,
+            global_busy: false,
+            pipe_current: 0,
+            pipe_last: 0,
+            pipe_status: 1,
+        };
+        // A matching kind-1 aggregate completes, so the vendor reset runs once.
+        assert!(matches!(
+            plan_ordinary_tx_pipe_status(input, 4),
+            OrdinaryTxPipeStatusPlan::Complete { .. }
+        ));
+        // Slot kind 2 advances without completion: no reset.
+        assert!(matches!(
+            plan_ordinary_tx_pipe_status(
+                OrdinaryTxPipeStatusInput { slot_kind: 2, ..input },
+                4
+            ),
+            OrdinaryTxPipeStatusPlan::AdvanceWithoutCompletion { .. }
+        ));
+        for ineligible in [
+            OrdinaryTxPipeStatusInput { pipe_active: false, ..input },
+            OrdinaryTxPipeStatusInput { slot_state: 5, ..input },
+            OrdinaryTxPipeStatusInput { expected_status: 6, ..input },
+        ] {
+            assert_eq!(
+                plan_ordinary_tx_pipe_status(ineligible, 4),
+                OrdinaryTxPipeStatusPlan::Ineligible
+            );
+        }
+    }
+
+    fn terminating_head_policy() -> crate::rate_policy::TxRatePolicy {
+        let mut payload = [0_u8; 24];
+        payload[0] = 1;
+        payload[4] = 5;
+        payload[5] = 6;
+        payload[6] = 6;
+        payload[7] = 0x0c;
+        // Policy bytes start after the four-byte header; rate 13 lives in the
+        // high nibble of packed byte 8 + (13 >> 1).
+        payload[4 + 8 + 6] = 2 << 4;
+        crate::rate_policy::install(&payload).unwrap();
+        crate::rate_policy::get(5).unwrap()
     }
 
     #[test]
