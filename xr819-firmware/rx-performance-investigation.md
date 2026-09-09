@@ -2199,3 +2199,123 @@ hardware qualification, not a proven throughput gain or proof all HIF stalls
 are fixed. Earlier clean samples4.70 and4.28 are serial, variable conditions;
 this run does not reproduce the same buffer pressure as the rejected backoff
 candidate. No new firmware feature introduced.
+
+### Host-request priority discriminator: static audit and build qualification
+
+Started a new jj change on the retained response-capacity correction; hif.rs is
+unchanged by this discriminator. Sole writer/hardware owner; no nested agents.
+
+The suspected reversed airtime offsets are **not a discrepancy**. Read-only
+Ghidra instruction inspection of xr819-annotated-main/ghidra-fw-main.bin:
+`pas_compute_tx_timing` retains PAS in r4 at0x7fa8; at0x806a-0x8074 it passes
+r1=PAS+0x38 and r0=r1+2=PAS+0x3a to airtime_compute(0x83e2). The callee saves
+r0/r1; after its extra stack word these pointers are at sp+4/sp+8. It stores
+the unextended result through the first pointer at0x8458-0x8460, then adds
+0x20,0x0a,or0x10 and stores through the second at0x8462-0x8480. Thus base is
+PAS+0x3a and extended is PAS+0x38, matching Rust mac::{base,extended}_airtime,
+compute_single_frame_pas_timing and prepare_single_frame_pas_timing. The type
+labels are wDurPayA at0x38 and wDurPayB at0x3a: their names do not imply which
+is base. No airtime code or Ghidra database edits. Evidence files:
+`/tmp/xr819-priority-airtime-{caller,compute}.json` and
+`/tmp/xr819-priority-pas-type.json`. Function-disasm initially returned only ten
+instructions; the final evidence uses explicit disasm -n350/-n80, not that
+truncated result. This verifies offset ordering, not all timing mathematics.
+
+Transport audit: request_available includes response_available, so its name
+means IRQ-notified descriptor readiness AND current full admission capacity,
+not raw pending work or a reservation. service_interrupt only records notified
+RX/TX work; reclaim_tx releases shared storage or RX tokens only following the
+TX notification, preserving stage-successor-before-release ordering. Output
+queue capacity is64; shared output slots and prepared storage are additional
+constraints. publish_radio uses zero-copy RX tokens; command responses and
+coalesced confirmations copy into shared storage. poll_request reclaims/checks
+full capacity before detaching one input and schedules a ready successor.
+command::service_one finishes response publication before returning; admission
+failure releases its request credit and encodes an immediate failure response.
+HostTxDriver::admit does not publish asynchronous HIF output. Retained full
+capacity gating is therefore required for both success and failure paths.
+
+Candidate moves the single command service from loop end to immediately after
+MAC/management service and before asynchronous output. Fresh successor admission
+state is sampled afterward; all existing asynchronous capacity checks and
+host-request gates remain. No extra command batching, publication-owner reorder,
+BA bypass, RX-BA retirement, crypto/replay changes, FIQ, depth or feature changes.
+The admitted command gets first use of reclaimed response capacity each pass;
+a blocked input is not detached. A successor retains priority when admissible.
+Freshly arriving hardware notifications wait for the next normal interrupt
+service, as before. This does not claim an absolute latency bound while the
+host stops draining output, nor fairness for asynchronous work under an
+unbounded synchronous-command stream. It removes avoidable suppression by the
+request already serviced, not all possible confirmation delay.
+
+Targeted primary LSP: no errors in hif.rs/hif_startup.rs.303 library tests pass;
+nightly thumbv5te-none-eabi release hif-startup build-std=core passes. Stack6744
+of6912, exception224 of256; packet-RAM, section packing and DTCM checks pass.
+Features: experimental-list-first-depth-four-ampdu,experimental-fast-loop,
+experimental-aggregate-rate-feedback,experimental-rx-path-diagnostics (defaults
+and transitive features unchanged). Build script/log `/tmp/xr819-priority-build.*`.
+Candidate `/tmp/xr819-priority-candidate.bin` SHA256
+`94eafb9c709f32b61f2b94badbc24e5924f47f4463c6bd4e11db94a246d2d950`;
+ELF SHA256 `e3890749a061eea76ef0de63edf5be328e4499b837d8ed82b24954bd0b6d3f2f`;
+patch `/tmp/xr819-priority-candidate.patch` SHA256
+`2455b984d815f57a5c399e96f4b6b686ba596c32e3fa9f00880eb74e185294ca`.
+Baseline archived `/tmp/xr819-priority-baseline.{bin,elf}`: image SHA256
+`ee76be8ff39b40e08374a71f6f1c37d1bb52ca06cb90d2d65e7bd12557a22fe2`,
+ELF `88860a7e8748e9da48fc81cbb6aca1f951a87d2a10ab6db51f3e3ac27fa344b9`.
+
+Read the response-capacity and TCP wrappers, observer and failure-capture paths
+fully before reuse. CPU export/loaded captures, tracing and extra bidirectional
+phases remain disabled; BA-enabled driver, auto-rate600s TX,10s stall guard,
+recovery EXIT unchanged. Before starting, no managed runs or host observers,
+board iperf/bpftrace absent, all three recovery files independently compared,
+no trace instances. Started serial baseline-first/candidate/baseline-return via
+`/tmp/xr819-priority-series.sh`, with separate file/trace verification after each
+wrapper. Per-phase logs use `/tmp/xr819-priority-*-run.log` and `*-recovery.log`.
+
+### Priority discriminator: no observed benefit; reverted, third run interrupted
+
+| Run | TCP Mbit/s | Duration s | Last TCP retrans/data segments |
+| --- | ---: | ---: | ---: |
+| Retained HIF baseline first | 5.84 | 600.6334 | 294/303071 |
+| Command-first candidate | 5.69 | 600.6721 | 201/294817 |
+| Retained HIF baseline return | incomplete | ~47s logged | 30/14839 |
+
+The first two runs exited0, passed100/100 pings, reached TID0 BA operational,
+and reported BH alive without a recorded stall/assertion. Independent recovery
+logs confirm all three files and no trace instances/events after each. Host
+aggregate reports were baseline62114 heads/230986 length/228844 ACK/0 invalid,
+candidate60246/222682/220435/0. These counts are not latency measurements or
+on-air aggregation depth; TCP retransmissions are not radio retry counts.
+Candidate was2.6% below the first baseline: no observed benefit supports
+retention, but this incomplete serial pair does not establish a regression or
+a repeatable effect. The planned return baseline did NOT finish and must not
+be presented as a completed baseline-candidate-baseline comparison.
+
+Lifecycle failure: series.log ends PHASE_START baseline-return at10:13:12+02;
+return traffic log ends abruptly at08:16:18UTC (10:16:18+02), with TCP ACKs still
+progressing around47.6s, no exit code, stall capture, or recovery footer. After
+the parent escalated the lost completion notification, no local managed series
+or matching wrapper/observer processes remained. Cause of their disappearance
+is unknown; a bounded local kernel-journal OOM query around10:14-10:18 found
+no entries. Do not infer an RF/firmware failure or successful recovery from this
+truncated log. Waiting for the lost notification left hardware ownership open
+and the EXIT trap did not restore the board: this was an orchestration/recovery
+failure, not a completed test. No replacement benchmark was run.
+
+At10:35:43UTC board SSH was responsive (uptime2h21m); test iperf daemons remained,
+boot matched recovery but firmware/module did not. Immediately copied all three
+recovery files, ran depmod/sync, compared them, then rebooted. Separate post-boot
+verification succeeded at10:36:28UTC (uptime0min): boot cmp, host-event-drain
+vendor firmware cmp, module cmp; zero trace instances, events disabled, nop
+tracer, no iperf. Evidence `/tmp/xr819-priority-interruption-restore.log` and
+`/tmp/xr819-priority-interruption-recovery.log`; managed verifier proc_f397
+exited0. Recovery is the host-event-drain vendor image, not stock firmware.
+
+Restored src/bin/hif_startup.rs exactly from the retained-HIF parent revision.
+Scheduling candidate remains archived with ELF/image/patch, not retained in
+source. hif.rs was never changed in this experiment; its full response-capacity
+check including admission-failure protection remains. Final new-change diff is
+this ledger only; no new feature, airtime correction, or improvement checkpoint.
+303 tests and the6744/6912,224/256 stack/layout qualification above apply to the
+archived candidate. They do not prove absence of every command/security/owner
+regression; reverted source restores the prior qualified scheduling exactly.
