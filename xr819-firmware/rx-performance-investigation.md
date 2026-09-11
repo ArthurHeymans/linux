@@ -2480,3 +2480,653 @@ explicitly labelled not hardware-qualified. It must not be treated as a verified
 improvement checkpoint, and the deferred qualification (baseline -> candidate ->
 baseline, deadman armed per phase, host quiet) is still owed. Reverting is one
 `jj abandon` of this revision; the archived patch reproduces it exactly.
+
+## Downlink collapse: the AP stops being acknowledged
+
+### Method: this measurement needs a load gate and interleaving
+
+The host is simultaneously the AP and the TCP receiver, so unrelated host load
+corrupts every number below. A first serial bisect (clean Sep 7 image, HIF-only,
+tip) read 6.62 / 4.51 / 3.48 Mbit/s board-TX TCP while host load climbed
+0.46 / 1.85 / 5.38 from an unrelated `btrfs-endio`/`kcryptd` job. The same tip
+image measured 6.00 Mbit/s at load 1.4 and 3.48 at load 5.4. That series is void:
+its apparent monotonic regression was host load, not firmware. Every phase below
+waits for two consecutive host samples under 3.0, phases alternate
+vendor/Rust/vendor/Rust, and host load plus the AP's per-station rate are sampled
+inside every phase.
+
+### Matched, load-guarded pair (host load <= 0.89 in all four phases)
+
+Identical boot, host module, AP, fixed board MCS5 and harness; only firmware
+differs. 90s board-TX TCP, 30s board-RX TCP, then a 5/10/20/30 Mbit/s UDP
+offered-load sweep in both directions.
+
+| Phase | TX TCP | RX TCP | TX UDP 20/30M | RX UDP 20/30M |
+| --- | ---: | ---: | ---: | ---: |
+| vendor-a | 11.88 | 27.00 | 14.20 / 15.40 | 21.00 / 31.50 |
+| Rust tip-a | 7.70 | 21.10 | 13.70 / 13.30 | 14.90 / 23.70 |
+| vendor-b | 11.74 | 29.20 | 15.10 / 15.40 | 21.00 / 31.50 |
+| Rust tip-b | 6.53 | 19.90 | 13.10 / 13.20 | 11.70 / 23.10 |
+
+Host load was <= 0.89, 0.68, 0.51 and 0.81 respectively, so this pair is
+comparable. Uplink capacity is close (Rust loses 4-5% at 20/30M offered where the
+vendor loses 0.2%); the downlink is 26-45% short and the vendor is still not
+saturated at 31.5 Mbit/s.
+
+### The AP's rate collapses against the Rust board
+
+Per-2s `iw dev wlp4s0 station dump` during each phase:
+
+| AP tx bitrate | vendor-a | Rust-a | vendor-b | Rust-b |
+| --- | ---: | ---: | ---: | ---: |
+| MCS 7 (65 M) | 187/196 | 6 | 181/197 | 0 |
+| MCS 0 (6.5 M) | 0 | 27 | 0 | 7 |
+| AP tx retries (phase delta) | +2379 | +6178 | +2558 | +7251 |
+| AP tx failed (phase delta) | **+0** | **+96** | **+0** | **+67** |
+
+The AP holds MCS 7 and records **zero** failed transmissions against the vendor
+board, twice. Against the Rust board it retries ~2.5x more, records real
+failures, and falls back to MCS 0-5. This is the downlink deficit: MCS 0 is
+6.5 Mbit/s PHY, which is what the 3.5-5 Mbit/s low-offer RX UDP phases deliver.
+The board is not being acknowledged.
+
+### BlockAck action census
+
+`cw1200_ampdu_action` logging over a full 9-minute phase (mac80211 action
+numbers: 0=RX_START, 1=RX_STOP, 2=TX_START, 3=TX_STOP_CONT, 6=TX_OPERATIONAL):
+
+| | RX_START | RX_STOP | TX_START | TX_OPERATIONAL |
+| --- | ---: | ---: | ---: | ---: |
+| vendor-a | **0** | **0** | 164 | 0 |
+| Rust-a | **96** | **84** | 12 | 12 |
+
+The board's downlink BA session is started and stopped roughly every five seconds
+with the Rust firmware, and never exists at all with the vendor firmware.
+
+### Static finding: there is no downlink BA responder
+
+- `cw1200_ampdu_action` in both the lab module and the stock tree driver
+  (`drivers/net/wireless/st/cw1200/sta.c`) returns 0 for
+  `IEEE80211_AMPDU_RX_START` and `IEEE80211_AMPDU_RX_STOP` without telling the
+  firmware anything. The host has never programmed a downlink BA session.
+- The vendor firmware therefore handles the ADDBA exchange internally: mac80211
+  never sees an RX BA session with vendor firmware (zero RX_START events above).
+  The Rust firmware passes protected management up through mac80211's
+  `SW_MGMT_TX`/`RX_MGMT` path, so mac80211 negotiates the session and the
+  firmware/MAC is never told about it.
+- The vendor keeps four DTCM BA session records at `0x8e78` (`activity`,
+  `peer_mac`, `tid`, `interface`, `timeout_1024us`, `timer`). The Rust firmware
+  models that layout but **never writes it**: the only references are the type,
+  the linker region and layout assertions. No code populates a session.
+
+Hypothesis, not yet proven: with no BA responder programmed, the MAC cannot
+answer the AP's A-MPDUs with a BlockAck, so the AP retries, DELBAs and
+renegotiates, and its rate control collapses to MCS 0. That single defect would
+account for the AP failures, the rate collapse, the 96/84 session churn, and both
+the low-offer RX UDP collapse and the 23-vs-31.5 Mbit/s ceiling. Confirmation
+would need a monitor capture, or programming the responder and re-measuring.
+
+### Temporary service probe
+
+`experimental-service-probe` exports counters MIB 0x100c words 0..=10 (marker
+`RXP1`): passes, passes with a hardware-owned class-0 slot, completions,
+published RX indications, drops at the 24 host-transfer cap, passes blocked on
+output descriptors, passes within 4 KiB of the 0x7000 RX FIFO limit, and lifetime
+maxima for outstanding host transfers and pending bytes. It changes no
+scheduling, ownership or lifecycle behaviour, and is removed once read.
+
+### Probe result: the RX data path is not the bottleneck
+
+First probe phase (`/tmp/xr819-probe-probe-a.log`, image SHA256
+`e6516d12619ac2b323ed81a9a0507cc957bf544aa693e434a2d9c70109dd213e`), per
+snapshot interval:
+
+| interval | passes/s | TX busy% | completions | rx indications | drops at 24 | near-full passes | max pending bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| board TX TCP (142s) | 4848 | 54.6 | 115422 | 40082 | 43 | 0 | 22304 |
+| board RX TCP (40s) | 4461 | 65.0 | 13922 | 51913 | 0 | 0 | 22304 |
+| TX UDP 5/10/20/30M | 4765-5789 | 27-49 | 6746-22869 | 385-924 | 0 | 0 | 22304 |
+| RX UDP 5/10M | 6263-6807 | 0.3-1.3 | 59-61 | 7624-13015 | 0 | 0 | 22304 |
+
+Both RX admission hypotheses are eliminated: drops at the 24 host-transfer cap
+are effectively zero (43 in the whole TX phase, none elsewhere), and the RX FIFO
+never came within 4 KiB of its 0x7000 limit. Frames that arrive are delivered;
+what is missing is the BlockAck signalling above.
+
+The probe also shows the TX pipe is hardware-owned only 27-65% of passes during
+TX traffic and ~0% during RX traffic, so the TX path is not air- or
+MAC-saturated: the uplink deficit is software/latency-bound.
+
+Known limitation of this first build: `blocked_by_descriptor` was incremented at
+the call site that hardcodes `publication_available = false` because a host
+request or control indication is already pending, so it duplicated the
+host-request count (37491 in the TX phase). The attribution now mirrors the
+existing rx-path-diagnostics else-if chain, and words 0..=12 are the probe schema
+with 13..=21 left to rx-path-diagnostics.
+
+Probe repeat (`/tmp/xr819-probe-probe-b.log`) reproduces the admission result and
+adds a second signal. Drops at the 24 host-transfer cap stay near zero (66 in the
+143s TX phase, none elsewhere). But during the board-TX phase the RX FIFO reaches
+**28296 of its 28672-byte limit** with 473 near-full passes, and RX publication is
+blocked on output-queue capacity for **37491 of 107579** pending passes in the
+first run and **44929 of 115053** in the second - 35-40% of the time. Probe-a
+peaked lower (22304 bytes) with no near-full pass, so this pressure varies.
+
+That is a second, independent defect: while the board transmits, the firmware-to-
+host output queue (64 entries) holds TX confirmations and RX indications together,
+`publication_available()` stays false, RX publication stalls behind it, and the
+receive FIFO fills. A board that cannot receive while transmitting also misses the
+AP's ACKs, BlockAcks and aggregates, which is consistent with the oscillating
+4.4-11.3 Mbit/s uplink and with the AP's failed transmissions.
+
+Two mechanisms are therefore live, and they are not mutually exclusive:
+
+1. missing downlink BlockAck responder (static finding above) - the AP's
+   aggregates are never properly acknowledged;
+2. RX starvation behind the TX confirmation output queue - the board misses
+   frames while it is transmitting.
+
+The probe's RX admission counters were correct for both runs; only the printed
+schema changed mid-series, so `blocked req/ctl/desc` in
+`/tmp/xr819-probe-run.log` is misaligned and the raw words must be read with the
+words 0..=10 mapping.
+
+## Downlink BA responder: attempted, falsified in this form
+
+The static finding above was tested directly by programming the receive block-ack
+session from received ADDBA requests, in three increasing levels of fidelity, each
+in an interleaved load-gated A/B against the unmodified tip.
+
+| build | what it writes | AP tx failed | board RX BA starts/stops |
+| --- | --- | ---: | ---: |
+| tip (baseline) | - | +93, +95 | 44/30, 43/32 |
+| shadow only | DTCM `BaSessions` + `MacPipeTail` | +96, +67 | 52/41, 52/40 |
+| + registers | + peer MAC/TID, enable bit, scoreboard clears | **+297**, +99 | **51/41**, **40/27** |
+
+**The downlink BA session churn is invariant at ~40-52 starts per phase in every
+phase, with and without the responder.** Programming the MAC receive pipe from
+the ADDBA request therefore does not make the AP's aggregates acknowledged, and
+the hypothesis "the board is not answering A-MPDUs because the MAC was never
+programmed" is falsified in this form. The shadow-only build additionally
+regressed board TX (2.46 Mbit/s against 8.98), which is why it was abandoned
+rather than iterated.
+
+What survives is the *difference* in session ownership. The vendor firmware
+consumes the ADDBA exchange itself (`bab_event_dispatch` builds the ADDBA/DELBA
+signalling), so mac80211 never sees an RX BA session and the churn is zero. The
+open firmware leaves the exchange to mac80211's `SW_MGMT_TX`/`RX_MGMT` path and
+only added MAC programming on the side, which is a split-brain arrangement: two
+owners, one agreement. Any future attempt must move the whole exchange into the
+firmware - session ownership, the reorder buffer, and the signalling - rather
+than adding a writer beside mac80211.
+
+### Register map recovered for the vendor receive BA pipe
+
+Vendor `pipe_setup_entry` writes MAC register space, not only the DTCM shadow.
+The pointers resolve only with the container offset from
+`xr819-decompilation/README.md` (main payload at `0x1ab8` in `fw_xr819.bin`);
+`DAT_00002828` reads `0x04001680` (`initialized_low_mac_prefix`),
+`DAT_0000282c` `0x09c01200`, `DAT_00002830` `0x09c00040`, `DAT_0000283c`
+`0x04001d40`, and `DAT_00005dd4` `0x04008ad8`, which is the session table base
+minus its `+0x3a0` field offset.
+
+```text
+0x09c00060 + pipe*0xc   peer MAC[0..4]        (stats_export_pipe_counters clears
+0x09c00064 + pipe*0xc   peer MAC[4..6]         these to ff:ff:ff:ff:ff:ff, which
+0x09c00068 + pipe*0xc   TID                    confirms the meaning)
+0x09c01204 + pipe*0x20  (win_size << 4) | 0x80400000   block-ack window
+0x09c01210 + pipe*0x20  four cleared scoreboard words
+0x09c0011c              per-pipe enable, one of two bits at 0x10 + pipe*2,
+                        mirrored to DTCM mac_phy_command_state + 0x44
+```
+
+The enable bit's two-way choice comes from comparing a per-interface byte at
+`0x04003678 + if_id*0x98 + 0x481` with a global byte at `0x04003ab8 + 0x19`.
+
+The responder implementation is archived as `/tmp/xr819-rx-ba-responder.patch`
+and removed from the working source; the feature gate and its three parse tests
+go with it.
+
+## Real-AP rig: the Hoeve AP exposes an uplink defect the lab AP hid
+
+The Intel AX200 lab AP is not a neutral instrument: it is also the host, its load
+corrupts the numbers, and it pins the board's rate to MCS5. Testing against a
+real-world AP with the host as a plain wired peer removes all three problems.
+
+### Setup
+
+- AP: `Hoeve Luitenant Halleux`, BSSID `94:83:c4:ba:5b:0e`, 2.4 GHz channel 1,
+  WPA2/WPA3 mixed. Its BSSIDs changed since the older configs in this tree, so
+  `/root/xr819-hlh-new.conf` on the board carries the current BSSID and PSK.
+- The board associates with its wifi in the `wifi-test` netns and takes a DHCP
+  address on the house LAN, so all board traffic is forced across the real AP.
+- The **board** runs the iperf servers and the **host** opens every connection
+  outbound: the host firewall blocks inbound iperf (an inbound attempt hangs
+  indefinitely), but outbound connections pass. Measured 91.4 Mbit/s host-to-board
+  over Ethernet to confirm the path.
+- Same `cw1200_core.ko` for both firmwares, so only the firmware differs.
+
+### Result: downlink is identical, uplink is not
+
+Offered-load UDP sweep, 15 s per point, board as server, host as client:
+
+| Direction / offered | Rust tip | vendor stock |
+| --- | ---: | ---: |
+| board RX (downlink) 5/10/20/30M | 5.24 / 10.50 / 21.00 / 31.50 | 5.24 / 10.50 / 21.00 / 31.40 |
+| board TX (uplink) 5M | 1.08 (72% lost) | 5.28 (0%) |
+| board TX 10M | 3.09 (49%) | 10.60 (0%) |
+| board TX 20M | 3.74 (47%) | 19.60 (0%) |
+| board TX 30M | 3.90 (48%) | **29.50** (0%) |
+
+TCP, 60 s each: board TX 1.44 Mbit/s against vendor 28.5; board RX 0.107 Mbit/s
+against vendor 13.5. Ping 20/20 in both.
+
+Three conclusions:
+
+1. **The downlink radio path is fine.** Downlink UDP is identical between
+   firmwares at every offered rate, so the 23-vs-31.5 downlink deficit chased
+   earlier is specific to the Intel lab AP, not a general firmware defect.
+2. **The downlink TCP collapse is a consequence of the uplink.** Downlink UDP
+   carries 31.5 Mbit/s at 0% loss while downlink TCP manages 101 Kbit/s; the only
+   difference is that TCP needs the board's ACKs to travel upstream. So there is
+   one root defect, not several: the firmware's TX path saturates near 8.5 Mbit/s
+   with ~18% loss where the vendor reaches 29.5 Mbit/s at 0%.
+3. **The lab AP masked it by pinning the rate.** The lab harness always ran
+   `iw dev wlan0 set bitrates ht-mcs-2.4 5`, so it never exercised rate
+   adaptation. The board's own `iw link` against the real AP reports
+   `tx bitrate: 6.0 MBit/s` - a legacy rate - which is consistent with the
+   ~8 Mbit/s uplink ceiling and with queue overflow producing the flat ~18% loss.
+
+### Power-save is a real, separate factor
+
+The lab harness also always ran `iw dev wlan0 set power_save off`; the first real-AP
+runs did not, and the difference is large:
+
+| | Rust, PS default | Rust, PS off | vendor |
+| --- | ---: | ---: | ---: |
+| board TX UDP 5M | 1.08 (72%) | 3.80 (4.6%) | 5.28 (0%) |
+| board TX UDP 10M | 3.09 (49%) | 8.17 (17%) | 10.60 (0%) |
+| board TX UDP 20M | 3.74 (47%) | 9.25 (19%) | 19.60 (0%) |
+| board TX UDP 30M | 3.90 (48%) | 8.34 (18%) | 29.50 (0%) |
+
+Forcing PS off roughly halves the loss and doubles the uplink, and the reported
+state is then `Power save: off`. But it does not fix TCP (uplink 1.44 -> 1.83,
+downlink 0.107 -> 0.101), so power-save is a contributor, not the root cause.
+This is consistent with the architecture ledger, which already lists "power-save
+behavior" as outstanding vendor-parity work.
+
+### The Intel AX200 cannot be used as the observer
+
+The plan to use the AX200 as a monitor while the Hoeve AP served as the device
+under test failed: `iw` reported `type monitor, channel 1` and tcpdump ran, but
+`rx_packets` never advanced and the pcap stayed at its 102-byte header. Reloading
+iwlwifi and creating a fresh monitor interface made it receive - for a few
+seconds: 105 frames in 14 minutes against roughly 8400 expected beacons, then it
+went deaf again. iwlwifi monitor mode on this card delivers a short burst after
+the driver reload and then stops. A reception self-check sampled over the first
+6 s therefore passes while the capture is already dying. Air visibility needs
+different hardware; an `ath9k_htc`-style USB dongle would do, and the module is
+already loaded on this host waiting for one.
+
+## RX output-queue reserve: Hoeve A/B rejects it
+
+The probe-b signal (RX publication blocked on the shared 64-entry
+firmware-to-host output queue for 35-40% of pending passes during board TX,
+RX FIFO reaching 28296/28672 bytes) motivated `experimental-rx-output-reserve`:
+8 output entries kept for receive indications, with TX confirmations and async
+events gated through `async_*` capacity checks. Both A/B images also carried
+the `RXP1` service probe; the verdict is throughput, not probe words.
+
+Four Hoeve phases, same open boot `51cbe9ec…`, same BA-enabled diagnostic host
+module `a237a79e…`, PS off, auto-rate, 60s TX TCP + 30s RX TCP + 5/10/20/30M TX
+UDP sweep per phase. Logs `/tmp/xr819-hlh-res-{control-a,reserve-a,control-b,
+reserve-b}.log`; images `/tmp/xr819-reserve-{control,reserve}.bin`
+(`9cbc9863…` / `f1b44852…`, 318 tests each, rebuilt bit-identically on the day).
+
+| Phase | TX TCP | TX UDP 10M | TX UDP 20M | TX UDP 30M | Board tx-rate view |
+| --- | ---: | ---: | ---: | ---: | --- |
+| control-a | 2.31 | 9.18 (12%) | 9.22 (21%) | 9.32 (21%) | MCS0/2, touches MCS5 |
+| reserve-a | 2.28 | 7.10 (26%) | 6.94 (32%) | 6.90 (34%) | pinned MCS1, 1x MCS6 |
+| control-b | 2.28 | 8.78 (16%) | 8.56 (19%) | 8.57 (21%) | MCS2, touches MCS6/3 |
+| reserve-b | 1.30 | 4.06 (48%) | 4.07 (46%) | 3.70 (50%) | pinned MCS0/1 all run |
+
+RX UDP ran at full offered rate to 31.5 Mbit/s in all four phases; downlink TCP
+stayed collapsed (~50-400 kbit/s) in all four (wash: starved of upstream ACKs).
+Pings 20/20 throughout; `RUN_EXIT=0` everywhere. The TX UDP 5M point is void in
+reserve-a and control-b (board port-5002 UDP server dead before that section,
+`0 bytes, 0/0` over a stretched 17.9s); valid only in control-a (5.24, 0.03%)
+and reserve-b (3.59, 31%).
+
+Both reserve phases are worse than both controls on every comparable point.
+Withholding 8/64 output entries from confirmations throttles TX-confirmation
+drain into host-input-credit starvation: fewer admissions, more loss, deeper
+minstrel fallback. The probe pressure was real but this partitioning cures
+nothing; the root loss (vendor 0% vs Rust 12-21% at equal offered loads) is
+untouched by output-queue policy.
+
+Orchestration notes: the first attempt died after control-a when its EXIT-trap
+recovery reboot landed between the next phase's `wait_ready` and `scp`
+(`Connection refused`, exit 2). The wrapper now settles on post-phase recovery
+file state before starting the next phase; the resume's wrapper record expired
+over the hour, so reserve-b ran standalone with identical arguments.
+
+Archived: `/tmp/xr819-rx-output-reserve-rejected.patch` (hif.rs + hif_startup.rs
+hunks, Cargo feature context), both binaries and their SHAs in
+`/tmp/xr819-reserve-rejected-hashes.txt`. Reverted from the working source:
+hif.rs/hif_startup.rs have zero diff vs the committed parent, Cargo.toml keeps
+only the service-probe feature lines. The reverted tree passes 318 tests; its
+probe-image build differs from the archived control binary only by codegen
+(the archived control called the semantically-identical `async_*` wrappers with
+reserve 0), which is expected and not a behavior change. The `RXP1` probe code
+is retained for the next discriminator, not as a fix.
+
+Next: rate control. Nothing on Hoeve sustains high MCS (controls briefly touch
+MCS5/6 and deliver ~9 Mbit/s; vendor holds 25+ Mbit/s TCP). Compare TX
+retry/fallback policy and per-rate attempt histories between the firmwares,
+not just confirmation-rate distributions.
+
+## Rate-feedback capture: the air is flawless, the service rate is the ceiling
+
+A Hoeve run with an extended static host driver (confirmation events now carry
+`rate_try[3]` alongside status/rate/ack_failures) settles tries-high-and-burns
+versus never-tries-high in one measurement. Firmware
+`8ef940a1…` (reserve-reverted probe control), module `a45b7beb…`, PS off,
+auto-rate, no-host-BA driver (per-frame confirmations). Log
+`/tmp/xr819-hlh-ratetry.log`, per-second board metadata
+`/tmp/xr819-hlh-ratetry-metadata.log`, analyzer `/tmp/analyze-ratetry3.py`.
+
+Method correction: the board monitor *resets* its counters after every
+per-second emit (`counts.emit(); counts = Counts()`), so each
+`BOARD_STATIC_FLOW` line is a one-second delta, not a cumulative snapshot.
+Past and future analyses must sum lines within a phase window, never
+difference endpoints. Phase windows map host `PHASE_START` times to board
+`mono` through the `TCP_MONITOR_READY` anchor (first snapshot mono 48.67).
+
+Result: every phase's confirmations are ~100% `status=0, tx_rate=21 (MCS7),
+ack_failures 0-2, rate_try all zero` — first-try MCS7 success, with only a
+1-3% tail of 1-4 retries at the same rate. One frame in ~30k at rate 20. Zero
+`RETRY_EXCEEDED`, zero failures at any other rate. Minstrel held MCS7 for the
+entire run (every confirmation's policy-head rate is 21), and it was right to.
+
+Delivered throughput equals confirmations times frame size, one-to-one:
+
+| Phase | Confirmations | Rate | Implied @1500B | iperf delivered |
+| --- | ---: | ---: | ---: | --- |
+| TCP-TX 60s | 8420 | 137/s | 1.65 Mbit/s | 1.61 |
+| UDP-TX-5M | 1722 | 115/s | 1.38 | 1.34 (1714/5346 datagrams) |
+| UDP-TX-10M | 5546 | 370/s | 4.44 | 5.86-7.10 (window-clipped) |
+| UDP-TX-20M | 6868 | 458/s | 5.49 | 5.98 |
+| UDP-TX-30M | 7238 | 483/s | 5.79 | 5.84 (7140 datagrams) |
+
+(`queued ≈ confirmed` in every phase, and `net_dev_queue` exceeds admissions
+by exactly the iperf-reported loss: e.g. 10M phase 9338 skbs in vs 5559
+admitted.) So iperf "loss" is driver-queue overflow *before* firmware
+admission, never air loss: frames that reach the MAC fly first-try at MCS7,
+everything above the completion rate is dropped upstream and counted lost.
+Only 4 MMC error events in the whole run.
+
+The invariant is the publication cycle rate, not the frame rate: ~115
+cycles/s at thin 5M batches rising only to ~120-480 frames/s as batches fill
+toward depth 4 — i.e. roughly **8 ms per publish→air→complete→confirm→credit
+cycle** against ~1 ms of MCS7 airtime for a full batch. Per-cookie trace
+samples show ~2-20 ms admission-to-confirmation latency. The cooperative loop
+round-trip is the ceiling; rate control, crypto waits (1.77%), and the
+output-queue reserve are all exonerated as primary causes, and minstrel's
+MCS7 stance is vindicated. The MCS0-2 parking seen in other runs' trajectory
+is a secondary fallback under burstier air, not the throughput mechanism.
+
+This also reframes the rejected reserve: throttling confirmation drain
+directly throttles the only cycle that matters. The fix direction is the
+staged-plan step 12 that the investigation has been circling since the start
+— multiple hardware-owned frames / per-pipe credits so the MAC has work while
+a completion is being serviced (the vendor PAS ring does exactly this) —
+and/or cutting per-cycle loop hops. Next: break the ~8 ms into staged
+admission→GO→completion→confirmation→credit latencies from the existing
+per-cookie trace samples, then design the pipelining change against that
+breakdown. With BA + depth the same cycle rate carries 2-4x the frames,
+which is why BA-enabled runs reach ~9 Mbit/s under the identical cycle bound.
+
+## Stage-latency capture: 1 ms host, 21 ms firmware queueing, 0.25 ms air
+
+Full-capture static run (all trace rows, ~500/s over SSH without loss) of one
+60s Hoeve UDP-TX-20M phase: 5.33 Mbit/s delivered, 47% queue-overflow loss
+(23727/50958), firmware `8ef940a1…`, module `a45b7beb…`. Log
+`/tmp/xr819-hlh-stages.log`, 13.8 MB metadata
+`/tmp/xr819-hlh-stages-metadata.log`, analyzer `/tmp/analyze-stages3.py`.
+(An earlier attempt of the same script ran the phase without `-R` and measured
+a perfect 21 Mbit/s downlink instead — same radio and firmware receiving
+flawlessly while TX stays capped.)
+
+Sequential per-cookie matching (13 cookie ids, order-matched within each id,
+5 s generation guard) yields 27,239 complete queue→write→confirm timelines:
+
+| Stage | p50 | p90 | max |
+| --- | ---: | ---: | --- |
+| queued → SDIO write done (driver/handoff) | 0.9 ms | 1.5 ms | 4.4 ms |
+| write done → confirmation (firmware + air + host RX) | 21.2 ms | 31.2 ms | 178 ms |
+| queue → confirm total | 22.2 ms | 32.3 ms | 182 ms |
+
+All 27,239 confirmations are status 0 (27143 at MCS7, 95 at MCS6, 1 at MCS5);
+airtime per frame is ~0.25 ms. So ~21 of 22 ms is firmware-side queueing and
+handling plus host indication delivery — against ~1 ms of host handoff. By
+Little's law, 454 completions/s at 22 ms mean ~10 frames live in the pipeline
+while the single-owner gate admits one batch per pipe: each frame waits ~2-3
+serialized publish→complete→confirm→credit cycles (~8 ms each) in
+pending/PAS before its batch GOes. Queueing amplifies the cycle; the cycle
+itself is the disease.
+
+(The first sparse-sampling attempt at this analysis produced garbage p50s —
+first-8-per-second samples per event kind are independent subsets, so
+cross-kind pairing is coincidental. Full capture was required. A side
+correction: the `0/0` UDP-5M sections in the A/B were a dead board UDP
+server, not a firmware behavior.)
+
+Fix direction is now fully determined: staged-plan step 12, multiple
+hardware-owned batches per pipe. It hides latency wherever inside the
+firmware/host-RX path it lives, and depth measurements already show the
+mechanism (fuller batches → more frames per identical cycle). The design
+constraint found so far: publication currently refuses unless
+`mac_pipe_state == 0` and uses the pipe's current-slot cursor, so pipelining
+needs the real MAC multi-slot contract (which slot a second GO may use, how
+pipe state tracks 2+ in-flight batches), plus per-slot watchdog/BA/retry
+audits. Completion routing by (pipe, slot) and `occupied_slots`/`slot_owner`
+already exist; the `contains_pipe` gate is the only publication blocker.
+
+## Pipelining design written; implementation not started
+
+The stage split (1 ms host, ~21 ms firmware queueing, 0.25 ms air) plus the
+MAC window protocol (state 0→1 at GO in `finalize_staged_pipe`, 1→0 only on
+full drain in `service_pipe_tx_success` walking `current..=last`, per-slot
+completion identity already routed, `occupied_slots` already tracked) fully
+determine the fix shape. It is recorded in
+`xr819-firmware/tx-pipelining-design.md`: allow a second staged batch per pipe
+behind `experimental-pipelined-publish`, stage after `last`, extend the window
+and re-trigger GO, walk all outstanding slots on watchdog expiry, and audit
+(not change) the per-slot completion/retry/BA paths.
+
+The single blocking unknown is second-GO semantics on an active pipe
+(latched window vs extended window) — a vendor-decompilation read
+(`txp_fn_4155` at 0x101f4 and surrounding GO writes) first, then a hardware
+probe if static evidence is inconclusive. No implementation exists yet, and
+the retry/BA/rate subsystems stay frozen so the eventual A/B attributes only
+to pipelining.
+
+## Vendor scheduler read: one outstanding batch per pipe, like us
+
+`txp_scheduler_run` (annotated-main 0xaa5e) builds its candidate mask only
+from pipes with the +0xa3 byte clear, stages slots from the pipe cursor to the
+new last, marks +0xa3/+0xa4, reloads the watchdog (5), and GOes
+(`ring+0x14 = 1`) per staged pipe. `txp_pipe_tx_success` (0x9cdc) advances
+`current` past each completed slot and clears +0xa3/+0xa4 plus pipe state only
+on full drain (`current == last`, walking slots through `txp_fn_2441`).
+`txp_fn_4155` (0x101f4) walks *every* outstanding slot on watchdog expiry.
+Caveat: the three +0xa3 observations live in different table bases
+(DAT_0000ab0c/ab0b8/10520) with a shared 0x6c stride, so cross-function
+identity is structural, not address-proven.
+
+If that reading holds, vendor's 29.5 Mbit/s is a faster cycle and/or deeper
+batches — not multi-batch pipelining. Our own scaling already shows
+throughput = depth x cycle-rate at a fixed ~8 ms cycle (no-BA ~5, depth-4
+BA ~9). Consequence, recorded in `tx-pipelining-design.md`: depth-8 A/B
+first (in-tree, no contract risk), firmware-internal cycle timestamps second,
+multi-outstanding demoted to fallback. Our watchdog should still learn the
+4155 full-window walk regardless — current-slot-only retirement is weaker
+than vendor on any depth.
+
+## Depth-8 blocked on stack; fixed-cycle model confirmed from existing data
+
+A depth-8 candidate (base + list-first-depth-five/eight + depth-eight-ampdu,
+319 tests pass) fails the ARM stack gate: 6992/6912, 80 bytes over, while the
+depth-4 control is 6752/6912. Delta frames are all in the retry-planning path
+with arrays scaled by `MAX_EXPERIMENTAL_AMPDU_DEPTH` 4→8:
+`service_single_probe_runtime_inactive` 432→616,
+`decide_retry` 144→216, `depth_four_selective_plan_for` 152→232 (plus the
+fixed ~208 panic tail). Trimming 240B there means reworking by-value
+`RetainedAmpduBlockAck` moves, the `[u32; 8]` return/error paths and small
+array merges across inlined frames — multi-iteration surgery on the retry
+path for a discriminator run. Images archived (`/tmp/xr819-depth8-candidate.bin`
+`18f26262…`, `/tmp/xr819-depth4-control.bin` `8ef940a1…`, ELFs beside them);
+no depth-8 hardware run until the stack fits.
+
+The discriminator question (does throughput scale with depth at fixed cycle?)
+answers from existing BA-enabled lab reports without new hardware: baseline
+62114 heads / 230986 length (mean depth 3.72) delivering 5.84 Mbit/s
+(487 1500B-frames/s) implies 131 cycles/s ≈ 7.6 ms; the command-first
+candidate (60246/222682, depth 3.70, 5.69 Mbit/s = 474/s) implies 128/s ≈
+7.8 ms. Same cycle across a scheduling change, throughput tracking depth —
+the fixed-cost cycle model holds. Depth would buy throughput, but only after
+the stack trim; the bigger lever is the cycle itself.
+
+Next highest value is firmware-internal cycle timestamps (GO vs completion
+IRQ vs confirmation publish vs credit return, reusing the SVC2 AES-timer
+technique — no new MMIO) to find what fills the ~7 ms, then cut it. That
+doubles throughput at every depth including depth-4-today.
+
+## CYC3 itemizes the cycle: confirm->GO 3.5 ms dominates
+
+Cycle-probe build `68514f0b…` (324 tests, stack 6760/6912) hooks both GO
+triggers, per-pipe drain, and all three confirm publish sites behind
+`experimental-cycle-probe` (CYC3 schema; never combined with RXP1). Hoeve
+UDP-20M 60s, no-BA static driver: 5.36 Mbit/s, 47% queue-overflow loss.
+MIB snapshots bracket the phase via board `cw1200/counters`; decoder
+`/tmp/xr819-decode-cycle-probe.py`. Log `/tmp/xr819-hlh-cycle.log`.
+
+Means (vendor µs ticks, pipe 0 — the only active pipe):
+
+| Span | Mean | n | Meaning |
+| --- | ---: | ---: | --- |
+| GO -> drain | 1820 | 6976 | ~1 ms airtime (depth-4) + ~0.8 ms drain latency |
+| drain -> confirm (global) | 371 | 27391 | routing/encode/publish is healthy |
+| confirm -> GO | 3519 | 6976 | credit/admission/reservation — the target |
+
+6976 GOs / ~60 s = 116 batches/s ≈ 8.6 ms cycle; 27391 drains = 3.93
+members/GO. Host-side trace from the same run: driver handoff
+queue->SDIO-write 0.9 ms, but mac80211 queues in instantaneous bursts
+(inter-queue p50 0.01 ms) while firmware completes steadily — the 3.5 ms
+confirm->GO contains a host supply round trip (confirm read, queue wake,
+SDIO write) plus firmware staging, in unknown proportion.
+
+Surgery plan (no hardware-contract risk — single GO on idle pipe preserved):
+
+1. **HIF multi-dispatch**: `command::service_one` admits one request per
+   pass (~0.2 ms/frame, ~0.8 ms per 4-frame refill). Vendor reschedules
+   immediately while descriptors are ready; ours waits for the next pass.
+   Drain N ready requests per pass when backlogged.
+2. **Pro-active staging + immediate GO on idle**: reserve/stage the next
+   batch from already-arrived frames while the current batch flies, so GO
+   fires the same pass the pipe retires instead of ~17 passes later.
+3. **Deep retained backlog**: keep all 30 contexts filled so host supply
+   latency overlaps airtime instead of serializing into every cycle.
+
+A one-line MIB lesson for future probes: the board monitor resets counters
+after every per-second emit (deltas, not cumulative) — difference phase
+windows, and validate the schema magic before trusting any number (an early
+dry run decoded an idle phase correctly as all-zeros).
+
+## Multi-dispatch A/B interim: no throughput effect, per-phase CYC3 works
+
+`experimental-multi-dispatch` (up to 4 TX admissions per command-lane pass;
+sync semantics identical) images qualified: control `22827d6c…` (refactored
+single-shot) vs candidate `c652da52…`, both CYC3, stack ≤6768/6912. Hoeve,
+no-BA static driver, per-phase MIB snapshots (11 per run).
+
+multidispatch-a (candidate, raw log later clobbered by an accidental phase
+rerun — numbers preserved here): TX TCP 1.37 Mbit/s; UDP 5.07 (3.7%) /
+5.41 (41%) / 5.16 (41%) / 4.61 (43%) at 5/10/20/30M. Per-phase CYC3:
+UDP-TX go_drain ~1.8-2.2 ms, confirm_go 4.3-8.4 ms, drain_confirm ~0.29 ms,
+3.4-4.0 members/GO. Against control-a (TX TCP 1.29; UDP 5.14/5.45/5.49) the
+candidate is indistinguishable to slightly worse — draining more admissions
+per pass did not move throughput.
+
+Two methodology notes. First, RX-phase windows correctly show ~idle spans
+(single-digit GOs, multi-second confirm_go), confirming the full-run means
+are idle-polluted and only per-phase windows compare. Second, wrappers keep
+dying between phases with no record (third occurrence); phase logs are now
+the only durable state, so archive a phase log before any rerun touches its
+name — the rerun that produced this note clobbered the good
+multidispatch-a raw log (its numbers above survive in this ledger).
+
+## CYC4 pass partition: zero blocked passes, confirm->GO is host supply
+
+Cycle-probe build `efefbee2…` (CYC4 schema; 324 tests, stack 6760/6912) with
+the added pipe-0 end-of-pass partition. Hoeve UDP-20M 60 s, no-BA static
+driver: 5.09 Mbit/s, 47% queue-overflow loss (23509/49501) — control parity.
+Log `/tmp/xr819-hlh-cycle4.log`, MIB windows
+`/tmp/xr819-cycle4-mib-{before,after}.txt`, decoder
+`/tmp/xr819-decode-cycle4.py`, harness `/tmp/xr819-hlh-cycle4-run.sh`.
+
+Differenced means (vendor µs ticks, pipe 0 — the only active pipe):
+
+| Span | Mean | n | Meaning |
+| --- | ---: | ---: | --- |
+| GO -> first drain | 1974 | 6612 | first member's airtime + drain latency |
+| drain -> confirm (global) | 383 | 25996 | routing/encode/publish is healthy |
+| confirm -> GO | 3097 | 6612 | idle window before the next batch GOes |
+
+310310 loops over the 61 s phase = 5087 passes/s; 6612 GOs = 108 batches/s
+≈ 9.2 ms cycle; 25996 confirmations = 3.93 members/GO.
+
+Pass partition for pipe 0: busy 288253 (92.9%), **idle-blocked 0 (0.0%)**,
+idle-starved 22057 (7.1%). Busy is derived as `loops - starved - blocked`, so
+the split is exhaustive by construction.
+
+Over 310k passes and the whole run there was not one pass where pipe 0 was
+idle with admitted-but-unpublished work (a PasQueued candidate with no
+hardware owner, or a reservation waiting to trigger). Every idle pass was
+genuinely work-free. Together with multi-dispatch's null result, the 3.1 ms
+confirm->GO is host supply latency — confirm read, mac80211 queue wake, SDIO
+write — not firmware admission, reservation or publication mechanics. Pass
+counts are not wall-time shares (the idle path sleeps; ~2.8 ms per idle pass
+against ~0.14 ms busy), but the zero is a count, so it does not depend on
+that.
+
+Caveat recorded for the next refinement: the classifier only sees
+`host_tx_driver` state, so a request still sitting in the HIF input queue
+reads as starved. `HostTxState` is Owned/Reserved/Confirming; the two counted
+waiting states are the only admission-visible ones (mid-pass phases
+Submitted..PendingEligible do not survive a pass). The cheap closure is a
+transport-pending clause in the same pass hook — if it also reads zero, the
+starvation verdict is airtight. Multi-dispatch's null result already argues
+those frames are absent: admitting up to four requests per pass changed
+nothing, and frames already in the firmware would have been published within
+a pass or two of the pipe retiring, not 3.1 ms later.
+
+Consequence for the active plan: neither multi-dispatch (measured null) nor
+pro-active staging (nothing to stage) can remove the idle window, because the
+frames have not arrived. At a fixed host request-response latency the round
+trip is paid once per batch, so depth is the only lever that amortizes it —
+consistent with the depth-first priority, still blocked on the ARM stack gate.
+The remaining firmware-side alternative is to make the round trip overlap the
+airtime (host-side queue depth / earlier confirmation publication), not to
+re-order firmware publication.
+
+Build recipe (reproduced byte-exact, correcting the earlier note that the
+cycle probe was never combined with RXP1): the probe images were built with
+the standard board-diagnostic set
+`experimental-list-first-depth-four-ampdu,experimental-fast-loop,experimental-aggregate-rate-feedback,experimental-rx-path-diagnostics,experimental-cycle-probe`
+— RXP1 *is* present in both CYC3 and CYC4 images. It is harmless:
+`cycle_probe::populate` runs last in `encode_read_mib_data_response` and
+overwrites all 22 words, so the CYC4 schema wins. Rebuilding the working copy
+with that feature set and `tools/pack-sectioned-elf.py` yields exactly
+`efefbee21fbd42a4aa867e81b55b81463675f34fe380616d4d047a66e4f1c69f` (ELF
+`f9ace96f…`).

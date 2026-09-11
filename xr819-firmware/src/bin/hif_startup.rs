@@ -9,6 +9,7 @@ use xr819_firmware::command::{
     ENABLE_SINGLE_PROBE_EXPERIMENT, encode_debug_event, service_one as service_one_command,
 };
 use xr819_firmware::configuration;
+use xr819_firmware::cycle_probe;
 use xr819_firmware::hif::{HifQueues, HifRingState, SHARED_BUFFER_SIZE, Transport};
 use xr819_firmware::mac;
 use xr819_firmware::mac_domain::MacDomain;
@@ -150,6 +151,8 @@ fn publish_coalesced_host_tx_confirmations(firmware: &mut Firmware, host_request
         let Some(release) = (unsafe { firmware.host_tx_driver.finish_confirmation() }) else {
             return;
         };
+        #[cfg(feature = "experimental-cycle-probe")]
+        cycle_probe::note_confirm();
         if first_release.is_none() {
             first_release = Some(release);
         } else {
@@ -583,6 +586,8 @@ extern "C" fn rust_main() -> ! {
             if let Ok(length) = encoded {
                 firmware.pending_tx_confirmation = None;
                 firmware.transport.publish(length as u16);
+                #[cfg(feature = "experimental-cycle-probe")]
+                cycle_probe::note_confirm();
             }
         }
 
@@ -616,6 +621,8 @@ extern "C" fn rust_main() -> ! {
             if let Ok(length) = encoded
                 && let Some(release) = unsafe { firmware.host_tx_driver.finish_confirmation() }
             {
+                #[cfg(feature = "experimental-cycle-probe")]
+                cycle_probe::note_confirm();
                 unsafe {
                     firmware.transport.publish_request_in_place(
                         release,

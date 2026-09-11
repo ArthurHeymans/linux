@@ -231,6 +231,15 @@ pub fn observe_joined_rx_opportunity(
         diagnostics.host_transfers_max = diagnostics
             .host_transfers_max
             .max(ring.host_transfer_count());
+        #[cfg(feature = "experimental-service-probe")]
+        crate::stage_probe::observe_rx_pending(
+            pending_bytes,
+            host_request_waiting,
+            control_pending,
+            publication_available,
+            ring.host_transfer_count(),
+            pending_bytes.saturating_add(0x1000) >= FIFO_SIZE,
+        );
         if pending_bytes == 0 {
             return;
         }
@@ -1285,6 +1294,8 @@ unsafe fn poll_indication(
                     path_diagnostics.host_transfer_drops =
                         path_diagnostics.host_transfer_drops.wrapping_add(1);
                 }
+                #[cfg(feature = "experimental-service-probe")]
+                crate::stage_probe::note_rx_host_transfer_drop();
                 release(ring, token);
             }
             return None;
@@ -1305,6 +1316,8 @@ unsafe fn poll_indication(
             write_u32(message_address + 12, indication_flags);
             let published = ring.publish_host_transfer(MAX_HOST_TRANSFERS);
             debug_assert!(published);
+            #[cfg(feature = "experimental-service-probe")]
+            crate::stage_probe::note_rx_indication();
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.indications = diagnostics.indications.wrapping_add(1);
         }

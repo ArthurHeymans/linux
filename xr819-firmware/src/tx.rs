@@ -8946,6 +8946,8 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         );
     }
     mmio.write_u32(ring.go(), 1);
+    #[cfg(feature = "experimental-cycle-probe")]
+    crate::cycle_probe::note_go(pipe);
     #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
     unsafe {
         crate::hif::validate_tx_boundary(
@@ -9007,6 +9009,8 @@ fn finalize_staged_pipe<M: MacPipeMmio>(
     mmio.write_u8(record.control().get() as u32, pipe_flags);
     mmio.write_u8(record.watchdog().get() as u32, 5);
     mmio.write_u32(ring.go(), 1);
+    #[cfg(feature = "experimental-cycle-probe")]
+    crate::cycle_probe::note_go(pipe);
     true
 }
 

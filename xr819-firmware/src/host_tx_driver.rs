@@ -255,9 +255,17 @@ impl HostTxDriver {
         let Some(owners) = self.hardware_runtime_owners() else {
             crate::halt_always!();
         };
+        #[cfg(feature = "experimental-service-probe")]
+        crate::stage_probe::observe_pass(!owners.is_empty());
+        #[cfg(feature = "experimental-cycle-probe")]
+        crate::cycle_probe::observe_loop();
         if !owners.is_empty() {
             let mut completion = unsafe { tx::service_host_class0_runtime(events, 32) };
             while let Some(completed) = completion {
+                #[cfg(feature = "experimental-service-probe")]
+                crate::stage_probe::note_completion();
+                #[cfg(feature = "experimental-cycle-probe")]
+                crate::cycle_probe::note_drain(completed.pipe);
                 #[cfg(feature = "experimental-member-requeue")]
                 if tx::host_class0_is_requeue(completed) {
                     self.route_hardware_requeue(completed, mac_domain);
@@ -328,6 +336,42 @@ impl HostTxDriver {
         };
         if allow_hardware_publication {
             unsafe { self.publish_ready_batch(mac_domain, owners) };
+        }
+        #[cfg(feature = "experimental-cycle-probe")]
+        {
+            // End-of-pass pipe-0 stall flavor: hardware-owned, waiting work,
+            // or supply-starved. Reserved-but-untriggered batches count as
+            // waiting work alongside PasQueued-but-unowned candidates, so a
+            // deferred trigger reads as blocked, never starved.
+            let mut hardware_owned = false;
+            let mut work_present = false;
+            for state in self.states.iter().flatten() {
+                match state {
+                    HostTxState::Owned { retained, hardware, .. } => {
+                        if let Some(owner) = hardware.as_ref() {
+                            if owner.pipe == 0 {
+                                hardware_owned = true;
+                            }
+                        } else if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
+                            && unsafe {
+                                vendor_host_tx::scheduler_live_diagnostic(retained).pipe
+                            } == 0
+                        {
+                            work_present = true;
+                        }
+                    }
+                    HostTxState::Reserved { reservation, .. } => {
+                        if reservation.pipe() == 0 {
+                            work_present = true;
+                        }
+                    }
+                    _ => {}
+                }
+                if hardware_owned {
+                    break;
+                }
+            }
+            crate::cycle_probe::note_pipe0_pass(hardware_owned, work_present);
         }
         diagnostic
     }

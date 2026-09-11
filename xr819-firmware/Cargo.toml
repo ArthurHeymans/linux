@@ -77,6 +77,17 @@ experimental-fast-loop = []
 # Records joined RX FIFO pressure and publication blockers in counters MIB words
 # 11 through 19 without changing the normal receive path.
 experimental-rx-path-diagnostics = []
+# Temporary TX pipeline duty-cycle counters in counters MIB words 0 through 6.
+# No timers, no scheduling change; removed again once the measurement is read.
+experimental-service-probe = []
+# Temporary batch-cycle timing spans (GO/drain/confirm) in counters MIB words
+# 0 through 21. No timers of its own, no scheduling change; removed again
+# once the measurement is read. Never enabled together with service-probe.
+experimental-cycle-probe = []
+# Drain up to a full depth-4 batch of TX admissions per command-lane pass
+# instead of exactly one request. Sync-command semantics are unchanged: the
+# first sync command, failed admission, or empty queue ends the loop.
+experimental-multi-dispatch = []
 # Board-local discriminator: replace dynamic-IQ search output with the stable
 # channel-6 correction pair observed under vendor firmware.
 experimental-fixed-iq-correction = []

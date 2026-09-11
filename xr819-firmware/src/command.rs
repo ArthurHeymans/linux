@@ -6,7 +6,7 @@
 
 use crate::configuration;
 use crate::crypto;
-use crate::hif::{SHARED_BUFFER_SIZE, Transport};
+use crate::hif::{ReceivedRequest, SHARED_BUFFER_SIZE, Transport};
 use crate::host_tx_diagnostics;
 use crate::host_tx_driver::HostTxDriver;
 use crate::join;
@@ -163,6 +163,10 @@ fn encode_standard_read_mib(
         values[20] = diagnostics.auth_retry;
         values[21] = diagnostics.auth_last_signature;
     }
+    #[cfg(feature = "experimental-service-probe")]
+    crate::stage_probe::populate(&mut values);
+    #[cfg(feature = "experimental-cycle-probe")]
+    crate::cycle_probe::populate(&mut values);
     let mut data = [0_u8; 88];
     for (index, value) in values.into_iter().enumerate() {
         data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -207,6 +211,20 @@ fn retain_configuration(
 /// The caller must hold the unique cooperative owners for `events`,
 /// `mac_domain`, `transport`, and `host_tx_driver` and must not re-enter this
 /// lane before the call returns.
+/// Outcome of one dispatched request: whether the multi-dispatch loop may
+/// consume another TX request in the same pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SingleOutcome {
+    AdmittedTx,
+    Settled,
+}
+
+/// Maximum TX admissions per pass under multi-dispatch: one full depth-4
+/// batch. The first sync command, failed admission, or empty queue ends the
+/// loop, preserving single-shot semantics for everything but TX refill.
+#[cfg(feature = "experimental-multi-dispatch")]
+const MAX_TX_ADMIT_PER_PASS: u8 = 4;
+
 pub unsafe fn service_one(
     transport: &mut Transport,
     events: &mut tx::MacEventQueue,
@@ -218,9 +236,65 @@ pub unsafe fn service_one(
     if !transport.publication_available() {
         return;
     }
+    #[cfg(feature = "experimental-multi-dispatch")]
+    {
+        // Vendor `hif_rx_process()` reschedules itself while descriptors are
+        // ready instead of waiting for the next pass. Drain up to a full
+        // batch of TX admissions here; anything else settles the pass.
+        let mut admitted = 0_u8;
+        loop {
+            let Some(request) = transport.poll_request() else {
+                break;
+            };
+            let outcome = unsafe {
+                dispatch_single_request(
+                    transport,
+                    events,
+                    mac_domain,
+                    host_tx_driver,
+                    &mut *response_scratch,
+                    pending_join_complete,
+                    request,
+                )
+            };
+            if outcome == SingleOutcome::Settled {
+                break;
+            }
+            admitted += 1;
+            if admitted >= MAX_TX_ADMIT_PER_PASS {
+                break;
+            }
+        }
+        return;
+    }
     let Some(request) = transport.poll_request() else {
         return;
     };
+    unsafe {
+        dispatch_single_request(
+            transport,
+            events,
+            mac_domain,
+            host_tx_driver,
+            &mut *response_scratch,
+            pending_join_complete,
+            request,
+        );
+    }
+}
+
+/// One dispatched request: the former `service_one` body. Reports whether the
+/// multi-dispatch loop may consume another TX request in the same pass.
+#[allow(clippy::too_many_arguments)]
+unsafe fn dispatch_single_request(
+    transport: &mut Transport,
+    events: &mut tx::MacEventQueue,
+    mac_domain: &mut MacDomain,
+    host_tx_driver: &mut HostTxDriver,
+    response_scratch: &mut [u8; SHARED_BUFFER_SIZE],
+    pending_join_complete: &mut Option<u32>,
+    request: ReceivedRequest,
+) -> SingleOutcome {
 
     let output: &mut [u8] = &mut response_scratch[..];
     let mut publish_response = true;
@@ -230,6 +304,7 @@ pub unsafe fn service_one(
         host_tx_diagnostics::record_hif_event(1, request_id, request_if_id);
     }
     let mut request_buffer = Some(request.buffer);
+    let mut outcome = SingleOutcome::Settled;
     let request_payload = request_buffer
         .as_ref()
         .expect("request buffer is present")
@@ -396,6 +471,7 @@ pub unsafe fn service_one(
                     };
                     if admitted {
                         publish_response = false;
+                        outcome = SingleOutcome::AdmittedTx;
                         Ok(0)
                     } else {
                         unsafe {
@@ -459,4 +535,5 @@ pub unsafe fn service_one(
     if let Some(buffer) = request_buffer {
         transport.release_request(buffer.into_release());
     }
+    outcome
 }
