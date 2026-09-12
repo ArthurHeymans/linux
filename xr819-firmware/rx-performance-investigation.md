@@ -3130,3 +3130,31 @@ overwrites all 22 words, so the CYC4 schema wins. Rebuilding the working copy
 with that feature set and `tools/pack-sectioned-elf.py` yields exactly
 `efefbee21fbd42a4aa867e81b55b81463675f34fe380616d4d047a66e4f1c69f` (ELF
 `f9ace96f…`).
+
+## Depth-eight stack gate cleared by dropping retry-path array copies
+
+The depth-8 candidate had been parked at 6992/6912 on the ARM stack gate. The
+whole excess was in the retry-planning path, whose frames scale with
+`MAX_EXPERIMENTAL_AMPDU_DEPTH` 4 -> 8. The trim keeps the depth-sized member
+array in the retained BA observation instead of copying it around:
+
+- `depth_four_selective_plan_for` validates the walked chain against
+  `observation.members` one member at a time and returns only the plan and
+  reason mask (the returned `[u32; MAX]` was live in the two deepest frames);
+- `apply_depth_four_selective_retry` and `finish_depth_four_selective_actions`
+  take that array by reference, and `prepare_whole_ampdu_retry` returns a
+  member count rather than its context array;
+- the remaining indexed reads that could open a bounds-check panic edge on the
+  deepest frame use `get`/`iter().take()`, and
+  `rewrite_depth_four_member_table` takes a slice so the clearing call passes
+  the empty slice instead of a stack temporary.
+
+All of it is inside `experimental-depth-two/four-ampdu` functions, so the
+feature-free image keeps every symbol byte-identical (only panic line-number
+metadata in `.text` moves, which is the reviewed-manifest drift case).
+
+Measured `rust_main` call chains: depth-8 A/B candidate 6824/6912 (depth-4
+base 6712, cycle-probe build 6720, worst deeper combination 6864). Rebuilt
+images: control `6a42cb37…` (standard diagnostic base + list-first-depth-four)
+and candidate `de77947e…` (that base + list-first-depth-eight + depth-eight),
+so the Hoeve depth A/B is unblocked.
