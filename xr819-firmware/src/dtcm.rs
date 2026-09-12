@@ -2330,6 +2330,11 @@ pub(crate) const HOST_CONTEXT_ADJACENT_STATE: DtcmAddress = DtcmAddress::from_of
 
 const LOW_MAC_PAS_OFFSET: usize = core::mem::offset_of!(DtcmLayout, low_mac_pas);
 pub const LOW_MAC_PAS_SIZE: usize = core::mem::size_of::<LowMacPasFamily>();
+/// Absolute family base, exposed only to layout tests that pin
+/// instruction-verified offsets from it. Production code names the field it
+/// touches through the typed accessors instead of deriving from this base.
+#[cfg(test)]
+pub(crate) const LOW_MAC_PAS_FAMILY_BASE: DtcmAddress = DtcmAddress::from_offset(LOW_MAC_PAS_OFFSET);
 pub const PAS_VIEW_COUNT: usize = 3;
 pub const PAS_VIEW_STRIDE: usize = core::mem::size_of::<PasStrideLayout>();
 const PAS_VIEWS_OFFSET: usize =

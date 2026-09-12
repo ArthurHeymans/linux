@@ -253,7 +253,7 @@ pub(crate) mod tests {
     #[test]
     fn bank_addresses_match_the_instruction_verified_layout() {
         let entry = entry(1, 2).unwrap();
-        let base = 0x0400_3678 + 0x98;
+        let base = crate::dtcm::LOW_MAC_PAS_FAMILY_BASE.get() + 0x98;
         assert_eq!(entry.retry_count, base + 0x4ac + 4 * 2);
         assert_eq!(entry.window, base + 0x4bc + 4 * 2);
         assert_eq!(entry.cw_min, base + 0x4cc + 2 * 2);
