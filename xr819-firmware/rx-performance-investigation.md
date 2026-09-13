@@ -3570,3 +3570,49 @@ flight - overlaps that latency instead of amortising it through depth, which is
 the one lever that does not depend on batch shape. That is the next experiment:
 a two-pipe alternating publication A/B measuring throughput and the pipe
 distribution.
+
+## Dual-access-category test: a second pipe does not overlap the start latency
+
+The CYC11 result says the ~1.3 ms is paid per GO, and every earlier probe showed
+all traffic serialised on pipe 0 while the vendor scheduler can map access
+categories onto idle pipes. That is testable without touching the firmware: run
+two concurrent board->host flows with different TOS values so mac80211 routes
+them to different access categories, and count GOs per pipe in the probe
+(words 18..=21 now carry the pipe-0..3 GO counts).
+
+BE (`-S 0x00`) and VO (`-S 0xB8`) UDP flows, 20 Mbit/s each, 30 s, MCS5:
+
+| quantity | value |
+| --- | --- |
+| GOs per pipe 0..3 | **2825, 0, 0, 13835** |
+| pipe-0 batches | 2825 (members/batch 3.65) |
+| pipe-0 GO -> first drain | **10389 us** |
+| pipe-0 GO -> phase-2 dequeue | **9156 us** (was 1312 us single-flow) |
+| phase-2 -> first drain | 1233 us |
+| TX-start events | 44266, all with PHY state 5, command 2 never dispatched |
+| idle-starved passes | 37.4% |
+
+So the second access category really does put traffic on a **second pipe**
+(pipe 3), confirming the AC-to-pipe mapping is live and that our per-pipe
+ownership gate permits two pipes in flight. But the two flows do **not** overlap
+their start latencies: pipe 0's GO -> phase-2 rose from 1312 us to 9156 us, about
+seven times worse, while its own post-event handling stayed at 1233 us. That is
+the signature of a MAC start path that serialises across pipes rather than one
+that runs per pipe in parallel, and it argues against the multi-pipe lever for
+this bottleneck.
+
+Caveats recorded, because this run is suggestive rather than clean: the harness
+did not capture the two per-flow iperf summaries (the ssh tail printed empty
+lines), so the delivered split is unknown; the probe decomposes the batch
+timeline for pipe 0 only, so pipe 3's latency is unmeasured; and the two flows
+run at equal offered load with VO enjoying EDCA priority, so some of pipe 0's
+regression is ordinary voice-over-best-effort contention rather than proof of a
+shared start engine. A clean re-run should capture both flow summaries and
+extend the per-pipe decomposition to a second pipe; if the start latency is
+shared, a single-pipe depth strategy remains the only lever, and the vendor's
+29.5 Mbit/s would then need a different explanation than pipe parallelism.
+
+One process note for the ledger: an inline python summary in the run wrapper
+computed `after - before` with the operands swapped and printed negative deltas
+(4294964471 for 2825); the numbers above come from the decoder, which diffs
+correctly.

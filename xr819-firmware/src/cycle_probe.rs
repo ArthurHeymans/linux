@@ -60,7 +60,7 @@ struct Counters {
     txstart_firstdrain_sum: u32,
     txstart_firstdrain_count: u32,
     pipe0_idle_starved: u32,
-    pipe0_idle_blocked: u32,
+    go_per_pipe: [u32; 4],
     batch: BatchState,
 }
 
@@ -86,7 +86,7 @@ static COUNTERS: Shared = Shared(UnsafeCell::new(Counters {
     txstart_firstdrain_sum: 0,
     txstart_firstdrain_count: 0,
     pipe0_idle_starved: 0,
-    pipe0_idle_blocked: 0,
+    go_per_pipe: [0; 4],
     batch: BatchState {
         go_stamp: 0,
         phase2_stamp: 0,
@@ -129,7 +129,8 @@ pub fn note_pipe0_pass(hardware_owned: bool, work_present: bool) {
     }
     let counters = counters();
     if work_present {
-        counters.pipe0_idle_blocked = counters.pipe0_idle_blocked.wrapping_add(1);
+        // Blocked idle passes are not counted separately; the pipe-GO
+        // distribution below is what the multi-pipe experiment needs.
     } else {
         counters.pipe0_idle_starved = counters.pipe0_idle_starved.wrapping_add(1);
     }
@@ -138,10 +139,14 @@ pub fn note_pipe0_pass(hardware_owned: bool, work_present: bool) {
 /// A host batch GO triggered on `pipe` at `stamp`. Test-visible core.
 #[inline(always)]
 pub fn note_go_at(pipe: u8, stamp: u32) {
+    let counters = counters();
+    if pipe < 4 {
+        counters.go_per_pipe[usize::from(pipe)] =
+            counters.go_per_pipe[usize::from(pipe)].wrapping_add(1);
+    }
     if pipe != 0 {
         return;
     }
-    let counters = counters();
     if counters.batch.go_valid {
         counters.batches = counters.batches.wrapping_add(1);
     }
@@ -287,7 +292,10 @@ pub fn snapshot() -> [u32; 22] {
     values[15] = counters.txstart_firstdrain_sum;
     values[16] = counters.txstart_firstdrain_count;
     values[17] = counters.pipe0_idle_starved;
-    values[18] = counters.pipe0_idle_blocked;
+    values[18] = counters.go_per_pipe[0];
+    values[19] = counters.go_per_pipe[1];
+    values[20] = counters.go_per_pipe[2];
+    values[21] = counters.go_per_pipe[3];
     values
 }
 
