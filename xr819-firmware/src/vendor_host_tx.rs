@@ -260,6 +260,25 @@ pub fn classify_header(
         return Err(HeaderClassificationError::Truncated);
     }
     let frame_control = u16::from_le_bytes([frame[0], frame[1]]);
+    // A BlockAckReq is a 20-octet control frame, not a 24-octet data frame, so it
+    // fails the ordinary shape above. mac80211 sends one through this path
+    // whenever an aggregate member has to be abandoned; it carries no payload,
+    // no QoS control, and no sequence to assign, because its own start sequence
+    // is what moves the peer's reorder window. It must reach the air unaltered.
+    if frame_control & 0x00fc == 0x0084 {
+        if frame.len() < 20 {
+            return Err(HeaderClassificationError::Truncated);
+        }
+        return Ok(HeaderClassification {
+            frame_control,
+            header_length: 20,
+            payload_length: 0,
+            qos_control: 0,
+            tid: frame[16] & 0x0f,
+            flags: initial_flags | 0x1000,
+            assign_sequence: false,
+        });
+    }
     let four_address = frame_control & 0x0300 == 0x0300;
     let base_header = if four_address { 30 } else { 24 };
     if frame.len() < base_header {
@@ -3387,6 +3406,31 @@ mod tests {
                 tid: 5,
                 flags: 0x20f0_1201,
                 assign_sequence: true,
+            })
+        );
+    }
+
+    #[test]
+    fn header_classifier_accepts_a_compressed_block_ack_request() {
+        // 20-octet control frame: FC, duration, RA, TA, BAR control (compressed
+        // bitmap, TID 3), start sequence. mac80211 builds this shape and the
+        // ordinary-data path would reject it as truncated.
+        let mut frame = [0_u8; 20];
+        frame[..2].copy_from_slice(&0x0084_u16.to_le_bytes());
+        frame[4] = 0x02;
+        frame[16..18].copy_from_slice(&0x1003_u16.to_le_bytes());
+        frame[18..20].copy_from_slice(&0x0120_u16.to_le_bytes());
+
+        assert_eq!(
+            classify_header(&frame, 0),
+            Ok(HeaderClassification {
+                frame_control: 0x0084,
+                header_length: 20,
+                payload_length: 0,
+                qos_control: 0,
+                tid: 3,
+                flags: 0x1000,
+                assign_sequence: false,
             })
         );
     }

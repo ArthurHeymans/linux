@@ -3938,3 +3938,37 @@ QoS/sequence assignment, and leave the frame unencrypted. That is the only thing
 standing between the driver change and a real BAR on air, and until it lands the
 driver change must not be deployed on its own, because refusing the BAR wedges
 the link rather than degrading it.
+
+## BlockAckReqs on air, and the 64-run mode collapses
+
+Three changes were needed before a single BlockAckReq could reach the air, and
+each one was found by its own failure.
+
+The driver had to ask mac80211 for the recovery. `cw1200_tx_confirm_cb` covers the
+frames the firmware confirms, but the abandoned members of our aggregates are not
+confirmed at all - they are reaped by the queue TTL and reported through
+`cw1200_skb_dtor`, which set no recovery flag either. Setting
+`IEEE80211_TX_STAT_AMPDU_NO_BACK` in `cw1200_skb_dtor` for QoS data is what finally
+produced BlockAckReq frames: twelve logged transmissions, at the basic rate
+(`rate=0x00`), queue 2, `hdrlen=16`, and `tid=8` because a control frame carries no
+TID for the driver's classifier.
+
+The firmware had to stop refusing them. `vendor_host_tx::classify_header` now
+accepts the 20-octet control shape (type 1, subtype 8) with a 20-octet header, no
+payload, no QoS control, no sequence assignment, and the TID taken from the BAR
+control field, which is what keeps it on the same EDCA queue as the data it is
+repairing. Before that change the same driver wedged the link completely: the
+refused request never completed, so the host's credit never returned.
+
+With both in place the loss profile changed shape rather than size. The missing
+runs collapsed from 140 runs of exactly 64 down to three, and the population became
+singles and pairs (164 singles and 96 pairs of 353 runs). That is what releasing the
+peer's window looks like: the hole now costs one datagram instead of sixty-four.
+
+Throughput collapsed at the same time - the sender managed 5,607 datagrams in its
+thirty seconds against the usual 31,000 - so the loss percentage stayed near 50%.
+The link is no longer losing whole windows, but it is no longer carrying load
+either, and separating those two effects is the next measurement. The candidates
+are a BAR retry storm from mac80211 (a failed BAR is stored and re-sent when the
+next unicast on the TID succeeds), the discarded-frame reporting now stopping the
+TID queue, and the 44-octet skb the driver logs for a 20-octet frame.
