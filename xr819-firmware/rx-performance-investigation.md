@@ -3863,3 +3863,34 @@ to send a BAR when a member is given up (moving the AP's head immediately) or to
 fence publication so the sender cannot advance to `head+64` in the first place,
 and the vendor's own choice between those is the next thing to establish from a
 capture rather than from our decompilation.
+
+## The matched capture: the vendor never runs a TX BA session
+
+The same harness, module, channel and sequence flow were run against the vendor
+firmware with the monitor attached, so the two can be put side by side.
+
+| | TX BA session | on air | loss | missing-run profile |
+| --- | --- | --- | --- | --- |
+| vendor | `action=2` then `action=3`, five times, `buf_size=0`, **never** `action=6` | unaggregated single frames, 44,360 per-frame ACKs, 41 BlockAcks | 0.43% | 97 of 98 runs are **singles** |
+| ours | `action=0`, `action=2`, **`action=6` OPERATIONAL**, `buf_size=64` | 4-member A-MPDUs, 10,881 BlockAcks | 25.4% | 69 runs of exactly 64 |
+
+Two conclusions follow, and the first retracts the BAR hypothesis.
+
+The vendor does not send BlockAckReq either - its capture contains **zero**
+subtype-8 frames, exactly like ours. It does not need to, because it never reaches
+`IEEE80211_AMPDU_TX_OPERATIONAL`: mac80211 starts a TX BA session and stops it
+again every time, so the AP never holds a reorder window for our traffic and a
+lost frame costs one datagram rather than a window. Copying a vendor BAR behaviour
+is therefore impossible, because there is none to copy.
+
+What the comparison does show is that the defect is **amplification, not loss
+rate**. The window tracer counted 211 slot mismatches across its trace while we
+sent tens of thousands of datagrams - on the order of 0.2-0.7% of frames are
+abandoned, which is the same order as the vendor's whole 0.43% loss figure. Our
+air and retry path is roughly as good as the vendor's; what differs is that each
+abandoned frame is multiplied by 64 because we keep a BA session open, leave the
+hole, and run a full window past it. Recovering the hole - by announcing it with a
+BAR, or by fencing admission so the sender cannot reach `head+64` - should take
+our loss from 25% to roughly the vendor's figure without touching the RF path at
+all. That is now the single highest-value change available, and it is a firmware
+behaviour we owe the AP rather than a vendor behaviour we can copy.
