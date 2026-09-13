@@ -12,6 +12,20 @@ Zero over SDIO, with a cw1200-derived host driver. Vendor firmware reaches
 ~29.5 Mbit/s in the board->host direction; we measure 8.5-12.6 Mbit/s at fixed
 MCS5 with depth-4 aggregates. The goal is to find the difference.
 
+**Important qualification added 2026-09-13, after a review prompted the check.**
+The 29.5 figure is *not* a matched board-TX comparison. It comes from an
+offered-load sweep with **vendor stock firmware and stock driver at unrestricted
+rate** (`rx-performance-investigation.md`, board TX uplink table: 29.50 Mbit/s at
+0% loss, rising monotonically with offered load to the 30M offer, i.e. the
+channel was never the limit in that configuration). The *matched* control - the
+same host module, the same AP, fixed MCS5 - puts vendor board TX at **11.8 TCP /
+12.1 UDP Mbit/s**, which is what our firmware delivers. The ledger's own summary
+of that control says it "closes the host-module/rate-mask gap". So at comparable
+conditions there is rough parity, and the remaining questions are what the stock
+configuration unlocks (rate selection, host driver, or both) and why our loss at
+fixed offered load is 12-42% against the vendor's 1.2% at the same delivered
+rate.
+
 ## Rig and method
 
 - **AP**: self-hosted on the workstation's Intel AX200 (`nmcli connection up
@@ -56,6 +70,7 @@ Decoder `/tmp/xr819-decode-cyc11.py`.
 | Idle gaps are irrelevant | depth-4 GO->first-drain 2107 us after 1 s idle against 2227 us continuous |
 | Watchdog is irrelevant | reload 2/5/10 gives 2114/2134/2100 us |
 | Duplicate command 1 is not a delta | the vendor arms it once per scheduler pass, not once per batch |
+| **Vendor parity at matched conditions** | vendor board TX 11.8 TCP / 12.1 UDP Mbit/s at fixed MCS5 with the open host module, against our 8.5-12.6; the 29.5 figure needs the stock driver and unrestricted rate |
 
 Vendor facts from the static comparison (`vendor-tx-start-path.md`): command 1
 publishes PHY state 3 (or preserves 5) and restarts a timer with no PHY MMIO;
@@ -83,10 +98,17 @@ duplicate command 1 is a vendor delta".
    gain 1.3-1.5x; the A/B was flat. Either the model does not extend past depth 4
    (mixed-rate members or more retries raise the slope) or the A/B was
    supply-masked.
-3. **How vendor firmware reaches 29.5 Mbit/s.** With the same post-GO PHY
-   ordering and the same command-2 skip, the vendor must either pay a smaller
-   per-GO latency or keep more work in flight, and no evidence for either has
-   been found yet.
+3. **Which factor unlocks the 29.5 Mbit/s configuration.** The vendor reaches
+   29.5 only with its stock driver and unrestricted rate, and reaches ~12 under
+   the matched fixed-MCS5 conditions; so the lever is either automatic rate
+   selection (MCS7 and/or 40 MHz, i.e. a rate-policy question) or something in
+   the stock host driver path. Reproducing the 29.5 configuration factor by
+   factor - vendor firmware with the stock driver, then our firmware with the
+   rate mask lifted - is now the highest-value work, because it locates the real
+   difference instead of optimising a MAC latency that both firmwares pay.
+4. **Our loss at fixed offered load** (12-42% against the vendor's 1.2% at the
+   same delivered rate) is unexplained and may be the same phenomenon as the
+   saturation point seen from the other side.
 
 ## Method notes and pitfalls hit
 
