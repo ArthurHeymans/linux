@@ -5678,6 +5678,8 @@ pub unsafe fn service_single_probe_runtime_inactive(
     let pending = unsafe { read_u32(INTERRUPT_PENDING) };
     let readiness = unsafe { read_u32(MAC_EVENT_READINESS as usize) };
     let events = if mac_service_pending(pending, readiness) {
+        #[cfg(feature = "experimental-cycle-probe")]
+        crate::cycle_probe::note_mac_service();
         unsafe {
             trace_tx_value(0x14, pending);
             trace_tx_stage(TX_TRACE_FIQ);

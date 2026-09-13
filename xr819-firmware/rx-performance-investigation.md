@@ -3260,3 +3260,36 @@ Next: attribute the fixed GO -> first-completion latency. The cheapest
 discriminator is to count cooperative passes and MAC-event services between a GO
 and its first drain: many passes with no completion visible means the MAC
 signals the batch late, few passes means the firmware is not being scheduled.
+
+## The GO -> first-completion latency is MAC-side, not firmware scheduling
+
+CYC5 now also counts, inside each GO -> first-drain window, the cooperative
+passes, the MAC event-FIFO services, and (new) how many passes elapsed at the
+first drain since the last MAC event service. Same depth-4 probe, same rig,
+30 s TCP board-TX per point, join retried up to three times.
+
+| MCS | rate | passes in window | per pass | MAC services/batch window | passes since last MAC service at the first drain | GO -> first drain |
+| --- | --- | --- | --- | --- | --- | --- |
+| 5 | 52.0 | 11.03 | 239 us | 3.2 | **0.00** (n=9620) | 2633 us |
+| 0 | 6.5 | 52.18 | 190 us | 4.2 | **0.00** (n=2943) | 9926 us |
+| 7 | 65.0 | 10.11 | 229 us | 3.3 | **0.00** (n=4338) | 2315 us |
+
+The firmware is not starved and does not sit on a visible completion: it runs
+10-52 passes across the window (190-239 us each), MAC events are serviced
+throughout, and the first drain lands in the *same pass* as an event service for
+every batch measured (mean 0.00, not a rounded near-zero). So the completion is
+being delivered by a MAC event and drained immediately; the fixed ~1.7-2.2 ms
+residual sits upstream of the firmware, between the GO trigger and the MAC
+raising that event. With airtime, channel access and MAC aggregation machinery
+all inside that span, the next discriminators are (a) a non-aggregate build at
+the same rate, which separates aggregate-completion machinery from a per-GO
+fixed cost, and (b) varying the per-pipe watchdog value the firmware writes at
+GO, which moves if the completion becomes visible only on a MAC poll tick.
+
+Also corrected here: the board's join path flakes about one run in three on
+*any* image (`wpa_state=ASSOCIATED` without the four-way handshake). The same
+untrimmed probe image failed twice in three attempts on one point and twice in
+three on another in this session, so the 2-of-3 association failures that the
+trimmed depth-8 image showed earlier were not evidence against that trim; the
+trim was reverted for having no benefit, and that reasoning stands on its own.
+The sweep harness now retries each point up to three times.

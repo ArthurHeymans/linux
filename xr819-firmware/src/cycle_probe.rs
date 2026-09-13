@@ -26,8 +26,11 @@
 //! 4 members, 5 intra-batch drain-gap sum, 6 its count, 7 GO->first-drain sum,
 //! 8 last-drain->confirm sum, 9 its count, 10 confirm->admit sum, 11 its count,
 //! 12 last-admit->GO sum, 13 its count, 14 other-pipe events, 15 pipe-0 idle
-//! starved passes, 16 pipe-0 idle-blocked passes, 17..=21 reserved. This schema
-//! supersedes CYC4 words; the features are never enabled in the same build. No
+//! starved passes, 16 pipe-0 idle-blocked passes, 17 cooperative passes between
+//! a GO and its first drain, 18 that count, 19 MAC event services in the same
+//! window, 20 passes elapsed at the first drain since the last MAC event
+//! service, 21 that count. This schema supersedes CYC4 words; the features are
+//! never enabled in the same build. No
 //! timers of its own: the existing vendor microsecond timer is the only clock,
 //! and there is no scheduling, ownership or lifecycle change. All words are
 //! `u32` and wrap modulo 2^32.
@@ -48,6 +51,10 @@ struct BatchState {
     drain_valid: bool,
     admit_valid: bool,
     awaiting_admit: bool,
+    first_drain_seen: bool,
+    passes_pending: u32,
+    mac_services_pending: u32,
+    passes_since_mac: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -68,6 +75,11 @@ struct Counters {
     other_pipe_events: u32,
     pipe0_idle_starved: u32,
     pipe0_idle_blocked: u32,
+    passes_to_first_sum: u32,
+    passes_to_first_count: u32,
+    mac_services_to_first_sum: u32,
+    passes_since_mac_at_first_sum: u32,
+    passes_since_mac_at_first_count: u32,
     batch: BatchState,
 }
 
@@ -93,6 +105,11 @@ static COUNTERS: Shared = Shared(UnsafeCell::new(Counters {
     other_pipe_events: 0,
     pipe0_idle_starved: 0,
     pipe0_idle_blocked: 0,
+    passes_to_first_sum: 0,
+    passes_to_first_count: 0,
+    mac_services_to_first_sum: 0,
+    passes_since_mac_at_first_sum: 0,
+    passes_since_mac_at_first_count: 0,
     batch: BatchState {
         go_stamp: 0,
         last_drain_stamp: 0,
@@ -102,6 +119,10 @@ static COUNTERS: Shared = Shared(UnsafeCell::new(Counters {
         drain_valid: false,
         admit_valid: false,
         awaiting_admit: false,
+        first_drain_seen: false,
+        passes_pending: 0,
+        mac_services_pending: 0,
+        passes_since_mac: 0,
     },
 }));
 
@@ -125,7 +146,28 @@ fn now() -> u32 {
 /// One cooperative service pass.
 #[inline(always)]
 pub fn observe_loop() {
-    counters().loops = counters().loops.wrapping_add(1);
+    let counters = counters();
+    counters.loops = counters.loops.wrapping_add(1);
+    // Passes between a GO and its first drain tell scheduling apart from a late
+    // hardware completion: many passes with no completion visible means the MAC
+    // is signaling late, few passes means the firmware is not being scheduled.
+    if counters.batch.go_valid && !counters.batch.first_drain_seen {
+        counters.batch.passes_pending = counters.batch.passes_pending.wrapping_add(1);
+        counters.batch.passes_since_mac = counters.batch.passes_since_mac.wrapping_add(1);
+    }
+}
+
+/// One MAC event-FIFO service admission. Test-visible core.
+#[inline(always)]
+pub fn note_mac_service() {
+    let counters = counters();
+    if counters.batch.go_valid && !counters.batch.first_drain_seen {
+        counters.batch.mac_services_pending = counters.batch.mac_services_pending.wrapping_add(1);
+        // A drain in the same pass as an event service reads as 0 here, which is
+        // the signature of an event-driven completion rather than a poll that
+        // ignored an already-visible one.
+        counters.batch.passes_since_mac = 0;
+    }
 }
 
 /// A host batch GO triggered on `pipe` at `stamp`. Test-visible core.
@@ -157,6 +199,10 @@ pub fn note_go_at(pipe: u8, stamp: u32) {
     counters.batch.go_valid = true;
     counters.batch.drain_valid = false;
     counters.batch.admit_valid = false;
+    counters.batch.first_drain_seen = false;
+    counters.batch.passes_pending = 0;
+    counters.batch.mac_services_pending = 0;
+    counters.batch.passes_since_mac = 0;
 }
 
 /// A hardware completion drained on `pipe` at `stamp`. Test-visible core.
@@ -180,6 +226,20 @@ pub fn note_drain_at(pipe: u8, stamp: u32) {
         counters.go_firstdrain_sum = counters
             .go_firstdrain_sum
             .wrapping_add(stamp.wrapping_sub(counters.batch.go_stamp));
+        // Close the scheduling window measured since this batch's GO.
+        counters.passes_to_first_sum = counters
+            .passes_to_first_sum
+            .wrapping_add(counters.batch.passes_pending);
+        counters.passes_to_first_count = counters.passes_to_first_count.wrapping_add(1);
+        counters.mac_services_to_first_sum = counters
+            .mac_services_to_first_sum
+            .wrapping_add(counters.batch.mac_services_pending);
+        counters.passes_since_mac_at_first_sum = counters
+            .passes_since_mac_at_first_sum
+            .wrapping_add(counters.batch.passes_since_mac);
+        counters.passes_since_mac_at_first_count =
+            counters.passes_since_mac_at_first_count.wrapping_add(1);
+        counters.batch.first_drain_seen = true;
     }
     counters.batch.last_drain_stamp = stamp;
     counters.batch.drain_valid = true;
@@ -275,6 +335,11 @@ pub fn snapshot() -> [u32; 22] {
     values[14] = counters.other_pipe_events;
     values[15] = counters.pipe0_idle_starved;
     values[16] = counters.pipe0_idle_blocked;
+    values[17] = counters.passes_to_first_sum;
+    values[18] = counters.passes_to_first_count;
+    values[19] = counters.mac_services_to_first_sum;
+    values[20] = counters.passes_since_mac_at_first_sum;
+    values[21] = counters.passes_since_mac_at_first_count;
     values
 }
 
@@ -306,6 +371,11 @@ mod tests {
                 other_pipe_events: 0,
                 pipe0_idle_starved: 0,
                 pipe0_idle_blocked: 0,
+                passes_to_first_sum: 0,
+                passes_to_first_count: 0,
+                mac_services_to_first_sum: 0,
+                passes_since_mac_at_first_sum: 0,
+                passes_since_mac_at_first_count: 0,
                 batch: BatchState {
                     go_stamp: 0,
                     last_drain_stamp: 0,
@@ -315,6 +385,10 @@ mod tests {
                     drain_valid: false,
                     admit_valid: false,
                     awaiting_admit: false,
+                    first_drain_seen: false,
+                    passes_pending: 0,
+                    mac_services_pending: 0,
+                    passes_since_mac: 0,
                 },
             };
         }
@@ -411,6 +485,58 @@ mod tests {
         let values = snapshot();
         assert_eq!(values[3], 601); // GO -> GO across the wrap
         assert_eq!(values[7], 301); // GO -> first drain across the wrap
+    }
+
+    #[test]
+    fn passes_and_mac_services_are_attributed_to_the_first_drain() {
+        reset();
+        note_go_at(0, 1_000);
+        observe_loop();
+        observe_loop();
+        note_mac_service();
+        observe_loop();
+        note_drain_at(0, 2_000);
+        // After the first drain the window is closed for this batch.
+        observe_loop();
+        note_drain_at(0, 2_100);
+        note_go_at(0, 3_000);
+        let values = snapshot();
+        assert_eq!(values[17], 3); // passes before the first drain
+        assert_eq!(values[18], 1);
+        assert_eq!(values[19], 1); // one MAC service inside the window
+        assert_eq!(values[20], 1); // one pass elapsed since that service
+        assert_eq!(values[21], 1);
+    }
+
+    #[test]
+    fn drain_in_the_same_pass_as_a_mac_service_reads_as_zero() {
+        reset();
+        note_go_at(0, 100);
+        observe_loop();
+        observe_loop();
+        note_mac_service();
+        note_drain_at(0, 300);
+        let values = snapshot();
+        assert_eq!(values[17], 2);
+        assert_eq!(values[19], 1);
+        assert_eq!(values[20], 0);
+    }
+
+    #[test]
+    fn scheduling_window_resets_at_each_go() {
+        reset();
+        note_go_at(0, 100);
+        observe_loop();
+        note_drain_at(0, 200);
+        note_go_at(0, 300);
+        observe_loop();
+        observe_loop();
+        note_drain_at(0, 400);
+        let values = snapshot();
+        assert_eq!(values[17], 3); // 1 from the first batch, 2 from the second
+        assert_eq!(values[18], 2);
+        assert_eq!(values[20], 3); // no MAC service in either window
+        assert_eq!(values[21], 2);
     }
 
     #[test]
