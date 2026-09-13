@@ -472,6 +472,8 @@ unsafe fn dispatch_single_request(
                     if admitted {
                         publish_response = false;
                         outcome = SingleOutcome::AdmittedTx;
+                        #[cfg(feature = "experimental-cycle-probe")]
+                        crate::cycle_probe::note_admit();
                         Ok(0)
                     } else {
                         unsafe {

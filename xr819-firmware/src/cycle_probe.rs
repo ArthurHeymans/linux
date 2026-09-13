@@ -1,91 +1,108 @@
-//! Temporary batch-cycle timing probe (counters MIB 0x100c, CYC4 schema).
+//! Temporary per-batch cycle decomposition probe (counters MIB 0x100c, CYC5).
 //!
-//! Splits the ~8 ms publish cycle into three spans so cycle surgery can target
-//! the dominant hop instead of guessing:
+//! Splits the publish cycle at every boundary the firmware can see, so the
+//! per-batch cost can be attributed instead of inferred from throughput:
 //!
-//! * GO -> drain per pipe: airtime plus completion-drain latency;
-//! * drain -> confirm, global: completion routing, encoding and HIF publish;
-//! * confirm -> GO per pipe: credit return, admission and reservation.
+//! * GO -> first drain (chip airtime plus completion latency for the head);
+//! * consecutive drains inside one batch (the per-member inter-drain gap: the
+//!   discriminator between airtime and per-member dead time);
+//! * last drain -> confirmation (routing, encode, HIF publish);
+//! * confirmation -> first admission (host round trip: confirm read, driver
+//!   wake, SDIO write, command-lane poll);
+//! * last admission -> GO (firmware reservation and publication).
 //!
-//! Words 20..=21 partition every pass for pipe 0 (the only pipe our traffic
-//! uses; multi-pipe generalization is a follow-up): idle with no waiting
-//! work (supply-starved) vs idle with waiting work (mechanics-blocked). Busy
-//! passes are `loops - starved - blocked`. A pass counts blocked when pipe 0
-//! has PasQueued-but-unowned candidates or Reserved-but-untriggered batches
-//! while no hardware owner exists; multi-dispatch's null result makes this
-//! partition, not finer spans, the next discriminator.
+//! Cycle totals are accumulated as GO -> next GO so `cycle` can be regressed on
+//! members per batch directly. Pipe 0 carries all measured traffic; other
+//! pipes only increment one witness word so an unexpected second pipe cannot
+//! hide inside the pipe-0 means.
 //!
-//! Under the single-owner gate each pipe cycles GO -> drain -> confirm -> GO
-//! in order; a drain with no preceding GO (e.g. a management publication,
-//! which is not instrumented) only refreshes the drain stamp without opening
-//! a GO -> drain span. Sums and counts are exported so means survive sampling
-//! anywhere in the phase; timer wrap is handled by `wrapping_sub`. All words
-//! are `u32` and wrap modulo 2^32.
+//! The confirm -> admit span is armed by each confirmation and closed by the
+//! next admission. It measures the host response only when the host is not
+//! already ahead of the firmware; when the host has pipelined more frames the
+//! same batch closes the span immediately, which reads as a fast round trip and
+//! is indistinguishable here from a genuinely fast host.
 //!
-//! MIB words (CYC4 `0x43594334`): 0 marker, 1 cooperative loops, 2..=5
-//! GO->drain sums per pipe, 6..=9 their counts, 10..=13 confirm->GO sums,
-//! 14..=17 their counts, 18 drain->confirm sum, 19 its count, 20 pipe-0
-//! idle-starved passes, 21 pipe-0 idle-blocked passes. This schema supersedes
-//! RXP1/service-probe and CYC3 words; the features are never enabled in the
-//! same build. No timers of its own: the existing vendor microsecond timer
-//! is the only clock, and there is no scheduling, ownership or lifecycle
-//! change.
+//! MIB words (CYC5 `0x43594335`): 0 marker, 1 loops, 2 batches, 3 GO->GO sum,
+//! 4 members, 5 intra-batch drain-gap sum, 6 its count, 7 GO->first-drain sum,
+//! 8 last-drain->confirm sum, 9 its count, 10 confirm->admit sum, 11 its count,
+//! 12 last-admit->GO sum, 13 its count, 14 other-pipe events, 15 pipe-0 idle
+//! starved passes, 16 pipe-0 idle-blocked passes, 17..=21 reserved. This schema
+//! supersedes CYC4 words; the features are never enabled in the same build. No
+//! timers of its own: the existing vendor microsecond timer is the only clock,
+//! and there is no scheduling, ownership or lifecycle change. All words are
+//! `u32` and wrap modulo 2^32.
 
 use core::cell::UnsafeCell;
 
 /// Counters MIB schema marker, word 0.
-pub const MAGIC: u32 = 0x4359_4334;
+pub const MAGIC: u32 = 0x4359_4335;
 
-const PIPES: usize = 4;
-
+/// Per-batch latch state; never exported.
 #[derive(Clone, Copy, Default)]
-struct PipeState {
+struct BatchState {
     go_stamp: u32,
-    drain_stamp: u32,
-    go_pending: bool,
-    go_drain_sum: u32,
-    go_drain_count: u32,
-    confirm_go_sum: u32,
-    confirm_go_count: u32,
+    last_drain_stamp: u32,
+    last_admit_stamp: u32,
+    awaiting_admit_stamp: u32,
+    go_valid: bool,
+    drain_valid: bool,
+    admit_valid: bool,
+    awaiting_admit: bool,
 }
 
 #[derive(Clone, Copy, Default)]
 struct Counters {
     loops: u32,
-    pipes: [PipeState; PIPES],
-    last_drain_stamp: u32,
-    last_drain_valid: bool,
-    last_confirm_stamp: u32,
-    last_confirm_valid: bool,
+    batches: u32,
+    cycle_sum: u32,
+    members: u32,
+    interdrain_sum: u32,
+    interdrain_count: u32,
+    go_firstdrain_sum: u32,
     drain_confirm_sum: u32,
     drain_confirm_count: u32,
+    confirm_admit_sum: u32,
+    confirm_admit_count: u32,
+    admit_go_sum: u32,
+    admit_go_count: u32,
+    other_pipe_events: u32,
     pipe0_idle_starved: u32,
     pipe0_idle_blocked: u32,
+    batch: BatchState,
 }
 
 struct Shared(UnsafeCell<Counters>);
 // SAFETY: only the single cooperative foreground thread touches these counters;
-// GO, drain and confirmation hooks all run in that context, never in an IRQ.
+// GO, drain, admission and confirmation hooks all run in that context, never in
+// an IRQ.
 unsafe impl Sync for Shared {}
 static COUNTERS: Shared = Shared(UnsafeCell::new(Counters {
     loops: 0,
-    pipes: [PipeState {
-        go_stamp: 0,
-        drain_stamp: 0,
-        go_pending: false,
-        go_drain_sum: 0,
-        go_drain_count: 0,
-        confirm_go_sum: 0,
-        confirm_go_count: 0,
-    }; PIPES],
-    last_drain_stamp: 0,
-    last_drain_valid: false,
-    last_confirm_stamp: 0,
-    last_confirm_valid: false,
+    batches: 0,
+    cycle_sum: 0,
+    members: 0,
+    interdrain_sum: 0,
+    interdrain_count: 0,
+    go_firstdrain_sum: 0,
     drain_confirm_sum: 0,
     drain_confirm_count: 0,
+    confirm_admit_sum: 0,
+    confirm_admit_count: 0,
+    admit_go_sum: 0,
+    admit_go_count: 0,
+    other_pipe_events: 0,
     pipe0_idle_starved: 0,
     pipe0_idle_blocked: 0,
+    batch: BatchState {
+        go_stamp: 0,
+        last_drain_stamp: 0,
+        last_admit_stamp: 0,
+        awaiting_admit_stamp: 0,
+        go_valid: false,
+        drain_valid: false,
+        admit_valid: false,
+        awaiting_admit: false,
+    },
 }));
 
 #[inline(always)]
@@ -114,58 +131,87 @@ pub fn observe_loop() {
 /// A host batch GO triggered on `pipe` at `stamp`. Test-visible core.
 #[inline(always)]
 pub fn note_go_at(pipe: u8, stamp: u32) {
-    if pipe as usize >= PIPES {
+    if pipe != 0 {
+        let counters = counters();
+        counters.other_pipe_events = counters.other_pipe_events.wrapping_add(1);
         return;
     }
     let counters = counters();
-    let pipe_state = &mut counters.pipes[pipe as usize];
-    // Confirm -> GO span against the latest global confirmation. Under
-    // single-owner ordering a confirmation precedes the next GO; a GO with
-    // no preceding confirmation (boot) is counted without a span.
-    if counters.last_confirm_valid {
-        pipe_state.confirm_go_sum = pipe_state
-            .confirm_go_sum
-            .wrapping_add(stamp.wrapping_sub(counters.last_confirm_stamp));
-        pipe_state.confirm_go_count = pipe_state.confirm_go_count.wrapping_add(1);
+    // The previous batch is only complete once its successor GOes, so the
+    // GO -> GO distance is the cycle the throughput is limited by.
+    if counters.batch.go_valid {
+        counters.cycle_sum = counters
+            .cycle_sum
+            .wrapping_add(stamp.wrapping_sub(counters.batch.go_stamp));
+        counters.batches = counters.batches.wrapping_add(1);
     }
-    pipe_state.go_stamp = stamp;
-    pipe_state.go_pending = true;
+    // Admission -> GO is the firmware's own staging latency for the members the
+    // host supplied since the last trigger.
+    if counters.batch.admit_valid {
+        counters.admit_go_sum = counters
+            .admit_go_sum
+            .wrapping_add(stamp.wrapping_sub(counters.batch.last_admit_stamp));
+        counters.admit_go_count = counters.admit_go_count.wrapping_add(1);
+    }
+    counters.batch.go_stamp = stamp;
+    counters.batch.go_valid = true;
+    counters.batch.drain_valid = false;
+    counters.batch.admit_valid = false;
 }
 
 /// A hardware completion drained on `pipe` at `stamp`. Test-visible core.
 #[inline(always)]
 pub fn note_drain_at(pipe: u8, stamp: u32) {
-    if pipe as usize >= PIPES {
+    if pipe != 0 {
+        let counters = counters();
+        counters.other_pipe_events = counters.other_pipe_events.wrapping_add(1);
         return;
     }
     let counters = counters();
-    let pipe_state = &mut counters.pipes[pipe as usize];
-    // Only the first drain after a GO opens a GO -> drain span; later drains
-    // of the same batch still refresh the stamp for drain -> confirm.
-    if pipe_state.go_pending {
-        pipe_state.go_drain_sum = pipe_state
-            .go_drain_sum
-            .wrapping_add(stamp.wrapping_sub(pipe_state.go_stamp));
-        pipe_state.go_drain_count = pipe_state.go_drain_count.wrapping_add(1);
-        pipe_state.go_pending = false;
+    counters.members = counters.members.wrapping_add(1);
+    if counters.batch.drain_valid {
+        // Consecutive members of one batch: this gap is where per-member dead
+        // time would show up, because the aggregate's members share one GO.
+        counters.interdrain_sum = counters
+            .interdrain_sum
+            .wrapping_add(stamp.wrapping_sub(counters.batch.last_drain_stamp));
+        counters.interdrain_count = counters.interdrain_count.wrapping_add(1);
+    } else if counters.batch.go_valid {
+        counters.go_firstdrain_sum = counters
+            .go_firstdrain_sum
+            .wrapping_add(stamp.wrapping_sub(counters.batch.go_stamp));
     }
-    pipe_state.drain_stamp = stamp;
-    counters.last_drain_stamp = stamp;
-    counters.last_drain_valid = true;
+    counters.batch.last_drain_stamp = stamp;
+    counters.batch.drain_valid = true;
 }
 
 /// A TX confirmation published to the host at `stamp`. Test-visible core.
 #[inline(always)]
 pub fn note_confirm_at(stamp: u32) {
     let counters = counters();
-    if counters.last_drain_valid {
+    if counters.batch.drain_valid {
         counters.drain_confirm_sum = counters
             .drain_confirm_sum
-            .wrapping_add(stamp.wrapping_sub(counters.last_drain_stamp));
+            .wrapping_add(stamp.wrapping_sub(counters.batch.last_drain_stamp));
         counters.drain_confirm_count = counters.drain_confirm_count.wrapping_add(1);
     }
-    counters.last_confirm_stamp = stamp;
-    counters.last_confirm_valid = true;
+    counters.batch.awaiting_admit = true;
+    counters.batch.awaiting_admit_stamp = stamp;
+}
+
+/// A TX request admitted from the command lane at `stamp`. Test-visible core.
+#[inline(always)]
+pub fn note_admit_at(stamp: u32) {
+    let counters = counters();
+    if counters.batch.awaiting_admit {
+        counters.confirm_admit_sum = counters
+            .confirm_admit_sum
+            .wrapping_add(stamp.wrapping_sub(counters.batch.awaiting_admit_stamp));
+        counters.confirm_admit_count = counters.confirm_admit_count.wrapping_add(1);
+        counters.batch.awaiting_admit = false;
+    }
+    counters.batch.last_admit_stamp = stamp;
+    counters.batch.admit_valid = true;
 }
 
 /// A host batch GO triggered on `pipe` now.
@@ -178,6 +224,18 @@ pub fn note_go(pipe: u8) {
 #[inline(always)]
 pub fn note_drain(pipe: u8) {
     note_drain_at(pipe, now());
+}
+
+/// A TX confirmation published to the host now.
+#[inline(always)]
+pub fn note_confirm() {
+    note_confirm_at(now());
+}
+
+/// A TX request admitted from the command lane now.
+#[inline(always)]
+pub fn note_admit() {
+    note_admit_at(now());
 }
 
 /// End-of-pass pipe-0 stall flavor. `hardware_owned` means a software owner
@@ -197,28 +255,26 @@ pub fn note_pipe0_pass(hardware_owned: bool, work_present: bool) {
     }
 }
 
-/// A TX confirmation published to the host now.
-#[inline(always)]
-pub fn note_confirm() {
-    note_confirm_at(now());
-}
-
 pub fn snapshot() -> [u32; 22] {
     let counters = unsafe { *COUNTERS.0.get() };
     let mut values = [0_u32; 22];
     values[0] = MAGIC;
     values[1] = counters.loops;
-    for pipe in 0..PIPES {
-        let state = counters.pipes[pipe];
-        values[2 + pipe] = state.go_drain_sum;
-        values[6 + pipe] = state.go_drain_count;
-        values[10 + pipe] = state.confirm_go_sum;
-        values[14 + pipe] = state.confirm_go_count;
-    }
-    values[18] = counters.drain_confirm_sum;
-    values[19] = counters.drain_confirm_count;
-    values[20] = counters.pipe0_idle_starved;
-    values[21] = counters.pipe0_idle_blocked;
+    values[2] = counters.batches;
+    values[3] = counters.cycle_sum;
+    values[4] = counters.members;
+    values[5] = counters.interdrain_sum;
+    values[6] = counters.interdrain_count;
+    values[7] = counters.go_firstdrain_sum;
+    values[8] = counters.drain_confirm_sum;
+    values[9] = counters.drain_confirm_count;
+    values[10] = counters.confirm_admit_sum;
+    values[11] = counters.confirm_admit_count;
+    values[12] = counters.admit_go_sum;
+    values[13] = counters.admit_go_count;
+    values[14] = counters.other_pipe_events;
+    values[15] = counters.pipe0_idle_starved;
+    values[16] = counters.pipe0_idle_blocked;
     values
 }
 
@@ -235,102 +291,126 @@ mod tests {
         unsafe {
             *COUNTERS.0.get() = Counters {
                 loops: 0,
-                pipes: [PipeState {
-                    go_stamp: 0,
-                    drain_stamp: 0,
-                    go_pending: false,
-                    go_drain_sum: 0,
-                    go_drain_count: 0,
-                    confirm_go_sum: 0,
-                    confirm_go_count: 0,
-                }; PIPES],
-                last_drain_stamp: 0,
-                last_drain_valid: false,
-                last_confirm_stamp: 0,
-                last_confirm_valid: false,
+                batches: 0,
+                cycle_sum: 0,
+                members: 0,
+                interdrain_sum: 0,
+                interdrain_count: 0,
+                go_firstdrain_sum: 0,
                 drain_confirm_sum: 0,
                 drain_confirm_count: 0,
+                confirm_admit_sum: 0,
+                confirm_admit_count: 0,
+                admit_go_sum: 0,
+                admit_go_count: 0,
+                other_pipe_events: 0,
                 pipe0_idle_starved: 0,
                 pipe0_idle_blocked: 0,
+                batch: BatchState {
+                    go_stamp: 0,
+                    last_drain_stamp: 0,
+                    last_admit_stamp: 0,
+                    awaiting_admit_stamp: 0,
+                    go_valid: false,
+                    drain_valid: false,
+                    admit_valid: false,
+                    awaiting_admit: false,
+                },
             };
         }
     }
 
     #[test]
-    fn ordered_cycle_records_all_three_spans() {
+    fn full_cycle_splits_at_every_boundary() {
         reset();
-        note_go_at(0, 1000);
-        note_drain_at(0, 2000);
-        note_confirm_at(2500);
-        note_go_at(0, 9000);
+        note_go_at(0, 1_000);
+        note_drain_at(0, 3_000);
+        note_drain_at(0, 4_000);
+        note_confirm_at(4_500);
+        note_admit_at(6_000);
+        note_go_at(0, 11_000);
         let values = snapshot();
         assert_eq!(values[0], MAGIC);
-        assert_eq!(values[2], 1000); // GO -> drain
+        assert_eq!(values[2], 1); // one completed cycle
+        assert_eq!(values[3], 10_000); // GO -> GO
+        assert_eq!(values[4], 2); // members
+        assert_eq!(values[5], 1_000); // first -> second drain
         assert_eq!(values[6], 1);
-        assert_eq!(values[18], 500); // drain -> confirm
-        assert_eq!(values[19], 1);
-        assert_eq!(values[10], 6500); // confirm -> GO
-        assert_eq!(values[14], 1);
-        assert_eq!(values[20], 0); // no pipe-0 pass outcomes recorded
-        assert_eq!(values[21], 0);
+        assert_eq!(values[7], 2_000); // GO -> first drain
+        assert_eq!(values[8], 500); // last drain -> confirm
+        assert_eq!(values[9], 1);
+        assert_eq!(values[10], 1_500); // confirm -> admit
+        assert_eq!(values[11], 1);
+        assert_eq!(values[12], 5_000); // last admit -> GO
+        assert_eq!(values[13], 1);
     }
 
     #[test]
-    fn drain_without_go_refreshes_without_span() {
+    fn single_member_batch_has_no_interdrain_gap() {
         reset();
-        note_drain_at(1, 500);
-        note_confirm_at(700);
+        note_go_at(0, 100);
+        note_drain_at(0, 900);
+        note_confirm_at(1_000);
+        note_go_at(0, 2_000);
         let values = snapshot();
-        assert_eq!(values[3], 0); // no GO -> drain span on pipe 1
-        assert_eq!(values[7], 0);
-        assert_eq!(values[18], 200); // drain -> confirm still recorded
-        assert_eq!(values[19], 1);
+        assert_eq!(values[5], 0);
+        assert_eq!(values[6], 0);
+        assert_eq!(values[7], 800);
+        assert_eq!(values[4], 1);
+        assert_eq!(values[2], 1);
     }
 
     #[test]
-    fn second_drain_of_batch_does_not_reopen_span() {
+    fn first_go_does_not_open_a_cycle() {
         reset();
-        note_go_at(2, 1000);
-        note_drain_at(2, 1500);
-        note_drain_at(2, 1600);
+        note_go_at(0, 500);
+        note_drain_at(0, 900);
         let values = snapshot();
-        assert_eq!(values[4], 500);
-        assert_eq!(values[8], 1);
+        assert_eq!(values[2], 0); // no predecessor GO
+        assert_eq!(values[3], 0);
+        assert_eq!(values[7], 400); // but the batch span is still measured
+    }
+
+    #[test]
+    fn confirm_admit_span_closes_once_per_confirmation() {
+        reset();
+        note_go_at(0, 100);
+        note_drain_at(0, 200);
+        note_confirm_at(300);
+        note_admit_at(400);
+        note_admit_at(500);
+        note_admit_at(600);
+        let values = snapshot();
+        assert_eq!(values[10], 100); // 300 -> 400 only
+        assert_eq!(values[11], 1);
+        assert_eq!(values[12], 0); // no GO yet
+    }
+
+    #[test]
+    fn other_pipes_only_touch_the_witness_word() {
+        reset();
+        note_go_at(0, 100);
+        note_drain_at(1, 150);
+        note_go_at(2, 160);
+        note_drain_at(0, 200);
+        let values = snapshot();
+        assert_eq!(values[14], 2);
+        assert_eq!(values[4], 1);
+        assert_eq!(values[7], 100);
+        assert_eq!(values[2], 0);
     }
 
     #[test]
     fn timer_wrap_uses_wrapping_arithmetic() {
         reset();
-        note_go_at(3, u32::MAX - 100);
-        note_drain_at(3, 200);
+        note_go_at(0, u32::MAX - 100);
+        note_drain_at(0, 200);
+        note_confirm_at(300);
+        note_admit_at(400);
+        note_go_at(0, 500);
         let values = snapshot();
-        assert_eq!(values[5], 301);
-        assert_eq!(values[9], 1);
-    }
-
-    #[test]
-    fn pipes_stay_independent() {
-        reset();
-        note_go_at(0, 100);
-        note_go_at(1, 200);
-        note_drain_at(1, 500);
-        let values = snapshot();
-        assert_eq!(values[6], 0); // pipe 0 GO still pending, no span
-        assert_eq!(values[3], 300); // pipe 1 span
-        assert_eq!(values[7], 1);
-    }
-
-    #[test]
-    fn out_of_range_pipe_is_ignored() {
-        reset();
-        note_go_at(4, 100);
-        note_drain_at(9, 200);
-        note_pipe0_pass(false, false);
-        note_pipe0_pass(false, true);
-        note_pipe0_pass(true, true);
-        let values = snapshot();
-        assert_eq!(values[20], 1); // one starved pass
-        assert_eq!(values[21], 1); // one blocked pass, busy pass uncounted
+        assert_eq!(values[3], 601); // GO -> GO across the wrap
+        assert_eq!(values[7], 301); // GO -> first drain across the wrap
     }
 
     #[test]
@@ -343,7 +423,7 @@ mod tests {
         observe_loop();
         note_pipe0_pass(true, false);
         let values = snapshot();
-        assert_eq!(values[1], 3); // loops
-        assert_eq!(values[20] + values[21], 2); // two idle passes classified
+        assert_eq!(values[1], 3);
+        assert_eq!(values[15] + values[16], 2);
     }
 }

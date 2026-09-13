@@ -3191,7 +3191,10 @@ the "fixed ~8 ms cycle -> ~2x at depth-8" model is falsified. The depth-first
 plan is dead, and it explains why the earlier no-BA -> depth-4 gain (5 -> 9
 Mbit/s) did not continue: it saturates by depth 4. The remaining ceiling is
 per-member cost (~1 ms per member, roughly 4x the ~250 us airtime of a
-1500-byte frame at MCS5) on top of the CYC4 host round trip.
+1500-byte frame at MCS5) on top of the CYC4 host round trip. (Corrected by the
+CYC5 rate sweep below: consecutive drain gaps measure 13-16 us and do not move
+with rate, so there is no per-member cost. The surviving term is a fixed
+~1.6-2.2 ms GO->first-completion latency.)
 
 The trimmed image also failed to associate in 2 of 3 Intel runs
 (`STATE=SCANNING`, exit 10) against 0 of 5 for the untrimmed image, the control
@@ -3205,3 +3208,55 @@ Harness lesson from the same session: the A/B wrapper's `settle_recovery` used
 `ssh` with only `ConnectTimeout`, so a boot window left it blocked on a
 half-open connection for 83 minutes. Wrap that probe in `timeout` and add
 `ServerAliveInterval`/`ServerAliveCountMax` before the next board session.
+
+## CYC5 rate sweep: the cycle is airtime plus a fixed ~1.8 ms completion latency
+
+CYC4 could not decompose its own cycle: the three spans summed to 5.45 ms
+against a measured 9.22 ms cycle, and the missing 3.8 ms was read as an
+intra-batch drain spread. CYC5 measures every boundary instead: GO -> next GO
+(the cycle), GO -> first drain, consecutive drain gaps inside one batch, last
+drain -> confirmation, confirmation -> first admission (host round trip) and
+last admission -> GO (staging). It replaces the CYC4 words and adds an
+admission hook in `dispatch_single_request`; pipe 0 carries the traffic and
+other pipes only increment one witness word.
+
+Method: one depth-4 probe image (`6adeb80d…`, stack 6760/6912) at four fixed
+2.4 GHz MCS values on the host Intel AP with the BA-forcing driver, 30 s of TCP
+board-TX traffic per point, MIB snapshots bracketing the traffic window. Every
+point's rate is confirmed by the AP's own receive report, not by the setting.
+
+| MCS | rate | members/batch | cycle | GO -> first drain | air/batch | residual | drain -> drain | drain -> confirm | confirm -> admit | admit -> GO | TCP |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 6.5 | 3.99 | 11712 us | 9926 us | 7710 us | 2216 us | 16.4 us | 167 us | 3211 us | 7130 us | 4.43 Mbit/s |
+| 2 | 19.5 | 3.99 | 5423 | 4514 | 2570 | 1944 | 16.3 | 169 | 1855 | 1969 | 9.26 |
+| 5 | 52.0 | 3.93 | 3449 | 2686 | 949 | 1737 | 13.7 | 174 | 1702 | 1171 | 11.40 |
+| 7 | 65.0 | 3.13 | 8299 | 2223 | 605 | 1618 | 13.6 | 170 | 11380 | 984 | 3.87 |
+
+Two conclusions, both correcting earlier ones:
+
+1. **There is no per-member cost.** Consecutive drains inside a batch arrive
+   13-16 us apart and that gap is flat across a 10x rate change, so the members
+   leave the MAC back to back and the earlier ~1 ms/member figure and the
+   3.8 ms intra-batch spread inference are both wrong. The drains arrive as one
+   burst after the batch's whole airtime has elapsed, which is why the first
+   drain is late while the rest follow immediately.
+2. **The cycle is aggregate airtime plus a fixed ~1.6-2.2 ms latency between GO
+   and the first completion.** That residual is nearly rate-independent
+   (2216/1944/1737/1618 us) and dominates as the rate rises: airtime is 66% of
+   the cycle at MCS0 but 28% at MCS5, while the fixed term is 50% at MCS5. It
+   also explains the depth A/B: doubling depth adds airtime but not this fixed
+   term, so throughput stays flat. Depth is deprioritised, not disproven.
+
+Caveats recorded with the numbers: the per-event spans overlap batches, so
+confirmation -> admission and admission -> GO do not sum into the cycle (the
+host round trip is largely hidden behind airtime at low rates and only surfaces
+at MCS5); drain -> confirmation undercounts (36-541 samples) because the span is
+only recorded while the batch's drain window is still open; the MCS7 point is
+host-starved rather than clean (79% idle-starved passes, confirm -> admit 11.4 ms,
+members/batch 3.13) so it is a bound, not a rate point; and the earlier BA A/B's
+UDP arm is offered-load-limited, so only its TCP arm carries the depth result.
+
+Next: attribute the fixed GO -> first-completion latency. The cheapest
+discriminator is to count cooperative passes and MAC-event services between a GO
+and its first drain: many passes with no completion visible means the MAC
+signals the batch late, few passes means the firmware is not being scheduled.
