@@ -4124,3 +4124,36 @@ That is the root defect this whole investigation has been circling: the firmware
 hides its own losses from the host. Until a missing member is reported as failed, no
 retry, no BlockAckReq and no host-level recovery can happen, and the 64-datagram
 runs are simply what those hidden losses look like at the receiver.
+
+## The firmware's accounting is honest: the peer acks frames it later drops
+
+One sampled run with the aggregate counters read alongside the stream settles what
+the false successes were:
+
+```
+AGG report: 8685 ctl, 30690 len, 30059 ack, 0 invalid
+TX confirm: 30971 ok, 3 fail
+stream:     SENT 31101, loss 19.2%, 215 missing runs (56 of exactly 64)
+```
+
+Of 30,690 aggregate members the firmware reports **30,059 acked** - 98% - with 631
+members genuinely missing, and only three failure confirmations reached the driver.
+So the confirmations were not lying about the BlockAck: the peer really did ack those
+frames.
+
+That is the mechanism, seen from the sending side at last. The peer acknowledges
+every frame it *buffers*, including the frames sitting behind a hole, so the sender's
+only delivery signal says "acknowledged" while roughly a sixth of the datagrams
+(19.2% of the stream, against 2% missing members) are later discarded when the peer
+releases its reorder window. No sender-side status can report that: the frames were
+acked, and their loss happens afterwards inside the peer's reorder buffer.
+
+Which is why retrying the hole could not help. The frames behind the hole are
+already acked and already doomed; filling the hole only stops *new* frames from being
+rejected, it does not recover the buffered ones. The only thing that removes the loss
+is preventing the hole from accumulating a full window of advance, and the quantity
+to bound is therefore **how far the transmit sequence runs ahead of the peer's
+reorder head**, which the BlockAck's starting sequence tells us directly. Capping that
+advance below 64 - holding publication instead of transmitting the frame that would
+alias the peer's ring - keeps the peer's window releasable and turns each hole back
+into a single lost datagram instead of a run of sixty-four.
