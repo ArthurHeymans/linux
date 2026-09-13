@@ -3378,3 +3378,40 @@ packed hash matched the previous image exactly, which is how it was caught.
 Host `cargo test` passing does not prove the ARM firmware builds, because the
 probe hooks guarded by `target_arch = "arm"` are not compiled on the host, so
 the build result must be checked rather than the artifact hash.
+
+## CYC9 depth buckets: GO -> first drain is a fixed per-batch cost plus airtime
+
+CYC8 also refuted the loop-stall explanation: during traffic no cooperative pass
+interval exceeds 1 ms (mean 192-265 us, 0% slow in both windows), so the ~1.2 ms
+excess a supply-clean batch carries is not firmware scheduling. CYC9 separates
+the remaining two candidates by bucketing GO -> first drain by the batch's own
+depth (1..4), which yields the per-batch intercept and the per-member slope from
+within-run depth spread rather than a rate sweep. Same two-window rig (TCP then
+UDP blast), MCS5, image `e11036ff…`.
+
+| window | depth 1 | depth 2 | depth 3 | depth 4 | fit |
+| --- | --- | --- | --- | --- | --- |
+| TCP reverse | 1825 us (n=210) | 2402 (n=229) | 2563 (n=435) | 2682 (n=6255) | 1788 us + 225 us x depth |
+| UDP blast | 1334 us (n=29) | 1851 (n=373) | 1927 (n=813) | 2090 (n=11052) | 1503 us + 147 us x depth |
+
+Ideal airtime per member at MCS5 with 1570 bytes is ~242 us, so the per-member
+slope is essentially airtime (the low-end 147 us reflects few small-depth
+samples and smaller frames), while the intercept is a **fixed ~1.5-1.8 ms per
+batch that is not airtime and does not depend on depth**. That single term
+explains most of the supply-clean cycle (2450 us at 3.87 members under the
+blast), and it is consistent across the two windows to within ~285 us.
+
+Combined with the earlier negatives - no per-member drain cost (13-16 us gaps),
+no loop stall (0 intervals > 1 ms), no firmware poll delay (the completion
+arrives with an event and the firmware drains it in the same pass), and no
+visible early completion to poll - the remaining unexplained term is a fixed
+MAC-side latency between the GO trigger and the first completion that is about
+seven cooperative polls long at MCS5.
+
+Next discriminators, in order: (1) a load sweep, because a fixed report delay
+should be load-independent while a PHY ramp or channel-access cost should grow
+with the idle gap before the GO - the depth-4 intercept is the comparable
+quantity; (2) a monitor capture of the board's own bursts, which shows whether
+the air actually starts ~1.5 ms after the GO or the burst is simply short,
+requiring a spare monitor-capable radio (the host's ath9k_htc module is loaded
+but no adapter is attached).
