@@ -3751,3 +3751,39 @@ board-side driver counters are still filtered out of the harness. Separating
 capture running alongside this flow, which is the next run. Note also that the
 host firewall drops unsolicited inbound UDP, so the receiver must send a hello
 first to open the return path; without it every arm reads zero received.
+
+## Loss appears with load, in 64-datagram chunks
+
+The sequence tooling was swept over offered load (BA-session driver, MCS5, same
+firmware). Loss is essentially absent at low load and window-shaped above it:
+
+| offered | sent | received | loss by sender/receiver counts | in-range gaps | missing-run profile |
+| --- | --- | --- | --- | --- | --- |
+| 2 Mbit/s | 6242 | 5830 | 6.6% (all of it a contiguous tail) | **0** | none |
+| 5 Mbit/s | — | — | — | — | three consecutive join failures |
+| 10 Mbit/s | 31191 | 22182 | 28.9% | 20.9% | 137 runs, mean 42.8, **60 of them exactly 64**, 17 singles |
+| 20 Mbit/s | 34532 | 18625 | 46.1% | 36.4% | 910 runs, **692 singles**, ~94 runs of 64-68 |
+
+Two readings matter here.
+
+1. **At 2 Mbit/s the received sequence range has zero gaps**, so the per-frame
+   path is clean when the pipe is not loaded; the 413-datagram discrepancy
+   between the sender's count and the highest received sequence is a contiguous
+   tail, which is a metric artefact to fix (the receiver derives "offered" from
+   the highest sequence it saw, so a lost tail is invisible).
+2. **Above capacity the loss arrives in exactly-64 chunks.** At 10 Mbit/s, 60 of
+   137 runs are exactly 64 consecutive missing datagrams and they carry most of
+   the loss; at 20 Mbit/s the same mode persists (~94 runs of 64-68) alongside a
+   new population of 692 isolated losses, which is what ordinary queue overflow
+   above capacity looks like.
+
+Two host-side numbers found while chasing that 64: the driver creates four TX
+queues of capacity **16** each (64 slots total, `main.c` `cw1200_queue_init(...,
+16, ...)`), and our firmware advertises `input_buffers: 30` in its WSM caps
+(`src/wsm.rs`), which caps how many frames the host may keep outstanding. Neither
+is 64 by itself, but the AP's reorder buffer is 64, and the earlier AP-side trace
+already showed open-firmware runs producing thousands of
+`iwl_mvm_release_frames` drops against zero for matched vendor runs. That makes
+"our PN/sequence handling under retries and requeues makes the AP drop whole
+reorder windows" the leading hypothesis, and the AP PN/reorder trace the next
+measurement rather than another blind A/B.
