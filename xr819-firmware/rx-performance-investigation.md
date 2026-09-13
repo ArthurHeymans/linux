@@ -3830,3 +3830,36 @@ advance.
 The firmware question is therefore specific: where do we account for outstanding
 members and the window limit, and what lets publication continue to `head+64`
 instead of holding? That is a code audit, not another hardware run.
+
+## Why the hole is never filled: no BAR, no fencing
+
+The trace says a missing member is left behind while we run a full window past it.
+Two code facts explain that and neither involves PN handling.
+
+First, the BA planner gives up rather than fencing. `plan_depth_two_block_ack_actions`
+in `src/tx.rs` maps an acknowledged member to `Confirm`, a missing member to
+`Retry` only when the session is active and a retry is still allowed, and
+everything else - missing with no retry left, or `OutsideWindow` - to `GiveUp`.
+`complete_give_up` then retires the pipe slot and clears `LOW_MAC_PIPE_BUSY`
+immediately, so publication resumes with the hole still unacknowledged at the AP.
+There is no admission fencing while a member is outstanding, which is exactly the
+behaviour the vendor presents as link states 6/7/8/10 refusing ordinary admission.
+
+Second, the hole is never announced to the AP. A search of the firmware finds no
+BAR generation at all: no `block_ack_req`, no BAR template, nothing that would
+advance the AP's reorder head past the hole. The monitor capture of our own TX
+confirms it on air - 10,881 BlockAck frames from the AP and **zero** BlockAckReq
+frames in 76,336 frames total. Since iwlwifi releases its reorder window on a BAR,
+the AP's head simply stays where the hole is until the ring aliases 64 frames
+later, which is the loss run we keep measuring.
+
+The host side is consistent with that reading: `cw1200_tx_confirm_cb` sets
+`IEEE80211_TX_STAT_ACK` only when the confirmation status is zero, so a given-up
+member is reported to mac80211 as not delivered and the host's sequence space
+moves on regardless, while the AP is still waiting.
+
+So the defect is a missing recovery action, not a corrupted one. The fix is either
+to send a BAR when a member is given up (moving the AP's head immediately) or to
+fence publication so the sender cannot advance to `head+64` in the first place,
+and the vendor's own choice between those is the next thing to establish from a
+capture rather than from our decompilation.
