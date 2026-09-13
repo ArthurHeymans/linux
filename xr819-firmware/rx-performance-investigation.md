@@ -4035,3 +4035,33 @@ first solve the four blockers the static analysis identified (the `TxRequest::pa
 length gate, the dispatch path that only admits unicast data, the management
 publisher that rejects control frames, and the aggregate-only response handling
 that would need the BlockAck class rather than a plain ACK).
+
+## The retry route refuted: a hole is not a transient delivery failure
+
+The cheaper alternative to BlockAckReq recovery was to stop abandoning members.
+`selective_member_retry_rate` returned `None` as soon as the rate policy stopped
+offering a step, which made a missing member unretryable and turned it into the
+hole. It now spends up to sixteen same-rate retries past the policy's own limit
+before giving up, which should recover any transient failure.
+
+It does not. Same flow, same host module, one run each:
+
+| | baseline | bounded same-rate retry |
+| --- | --- | --- |
+| sent in 30 s | 31,243 | 36,104 |
+| received | 22,196 | 25,155 |
+| in-range loss | 21.0% | 25.6% |
+| runs in the 64-68 band | 75 of 64, plus 4 of 54 | **96** (22 of 64, 27 of 65, 27 of 66, 14 of 67, 6 of 68) |
+| single datagrams missing | 5 | **727** |
+
+Retrying at the same rate made the window-shaped loss *more* frequent and added
+hundreds of singles, so the hole is not a transient delivery failure that more
+attempts recover. Either the retry never reaches the air, or the peer cannot accept
+the frame even when it does. The change has been reverted; the verified baseline
+remains `eb2fa79b`, and the board is on recovery firmware.
+
+That leaves the durable route - a real BlockAckReq with the four firmware pieces the
+static analysis identified - and one cheap diagnostic before it: capture the air
+during a run and check whether the hole's sequence number is ever re-sent as a
+single MPDU. If it is never re-sent, the retry machinery is the fault; if it is
+re-sent and still not delivered, the peer is refusing it and only a BAR can recover.
