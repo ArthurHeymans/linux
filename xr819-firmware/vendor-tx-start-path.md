@@ -9,9 +9,10 @@ locations.
 
 **Conclusion:** the vendor does issue `pac_phy_start_op(1)` early, before queue
 selection and descriptor construction, but this is **not itself a PHY hardware
-start or a rate-specific transmitter ramp**. Address-proven code shows that
-command 1 only publishes PHY state `3` (unless the retained PHY state is already
-`5`), stores a 10,000,000-tick timeout, and starts/restarts a software timer.
+start or a rate-specific transmitter ramp**. The address-proven wrapper plus
+structurally decoded command case show that command 1 only publishes PHY state
+`3` (unless the retained PHY state is already `5`), stores a 10,000,000-tick
+timeout, and starts/restarts a software timer.
 The rate-specific PHY register sequence is command 2, issued from
 `txp_pipe_tx_start()` only after the MAC reports phase 2 for event type `0x37`.
 The vendor uses the same post-GO command-2 ordering.
@@ -33,9 +34,18 @@ cooperative service pass. That can add roughly one measured 190-265 us pass and
 could postpone command-2 settling, but by itself it is not evidence for the full
 ~1 ms. GO-to-phase-2 timing has not yet been measured.
 
+Evidence labels used below:
+
+- **Address-proven:** direct instruction/decompilation evidence at the cited
+  vendor address.
+- **Structural:** inferred from control flow, translated state-machine
+  semantics, or the absence of a software-visible first-air boundary; not a
+  timestamped vendor measurement.
+- **Measured:** board/monitor evidence recorded in the cited investigation.
+
 ## What “PHY operation 1” actually is
 
-### Vendor, address-proven
+### Vendor wrapper: address-proven; command-case meaning: structural
 
 `pac_phy_start_op()` at `0x00007f10` writes the command byte, clears a secondary
 byte, dispatches the command, copies the output state, and starts a timer if the
@@ -51,22 +61,20 @@ if (*(u32 *)(op + 0x1c) != 0)
     timer_start(op - 8);                     /* 0x0000f2aa */
 ```
 
-The switch body is hidden by the decompiler's `switch8_r3` injection, but the
-vendor instructions are unambiguous:
+The decompiler hides the switch body behind its `switch8_r3` injection. The
+inline table resolves command 1 to `0x00016f8c`; its first instructions compare
+the retained state with 5. The shared-case tail is not represented as a normal
+Ghidra function, so the exact case meaning is **structural**, corroborated by the
+translated state machine at `src/tx.rs:7076-7098`:
 
 ```text
-0x00016f8c  cmp   r1, #5          ; command-1 case, r1 = retained PHY state
-0x00016f8e  beq   0x00017018      ; state 5 is already ready; preserve it
-0x00016f90  b     0x00017014
-0x00017014  movs  r0, #3
-0x00017016  strb  r0, [r5,#0x1d]  ; retained PHY state := 3
-0x00017018  ldrb  r0, [r5,#0x1d]
-0x0001701a  strb  r0, [r4]        ; output := retained state
-0x0001701c  ldr   r1, [sp]
-0x0001701e  str   r1, [r4,#4]     ; timeout := 0x00989680
+command 1 @ 0x00016f8c:
+    if retained_phy_state != 5: retained_phy_state = 3
+    output_state = retained_phy_state
+    timeout = 0x00989680
 ```
 
-There is no PHY MMIO write and no wait in the command-1 case. Its concrete
+There is no PHY MMIO write and no wait in this command-1 case. Its concrete
 operation is: **arm the PHY state machine for a possible command 2 and
 start/restart its maintenance timer**.
 
@@ -133,8 +141,9 @@ last step is therefore structural, constrained by the monitor capture.
 
 2. **Command 1 is issued before queue scan and descriptor construction.** In
    `txq_build_aggregate_lists()` (`0x0000a2c0`), the vendor tests global-ring
-   `head != tail`, then calls `pac_phy_start_op(1)` before iterating any PAS
-   entry (`annotated-main.c:12400-12408`):
+   `head != tail`, then executes `mov r0,#1` at `0x0000a4f2` and calls
+   `pac_phy_start_op()` at `0x0000a4f4`, before iterating any PAS entry
+   (`annotated-main.c:12400-12408`):
 
    ```c
    if (head != tail) {
@@ -163,16 +172,18 @@ last step is therefore structural, constrained by the monitor capture.
    12677-12679`).
 
 5. **GO is explicitly held low; EDCA and TXOP quantum are programmed.** The
-   common scheduler tail writes `ring+0x14 = 0`, updates the cached interface
-   EDCA word if needed, and writes the pipe duration quantum
+   common scheduler tail writes `ring+0x14 = 0` at `0x0000ac84`, updates the
+   cached interface EDCA word if needed (`0x0000acbe-0x0000acc6`), and writes
+   the pipe duration quantum at `0x0000acf6`
    (`annotated-main.c:12801-12823`).
 
 6. **The MAC pipe is triggered and every staged slot is published before one
-   GO.** The vendor writes `(1 << pipe) << 25` to the MAC pipe-trigger register,
-   then for producer through last: increments active count, marks slot state 1,
-   and pushes the slot duration into the hardware ring. It sets pipe state 1,
-   `control |= 1`, watchdog 5, then writes `ring+0x14 = 1`
-   (`annotated-main.c:12823-12837`):
+   GO.** The vendor writes `(1 << pipe) << 25` at `0x0000ad04`, then for
+   producer through last: increments active count, marks slot state 1 at
+   `0x0000ad2c`, and pushes the slot duration into the hardware ring at
+   `0x0000ad32`. It sets pipe state 1, `control |= 1`, watchdog 5, then writes
+   `ring+0x14 = 1` at `0x0000ad4c`, `0x0000ad52`, `0x0000ad56`, and
+   `0x0000ad5a`, respectively (`annotated-main.c:12823-12837`):
 
    ```c
    MAC_PIPE_TRIGGER = (1 << pipe) << 25;
@@ -189,14 +200,15 @@ last step is therefore structural, constrained by the monitor capture.
 
 7. **A MAC phase-2 event invokes the TX-start handler in FIQ context.** The
    vendor `mac_irq_handler()` (`0x00009eb4`) decodes event type `0x37` and phase
-   `0x20000`, then directly calls `txp_pipe_tx_start(pipe)`
+   `0x20000`, then directly calls `txp_pipe_tx_start(pipe)` at `0x00009f06`
    (`annotated-main.c:11984-11999`).
 
 8. **TX-start marks the slot and conditionally programs the PHY.** At
-   `txp_pipe_tx_start()` (`0x00009dea`), slot state becomes 2. If PHY operation
-   state is 3, it dispatches command 2 using a byte indexed by the head frame's
-   rate; output 4 advances operation state to 4, otherwise scheduler bit 18 is
-   raised (`annotated-main.c:11902-11926`). It may also assign a sequence value
+   `txp_pipe_tx_start()` (`0x00009dea`), slot state becomes 2 at `0x00009e1a`.
+   The operation-state comparison is at `0x00009e20-0x00009e24`; when it is 3,
+   command 2 is prepared at `0x00009e2c-0x00009e36` and dispatched at
+   `0x00009e3a`. Output 4 advances operation state to 4; otherwise scheduler bit
+   18 is raised (`annotated-main.c:11902-11926`). It may also assign a sequence value
    and advance `current` toward `last` (`annotated-main.c:11927-11941`).
 
 9. **Hardware performs channel access, fetches the command/data, and emits the
@@ -309,9 +321,11 @@ delay is inside the MAC before its start event. If phase 2 is early while PHY
 state is already 5, the remainder is after the event in fetch/channel access.
 Also correlate the descriptor's random-backoff value with GO -> phase 2.
 
-**Falsifier.** A firmware-only change—immediate phase-2 service, removal of the
-duplicate command 1, or correction of retained PHY state—removes most of the
-post-GO residual.
+**Cheapest falsifying test.** GO -> phase 2 is no more than one cooperative pass,
+and phase 2 -> first completion is fully accounted for by measured A-MPDU
+airtime plus the known completion margin, with no remaining ~0.8-1.0 ms excess.
+That would falsify a hidden MAC start handshake in this interval and instead
+challenge the GO/air population match or the subtraction used to derive it.
 
 **Vendor difference.** None established in the anchored scheduler path. A
 continuously armed or differently overlapped multi-pipe vendor schedule remains
