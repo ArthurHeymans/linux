@@ -3340,3 +3340,41 @@ supply that saturates the pipe independent of TCP (a UDP blast or a kernel-side
 queue test) — and read the MAC event payload itself, because if the completion
 event carries a hardware timestamp that is the only clock that can split air and
 channel access from MAC report delay.
+
+## CYC7 supply classification: supply is a real lever, but the MAC term dominates
+
+CYC7 classifies every batch by whether the refill window before its GO contained
+any idle-starved pass (pipe 0 idle with no admitted work at all), and reports
+cycle and GO->first-drain separately for supply-clean and supply-starved
+batches. One boot, two windows: a TCP reverse phase (window-limited supply) and
+then a UDP blast (`-u -R -b 30M -l 1200`, higher offered frame rate), each with
+its own MIB window. MCS5, depth-4 probe image `35a98659…`.
+
+| window | TCP served | members/batch | idle-starved passes | clean batches | clean cycle | clean GO->first drain | starved cycle | throughput |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TCP reverse | 5107 | 3.59 | 67.6% | 96.1% | 3773 us | 2655 us | 74446 us (n=201) | 5.63 Mbit/s |
+| UDP blast | 11853 | 3.86 | 16.4% | 99.7% | 2538 us | 2151 us | 85010 us (n=35) | 8.49 Mbit/s |
+
+Three conclusions:
+
+1. **The cycle means were tail-dominated by starvation, as the review suspected.**
+   Starved batches take 74-85 ms against 2.5-3.8 ms for clean ones, so a mean
+   cycle mostly measures how often the host stalled.
+2. **Supply is a genuine lever, worth about half the throughput.** The blast
+   cuts idle-starved passes from 67.6% to 16.4%, the clean-batch cycle from 3773
+   to 2538 us, and lifts TCP-measured throughput 5.63 -> 8.49 Mbit/s. Attacking
+   the host path is therefore worthwhile, not cosmetic.
+3. **But a hard floor remains below the host.** With 99.7% of batches
+   supply-clean and only 16.4% idle-starved passes, the clean cycle is still
+   2538 us and GO->first drain alone is 2151 us (85% of it), against ~0.9-1.0 ms
+   of ideal airtime for 3.9 members at MCS5. So the MAC/air term dominates the
+   supply-clean cycle and carries ~1.2 ms of excess over ideal serialization.
+   Perfect supply alone cannot reach vendor class.
+
+Harness lessons from this round, both worth keeping: the run script started only
+a TCP iperf server, so the first UDP blast died instantly and produced a
+three-second "window"; and a silently failing ARM build left a stale ELF whose
+packed hash matched the previous image exactly, which is how it was caught.
+Host `cargo test` passing does not prove the ARM firmware builds, because the
+probe hooks guarded by `target_arch = "arm"` are not compiled on the host, so
+the build result must be checked rather than the artifact hash.
