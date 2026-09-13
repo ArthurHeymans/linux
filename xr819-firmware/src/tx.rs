@@ -4181,10 +4181,10 @@ impl TxStatusPolicy for SingleProbeMacBackend {
                         || read_u8(record.state().get()) != 1
                         || read_u8(record.current_slot().get()) != slot_index
                     { terminal_probe_backend_fault(pipe); }
-                    let Some((plan, _)) = depth_four_selective_plan_for(frame, &observation)
+                    let Some((plan, members, _)) = depth_four_selective_plan_for(frame, &observation)
                     else { terminal_probe_backend_fault(pipe); };
                     let member_count = usize::from(observation.observation.member_count);
-                    let identities_match = observation.members[..member_count].iter().all(|member| {
+                    let identities_match = members[..member_count].iter().all(|member| {
                         self.publications.iter().flatten().any(|entry| {
                             entry.pipe == pipe && entry.slot == slot_index
                                 && entry.frame_node.raw() == *member
@@ -4198,7 +4198,7 @@ impl TxStatusPolicy for SingleProbeMacBackend {
                     // This is ordinary state-5 retirement, not a retry IRQ.
                     // The finisher requeues in reverse insertion order and does
                     // not acknowledge IRQs or advance the caller's cursors.
-                    if !finish_depth_four_selective_actions(slot_raw, plan, &observation.members, self) {
+                    if !finish_depth_four_selective_actions(slot_raw, plan, members, self) {
                         terminal_probe_backend_fault(pipe);
                     }
                     self.depth_two_block_ack[index] = None;
@@ -4415,7 +4415,7 @@ unsafe fn collect_ampdu_contexts(
                 return None;
             }
             let context = current.context();
-            *contexts.get_mut(count)? = Some(context);
+            contexts[count] = Some(context);
             count += 1;
             let next = read_u32(context.next_in_ampdu_address());
             if next == 0 {
@@ -4428,7 +4428,9 @@ unsafe fn collect_ampdu_contexts(
 }
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-unsafe fn prepare_whole_ampdu_retry(first_frame_node: FrameNodeAddress) -> Option<u8> {
+unsafe fn prepare_whole_ampdu_retry(
+    first_frame_node: FrameNodeAddress,
+) -> Option<[Option<ContextAddress>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH]> {
     unsafe {
         let (contexts, member_count) = collect_ampdu_contexts(first_frame_node)?;
         let first = contexts[0]?;
@@ -4437,8 +4439,8 @@ unsafe fn prepare_whole_ampdu_retry(first_frame_node: FrameNodeAddress) -> Optio
             && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
 
         let mut shared_next_rate = None;
-        for (index, context) in contexts.iter().take(member_count).enumerate() {
-            let context = (*context)?;
+        for index in 0..member_count {
+            let context = contexts[index]?;
             let host = context.host()?;
             let rate = read_u8(context.tx_rate_address());
             let policy = crate::rate_policy::get(read_u8(context.retry_policy_address()))?;
@@ -4460,8 +4462,8 @@ unsafe fn prepare_whole_ampdu_retry(first_frame_node: FrameNodeAddress) -> Optio
             return None;
         }
 
-        for context in contexts.iter().take(member_count) {
-            let context = (*context)?;
+        for index in 0..member_count {
+            let context = contexts[index]?;
             let host = context.host()?;
             let rate = read_u8(context.tx_rate_address());
             let status_address = host.rate_try(usize::from(rate >> 3))?.get();
@@ -4497,7 +4499,7 @@ unsafe fn prepare_whole_ampdu_retry(first_frame_node: FrameNodeAddress) -> Optio
                 read_u16(context.try_count_address()).wrapping_add(1),
             );
         }
-        u8::try_from(member_count).ok()
+        Some(contexts)
     }
 }
 
@@ -4743,26 +4745,22 @@ unsafe fn selective_member_retry_rate(frame_node: FrameNodeAddress) -> Option<u8
 unsafe fn depth_four_selective_plan_for(
     first_frame_node: FrameNodeAddress,
     observation: &RetainedAmpduBlockAck,
-) -> Option<(SelectiveAmpduRetryPlan, u8)> {
+) -> Option<(
+    SelectiveAmpduRetryPlan,
+    [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    u8,
+)> {
     unsafe {
-        // The retained member array is the expected chain, so walk against it
-        // directly instead of building a second MAX_EXPERIMENTAL_AMPDU_DEPTH
-        // array: both this frame and the plan return value sit on the deepest
-        // rust_main chain and grow with the deep-A-MPDU feature.
-        let expected = &observation.members;
+        let mut members = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
         let mut current = first_frame_node;
         let mut member_count = 0_usize;
         loop {
             if member_count == crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
-                || expected[..member_count].contains(&current.raw())
+                || members[..member_count].contains(&current.raw())
             {
                 return None;
             }
-            // Decides the former whole-array comparison one member at a time;
-            // a longer walked chain mismatches on the zero terminator.
-            if expected[member_count] != current.raw() {
-                return None;
-            }
+            members[member_count] = current.raw();
             member_count += 1;
             let next = read_u32(current.context().next_in_ampdu_address());
             if next == 0 {
@@ -4773,6 +4771,9 @@ unsafe fn depth_four_selective_plan_for(
         if member_count < 2 || member_count != usize::from(observation.observation.member_count) {
             return None;
         }
+        if observation.members != members {
+            return None;
+        }
         let first = first_frame_node.context();
         let tid = read_u8(first.tid_address());
         let session_active = tid < 8
@@ -4781,7 +4782,7 @@ unsafe fn depth_four_selective_plan_for(
         let mut retry_allowed = [false; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
         let mut retry_rates = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
         for index in 0..member_count {
-            let member = FrameNodeAddress::from_raw(expected[index])?;
+            let member = FrameNodeAddress::from_raw(members[index])?;
             retry_rates[index] = selective_member_retry_rate(member);
             retry_allowed[index] = retry_rates[index].is_some();
             match observation.observation.states[index] {
@@ -4814,6 +4815,7 @@ unsafe fn depth_four_selective_plan_for(
                 session_active,
                 retry_rates,
             ),
+            members,
             reason_mask,
         ))
     }
@@ -4841,7 +4843,10 @@ unsafe fn enqueue_terminal_depth_four_member(frame_node: FrameNodeAddress, statu
 
 #[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
 #[inline(never)]
-unsafe fn rewrite_depth_four_member_table(link: u8, members: &[u32]) {
+unsafe fn rewrite_depth_four_member_table(
+    link: u8,
+    members: &[u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+) {
     unsafe {
         if link >= 8 {
             return;
@@ -4867,7 +4872,7 @@ unsafe fn rewrite_depth_four_member_table(link: u8, members: &[u32]) {
 unsafe fn apply_depth_four_selective_retry(
     slot_raw: u32,
     plan: SelectiveAmpduRetryPlan,
-    members: &[u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
 ) -> Option<(FrameNodeAddress, usize)> {
     unsafe {
         let retry_count = usize::from(plan.retry_count);
@@ -4896,7 +4901,7 @@ unsafe fn apply_depth_four_selective_retry(
             if action == BlockAckMemberAction::Retry {
                 continue;
             }
-            let member = FrameNodeAddress::from_raw(*members.get(index)?)?;
+            let member = FrameNodeAddress::from_raw(members[index])?;
             write_u32(member.context().next_in_ampdu_address(), 0);
             let status = if action == BlockAckMemberAction::Confirm {
                 0
@@ -4941,7 +4946,7 @@ unsafe fn apply_depth_four_selective_retry(
 unsafe fn finish_depth_four_selective_actions(
     slot_raw: u32,
     plan: SelectiveAmpduRetryPlan,
-    members: &[u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
     backend: &mut SingleProbeMacBackend,
 ) -> bool {
     unsafe {
@@ -4959,7 +4964,10 @@ unsafe fn finish_depth_four_selective_actions(
         let Some(first) = FrameNodeAddress::from_raw(members[0]) else {
             return false;
         };
-        rewrite_depth_four_member_table(read_u8(first.context().link_id_address()), &[]);
+        rewrite_depth_four_member_table(
+            read_u8(first.context().link_id_address()),
+            &[0; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
+        );
         for (index, action) in plan.actions.into_iter().enumerate() {
             let Some(action) = action else { continue };
             if action == BlockAckMemberAction::Retry {
@@ -5030,7 +5038,7 @@ impl SingleProbeMacBackend {
             if let Some(observation) = self.depth_two_block_ack[retry_index]
                 .filter(|observation| observation.observation.member_count > 2)
             {
-                let Some((plan, _)) =
+                let Some((plan, members, _)) =
                     (unsafe { depth_four_selective_plan_for(frame_node, &observation) })
                 else {
                     terminal_probe_backend_fault(pipe)
@@ -5044,7 +5052,7 @@ impl SingleProbeMacBackend {
                 };
                 self.depth_two_block_ack[retry_index] = None;
                 let Some((retry_head, retry_count)) =
-                    (unsafe { apply_depth_four_selective_retry(slot, plan, &observation.members) })
+                    (unsafe { apply_depth_four_selective_retry(slot, plan, members) })
                 else {
                     terminal_probe_backend_fault(pipe)
                 };
@@ -5126,7 +5134,7 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 if let Some(observation) = self.depth_two_block_ack[retry_index]
                     .filter(|observation| observation.observation.member_count > 2)
                 {
-                    let Some((plan, reason_mask)) = (unsafe {
+                    let Some((plan, _, reason_mask)) = (unsafe {
                         depth_four_selective_plan_for(frame_node, &observation)
                     }) else {
                         unsafe {
@@ -5252,10 +5260,10 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                 }
                 // A missing or unusable bitmap retains the already-qualified
                 // conservative whole-aggregate retry path.
-                return if let Some(member_count) = unsafe { prepare_whole_ampdu_retry(frame_node) } {
+                return if let Some(contexts) = unsafe { prepare_whole_ampdu_retry(frame_node) } {
                     unsafe {
                         crate::host_tx_diagnostics::record_ampdu_outcome(
-                            if member_count > 2 {
+                            if contexts[2].is_some() {
                                 crate::host_tx_diagnostics::ampdu_outcome::DEEP_WHOLE_REARM
                             } else {
                                 crate::host_tx_diagnostics::ampdu_outcome::DEPTH_TWO_WHOLE
@@ -5382,13 +5390,13 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_COMPLETE,
                 )
             };
-            let Some((plan, _)) =
+            let Some((plan, members, _)) =
                 (unsafe { depth_four_selective_plan_for(frame_node, &observation) })
             else {
                 terminal_probe_backend_fault(pipe)
             };
             self.depth_two_block_ack[retry_index] = None;
-            if !unsafe { finish_depth_four_selective_actions(slot, plan, &observation.members, self) } {
+            if !unsafe { finish_depth_four_selective_actions(slot, plan, members, self) } {
                 terminal_probe_backend_fault(pipe);
             }
         } else if let Some((acknowledged, missing)) =

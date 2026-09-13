@@ -3131,7 +3131,7 @@ with that feature set and `tools/pack-sectioned-elf.py` yields exactly
 `efefbee21fbd42a4aa867e81b55b81463675f34fe380616d4d047a66e4f1c69f` (ELF
 `f9ace96f…`).
 
-## Depth-eight stack gate cleared by dropping retry-path array copies
+## Depth-eight stack gate cleared by dropping retry-path array copies (reverted, see the depth A/B below)
 
 The depth-8 candidate had been parked at 6992/6912 on the ARM stack gate. The
 whole excess was in the retry-planning path, whose frames scale with
@@ -3158,3 +3158,50 @@ base 6712, cycle-probe build 6720, worst deeper combination 6864). Rebuilt
 images: control `6a42cb37…` (standard diagnostic base + list-first-depth-four)
 and candidate `de77947e…` (that base + list-first-depth-eight + depth-eight),
 so the Hoeve depth A/B is unblocked.
+
+## Depth A/B on the self-hosted Intel AP: depth buys nothing, trim reverted
+
+The Hoeve A/B never produced a valid comparison because its AP died mid-session.
+That AP is the home Flint 3 (OpenWrt, `192.168.0.145`) serving `Hoeve Luitenant
+Halleux` as an MLO AP whose configured MAC is the `94:83:c4:ba:5b:0e` we pin.
+`ath12k` failed to submit beacon templates, ran a firmware recovery that
+`limit[ed] service ready radios to 2`, and only pdev 1/2 came back: MLD link 0
+(the 2.4 GHz link, `94:83:c4:ba:5b:0e`) never returned, leaving `ap-mld0`
+NO-CARRIER with Channel 0, 0 dBm and 0 stations. hostapd logged 15x `Failed to
+set beacon parameters` first. The board therefore only saw neighbouring APs on
+the same SSID. The `depth8-a` phase had already logged two authentication
+timeouts before it associated, so its 12-outstanding-frames confirm timeout is
+not attributable to the firmware, and the second pre-refactor attempt failed
+outright at association (`ASSOCIATION_FAILED state=SCANNING`).
+
+Reran on the host Intel AX200 AP (`nmcli connection up xr819-lab-intel`;
+`xr819-lab`, ch6, fixed MCS5, BA-forcing driver `a237a79e`), which removes the
+peer as a variable:
+
+| run | mean members/aggregate | TCP board-TX | UDP board-TX 20M |
+| --- | --- | --- | --- |
+| depth-4 control | 2.93 (9292 aggregates / 27182 members) | 9.86 Mbit/s | 11.3 Mbit/s (8.9% loss) |
+| depth-8, pre-trim | 6.98 (3003 / 20972) | 10.2 | 10.5 (9.7%) |
+| depth-8, trimmed | 6.99 (3013 / 21073) | 9.46 | 12.0 (6.6%) |
+
+All three runs were clean: 0% ping loss, every aggregate acknowledged, 0
+invalid aggregate reports, 4-5 TX misses. Aggregate depth rose 2.4x while
+delivered throughput stayed flat, so the cycle scales with aggregate depth and
+the "fixed ~8 ms cycle -> ~2x at depth-8" model is falsified. The depth-first
+plan is dead, and it explains why the earlier no-BA -> depth-4 gain (5 -> 9
+Mbit/s) did not continue: it saturates by depth 4. The remaining ceiling is
+per-member cost (~1 ms per member, roughly 4x the ~250 us airtime of a
+1500-byte frame at MCS5) on top of the CYC4 host round trip.
+
+The trimmed image also failed to associate in 2 of 3 Intel runs
+(`STATE=SCANNING`, exit 10) against 0 of 5 for the untrimmed image, the control
+and the historical Intel runs. Three runs cannot prove a regression, but the
+trim existed only to fit a depth-8 stack budget that is now worthless, so it is
+reverted: `src/tx.rs` is back to the `tputyvot` content, the feature-free image
+is byte-identical again (`4dbd65e4…`, stack 6592), and both the depth-4 base
+(6760) and the cycle-probe build (6768) stay inside the 6912 budget.
+
+Harness lesson from the same session: the A/B wrapper's `settle_recovery` used
+`ssh` with only `ConnectTimeout`, so a boot window left it blocked on a
+half-open connection for 83 minutes. Wrap that probe in `timeout` and add
+`ServerAliveInterval`/`ServerAliveCountMax` before the next board session.
