@@ -3616,3 +3616,33 @@ One process note for the ledger: an inline python summary in the run wrapper
 computed `after - before` with the operands swapped and printed negative deltas
 (4294964471 for 2825); the numbers above come from the decoder, which diffs
 correctly.
+
+### Low-rate second pipe: the regression was contention, not a shared start engine
+
+The dual-flow run above left the intended discriminator ambiguous, because a
+20 Mbit/s VO flow both occupies a second pipe and hogs the medium. Repeat with
+the second pipe present but lightly loaded: BE at 20 Mbit/s plus VO at
+**1 Mbit/s**, 30 s, MCS5.
+
+| quantity | single flow | VO at 20 Mbit/s | VO at 1 Mbit/s |
+| --- | --- | --- | --- |
+| GOs per pipe 0..3 | 16971 (pipe 0 only) | 2825 / 0 / 0 / 13835 | 8649 / 0 / 0 / 2877 |
+| pipe-0 GO -> phase-2 | 1312 us | 9156 us | **1708 us** |
+| pipe-0 phase-2 -> first drain | 1082 us | 1233 us | 1423 us |
+
+The second access category drives a second pipe at both loads (2877 GOs on pipe
+3 at 1 Mbit/s), so multi-pipe in flight is real. But pipe 0's start latency
+tracks the second flow's *load*, not the mere presence of a second pipe: +30% at
+1 Mbit/s against +600% at 20 Mbit/s. That identifies the earlier 9156 us as
+medium contention rather than an inherently shared MAC start engine, and it
+means the ~1.3 ms is substantially channel-access queueing - time the MAC spends
+waiting for the medium before it raises its start event - on top of its own
+preparation.
+
+That reopens the multi-pipe lever in a different form: if the latency is mostly
+waiting for the medium, then a second batch already staged on another pipe can
+be transmitted as soon as the first finishes, without paying a fresh GO-to-start
+round trip. What is still missing is the measurement that decides it - the
+delivered throughput of each flow - because the dual-flow harness did not capture
+either per-flow summary (both the host-side server logs and the board-side client
+tail came back empty), so the split between the two flows is unknown.
