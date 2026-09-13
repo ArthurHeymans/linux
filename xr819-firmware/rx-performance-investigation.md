@@ -3894,3 +3894,47 @@ BAR, or by fencing admission so the sender cannot reach `head+64` - should take
 our loss from 25% to roughly the vendor's figure without touching the RF path at
 all. That is now the single highest-value change available, and it is a firmware
 behaviour we owe the AP rather than a vendor behaviour we can copy.
+
+## The recovery mac80211 already owns, and the one guard that blocks it
+
+Tracing the hole back through the stack found the recovery mechanism already
+written, in mac80211, and gated on a flag our driver never set.
+
+`net/mac80211/status.c` sends a BlockAckReq by itself when a reported subframe
+carries `IEEE80211_TX_STAT_AMPDU_NO_BACK`: it reads the failed frame's sequence
+and calls `ieee80211_send_bar()`, which builds a compressed BAR at `seq + 1` and
+sends it through the ordinary TX path. iwlwifi sets that flag with the comment
+"single frame failure in an AMPDU queue => send BAR". Our driver's
+`cw1200_tx_confirm_cb` set nothing of the sort on a failed member, which is why
+both of our captures contain zero BlockAckReq frames even though the window
+tracer counted 211 abandoned holes.
+
+The driver now sets it for a failed QoS data member, with a `tx_ampdu_no_back`
+counter in the debugfs output so the effect is observable. Building and running
+that change on the board proved the mechanism and exposed the missing half: the
+BA session came up operational, the sender emitted 31,250 datagrams, and the
+host received **nothing at all**, with the radio's `tx_packets` moving only from
+25 to 85 in thirty seconds. That is a wedged TX path, not a slow one, and it is
+what happens when mac80211 now emits BlockAckReqs that the firmware refuses: the
+request is dropped, the driver's queue entry never completes, and the host's
+credit never returns.
+
+The refusal is a length guard. `vendor_host_tx::classify_header` opens with
+
+```
+if frame.len() < 24 || frame.len() > u16::MAX as usize { return Err(Truncated); }
+```
+
+and a BlockAckReq is a 20-octet control frame (2 frame control, 2 duration, 6 RA,
+6 TA, 2 BAR control, 2 start sequence), so it is rejected before any of its
+fields are read. Everything downstream then assumes the ordinary-data shape too:
+`assign_sequence` and the QoS branch are keyed off type bits that a control frame
+does not have, and the payload length would have to be zero rather than
+`len - 24`.
+
+So the remaining work is a control-frame shape in the firmware's host TX
+admission: accept type 1, set the 20-octet header length and a zero payload, skip
+QoS/sequence assignment, and leave the frame unencrypted. That is the only thing
+standing between the driver change and a real BAR on air, and until it lands the
+driver change must not be deployed on its own, because refusing the BAR wedges
+the link rather than degrading it.
