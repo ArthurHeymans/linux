@@ -12,19 +12,26 @@ Zero over SDIO, with a cw1200-derived host driver. Vendor firmware reaches
 ~29.5 Mbit/s in the board->host direction; we measure 8.5-12.6 Mbit/s at fixed
 MCS5 with depth-4 aggregates. The goal is to find the difference.
 
-**Important qualification added 2026-09-13, after a review prompted the check.**
-The 29.5 figure is *not* a matched board-TX comparison. It comes from an
-offered-load sweep with **vendor stock firmware and stock driver at unrestricted
-rate** (`rx-performance-investigation.md`, board TX uplink table: 29.50 Mbit/s at
-0% loss, rising monotonically with offered load to the 30M offer, i.e. the
-channel was never the limit in that configuration). The *matched* control - the
-same host module, the same AP, fixed MCS5 - puts vendor board TX at **11.8 TCP /
-12.1 UDP Mbit/s**, which is what our firmware delivers. The ledger's own summary
-of that control says it "closes the host-module/rate-mask gap". So at comparable
-conditions there is rough parity, and the remaining questions are what the stock
-configuration unlocks (rate selection, host driver, or both) and why our loss at
-fixed offered load is 12-42% against the vendor's 1.2% at the same delivered
-rate.
+**Important qualification, corrected twice.** The 29.5 figure is *not* a
+pinned-rate comparison: it comes from an offered-load sweep on a real AP at
+unrestricted rate, but with **our own host module for both firmwares** ("Same
+`cw1200_core.ko` for both firmwares, so only the firmware differs"), so the host
+driver is not the explanation and the rate mask is not either. Reproducing that
+table on the lab rig with the rate unpinned gives a clean four-arm result, two
+runs per firmware, same host module, same AP:
+
+| firmware | delivered (UDP, 30M offered) | loss | rate the AP observed |
+| --- | --- | --- | --- |
+| vendor | **12.2 / 12.0 Mbit/s** | **0.25% / 0.38%** | MCS5 (52.0 Mbit/s) |
+| ours | 8.95 / 5.58 Mbit/s (one run stalled to 1.4 in its last window) | 22% / 18% | MCS5 |
+
+Both firmwares run at the same rate even unpinned (MCS5), so **the difference is
+loss, not rate selection and not the MAC start latency**: the vendor delivers
+~12 Mbit/s with ~0.3% loss where we deliver 5.6-9.0 with ~20% loss. The earlier
+"matched parity" reading in this file was drawn from one best-case run of ours
+against a vendor number and is not supported by these interleaved arms; what the
+matched fixed-MCS5 comparison in the ledger shows is that the *open host module*
+costs the vendor too (vendor 12.1 rather than 29.5), not that we are at parity.
 
 ## Rig and method
 
@@ -70,7 +77,7 @@ Decoder `/tmp/xr819-decode-cyc11.py`.
 | Idle gaps are irrelevant | depth-4 GO->first-drain 2107 us after 1 s idle against 2227 us continuous |
 | Watchdog is irrelevant | reload 2/5/10 gives 2114/2134/2100 us |
 | Duplicate command 1 is not a delta | the vendor arms it once per scheduler pass, not once per batch |
-| **Vendor parity at matched conditions** | vendor board TX 11.8 TCP / 12.1 UDP Mbit/s at fixed MCS5 with the open host module, against our 8.5-12.6; the 29.5 figure needs the stock driver and unrestricted rate |
+| **Vendor parity is *not* supported; the gap is loss** | interleaved four-arm runs at MCS5 with the same host module: vendor 12.2/12.0 Mbit/s at 0.25/0.38% loss against ours 8.95/5.58 at 22/18%, both at MCS5 |
 
 Vendor facts from the static comparison (`vendor-tx-start-path.md`): command 1
 publishes PHY state 3 (or preserves 5) and restarts a timer with no PHY MMIO;
@@ -99,16 +106,18 @@ duplicate command 1 is a vendor delta".
    (mixed-rate members or more retries raise the slope) or the A/B was
    supply-masked.
 3. **Which factor unlocks the 29.5 Mbit/s configuration.** The vendor reaches
-   29.5 only with its stock driver and unrestricted rate, and reaches ~12 under
-   the matched fixed-MCS5 conditions; so the lever is either automatic rate
-   selection (MCS7 and/or 40 MHz, i.e. a rate-policy question) or something in
-   the stock host driver path. Reproducing the 29.5 configuration factor by
-   factor - vendor firmware with the stock driver, then our firmware with the
-   rate mask lifted - is now the highest-value work, because it locates the real
-   difference instead of optimising a MAC latency that both firmwares pay.
-4. **Our loss at fixed offered load** (12-42% against the vendor's 1.2% at the
-   same delivered rate) is unexplained and may be the same phenomenon as the
-   saturation point seen from the other side.
+   29.5 only on a real AP at unrestricted rate, and ~12 with the open host module
+even at fixed MCS5, so the open host module costs the vendor most of the
+difference and our firmware adds a further, separate loss penalty. Two factors
+   remain to be separated: whatever the real AP allows (rates, wider bandwidth,
+scheduling) and the host module itself.
+4. **Where our ~20% loss goes.** At the same rate and host module the vendor
+   loses ~0.3% and we lose ~20%, with one of our runs also stalling for a whole
+   10 s window. That is the concrete, reproducible gap now, and it is a loss or
+   queueing question - board-side admission drops, air retries, or both - not a
+   start-latency question. The next run must capture the board-side driver
+   counters (TXed / AGG TXed / MULTI / TX miss) alongside the host-side loss so
+   the two can be attributed.
 
 ## Method notes and pitfalls hit
 

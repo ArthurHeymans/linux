@@ -3681,3 +3681,32 @@ parallelism (this control). The attention moves to what caps the *aggregate* nea
 share of the medium as scheduled by the AP, the per-GO MAC start latency floor,
 or host supply - and the same caveat applies to this control as to the rest of
 the series: one run per arm, so it rejects a large effect, not a small one.
+
+## Unpinned-rate interleaved arms: the gap is loss, not rate
+
+The 29.5 Mbit/s table above was measured on a real AP at unrestricted rate with
+the same host module for both firmwares, while the lab rig pins MCS5. To find
+which factor that table isolates, the lab rig was run with the rate *unpinned*
+(`iw set bitrates` skipped, so rate control chooses freely) and the two firmwares
+interleaved, two arms each:
+
+| arm | delivered (UDP, 30M offered) | loss | rate the AP observed |
+| --- | --- | --- | --- |
+| vendor-a | 12.2 Mbit/s | 0.25% | 52.0 Mbit/s MCS 5 |
+| ours-a | 8.95 | 22% | MCS 5 |
+| ours-b | 5.58 (last window 1.43) | 18% | MCS 5 |
+| vendor-b | 12.0 | 0.38% | MCS 5 |
+
+Both firmwares sit at MCS5 even unpinned, so rate selection is not what
+separates them here, and the per-GO MAC start latency cannot explain it because
+the vendor pays the same one. What separates them is **loss at the same rate and
+the same host module**: ~0.3% against ~20%, with one of our runs stalling for a
+whole 10-second window. That is now the concrete, reproducible gap, and it also
+retracts the "parity" reading briefly recorded after the matched fixed-MCS5
+control: that control shows the open host module costs the vendor too (12.1
+rather than 29.5), not that we are level with it.
+
+The next run must capture the board-side driver counters (TXed / AGG TXed /
+MULTI TXed / TX miss) alongside the host-side loss, because the open harness
+filters them out today and they are what decides whether the 20% is board-side
+admission loss or air loss.
