@@ -3646,3 +3646,38 @@ round trip. What is still missing is the measurement that decides it - the
 delivered throughput of each flow - because the dual-flow harness did not capture
 either per-flow summary (both the host-side server logs and the board-side client
 tail came back empty), so the split between the two flows is unknown.
+
+## Multi-pipe control: the apparent gain was the second host flow, not the pipe
+
+The dual-TOS run above delivered 12.6 Mbit/s in total (BE 7.35 at 34% loss plus
+VO 5.24 at 0.14% loss), above any single-flow result, which looked like a
+multi-pipe win. It is not: a second flow in the *same* access category is the
+control, and it produces the same total.
+
+Host-side reverse clients so both flows are board TX and the delivered rates are
+reported on the measuring side, 30 s, MCS5:
+
+| run | flows | delivered | total | GOs per pipe 0..3 | pipe-0 GO -> phase-2 |
+| --- | --- | --- | --- | --- | --- |
+| dual pipe | BE 20M + VO(EF) 5M | 7.35 + 5.24 | **12.6 Mbit/s** | 8649 / 0 / 0 / 2877 | 2856 us |
+| **same pipe (control)** | BE 20M + BE 5M | 6.93 + 4.89 | **11.8 Mbit/s** | 11099 / 0 / 0 / **0** | 1126 us |
+| single flow | BE 20M (UDP blast) | 8.5-10.4 | 8.5-10.4 | pipe 0 only | 1312 us |
+
+The control confirms the routing (all 11,099 GOs on pipe 0, none on pipe 3) and
+totals within 6.6% of the dual-pipe run - inside the run-to-run spread this
+series has already shown - so **using a second pipe adds no throughput**. Two
+host flows are enough to lift the total; whether they share a pipe or not is
+irrelevant.
+
+That also re-reads the two earlier dual-flow runs: with a heavily loaded VO flow
+the BE flow's GO -> phase-2 latency rose to 9156 us because EDCA priority had
+the VO flow occupying the medium and BE deferring to it, not because two pipes
+contend inside the MAC. In the same-pipe control, where both flows are BE and
+the medium is not pre-empted, the latency is 1126 us - the single-flow value.
+
+So both structural levers are now measured flat: depth (the A/B) and pipe
+parallelism (this control). The attention moves to what caps the *aggregate* near
+10-12 Mbit/s at MCS5 when neither batch shape nor pipe count helps - the station's
+share of the medium as scheduled by the AP, the per-GO MAC start latency floor,
+or host supply - and the same caveat applies to this control as to the rest of
+the series: one run per arm, so it rejects a large effect, not a small one.
