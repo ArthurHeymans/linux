@@ -78,6 +78,7 @@ Decoder `/tmp/xr819-decode-cyc11.py`.
 | Watchdog is irrelevant | reload 2/5/10 gives 2114/2134/2100 us |
 | Duplicate command 1 is not a delta | the vendor arms it once per scheduler pass, not once per batch |
 | **Vendor parity is *not* supported; the gap is loss** | interleaved four-arm runs at MCS5 with the same host module: vendor 12.2/12.0 Mbit/s at 0.25/0.38% loss against ours 8.95/5.58 at 22/18%, both at MCS5 |
+| **The loss is the AP's receiver-slot alias, not our PN handling** | the ledger's `ap-pn-window-trace` session: head=1877, NSSN=1878, buffer size 64, logical release slot 1877, yet the dequeued packet is sequence 1941 (slot + 64); the PN high-water mark then advances and rejects the 58 legitimately buffered packets, with **zero first-transmission PN inversions**; vendor under the same tracer loses 0.35%/1.4% with no aliases |
 
 Vendor facts from the static comparison (`vendor-tx-start-path.md`): command 1
 publishes PHY state 3 (or preserves 5) and restarts a timer with no PHY MMIO;
@@ -111,13 +112,20 @@ even at fixed MCS5, so the open host module costs the vendor most of the
 difference and our firmware adds a further, separate loss penalty. Two factors
    remain to be separated: whatever the real AP allows (rates, wider bandwidth,
 scheduling) and the host module itself.
-4. **Where our ~20% loss goes.** At the same rate and host module the vendor
-   loses ~0.3% and we lose ~20%, with one of our runs also stalling for a whole
-   10 s window. That is the concrete, reproducible gap now, and it is a loss or
-   queueing question - board-side admission drops, air retries, or both - not a
-   start-latency question. The next run must capture the board-side driver
-   counters (TXed / AGG TXed / MULTI / TX miss) alongside the host-side loss so
-   the two can be attributed.
+4. **Where our ~20% loss goes - mechanism already traced, exposure still open.**
+   The loss arrives in exactly-64-datagram runs above capacity (60 of 137 runs at
+   10 Mbit/s) and is absent at low load. An earlier window-tracer session
+   established the mechanism: the AP's release loop consumes logical slot 1877
+   while the dequeued packet is sequence 1941 (slot + 64), the PN high-water mark
+   advances, and the 58 legitimately buffered packets are rejected, all with
+   **zero first-transmission PN inversions** at either firmware stage; the
+   matched vendor under the same tracer loses 0.35%/1.4% with no aliases. So our
+   PN assignment is not the defect and the remaining question is what transmit
+   behaviour avoids *exposing* the alias - plausibly retry/requeue fencing that
+   the vendor has and we do not, so that we keep sending 64 or more frames past
+   an unreleased hole instead of holding the window. Re-running the window
+   tracer against today's build, alongside the sequence flow, is the next
+   measurement.
 
 ## Method notes and pitfalls hit
 
