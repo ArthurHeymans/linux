@@ -3293,3 +3293,50 @@ three on another in this session, so the 2-of-3 association failures that the
 trimmed depth-8 image showed earlier were not evidence against that trim; the
 trim was reverted for having no benefit, and that reasoning stands on its own.
 The sweep harness now retries each point up to three times.
+
+## CYC6 distributions: the excess is tail-heavy, and host supply is marginal
+
+CYC5's means were tail-dominated, so CYC6 replaces the spans that cannot
+compose (the reviewer is right that per-event confirm/admit spans sample a
+different population than batches, so they are event latencies, not cycle
+budget components) with histograms of the two gaps that matter, and drops the
+"passes since last MAC service" word, which is zero by construction given the
+lane order. Words: GO->first-drain histogram at 250/500/1000/2000 us,
+confirm->admit histogram at 500/2000 us, plus the aggregates. Randomised MCS
+order, 20 s cooldown, up to three attempts per point.
+
+| MCS | TCP | mem/batch | GO->GO | GO->first drain | passes | MAC svc | <=500us | <=1000 | <=2000 | >2000 | confirm->admit >2000 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 4.45 | 3.99 | 11482 | 9942 | 52.4 | 4.12 | 0.1% | 0.0% | 0.0% | 99.9% | 2.5% |
+| 5 | 4.45 | 3.52 | 8060 | 2611 | 11.6 | 3.32 | 1.7% | 2.6% | 32.4% | 63.3% | 9.8% |
+| 2 | 4.38 | 3.62 | 9983 | 4471 | 21.7 | 3.71 | 0.0% | 2.0% | 3.2% | 94.8% | 9.2% |
+
+Three corrections to the previous entry:
+
+1. **The excess is not a fixed delay.** GO->first drain is broad and
+   tail-heavy: at MCS5 it spans 250 us to >2 ms with 63% above 2 ms, and even at
+   MCS0 it is 99.9% above 2 ms against ~7.7 ms of airtime. The mean of ~1.7-2.2 ms
+   I reported is a tail average, not a constant. Report quantiles, not means.
+2. **Host supply is marginal at MCS5 and run-dependent.** The same image and
+   setting produced 11.1 Mbit/s with 21% idle-starved passes in one run and
+   4.45 Mbit/s with 75% idle-starved passes in another (this sweep's third
+   attempt after two join flakes). So the "cycle" at high rate is a mixture of
+   MAC completion latency and host starvation, and any depth or rate law derived
+   from single runs is unsafe. This also means the flaky-join retry can select
+   the starved cell, exactly as the review warned: results must be reported by
+   attempt index.
+3. **No early-visibility signal exists to sample.** A class-0 completion is
+   produced only by processing a MAC event: `service_single_probe_runtime_inactive`
+   pops the event, the handler enqueues into the firmware completion ring and the
+   scheduler lane drains it. The pipe words a pass might poll instead (cursor,
+   `completion_word`) are firmware-written, not MAC-written. The firmware
+   therefore cannot observe a completion before the event that carries it, and
+   its own contribution is bounded by one `mac_service_pending` poll (190-240 us
+   measured). The review's alternative hypothesis is not merely unproven here,
+   it is not expressible in this firmware's data model.
+
+Next: remove host starvation before characterizing the MAC term at all — a
+supply that saturates the pipe independent of TCP (a UDP blast or a kernel-side
+queue test) — and read the MAC event payload itself, because if the completion
+event carries a hardware timestamp that is the only clock that can split air and
+channel access from MAC report delay.
