@@ -3474,3 +3474,49 @@ with members in a saturating way. Re-running the depth A/B with the CYC9 probe
 and the supply classification in the same window would settle it, but depth-8
 does not fit the ARM stack budget without the reverted trim, so it needs either
 the trim back or a smaller diagnostic base.
+
+## Monitor capture: the air is efficient, and ~1 ms elapses between GO and first air
+
+A spare AR9271 (ath9k_htc) was put in monitor mode on the lab channel and the
+board's own bursts captured while it ran the probe image at MCS5 (`/tmp/xr819-mon.pcap`,
+analyser `/tmp/xr819-analyse-monitor.py`). 47,246 board data frames grouped into
+13,526 bursts, 73% of them exactly four members.
+
+| quantity | measurement |
+| --- | --- |
+| members per burst | p50 4 (histogram 1:1243, 2:671, 3:1787, 4:9825) |
+| burst span, first -> last member | p50 630 us, p90 750 us |
+| member gap inside a burst | p50 215 us, p90 262 us |
+| AP block-ack frames | 14,032 for 13,526 bursts (~1.04 per burst) |
+| burst end -> block-ack | p50 2 us |
+| burst end -> next burst start | p50 2141 us |
+
+Three things follow.
+
+1. **The aggregate is really one packed A-MPDU.** ~1.04 block-acks per four-member
+   burst means one BA for the whole burst, not one per member, and the 215 us
+   member spacing equals one frame's airtime at MCS5 (~1250-byte frames), i.e.
+   the members are transmitted back to back with no dead air. The air is
+   efficient and the AP acknowledges 2 us after the last member.
+2. **Air occupancy is ~0.85 ms for four members** (span 630 us plus the first
+   member's own ~215 us), so the 630-750 us span is airtime, not a stall.
+3. **Therefore ~0.8-1.0 ms elapses between the firmware's GO register write and
+   the first frame appearing on air**: the firmware's depth-4 GO -> first drain
+   in the same window is 2073 us, minus ~845 us of measured air and ~200 us of
+   completion/confirm latency. That is the fixed per-batch term localised at
+   last - it is inside the MAC's TX-start path after the GO trigger, not host
+   supply, not scheduling, not the watchdog, and not airtime.
+
+Implication for the depth contradiction: if the fixed term really is ~1 ms per
+GO, then amortising it over eight members should give ~1.5x, which is what CYC9
+predicted and what the flat depth A/B did not show. The capture can adjudicate
+without any firmware change, because it measures members per burst and air
+occupancy independently of the firmware's own bookkeeping: run depth-4 and
+depth-8 images under the same capture and compare members per burst and burst
+spans. That needs a depth-8 image inside the ARM stack budget, so it needs
+either the reverted trim or a smaller diagnostic base.
+
+Caveat recorded with the derivation: the ~1 ms is a difference between a
+capture-measured duration and a firmware-measured duration, which assumes both
+describe the same batch population. Only durations are compared, so no clock
+synchronisation is required.
