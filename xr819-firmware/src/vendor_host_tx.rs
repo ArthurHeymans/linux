@@ -269,12 +269,19 @@ pub fn classify_header(
         if frame.len() < 20 {
             return Err(HeaderClassificationError::Truncated);
         }
+        let bar_control = u16::from_le_bytes([frame[16], frame[17]]);
         return Ok(HeaderClassification {
             frame_control,
             header_length: 20,
             payload_length: 0,
             qos_control: 0,
-            tid: frame[16] & 0x0f,
+            // mac80211 encodes the compressed BAR control as
+            // `CBMTID_COMPRESSED_BA (0x0004) | (tid << 12)`, so the TID is the
+            // high nibble of the little-endian control word, not the low one.
+            tid: ((bar_control >> 12) & 0x0f) as u8,
+            // The response class must become the BlockAck one the aggregate path
+            // uses before a BAR can be completed; see the retraction note in
+            // rx-performance-investigation.md.
             flags: initial_flags | 0x1000,
             assign_sequence: false,
         });
@@ -3412,13 +3419,14 @@ mod tests {
 
     #[test]
     fn header_classifier_accepts_a_compressed_block_ack_request() {
-        // 20-octet control frame: FC, duration, RA, TA, BAR control (compressed
-        // bitmap, TID 3), start sequence. mac80211 builds this shape and the
-        // ordinary-data path would reject it as truncated.
+        // 20-octet control frame: FC, duration, RA, TA, BAR control, start
+        // sequence. mac80211 encodes compressed TID 3 as 0x3004
+        // (CBMTID_COMPRESSED_BA 0x0004 | tid << 12) and the ordinary-data path
+        // would reject the frame as truncated.
         let mut frame = [0_u8; 20];
         frame[..2].copy_from_slice(&0x0084_u16.to_le_bytes());
         frame[4] = 0x02;
-        frame[16..18].copy_from_slice(&0x1003_u16.to_le_bytes());
+        frame[16..18].copy_from_slice(&0x3004_u16.to_le_bytes());
         frame[18..20].copy_from_slice(&0x0120_u16.to_le_bytes());
 
         assert_eq!(

@@ -4009,3 +4009,29 @@ response rather than a plain ACK), plus correcting the classifier's TID decode,
 which must read bits 12-15 of the little-endian BAR control rather than the low
 nibble. None of that exists today, so the honest baseline is the pre-change
 behaviour: full rate with the 64-datagram runs.
+
+## Reverted, and the baseline verified
+
+The driver's `cw1200_skb_dtor` marking was removed and the remaining marking in
+`cw1200_tx_confirm_cb` was gated on `IEEE80211_TX_CTL_AMPDU`, which this
+(non-txq) driver never sets, so nothing fires. The classifier's TID decode now
+reads bits 12-15 of the little-endian BAR control, matching mac80211's
+`CBMTID_COMPRESSED_BA (0x0004) | (tid << 12)`, and the unit test uses the real
+encoding (`0x3004` for TID 3) rather than the `0x1003` we invented.
+
+One verification run of the same 10 Mbit/s flow, same firmware path, confirms the
+revert restores the baseline exactly:
+
+| | storm (marking on) | reverted |
+| --- | --- | --- |
+| sent in 30 s | 5,507 | **31,243** |
+| loss | 47% | **21.0%** |
+| runs of ~64 | 4 | **75** |
+
+So the pre-change behaviour is back: full rate, and the 64-datagram loss runs are
+still there. The BAR episode is closed as a regression that has been undone; the
+real problem is unchanged from where it started, and any future BAR attempt must
+first solve the four blockers the static analysis identified (the `TxRequest::parse`
+length gate, the dispatch path that only admits unicast data, the management
+publisher that rejects control frames, and the aggregate-only response handling
+that would need the BlockAck class rather than a plain ACK).
