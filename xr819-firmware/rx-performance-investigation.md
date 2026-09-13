@@ -3710,3 +3710,44 @@ The next run must capture the board-side driver counters (TXed / AGG TXed /
 MULTI TXed / TX miss) alongside the host-side loss, because the open harness
 filters them out today and they are what decides whether the 20% is board-side
 admission loss or air loss.
+
+## BA versus no-TX-BA with per-datagram sequence logging
+
+To attribute the ~20% board-TX loss, the iperf flow was replaced with a paced
+python sender on the board (1200-byte payload carrying a 32-bit sequence) and a
+receiving logger on the host that reports loss and the run lengths of missing
+sequence numbers. Two host modules were interleaved, same firmware and rate:
+the BA-session driver and the no-TX-BA driver.
+
+| arm | module | offered | received | loss | missing-run profile |
+| --- | --- | --- | --- | --- | --- |
+| ba-a | BA session | 30737 | 22333 | 27.3% | 1518 runs, mean 5.5; 1365 singles plus clusters at 64-69 |
+| ba-b | BA session | 32555 | 21510 | 33.9% | 774 runs, mean 14.3; 576 singles plus clusters at 64-69 |
+| noba-a | no TX BA | 23042 | 12336 | **46.5%** | 2220 runs, mean 4.8; runs of 3-6 dominate |
+| noba-b | no TX BA | 21760 | 11628 | **46.6%** | 2139 runs, mean 4.7; runs of 3-6 dominate |
+
+Findings:
+
+1. **TX BA helps substantially; it is not the cause of the loss.** Losing the BA
+   session nearly doubles the loss (27-34% -> 46.5%) and cuts delivered
+   datagrams by ~45%. The static comparison's best-supported hypothesis, that
+   the BA/window path is responsible, is not supported by this A/B.
+2. **The module decides the transmission shape, and the probe sees it.** With BA
+   there is ~1.04 TX-start events per batch (one A-MPDU per batch); without BA
+   it is ~4.2 per batch, i.e. one per member, which is exactly the extra airtime
+   overhead the throughput difference shows. TX-start -> first drain is also
+   shorter without BA (310 us against ~955 us) because each start covers a
+   single frame.
+3. **The loss profile is bimodal.** The BA arms show many isolated single
+   datagrams (1365 and 576) plus a handful of long runs clustered at **64-69**
+   consecutive datagrams, which is the BA session/reorder window size; the no-BA
+   arms show short runs of 3-6 instead. That is a real structural signature, but
+   it cannot yet be read as air loss.
+
+Confound recorded: the paced python sender sleeps between datagrams, so bursts
+of loss can equally be board-side queue drops rather than air loss, and the
+board-side driver counters are still filtered out of the harness. Separating
+"never transmitted" from "transmitted and not delivered" needs the monitor
+capture running alongside this flow, which is the next run. Note also that the
+host firewall drops unsolicited inbound UDP, so the receiver must send a hello
+first to open the return path; without it every arm reads zero received.
