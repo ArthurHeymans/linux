@@ -3415,3 +3415,45 @@ quantity; (2) a monitor capture of the board's own bursts, which shows whether
 the air actually starts ~1.5 ms after the GO or the burst is simply short,
 requiring a spare monitor-capable radio (the host's ath9k_htc module is loaded
 but no adapter is attached).
+
+## The fixed per-batch term survives idle gaps and the watchdog knob
+
+Two more probes against the fixed ~1.5-2 ms per-batch GO -> first-drain term.
+
+**Duty-cycled supply (CYC10).** Same CYC9 image, three regimes in one boot: TCP,
+continuous UDP blast, and a blast interrupted 1 s on / 1 s off so many batches
+follow a one-second idle gap. Depth-4 GO -> first drain: 2989 us (TCP), 2227 us
+(continuous blast), **2107 us (duty)**. A PHY ramp or recalibration cost would
+grow after a long idle and a contention cost would fall in the quieter regime;
+neither happened, so the term is not idle-dependent.
+
+**Watchdog reload A/B.** The per-pipe watchdog is a countdown the firmware
+reloads at GO, and 5 counts is suspiciously close to the term, so the probe
+gained a build-time override (`XR819_PROBE_WATCHDOG`, production still reloads
+5; symbol-level production identity verified unchanged - text hash moves only
+through panic line metadata). Same rig, UDP window:
+
+| reload | depth-1 | depth-2 | depth-3 | depth-4 | fit | clean cycle | throughput |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 1282 us | 1971 | 2041 | 2114 | 1693 + 106 x depth | 2490 us | 9.7 Mbit/s |
+| 5 | 1638 | 1853 | 1947 | 2134 | 1505 + 157 x depth | 2500 | 9.7 |
+| 10 | 2241 | 1876 | 2000 | 2100 | 1729 + 93 x depth | 2466 | 10.4 |
+
+Depth-4 moves by 34 us across a 5x change in the reload, so the countdown does
+not gate completion reporting.
+
+The term has now survived every lever available without new hardware: it is not
+per-member (the slope is airtime), not firmware scheduling (no loop interval
+above 1 ms), not firmware polling (the completion arrives with an event and is
+drained in that pass), not host supply (present in supply-clean batches), not
+idle-dependent, and not the watchdog countdown. What remains is a MAC-internal
+or on-air cost that is insensitive to our own load, and the decisive measurement
+is a monitor capture of the board's own bursts: it shows whether the air starts
+~1.5 ms after the GO or the burst occupies ~2 ms on air. That needs a spare
+monitor-capable radio - adding a monitor interface to the AX200 while it runs
+the AP is refused (`Operation not permitted`), and the host's ath9k_htc module
+is loaded with no adapter attached.
+
+Process note: the probe tests share one global counter block and cargo runs them
+in parallel, so they now take a spin-lock guard; without it two tests that
+reset and read the same counters produce intermittent false failures.

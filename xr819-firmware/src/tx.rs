@@ -1717,6 +1717,48 @@ impl TxDescriptorAddress {
     const fn word_unchecked(self, index: u32) -> u32 { self.0.wrapping_add(index * 4) }
 }
 
+
+/// Parse `XR819_PROBE_WATCHDOG` at build time; anything that is not a decimal
+/// value below 128 falls back to the production reload of 5.
+#[cfg(feature = "experimental-cycle-probe")]
+const fn probe_watchdog_value(value: Option<&str>) -> u8 {
+    let Some(value) = value else { return 5 };
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return 5;
+    }
+    let mut parsed = 0_u16;
+    let mut index = 0;
+    while index < bytes.len() {
+        let digit = bytes[index];
+        if digit < b'0' || digit > b'9' {
+            return 5;
+        }
+        parsed = parsed * 10 + (digit - b'0') as u16;
+        if parsed > 127 {
+            return 5;
+        }
+        index += 1;
+    }
+    parsed as u8
+}
+
+/// Per-pipe watchdog reload the firmware writes at GO. The probe may override
+/// it at build time (`XR819_PROBE_WATCHDOG`) to test whether completion
+/// reporting is gated by the MAC's watchdog countdown; production always
+/// reloads 5.
+#[inline(always)]
+const fn watchdog_reload() -> u8 {
+    #[cfg(feature = "experimental-cycle-probe")]
+    {
+        probe_watchdog_value(option_env!("XR819_PROBE_WATCHDOG"))
+    }
+    #[cfg(not(feature = "experimental-cycle-probe"))]
+    {
+        5
+    }
+}
+
 fn pipe_record_address(pipe: u8) -> crate::dtcm::MacPipeRecordAddress {
     crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe & 3))
 }
@@ -2461,7 +2503,7 @@ unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
                 write_u8(record.producer_slot().get(), next_head);
                 write_u8(record.state().get(), 0);
                 write_u8(record.control().get(), 0);
-                write_u8(record.watchdog().get(), 5);
+                write_u8(record.watchdog().get(), watchdog_reload());
             }
         }
     }
@@ -2572,7 +2614,7 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                     // Vendor `txp_fn_4155` clears the programmed/abort bits and
                     // reloads the counter after a recovery pass.
                     write_u8(record.control().get(), read_u8(record.control().get()) & 0xf6);
-                    write_u8(record.watchdog().get(), 5);
+                    write_u8(record.watchdog().get(), watchdog_reload());
                 }
             }
         }
@@ -2719,7 +2761,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                         write_u8(record.producer_slot().get(), next_head);
                         write_u8(record.state().get(), 0);
                         write_u8(record.control().get(), 0);
-                        write_u8(record.watchdog().get(), 5);
+                        write_u8(record.watchdog().get(), watchdog_reload());
                     }
                 }
             }
@@ -3294,7 +3336,7 @@ where
             if current == last {
                 mmio.write_u8(record.state().get() as u32, 0);
                 mmio.write_u8(record.control().get() as u32, 0);
-                mmio.write_u8(record.watchdog().get() as u32, 5);
+                mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
             }
             mmio.write_u32(
                 PIPE_IRQ_PENDING,
@@ -3327,7 +3369,7 @@ where
             if current == last {
                 mmio.write_u8(record.state().get() as u32, 0);
                 mmio.write_u8(record.control().get() as u32, 0);
-                mmio.write_u8(record.watchdog().get() as u32, 5);
+                mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
             }
             mmio.write_u32(
                 PIPE_IRQ_PENDING,
@@ -7432,7 +7474,7 @@ unsafe fn service_expired_partial_block_ack_retry(
             // retrying here cannot race a late status IRQ. This rearm therefore
             // releases ownership without acknowledging PIPE_IRQ_PENDING.
             backend.rearm_with_optional_irq_ack(pipe, slot.raw(), frame_node, None);
-            write_u8(record.watchdog().get(), 5);
+            write_u8(record.watchdog().get(), watchdog_reload());
             return true;
         }
         false
@@ -8928,7 +8970,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     mmio.write_u8(record.state().get() as u32, 1);
     let pipe_flags = mmio.read_u8(record.control().get() as u32) | 1;
     mmio.write_u8(record.control().get() as u32, pipe_flags);
-    mmio.write_u8(record.watchdog().get() as u32, 5);
+    mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
         let actual_ring_duration = mmio.read_u32(ring.duration_fifo());
@@ -9007,7 +9049,7 @@ fn finalize_staged_pipe<M: MacPipeMmio>(
     mmio.write_u8(record.state().get() as u32, 1);
     let pipe_flags = mmio.read_u8(record.control().get() as u32) | 1;
     mmio.write_u8(record.control().get() as u32, pipe_flags);
-    mmio.write_u8(record.watchdog().get() as u32, 5);
+    mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
     mmio.write_u32(ring.go(), 1);
     #[cfg(feature = "experimental-cycle-probe")]
     crate::cycle_probe::note_go(pipe);

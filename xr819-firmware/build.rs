@@ -23,6 +23,7 @@ fn main() {
         ("XR819_TX_BISECT_STAGE", "0"),
         ("XR819_TX_BISECT_SUBTYPE", "255"),
         ("XR819_DATA_DIAGNOSTIC_LENGTH", "0"),
+        ("XR819_PROBE_WATCHDOG", ""),
     ] {
         println!("cargo:rerun-if-env-changed={name}");
         println!(
