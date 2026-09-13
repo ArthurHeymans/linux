@@ -3972,3 +3972,40 @@ either, and separating those two effects is the next measurement. The candidates
 are a BAR retry storm from mac80211 (a failed BAR is stored and re-sent when the
 next unicast on the TID succeeds), the discarded-frame reporting now stopping the
 TID queue, and the 44-octet skb the driver logs for a 20-octet frame.
+
+## Correction: no BlockAckReq ever reached the air, and the marking caused the collapse
+
+Static analysis of both codebases, checked against the sources, retracts two claims
+recorded above.
+
+First, the firmware classifier change is dead code. `TxRequest::parse` rejects any
+frame shorter than 24 octets (`src/wsm.rs`), so a 20-octet BAR never reaches
+`classify_header` and the control-frame branch is unreachable. Even if it were
+reached, `command.rs` routes the request by `is_unicast_data()` /
+`is_unicast_eapol()`, so a control frame would be handed to the management
+publisher, which rejects anything that is not management or data. The monitor
+capture agrees with that reading: zero BlockAckReq frames on air, which is what we
+should have concluded at the time instead of crediting the classifier change for
+the wedge disappearing.
+
+Second, the marking that produced the counter and the collapse is wrong in a
+different way. `cw1200_skb_dtor` is the driver's normal TX finalizer, not a
+drop-only path: `cw1200_queue_remove` calls it for *every* TX confirmation. Marking
+every QoS frame there sets `IEEE80211_TX_STAT_AMPDU_NO_BACK` on frames that were
+delivered successfully, and mac80211 does not consult `acked` before issuing the
+BAR (`net/mac80211/status.c`). That is why the counter reached 2,873 while the
+failure-branch log never fired, and why the BARs were generated and dropped: the
+firmware refused every one. The measured harm is a self-inflicted storm rather
+than a repair - 5,507 datagrams sent against ~31,000, loss up from 25% to 47%,
+`Used bufs` never above single digits, `TX TTL` zero, no queue locked or overfull.
+The disappearance of the 64-datagram runs is therefore a side effect of telling
+mac80211 that every frame failed its BlockAck, not evidence that a BAR repaired
+anything.
+
+The remaining work, if BAR recovery is still the goal, is three separate pieces in
+the firmware (accept a short control frame in `TxRequest::parse`, give control
+frames a publication path that accepts them, and handle the compressed BlockAck
+response rather than a plain ACK), plus correcting the classifier's TID decode,
+which must read bits 12-15 of the little-endian BAR control rather than the low
+nibble. None of that exists today, so the honest baseline is the pre-change
+behaviour: full rate with the 64-datagram runs.
