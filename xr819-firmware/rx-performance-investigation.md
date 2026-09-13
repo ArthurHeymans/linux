@@ -4093,3 +4093,34 @@ step is therefore on the driver side - find out why the given-up member's
 confirmation fails the queue lookup (packet-id lifetime, or an aggregate
 confirmation that carries only the head member's id) - and only then re-test the
 transmission path, which is now in place.
+
+## The loss is invisible to the host: every frame is confirmed as delivered
+
+With the BAR-capable firmware and a driver instrumented at every exit of
+`cw1200_tx_confirm_cb`, one run gave the answer in a single line:
+
+```
+TX confirm: 31202 ok, 0 fail      Conf unmatched: 0 (0 failed)
+Used bufs:  0                     TX TTL: 0
+stream:     SENT 31192, loss 55.6%, 145 runs of exactly 64
+```
+
+Every host frame is confirmed **successfully**, including the members that were
+never delivered, so mac80211 has no idea anything was lost: it neither retransmits
+(that is the firmware's job inside a BA session) nor asks for a BlockAckReq - hence
+zero BAR requests even with the transmission path now implemented. Nothing is
+"unmatched"; there simply are no failures to report.
+
+The firmware does have the notion: the give-up action passes status `0x0b` and bumps
+the `GIVE_UP` counter. But no failure confirmation ever reaches the driver, so either
+the plan never classifies a member as given up - every member comes back
+`Acknowledged` - or the confirmation is built with a zero status regardless. The
+driver's existing `AGG report: ctl, len, ack, invalid` counters sum the aggregate
+lengths and acked lengths the firmware reports, and comparing `ack` against `len`
+during a run is what will separate those two cases: if they match while half the
+datagrams are lost, the BA-driven classification is claiming every member acked.
+
+That is the root defect this whole investigation has been circling: the firmware
+hides its own losses from the host. Until a missing member is reported as failed, no
+retry, no BlockAckReq and no host-level recovery can happen, and the 64-datagram
+runs are simply what those hidden losses look like at the receiver.
