@@ -3457,3 +3457,20 @@ is loaded with no adapter attached.
 Process note: the probe tests share one global counter block and cargo runs them
 in parallel, so they now take a spin-lock guard; without it two tests that
 reset and read the same counters produce intermittent false failures.
+
+### Open contradiction: the depth model predicts a gain the depth A/B did not show
+
+The CYC9 fit is linear and predicts that depth-8 would amortise the fixed
+per-batch term over twice the members: 1500 + 8 x 157 = 2756 us for 8 members
+against 2134 us for 4, i.e. roughly 1.3-1.5x throughput. The measured depth A/B
+was flat (depth-4 control 9.86 TCP / 11.3 UDP; pre-refactor depth-8 10.2 / 10.5;
+refactored depth-8 9.46 / 12.0). Both cannot be right, and the discrepancy is
+unresolved. Candidate explanations, in the order I would test them: the depth
+A/B was partly supply-masked (one arm ran 75% idle-starved, and we now know
+supply swings run to run); the linear fit does not extend past depth 4 (the
+depth-8 arms may carry mixed-rate members or more retries, which would raise the
+slope); or the "intercept" is not a true per-batch cost but something that grows
+with members in a saturating way. Re-running the depth A/B with the CYC9 probe
+and the supply classification in the same window would settle it, but depth-8
+does not fit the ARM stack budget without the reverted trim, so it needs either
+the trim back or a smaller diagnostic base.
