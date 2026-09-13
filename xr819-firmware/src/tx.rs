@@ -3581,6 +3581,8 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
                         trace_tx_stage(TX_TRACE_PHASE2);
                         trace_tx_value(0x1c, event.raw);
                         write_u8(crate::dtcm::LOW_MAC_EVENT_PENDING.get(), 0);
+                        #[cfg(feature = "experimental-cycle-probe")]
+                        crate::cycle_probe::note_phase2(pipe);
                         service_pipe_tx_start(pipe, self.backend);
                     }
                 } else {
@@ -7579,6 +7581,8 @@ pub trait PipeStartEffects {
 /// PHY MMIO must be valid and exclusively owned.
 pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut B) {
     unsafe {
+        #[cfg(feature = "experimental-cycle-probe")]
+        crate::cycle_probe::note_tx_start(read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()));
         trace_tx_stage(TX_TRACE_START);
         trace_tx_value(0x24, u32::from(pipe));
         write_u32(
@@ -7614,7 +7618,11 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
                 )))
                 .get(),
             );
+            #[cfg(feature = "experimental-cycle-probe")]
+            let command2_entry = crate::cycle_probe::command2_enter();
             dispatch_phy_command_2(secondary);
+            #[cfg(feature = "experimental-cycle-probe")]
+            crate::cycle_probe::command2_exit(command2_entry);
             if read_u8(crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get()) == 4 {
                 write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), 4);
             } else {

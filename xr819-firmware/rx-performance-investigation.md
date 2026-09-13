@@ -3520,3 +3520,53 @@ Caveat recorded with the derivation: the ~1 ms is a difference between a
 capture-measured duration and a firmware-measured duration, which assumes both
 describe the same batch population. Only durations are compared, so no clock
 synchronisation is required.
+
+## CYC11: the ~1.3 ms is MAC latency before its own start event
+
+The static comparison pointed at the MAC's start path, so CYC11 timestamps the
+boundaries the firmware can see after the GO: the type-`0x37` phase-2 start
+event dequeue, `txp_pipe_tx_start` entry (with the retained PHY operation state),
+PHY command 2 entry/exit, and the first completion. MCS5, whole-phase window,
+16,971 batches, 3.79 members each, 8.5-10.4 Mbit/s:
+
+| span | mean | n |
+| --- | --- | --- |
+| GO -> first drain | 2394 us | 16971 |
+| **GO -> phase-2 dequeue** | **1312 us** | 16971 (100% of batches) |
+| phase-2 -> first drain | 1082 us | 16971 |
+| TX-start -> first drain | 993 us | 16971 |
+| PHY command 2 | **0 dispatches** | — |
+
+Two candidates die here:
+
+1. **PHY command 2 never runs.** The retained operation state is 5 at every one
+   of the 17,379 TX-start events (`state3=0 state5=17379`), so the rate-specific
+   command-2 branch is skipped exactly as the vendor skips it in steady state.
+   "Repeated command 2" and "our PHY state machine differs" are both refuted.
+2. **The delay is before the MAC tells us anything.** The MAC raises its own
+   start event 1312 us after our GO write, on every batch; the whole post-event
+   path (handler, TX-start, air, completion report) is 1082 us, of which ~845 us
+   is measured air, so only ~240 us - about one cooperative pass - is ours.
+
+So the fixed term is a **per-GO MAC start latency of ~1.3 ms**, and nothing the
+firmware does after the GO can change it.
+
+Correction recorded while preparing the second experiment: the command-1 A/B was
+dropped before spending board time. The vendor calls `pac_phy_start_op(1)` inside
+`txq_build_aggregate_lists`, which `txp_scheduler_run` invokes on every pass with
+a non-empty ring (`annotated-main.c:12780`), and its wrapper also restarts the
+timer whenever the timeout is non-zero - so the vendor arms command 1 far more
+often than our twice per batch, and our double call is not a delta at all.
+
+### New lead: the MAC latency is per GO and per pipe, and we use one pipe
+
+Measured `other-pipe events` has been 0-1 per window across every probe in this
+series, so all our traffic is serialised on pipe 0. The vendor scheduler
+computes an *idle-pipe mask* and maps access categories onto idle pipes
+(`annotated-main.c:12760-12780`), i.e. it can have several pipes in flight at
+once. If the ~1.3 ms is paid per GO per pipe, then publishing successive batches
+on different pipes - the next batch started while the current one is still in
+flight - overlaps that latency instead of amortising it through depth, which is
+the one lever that does not depend on batch shape. That is the next experiment:
+a two-pipe alternating publication A/B measuring throughput and the pipe
+distribution.
