@@ -529,7 +529,14 @@ impl<'a> TxRequest<'a> {
         let shifted = payload[7] & 0x80 != 0;
         let frame_offset = Self::PAYLOAD_HEADER_LEN + if shifted { 2 } else { 0 };
         let frame = payload.get(frame_offset..).ok_or(Error::Truncated)?;
-        if frame.len() < 24 {
+        if frame.len() < 2 {
+            return Err(Error::Truncated);
+        }
+        let frame_control = u16::from_le_bytes([frame[0], frame[1]]);
+        // A compressed BlockAckReq is a 20-octet control frame; every other frame
+        // this path carries has at least the 24-octet data header.
+        let minimum = if frame_control & 0x00fc == 0x0084 { 20 } else { 24 };
+        if frame.len() < minimum {
             return Err(Error::Truncated);
         }
         Ok(Self {
@@ -562,6 +569,15 @@ impl<'a> TxRequest<'a> {
     pub fn is_unicast_data(&self) -> bool {
         let frame_control = u16::from_le_bytes([self.frame[0], self.frame[1]]);
         frame_control & 0x000c == 0x0008 && frame_control & 0x0040 == 0 && self.frame[4] & 1 == 0
+    }
+
+    /// A unicast compressed BlockAckReq. mac80211 builds one whenever it has to
+    /// abandon an aggregate member, and it is the only control frame this
+    /// firmware transmits.
+    pub fn is_unicast_control(&self) -> bool {
+        self.frame.len() >= 20
+            && u16::from_le_bytes([self.frame[0], self.frame[1]]) & 0x00fc == 0x0084
+            && self.frame[4] & 1 == 0
     }
 }
 

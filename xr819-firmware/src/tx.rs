@@ -1654,8 +1654,12 @@ impl TxFrameAddress {
     }
 }
 
+/// A compressed BlockAckReq is a 20-octet control frame, so the 24-octet data
+/// header is not a valid floor for every frame that reaches the descriptor path.
+const CONTROL_FRAME_MIN_LENGTH: u16 = 20;
+
 fn validated_tx_frame(address: u32, length: u16) -> Option<TxFrameAddress> {
-    (length >= DOT11_FIXED_HEADER_LENGTH)
+    (length >= CONTROL_FRAME_MIN_LENGTH)
         .then(|| packet_ram::RuntimePacketAddress::new(address, usize::from(length)))
         .flatten()
         .map(|address| TxFrameAddress::new(address.raw()))

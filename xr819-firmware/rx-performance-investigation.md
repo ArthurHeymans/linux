@@ -4065,3 +4065,31 @@ static analysis identified - and one cheap diagnostic before it: capture the air
 during a run and check whether the hole's sequence number is ever re-sent as a
 single MPDU. If it is never re-sent, the retry machinery is the fault; if it is
 re-sent and still not delivered, the peer is refusing it and only a BAR can recover.
+
+## The BAR plumbing is in, but the host is never told about the hole
+
+The four pieces the static analysis asked for are implemented: `TxRequest::parse`
+accepts the 20-octet control shape, `is_unicast_control` routes it into the host TX
+driver, `classify_header` recognises the control frame before applying any data
+header minimum, and `validated_tx_frame` accepts a 20-octet frame. The BAR's
+response class is deliberately the no-response one (flags bit 9, frame kind 0xff),
+because a BlockAckReq is answered with a BlockAck rather than an ACK and waiting for
+the ACK class is what turned every BAR into a failure and a re-send.
+
+With that firmware and a driver that marks `NO_BACK` on firmware-reported failures,
+the run generated **zero** BAR requests and **zero** BAR transmissions, and mac80211
+therefore sent nothing. The reason is upstream of all of it: the host is never told
+that a member was abandoned. The driver only marks a failure inside the branch that
+has already matched the confirmation to a queue entry (`cw1200_queue_get_skb`), and
+the firmware's failure confirmations for given-up members are not reaching that
+branch - the 3,200 "failed" confirmations counted earlier are counted at the top of
+`cw1200_tx_confirm_cb`, before the early returns and before that match, so they were
+never matched to an skb and never became a BAR.
+
+That makes the abandonment report the real blocker, not the transmission path: until
+mac80211 is told that a member was abandoned, it has no reason to ask for a
+BlockAckReq, and no amount of firmware BAR capability will be exercised. The next
+step is therefore on the driver side - find out why the given-up member's
+confirmation fails the queue lookup (packet-id lifetime, or an aggregate
+confirmation that carries only the head member's id) - and only then re-test the
+transmission path, which is now in place.

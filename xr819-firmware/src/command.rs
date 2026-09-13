@@ -460,7 +460,9 @@ unsafe fn dispatch_single_request(
                             | (u32::from(tx_request.is_unicast_eapol()) << 1),
                     );
                 }
-                if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
+                if (tx_request.is_unicast_data() && !tx_request.is_unicast_eapol())
+                    || tx_request.is_unicast_control()
+                {
                     let packet_id = tx_request.packet_id;
                     let admitted = unsafe {
                         host_tx_driver.admit(

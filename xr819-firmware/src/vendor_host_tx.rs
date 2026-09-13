@@ -256,15 +256,16 @@ pub fn classify_header(
     frame: &[u8],
     initial_flags: u32,
 ) -> Result<HeaderClassification, HeaderClassificationError> {
-    if frame.len() < 24 || frame.len() > u16::MAX as usize {
+    if frame.len() < 2 || frame.len() > u16::MAX as usize {
         return Err(HeaderClassificationError::Truncated);
     }
     let frame_control = u16::from_le_bytes([frame[0], frame[1]]);
-    // A BlockAckReq is a 20-octet control frame, not a 24-octet data frame, so it
-    // fails the ordinary shape above. mac80211 sends one through this path
-    // whenever an aggregate member has to be abandoned; it carries no payload,
-    // no QoS control, and no sequence to assign, because its own start sequence
-    // is what moves the peer's reorder window. It must reach the air unaltered.
+    // A BlockAckReq is a 20-octet control frame, shorter than the 24-octet data
+    // header, so its shape has to be recognised before any data-frame minimum is
+    // applied. mac80211 sends one through this path whenever an aggregate member
+    // has to be abandoned; it carries no payload, no QoS control, and no sequence
+    // to assign, because its own start sequence is what moves the peer's reorder
+    // window. It must reach the air unaltered.
     if frame_control & 0x00fc == 0x0084 {
         if frame.len() < 20 {
             return Err(HeaderClassificationError::Truncated);
@@ -279,12 +280,18 @@ pub fn classify_header(
             // `CBMTID_COMPRESSED_BA (0x0004) | (tid << 12)`, so the TID is the
             // high nibble of the little-endian control word, not the low one.
             tid: ((bar_control >> 12) & 0x0f) as u8,
-            // The response class must become the BlockAck one the aggregate path
-            // uses before a BAR can be completed; see the retraction note in
-            // rx-performance-investigation.md.
-            flags: initial_flags | 0x1000,
+            // Bit 9 tells `compute_single_frame_pas_timing` that no response is
+            // expected (frame kind 0xff). A BlockAckReq is answered with a
+            // BlockAck rather than an ACK, and waiting for the generic ACK class
+            // made every BAR report failure and be re-sent until the link
+            // collapsed; the peer still releases its window on receipt, so the
+            // frame is transmitted once and completes immediately.
+            flags: initial_flags | 0x1000 | 0x0200,
             assign_sequence: false,
         });
+    }
+    if frame.len() < 24 {
+        return Err(HeaderClassificationError::Truncated);
     }
     let four_address = frame_control & 0x0300 == 0x0300;
     let base_header = if four_address { 30 } else { 24 };
@@ -3437,7 +3444,9 @@ mod tests {
                 payload_length: 0,
                 qos_control: 0,
                 tid: 3,
-                flags: 0x1000,
+                // Bit 9 marks the frame as expecting no response, which is how a
+                // BlockAckReq is transmitted here.
+                flags: 0x1200,
                 assign_sequence: false,
             })
         );
