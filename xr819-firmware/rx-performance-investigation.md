@@ -3787,3 +3787,46 @@ already showed open-firmware runs producing thousands of
 "our PN/sequence handling under retries and requeues makes the AP drop whole
 reorder windows" the leading hypothesis, and the AP PN/reorder trace the next
 measurement rather than another blind A/B.
+
+## The 64-datagram loss run, reproduced on today's build with the mechanism visible
+
+The window tracer was re-attached and a single 10 Mbit/s sequence flow was driven
+through it on the current build (boot `/tmp/xr819-open-boot.bin`, firmware
+`/tmp/xr819-pipe-probe.bin`, BA-session diag module, MCS5). Both halves agree.
+
+Sequence receiver: `SENT=31244`, `RECEIVED=20872`, in-range loss 25.4%, 181
+missing runs, and **69 of them exactly 64 datagrams**.
+
+Tracer, same window: every sampled slot mismatch has `delta=64` (16 of 16), and
+the reorder buffer is effectively full when it fires (occupancy 60-64, with seven
+events at 63 and seven at 64). The chain is explicit in one event:
+
+```
+SLOT_MISMATCH seq=1489 slot=1425 delta=64 head=1425 nssn=1426 size=64 count=63
+PN_ADVANCE   seq=1489 pn=30170 stored=30105 head=1425 nssn=1426
+SLOT_MISMATCH seq=1490 slot=1426 delta=64 head=1426 nssn=1491 size=64 count=63
+PN_REJECT    seq=1427 pn=30108 stored=30171 ... slot=1427 count=62
+PN_REJECT    seq=1428 pn=30109 stored=30171 ... count=61
+   ... 20 consecutive rejects, seq 1427-1446, PNs 30108-30127 ...
+```
+
+Read that as: the AP wants sequence 1425 and has 63 frames buffered behind it.
+The frame that arrives and is released is **1489 = 1425 + 64**, so it lands in the
+physical slot belonging to the missing 1425. Its PN is legitimate and higher, so
+the AP accepts it and moves the stored high-water mark to 30170. Every older frame
+that was buffered legitimately (1427-1446, PNs 30108-30127) now fails the replay
+check and is rejected - the loss run. The path-0 reject counter reached 1946 over
+the run with bursts of up to 20 consecutive rejects.
+
+So the defect is not our PN assignment, which the trace shows advancing normally;
+it is that **we transmit at, and one past, the negotiated 64-frame window relative
+to the oldest unacknowledged sequence**. Frame `head+64` is outside a 64-frame
+window, and because the AP's reorder ring has exactly 64 slots it aliases the head
+slot itself. That single fact explains the quantisation (the delta is always 64),
+the load dependence (64 frames must be in flight), the absence of loss at low
+load, and vendor immunity, since the vendor never exposes a hole to 64 frames of
+advance.
+
+The firmware question is therefore specific: where do we account for outstanding
+members and the window limit, and what lets publication continue to `head+64`
+instead of holding? That is a code audit, not another hardware run.
