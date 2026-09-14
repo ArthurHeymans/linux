@@ -10103,7 +10103,8 @@ unsafe fn prepare_host_management_publication(
     if if_id > 1 || !crate::vif::is_active(if_id) {
         return Err(ProbeBuildError::InvalidInterface);
     }
-    if !request.is_unicast_management() && !request.is_unicast_data() {
+    let control = request.is_unicast_control();
+    if !request.is_unicast_management() && !request.is_unicast_data() && !control {
         return Err(ProbeBuildError::WrongTemplateType);
     }
     if request.frame.len() > MAX_TEMPLATE_FRAME_LEN {
@@ -10134,8 +10135,11 @@ unsafe fn prepare_host_management_publication(
     }
     let frame_control = u16::from_le_bytes([prepared_frame[0], prepared_frame[1]]);
     let header = classify_dot11_header(frame_control, legacy_eapol);
-    let header_length = header.length;
-    let qos_data = header.qos_data;
+    // A BlockAckReq is a 20-octet control frame with no payload; the data-header
+    // classifier would otherwise describe it as an ordinary 24-octet header with
+    // four octets of payload.
+    let header_length = if control { 20 } else { header.length };
+    let qos_data = if control { false } else { header.qos_data };
     let queue = host_queue;
     unsafe {
         if !legacy_eapol {
@@ -10182,6 +10186,14 @@ unsafe fn prepare_host_management_publication(
     let mut tx_flags = 0x0080_1000_u32;
     if qos_data {
         tx_flags |= 0x0040_0000;
+    }
+    if control {
+        // A BlockAckReq is answered with a compressed BlockAck after SIFS, which
+        // is the response class the aggregate path also retires frames on
+        // (`frame_kind` 0x0c in `compute_single_frame_pas_timing`). Publishing it
+        // with no expected response leaves it uncompleted and stalls the host's
+        // TID queue behind it.
+        tx_flags |= 0x4000;
     }
     if request.frame.get(4).is_some_and(|octet| octet & 1 != 0) {
         tx_flags |= 0x300;

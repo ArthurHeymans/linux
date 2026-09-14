@@ -4225,3 +4225,32 @@ transmit the control frame - so no status ever arrives and nothing can complete 
 it transmits and the completion never reaches the host. A monitor capture during one
 run distinguishes those, because the first shows no BlockAckReq on air and the second
 shows one.
+
+## The capture: our BlockAckReq never reaches the air
+
+A monitor capture during a run with the hole trigger enabled settles the question the
+last run left open. Frames involving the board or the AP, by kind:
+
+- BlockAckReq from the **board**: **0**
+- BlockAckReq from the **AP**: 15 (its own downlink requests)
+- data frames from the board: 232, BlockAck from the AP: 63
+
+So the driver handed BlockAckReqs to the firmware and the MAC transmitted none of
+them, which is why none of them completed and why the host's TID queue sat behind
+them. The first hypothesis was aggregation: a control frame cannot ride an A-MPDU, and
+the host TX path is an aggregation path. The BlockAckReq was therefore routed to the
+single-frame publisher instead (`command.rs` no longer admits control frames to the
+host TX driver; `prepare_host_management_publication` accepts the 20-octet shape and
+sets the BlockAck response class) and the image was rebuilt.
+
+That did not fix it either. The next run handed over twelve BlockAckReqs, received no
+confirmation for any of them, and still crawled: 1,052 datagrams in 33 seconds against
+roughly 37,000 when the trigger is off. Because neither publisher produced a
+completion, the fault is in the completion path rather than in how the frame is
+published: whatever path transmits a control frame, the MAC's transmission report is
+not being turned into a host confirmation for it.
+
+The next measurement must therefore watch the firmware's own accounting - host
+contexts admitted versus completed, and whether a transmission status arrives for the
+control frame's slot - rather than the air or the driver, both of which have now been
+eliminated as the cause.

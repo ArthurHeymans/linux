@@ -460,9 +460,11 @@ unsafe fn dispatch_single_request(
                             | (u32::from(tx_request.is_unicast_eapol()) << 1),
                     );
                 }
-                if (tx_request.is_unicast_data() && !tx_request.is_unicast_eapol())
-                    || tx_request.is_unicast_control()
-                {
+                // A BlockAckReq is a control frame and is deliberately not admitted
+                // to the aggregate host path: it must go out as a single frame, so
+                // it falls through to the management publisher below, which builds
+                // a single-frame publication and lets the MAC's status complete it.
+                if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
                     let packet_id = tx_request.packet_id;
                     let admitted = unsafe {
                         host_tx_driver.admit(
