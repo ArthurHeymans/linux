@@ -4332,3 +4332,30 @@ carries almost nothing, after having been healthy enough twenty minutes earlier 
 51 BlockAckReqs on air. That pattern - join failures alternating with dead links, and a
 module reload or reboot fixing it only temporarily - points at the board or its radio
 environment rather than either codebase.
+
+## Both halves are provable, but no single path does both
+
+The isolation is unambiguous, with the same firmware image (`60e411dd`) and flow:
+
+| hole trigger | result |
+| --- | --- |
+| enabled (host path + 24-octet MPDU) | 175 datagrams delivered in 35 s, dead link |
+| disabled | **35,612 datagrams in 30 s**, 19.7% loss, 1,067 runs (973 singles) |
+
+So the environment is fine and the BlockAckReq path is what stops the link: the frame
+never completes and the host's TID queue waits behind it.
+
+Each publisher solves exactly one half, and neither solves both:
+
+- the **management publisher** transmits (51 BlockAckReqs on air, measured) but
+  publishes on an internal class-6 context, so its completion cannot produce the WSM
+  confirmation mac80211 waits on;
+- the **host TX path** has class-0 contexts whose completions do produce host
+  confirmations, but it publishes by aggregating into A-MPDU batches, and a single
+  control frame does not complete through that path either.
+
+What is missing is a single-frame publication on a host context: transmit the
+20-octet frame with the four FCS octets the MAC requires, from the context pool whose
+completion the host confirmation comes from. Nothing else is left in the mechanism;
+the trigger, the length, the response class and the completion gate are all in place
+and individually verified.
