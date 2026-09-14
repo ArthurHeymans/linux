@@ -4436,3 +4436,27 @@ can answer whether the publication armed or stopped at a bisect stage.
 Two runs were also lost to the recurring association failure, one of them after
 restarting the lab AP profile, which is worth watching because it coincides with the new
 modprobe option.
+
+## Fire-and-forget BlockAckReq: the shortest route around the missing completion
+
+The BlockAckReq's *transmission* is already proven - its effect on the peer is what
+collapsed the 64-datagram runs - so the only reason its absent completion matters is
+that the driver holds its TID queue entry and mac80211 then stops the queue, which costs
+about three quarters of the throughput. That makes the completion measurable but not
+necessary.
+
+The driver now retires the entry itself: `cw1200_queue_packet_id_for_skb` returns the
+packet id of a queued frame (the queue's item structure is private to `queue.c`, so the
+lookup lives there), and the TX path calls `cw1200_tx_confirm_cb` with a synthetic
+success confirmation as soon as the hardware has taken a BlockAckReq. That reuses the
+real confirmation path, so queue removal, skb destruction and mac80211 status are
+identical to a firmware confirmation - and it needs no firmware change, no DTCM address
+and no live firmware read.
+
+Its verification run is outstanding: three attempts stopped at `wait_ready`, after which
+the board's SSH resets every connection while still answering ping. That is the wedged
+state documented earlier, and it needs a physical power cycle rather than another run.
+
+Should the synthetic confirmation interact with a later real one for the same packet id,
+the unmatched counter will say so; `Conf unmatched` exceeding zero after this change is
+expected and benign.
