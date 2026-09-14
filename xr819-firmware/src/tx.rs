@@ -10125,6 +10125,15 @@ unsafe fn prepare_host_management_publication(
     let scratch = unsafe { &mut *PREPARED_PROBE_SCRATCH.0.get() };
     scratch.bytes[..request.frame.len()].copy_from_slice(request.frame);
     scratch.length = request.frame.len();
+    if control {
+        // MEASUREMENT PROBE (remove once answered): a 20-octet MPDU may be rejected
+        // where the descriptor path's minimum is the 24-octet fixed header. Pad to 24
+        // and see whether the MAC transmits it at all; a captured BlockAckReq from the
+        // board then implicates the length rather than the frame type.
+        let padded = request.frame.len() + 4;
+        scratch.bytes[request.frame.len()..padded].fill(0);
+        scratch.length = padded;
+    }
     scratch.rate = request.max_tx_rate;
     let legacy_eapol = request.is_unicast_eapol() && !force_ordinary_replay;
     if !legacy_eapol {

@@ -4283,3 +4283,30 @@ pipe class, or the vendor firmware sending BlockAckReqs through its own BA-sessi
 machinery instead of the host path. The unused DTCM structures left over from the
 vendor layout - `DTCM_BA_SESSIONS` with a `timeout_1024us` field and a timer,
 `DTCM_PENDING_BA_LMC` - are suggestive of the last one.
+
+## The transmission gate was the length: a 24-octet MPDU goes out
+
+The measurement probe answered it in one run. Publishing the BlockAckReq padded to 24
+octets - four zero bytes past the frame, which is exactly where the FCS belongs -
+produced **51 BlockAckReq frames from the board on air**, every one with
+`TA=12:42:2a:37:70:07` (the board), `RA=98:5f:41:18:76:17` (the AP) and
+`ctrl=0x0004` (compressed bitmap, TID 0). The unpadded 20-octet frame produced zero,
+twice. The same run also shows 4,779 data frames from the board and 1,594 BlockAcks
+from the AP.
+
+So the MAC will not transmit a 20-octet control MPDU, and accepts the same frame at
+24 octets. That is consistent with the descriptor counting the four FCS octets: the
+transmitted MPDU is then a complete BlockAckReq rather than a truncated one, which is
+why the peer answers it.
+
+The probe is therefore the fix for transmission, and it explains the earlier
+contradiction: the frame had been published correctly all along and was simply never
+put on the air, so no completion event could ever fire.
+
+Completion is still missing - twelve BlockAckReqs handed over, none confirmed - and
+the code now says why: `prepare_host_management_publication` publishes through an
+internal class-6 context rather than the host's class-0 pool, so its completion cannot
+produce the host's WSM confirmation for the packet id mac80211 is waiting on. The next
+change is to keep the 24-octet length while publishing through the host path, whose
+contexts do confirm; the two halves are now known separately and just have to be
+combined.
