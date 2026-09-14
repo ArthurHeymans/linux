@@ -460,12 +460,12 @@ unsafe fn dispatch_single_request(
                             | (u32::from(tx_request.is_unicast_eapol()) << 1),
                     );
                 }
-                // A BlockAckReq is a control frame and goes through the host TX path so
-                // that its completion produces the WSM confirmation mac80211 waits on;
-                // the internal class-6 context behind the management publisher cannot.
-                if (tx_request.is_unicast_data() && !tx_request.is_unicast_eapol())
-                    || tx_request.is_unicast_control()
-                {
+                // A BlockAckReq is a control frame: the management publisher transmits
+                // it as a single frame (with the four FCS octets the MAC requires) and
+                // its class-6 completion returns the host packet id, which hif_startup
+                // turns into the WSM confirmation mac80211 waits on. The host TX path
+                // batches into A-MPDUs and never completes a lone control frame.
+                if tx_request.is_unicast_data() && !tx_request.is_unicast_eapol() {
                     let packet_id = tx_request.packet_id;
                     let admitted = unsafe {
                         host_tx_driver.admit(

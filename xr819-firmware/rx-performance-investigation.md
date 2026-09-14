@@ -4359,3 +4359,32 @@ What is missing is a single-frame publication on a host context: transmit the
 completion the host confirmation comes from. Nothing else is left in the mechanism;
 the trigger, the length, the response class and the completion gate are all in place
 and individually verified.
+
+## The loss mechanism moves: 64-datagram runs all but disappear
+
+With the BlockAckReq routed through the management publisher - which transmits it as a
+single 24-octet frame and whose class-6 completion carries the host packet id back -
+the run finally changed shape rather than merely stalling:
+
+| | baseline (trigger off) | BAR recovery enabled |
+| --- | --- | --- |
+| sent in 30 s | 35,612 | 8,787 |
+| received | 23,811 | 7,144 |
+| loss | 19.7% | **12.5%** |
+| runs of ~64 | 45 (plus 973 singles) | **3** (plus 456 singles) |
+| counters | - | 61 BAR requests, 7,667 confirmations, `Conf unmatched` 0, `Used bufs` 3 |
+
+The window-shaped loss is essentially gone: three runs of 64-71 against forty-five
+before, and total loss down from 19.7% to 12.5%. That is the mechanism working - a
+BlockAckReq makes the peer release the frames it had buffered behind a hole, so they
+are delivered instead of discarded, and a hole costs one datagram rather than sixty
+to seventy.
+
+What is left is throughput: 8,787 datagrams against 35,612 on the same environment, and
+`XR819 BAR confirm` never appears in the driver even though twelve BlockAckReqs were
+handed over and every confirmation that does arrive is matched (`Conf unmatched` is
+zero). Each unconfirmed BlockAckReq still holds a TID queue entry, so the sender paces
+at roughly a quarter speed. The class-6 completion is therefore still not reaching the
+host for this frame, despite the path preserving the packet id, which is the next
+thing to instrument: count `HostManagementTxReport::Completed` emissions and the
+management runtime's published/completed handoff.
