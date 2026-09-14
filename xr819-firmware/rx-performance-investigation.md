@@ -4182,3 +4182,26 @@ datagrams in its sequence flow before the sender and receiver gave up. The AP it
 is healthy on the host side (`xr819-lab-intel` activated, channel 6), and each failed
 attempt returns the board to recovery firmware, so the block is the radio environment
 rather than either codebase.
+
+## The BlockAckReq is now generated and handed over - and then never completes
+
+With the hole trigger in place the recovery path ran end to end for the first time:
+the driver reported one `AGG BAR req`, mac80211 built a BlockAckReq, and the driver
+logged `XR819 BAR tx: len=44 hdrlen=16 q=2 tid=8 rate=0x00` handing it to the
+firmware. No wedge from a refused request, which is what the transmission path was
+for.
+
+What came next is the new problem. The same run stalled: 261 datagrams sent in 313
+seconds against ~31,000 in 30 seconds normally, `TX confirm: 212 ok, 1 fail` and
+`Conf unmatched: 0` over that whole period, and no `XR819 BAR confirm` line at all.
+The BA session had already been torn down eight seconds after it came up. So the
+BlockAckReq was accepted and published but never completed, and the host's TID queue
+sat behind it - the same stall signature as the refused request, reached from the
+other side.
+
+A frame published with the no-response class has to be completed by the MAC's
+transmission report alone, and that completion evidently never reaches the host.
+Until it does, every BlockAckReq costs a stalled queue instead of a repaired window,
+which is worse than not sending one. The next change is therefore in the firmware's
+completion path for a no-response control frame, not in the trigger or the
+transmission path, both of which now demonstrably work.
