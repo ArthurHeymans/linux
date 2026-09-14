@@ -4388,3 +4388,27 @@ at roughly a quarter speed. The class-6 completion is therefore still not reachi
 host for this frame, despite the path preserving the packet id, which is the next
 thing to instrument: count `HostManagementTxReport::Completed` emissions and the
 management runtime's published/completed handoff.
+
+## Two hypotheses ruled out by reading, and the trace reader located
+
+While chasing why the management publisher's completion does not reach the host, two
+plausible mechanisms were disproved from the code rather than from another run.
+
+The host TX path does **not** aggregate a control frame: `ampdu_candidate_matches`
+(`host_tx_policy.rs`) requires `frame_control & 0x008c == 0x0088`, i.e. QoS data, so a
+BlockAckReq can neither head nor join an A-MPDU batch and `plan_ampdu_group` returns
+`None` for it, leaving `aggregate_len = 1` and the single-frame publication the earlier
+design note asked for. The earlier conclusion that the host path "batches into A-MPDUs
+and never completes a lone control frame" was wrong.
+
+The class-6 completion does carry the host identity: `service_host_management_tx`
+returns `Completed { packet_id: runtime.host_packet_id, .. }` once
+`service_single_probe_runtime_inactive` yields a completion, and `hif_startup` turns
+that into the asynchronous WSM confirmation. So the path is right on paper; the
+completion itself is not arriving.
+
+For the next measurement the firmware already has a readable sink: the TX execution
+trace (`TX_EXEC_TRACE`, twelve words, magic "TXEX"), which the driver prints from
+`debug.c` when the magic matches. Trace points at publish result, `host_published`
+arming, `service_single_probe_runtime_inactive` completion/no-completion, and the
+handoff should show which of those links is missing without another air capture.
