@@ -4254,3 +4254,32 @@ The next measurement must therefore watch the firmware's own accounting - host
 contexts admitted versus completed, and whether a transmission status arrives for the
 control frame's slot - rather than the air or the driver, both of which have now been
 eliminated as the cause.
+
+## The completion gate, and why fixing it changed nothing
+
+Static analysis (medium effort, one agent, full agreement with the code) found the
+precise reason a published BlockAckReq never retires: `service_pipe_tx_success`
+completes frames only when the slot's marker byte is `0xff`, and a BlockAckReq is
+published with the BlockAck response class `0x0c` there, because that class is what
+selects the expected response. Nothing else retires it either - a received BlockAck
+does not synthesize a matching status report - so the frame stays in slot state 3 and
+the host's TID queue waits behind it.
+
+The fix is in: the success path now also completes a frame whose control field is a
+BlockAckReq (`frame_control & 0x00fc == 0x0084`), which is safe because that event
+proves the hardware finished with the context. The image was rebuilt
+(`be704730`).
+
+It changed nothing observable, and the capture explains why. **The MAC never
+transmits the BlockAckReq at all** - zero on air while the driver hands them over -
+so the physical-success event that both the old marker check and the new condition
+depend on never happens. The completion gate was real and worth fixing, but it sits
+downstream of a transmission problem: a 20-octet control frame handed to the MAC as a
+single frame does not come out.
+
+The remaining suspects are mechanical: the descriptor or MPDU length for a 20-octet
+control frame being rejected, the MAC requiring control frames through a different
+pipe class, or the vendor firmware sending BlockAckReqs through its own BA-session
+machinery instead of the host path. The unused DTCM structures left over from the
+vendor layout - `DTCM_BA_SESSIONS` with a `timeout_1024us` field and a timer,
+`DTCM_PENDING_BA_LMC` - are suggestive of the last one.

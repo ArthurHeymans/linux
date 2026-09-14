@@ -7510,7 +7510,18 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
 
         let pipe_state = read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get());
         let retry_rate = read_u8(current_slot.address.retry_rate().get());
-        if pipe_state == 1 && retry_rate == 0xff {
+        // A BlockAckReq is published with the BlockAck response class (0x0c) in that
+        // byte rather than the 0xff marker, because the class is what selects the
+        // expected response. Nothing else retires it: the peer's BlockAck does not
+        // synthesize a matching status report, so a BlockAckReq left the host's TID
+        // queue stalled behind it (measured: 1,052 datagrams in 33 seconds against
+        // roughly 37,000). Completing it here is safe because this event proves the
+        // hardware has finished consuming the context.
+        let control_frame = {
+            let frame = current_frame.context();
+            read_u16(frame.frame_control_address()) & 0x00fc == 0x0084
+        };
+        if pipe_state == 1 && (retry_rate == 0xff || control_frame) {
             let frame = current_frame.context();
             let flags = read_u32(frame.control_bits_address());
             if flags & (1 << 4) == 0 {
