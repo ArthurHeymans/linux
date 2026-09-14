@@ -592,8 +592,43 @@ static TX_DEBUG_SNAPSHOT: SharedTxDebugSnapshot =
     }));
 
 struct SharedTxExecTrace(UnsafeCell<[u32; 12]>);
-
 unsafe impl Sync for SharedTxExecTrace {}
+
+/// Instrumentation for the host-management publication handoff, which has no
+/// other live observable: how many publications armed, how many stopped at a
+/// bisect stage and the last stage seen, how many completions arrived with the
+/// last status, and how many service polls found none.
+struct SharedManagementTrace(UnsafeCell<[u32; 7]>);
+
+unsafe impl Sync for SharedManagementTrace {}
+
+#[cfg(target_arch = "arm")]
+static MANAGEMENT_TRACE: SharedManagementTrace = SharedManagementTrace(UnsafeCell::new([0; 7]));
+
+#[cfg(target_arch = "arm")]
+unsafe fn management_trace_bump(index: usize) {
+    unsafe {
+        let cell = &mut (*MANAGEMENT_TRACE.0.get());
+        if let Some(word) = cell.get_mut(index) {
+            *word = word.wrapping_add(1);
+        }
+    }
+}
+
+#[cfg(target_arch = "arm")]
+unsafe fn management_trace_set(index: usize, value: u32) {
+    unsafe {
+        if let Some(word) = (*MANAGEMENT_TRACE.0.get()).get_mut(index) {
+            *word = value;
+        }
+    }
+}
+
+#[cfg(not(target_arch = "arm"))]
+unsafe fn management_trace_bump(_index: usize) {}
+
+#[cfg(not(target_arch = "arm"))]
+unsafe fn management_trace_set(_index: usize, _value: u32) {}
 
 static TX_EXEC_TRACE: SharedTxExecTrace = SharedTxExecTrace(UnsafeCell::new([0; 12]));
 
@@ -10429,6 +10464,8 @@ pub unsafe fn service_host_management_tx(
 ) -> HostManagementTxReport {
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     if let Some(published) = runtime.host_published {
+        // Instrumentation: entered the waiting-for-completion state.
+        unsafe { management_trace_bump(6) };
         if let Some((request, _)) = request {
             return HostManagementTxReport::Failed {
                 packet_id: request.packet_id,
@@ -10438,8 +10475,13 @@ pub unsafe fn service_host_management_tx(
         let report =
             unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
         let Some(completion) = report.completion else {
+            unsafe { management_trace_bump(4) };
             return HostManagementTxReport::Servicing;
         };
+        unsafe {
+            management_trace_bump(3);
+            management_trace_set(5, u32::from(completion.status));
+        }
         let context = ContextAddress::new(completion.context);
         let completion_status = completion.status;
         if context != published.context {
@@ -10518,6 +10560,15 @@ pub unsafe fn service_host_management_tx(
         runtime.host_published = Some(published);
         runtime.host_packet_id = request.packet_id;
         runtime.host_rate = request.max_tx_rate;
+        // Instrumentation: publication armed and waiting for its completion.
+        unsafe { management_trace_bump(0) };
+    } else {
+        // Instrumentation: publication stopped at a bisect stage, so nothing is
+        // waiting for a completion and no confirmation can follow.
+        unsafe {
+            management_trace_bump(1);
+            management_trace_set(2, u32::from(published.bisect_stage));
+        }
     }
     HostManagementTxReport::Published {
         packet_id: request.packet_id,

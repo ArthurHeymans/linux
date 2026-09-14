@@ -4412,3 +4412,27 @@ trace (`TX_EXEC_TRACE`, twelve words, magic "TXEX"), which the driver prints fro
 `debug.c` when the magic matches. Trace points at publish result, `host_published`
 arming, `service_single_probe_runtime_inactive` completion/no-completion, and the
 handoff should show which of those links is missing without another air capture.
+
+## Instrumenting the management handoff: built, wired, and one address short
+
+The management publication path has no live observable, so the firmware now keeps seven
+words of counters next to the TX execution trace: publications armed, publications that
+stopped at a bisect stage with the last stage seen, completions seen with the last
+status, service polls that found no completion, and entries into the waiting state. The
+driver can read arbitrary memory through its `ahb` debugfs file, which returns `-EBUSY`
+while the firmware is live unless the module is loaded with `unsafe_debugfs=1`, and
+which otherwise enters reset/access mode and freezes the snapshot - so the words survive
+a read taken after the flow has finished.
+
+That path works: with `options cw1200_core unsafe_debugfs=1` the reads succeed and return
+words. They just are not our words. Computing the address from the trace's link-address
+delta assumed the driver's `XR819_TRACE_ADDRESS` (0x0900fd20) still describes this
+firmware, and it does not: the current layout keeps DTCM state at 0x04000000..0x04009c44
+(`check-dtcm-layout.py`), so that constant is stale and the delta landed in uninitialised
+memory. Resolving a DTCM symbol to the address the SDIO host reads it at - the convention
+the working probe counter reads already use - is the remaining step before the counters
+can answer whether the publication armed or stopped at a bisect stage.
+
+Two runs were also lost to the recurring association failure, one of them after
+restarting the lab AP profile, which is worth watching because it coincides with the new
+modprobe option.
