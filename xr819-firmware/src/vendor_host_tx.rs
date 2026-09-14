@@ -274,7 +274,9 @@ pub fn classify_header(
         return Ok(HeaderClassification {
             frame_control,
             header_length: 20,
-            payload_length: 0,
+            // The MPDU is the frame as retained, which includes the four octets of
+            // FCS space appended above for a control frame.
+            payload_length: (frame.len() - 20) as u16,
             qos_control: 0,
             // mac80211 encodes the compressed BAR control as
             // `CBMTID_COMPRESSED_BA (0x0004) | (tid << 12)`, so the TID is the
@@ -395,7 +397,25 @@ pub unsafe fn classify_and_encrypt(retained: &mut RetainedHostTx) -> Result<(), 
     }
     let context = retained.context;
     let frame_address = unsafe { read_host_u32(context.frame_address()) };
-    let frame_length = unsafe { read_host_u16(context.frame_length()) };
+    let mut frame_length = unsafe { read_host_u16(context.frame_length()) };
+    // A 20-octet control MPDU is not transmitted by the MAC, while the same frame at
+    // 24 octets goes out - those four octets are where the FCS sits, so the MPDU the
+    // peer sees is a complete BlockAckReq (measured: 0 on air at 20 octets, 51 at 24).
+    // Extend the retained frame in place and let the classification report the real
+    // MPDU length rather than trimming it back to 20.
+    if frame_length >= 20
+        && unsafe { (frame_address as *const u8).read_volatile() } & 0xfc == 0x84
+    {
+        unsafe {
+            core::ptr::write_bytes(
+                (frame_address as *mut u8).add(usize::from(frame_length)),
+                0,
+                4,
+            );
+        }
+        frame_length += 4;
+        unsafe { write_host_u16(context.frame_length(), frame_length) };
+    }
     let frame = unsafe {
         core::slice::from_raw_parts_mut(frame_address as *mut u8, usize::from(frame_length))
     };

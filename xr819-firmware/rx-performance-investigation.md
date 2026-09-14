@@ -4310,3 +4310,25 @@ produce the host's WSM confirmation for the packet id mac80211 is waiting on. Th
 change is to keep the 24-octet length while publishing through the host path, whose
 contexts do confirm; the two halves are now known separately and just have to be
 combined.
+
+## Combining the two proven halves
+
+The transmission requirement and the completion requirement are now in one path. The
+BlockAckReq goes back through the host TX path, whose contexts produce the WSM
+confirmation mac80211 waits on, and `classify_and_encrypt` extends a control frame to
+24 octets in place before classifying it, so the MPDU the MAC is handed is the shape it
+will actually transmit. `classify_header` reports the MPDU length as the retained frame
+length rather than trimming it back to 20.
+
+The verification is inconclusive because the rig is not cooperating. The one run that
+produced numbers had an effectively dead link: the sender offered 53,587 datagrams and
+the receiver took 40, only 35 aggregate members reached the firmware, and no
+BlockAckReq was generated at all, so nothing under test was exercised. Two further
+attempts failed to associate, and the board was not even reachable for a cleanup pass
+in between.
+
+The rig now fails association most of the time and occasionally brings up a link that
+carries almost nothing, after having been healthy enough twenty minutes earlier to put
+51 BlockAckReqs on air. That pattern - join failures alternating with dead links, and a
+module reload or reboot fixing it only temporarily - points at the board or its radio
+environment rather than either codebase.
