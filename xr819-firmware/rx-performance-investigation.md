@@ -4157,3 +4157,28 @@ reorder head**, which the BlockAck's starting sequence tells us directly. Cappin
 advance below 64 - holding publication instead of transmitting the frame that would
 alias the peer's ring - keeps the peer's window releasable and turns each hole back
 into a single lost datagram instead of a run of sixty-four.
+
+## The hole trigger, and a rig that will not sit still
+
+The localiser's result says the only signal that a frame was lost is the aggregate
+metadata the firmware already sends: `ampdu_len > ampdu_ack_len` means the peer did
+not acknowledge a member, i.e. there is a hole in its reorder window. Nothing else in
+the system can see the loss, because every frame buffered behind that hole is
+reported acked and is discarded later inside the peer.
+
+So the driver now sets `IEEE80211_TX_STAT_AMPDU_NO_BACK` when the metadata reports
+`len > ack_len`, on the head member, which makes mac80211 build a compressed
+BlockAckReq at that frame's next sequence. That start sequence sits just past the
+frames the peer has already buffered, so the peer releases and delivers them instead
+of holding them until its 64-slot ring aliases. Combined with the transmission path
+committed as `57549ffa`, this is the first configuration in which the recovery can
+actually reach the air, and it needs no advance cap: the frames behind a hole are
+recovered rather than prevented.
+
+It is not yet measured. The rig stopped cooperating at the point where it mattered:
+four consecutive association failures (`state=SCANNING`, against a documented rate of
+about one in three), and the single attempt that did associate delivered 104
+datagrams in its sequence flow before the sender and receiver gave up. The AP itself
+is healthy on the host side (`xr819-lab-intel` activated, channel 6), and each failed
+attempt returns the board to recovery firmware, so the block is the radio environment
+rather than either codebase.
