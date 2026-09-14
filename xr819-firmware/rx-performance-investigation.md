@@ -4205,3 +4205,23 @@ Until it does, every BlockAckReq costs a stalled queue instead of a repaired win
 which is worse than not sending one. The next change is therefore in the firmware's
 completion path for a no-response control frame, not in the trigger or the
 transmission path, both of which now demonstrably work.
+
+## The BAR is what stalls the link, in both response classes
+
+Two runs isolate it. With the hole trigger enabled, the flow crawls: 261 datagrams in
+313 seconds (no-response class) and 283 datagrams in 35 seconds (BlockAck class).
+With the trigger disabled - same firmware image, same module build, same harness,
+same flow - the link carries **37,059 datagrams in 30 seconds** at 18.3% loss with
+833 missing runs. So the environment is fine and the stall is caused by publishing a
+BlockAckReq at all.
+
+Changing the response class from no-response (0x0200) to the BlockAck class (0x4000)
+was therefore not the fix, even though that class is the semantically correct one and
+the same class the aggregate path retires frames on. In both cases the frame is
+published and never completed, and the host's TID queue sits behind it.
+
+The next question is where it stops, and it needs the air: either the MAC refuses to
+transmit the control frame - so no status ever arrives and nothing can complete - or
+it transmits and the completion never reaches the host. A monitor capture during one
+run distinguishes those, because the first shows no BlockAckReq on air and the second
+shows one.

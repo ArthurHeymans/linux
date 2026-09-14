@@ -280,13 +280,14 @@ pub fn classify_header(
             // `CBMTID_COMPRESSED_BA (0x0004) | (tid << 12)`, so the TID is the
             // high nibble of the little-endian control word, not the low one.
             tid: ((bar_control >> 12) & 0x0f) as u8,
-            // Bit 9 tells `compute_single_frame_pas_timing` that no response is
-            // expected (frame kind 0xff). A BlockAckReq is answered with a
-            // BlockAck rather than an ACK, and waiting for the generic ACK class
-            // made every BAR report failure and be re-sent until the link
-            // collapsed; the peer still releases its window on receipt, so the
-            // frame is transmitted once and completes immediately.
-            flags: initial_flags | 0x1000 | 0x0200,
+            // Bit 14 selects the BlockAck response class (`frame_kind` 0x0c in
+            // `compute_single_frame_pas_timing`), which is what a BlockAckReq is
+            // answered with - a compressed BlockAck after SIFS, not an ACK. It is
+            // also the class the host TX path retires frames on: publishing the
+            // BAR with the no-response class (0x0200) left it uncompleted and the
+            // host's TID queue stalled behind it (measured: 261 datagrams in 313
+            // seconds against roughly 31,000 in 30).
+            flags: initial_flags | 0x1000 | 0x4000,
             assign_sequence: false,
         });
     }
@@ -3444,9 +3445,9 @@ mod tests {
                 payload_length: 0,
                 qos_control: 0,
                 tid: 3,
-                // Bit 9 marks the frame as expecting no response, which is how a
-                // BlockAckReq is transmitted here.
-                flags: 0x1200,
+                // Bit 14 marks the BlockAck response class, which is what a
+                // BlockAckReq is answered with and what the host path retires on.
+                flags: 0x5000,
                 assign_sequence: false,
             })
         );
