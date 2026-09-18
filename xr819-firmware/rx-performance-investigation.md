@@ -4603,3 +4603,40 @@ The driver now records the BlockAckReq's packet id in `wsm_get_tx` and, in
 context a firmware confirmation arrives in, so queue removal, skb destruction and the
 mac80211 status are the ones the normal path produces. Module `d6081b94`; its
 verification run is next.
+
+## The arm order is not what stops the link
+
+The pair above is open to one objection: the control ran first, in the best conditions,
+and the BlockAckReq arm that followed started from a link already at MCS0 with 266
+retries before the flow. If running second were what stops a run, the pair would show
+exactly what it showed.
+
+Running it the other way settles it, with an AP reset before every arm. The BlockAckReq
+arm went first, the control second, the BlockAckReq arm third:
+
+| arm | order | baseline | outcome |
+| --- | --- | --- | --- |
+| BlockAckReq | 1st | 189.1 ms | stalled, successes froze at 178 |
+| no BlockAckReq | 2nd | 6.2 ms | ran the full 30 s at 1078/s |
+| BlockAckReq | 3rd | 37.0 ms | stalled, successes froze at 384 |
+
+Four BlockAckReq runs have now stalled and both control runs finished the window,
+including the control that ran last. The stall follows the BlockAckReq, not the arm
+order.
+
+## The loss figures do not reproduce; only the stall does
+
+The pair's loss numbers should not be read as the size of the BlockAckReq's benefit.
+Today the same configuration gives very different loss. The control lost 39.05% with 75
+runs in the 64-68 band in one run, and 79.63% with no 64-68 band and a longest run of 82
+in the next. The BlockAckReq arms gave 26.13%, 22.13%, 43.54%, and a 3.70% that only
+covers 135 datagrams because the link stopped almost immediately. Window-shaped loss
+appears in some runs and not others on the same firmware.
+
+What reproduces is the stall: four of four BlockAckReq runs stopped with the same
+signature and both control runs did not. The loss benefit is real - the window shape
+collapses and the peer does release buffered frames - but a single run's loss percentage
+from this rig is not evidence on its own. The claim in the section above that the
+BlockAckReq takes loss from 39.05% to 26.13% should be read as those two runs' numbers
+rather than as the size of the effect, and the 45-to-3 runs figure recorded on Sep 14
+should be treated the same way.
