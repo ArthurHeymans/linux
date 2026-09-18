@@ -4640,3 +4640,75 @@ from this rig is not evidence on its own. The claim in the section above that th
 BlockAckReq takes loss from 39.05% to 26.13% should be read as those two runs' numbers
 rather than as the size of the effect, and the 45-to-3 runs figure recorded on Sep 14
 should be treated the same way.
+
+## The stall, measured: a TID queue pinned above its unlock threshold by unconfirmed BlockAckReqs
+
+The whole chain is now visible instead of just the shape of its end. The status file
+already carried what was needed - per-queue `queued`/`pending`/`sent`/`overfull`/`locked`
+and the hardware input-buffer pool - so the lifecycle could be sampled every two seconds
+during a run without touching the driver at all.
+
+With firmware `bar11` and the BlockAckReq triggers on, the run stalls like this:
+
+    Queue 2: queued 9-11   pending 9-11   sent 178 -> 294   locked: YES   overfull: YES
+    TX bufs: 30 x 1632 bytes     Used bufs: 9-11
+    TX confirm: 168 ok (frozen)  failures 31 -> 148 (climbing)
+    AGG BAR req: 14 -> 37        AP rx: 97 (frozen)
+
+    XR819 BAR tx: 30 lines       XR819 BAR confirm: 0 lines       Conf unmatched: 0
+
+Four things follow, and three of them correct earlier claims in this file.
+
+**The queue is the mechanism.** Queue 2 is locked and overfull while nine to eleven
+entries sit in it for the whole run. The lock is set at `num_queued >= capacity -
+(num_present_cpus() - 1)`, which is **13** on this quad-core board and not the 16 that
+capacity alone suggests, and it is cleared only when `num_queued <= capacity >> 1`, which
+is **8**. Nine to eleven entries therefore sit permanently above the unlock threshold and
+`ieee80211_stop_queue(2)` is never undone. Note also that queue 2 is an AC queue carrying
+the data traffic itself, not a per-TID queue, so the entries that pin it are competing
+with the flow rather than sitting somewhere harmless.
+
+**What keeps them there is that a BlockAckReq is never confirmed.** The driver hands one
+over thirty times in this run and logs each hand-over, and it receives no confirmation at
+all - not one, at any status - while `Conf unmatched` stays at zero, so they are not being
+dropped by the lookup either. Entries leave only when the GC timer expires them, and BAR
+transmit lines continue past the stall at 128-134 s, so mac80211 keeps producing
+BlockAckReqs even with the AC stopped, replacing whatever the timer frees.
+
+**The hardware input-buffer credits are not the binding constraint.** Thirty buffers are
+reported and only nine to eleven are in use. A credit is taken in `wsm_alloc_tx_buffer()`
+before every `wsm_get_tx` and returned only from the confirmation path, so an unconfirmed
+frame does leak one for good, and `tx_burst = input_buffers - hw_bufs_used` would decay to
+nothing once all thirty were gone. That does not happen here, but it is a second failure
+mode waiting behind the first, and the fix returns the credit for that reason.
+
+**The failure path does drain.** An ordinary failure removes its entry
+(`cw1200_queue_remove`, txrx.c:1198); only `WSM_REQUEUE` with its flag set requeues. So the
+queue is not clogged by failures that never retire. It is clogged by the BlockAckReqs that
+each failure asks for and that nothing retires.
+
+## Retiring the BlockAckReq entry needs two things, not one
+
+The fix therefore retires each handed-over BlockAckReq in the BH, after
+`cw1200_data_write` has returned, and it has to do two things there rather than one.
+
+It retires the queue entry through `cw1200_tx_confirm_cb`, and it returns the hardware
+input-buffer credit with `wsm_release_tx_buffer(priv, 1)`, because that release is
+otherwise reached only from the RX confirmation path and would leak one of the thirty
+buffers per BlockAckReq.
+
+Both calls sit *after* `print_hex_dump_bytes(..., data, ...)`, `wsm_txed(priv, data)` and
+the sequence update. The earlier placement, immediately after `cw1200_data_write`, left
+those uses reading a buffer whose skb the confirmation path had already consumed.
+
+The confirmation reports success deliberately, and mac80211 is why: in
+`net/mac80211/status.c` a BlockAckReq that is *not* acked is treated as failed and goes
+through `ieee80211_set_bar_pending()`, which sends the request again on the next
+successful unicast on that TID. Since that next request would also go unconfirmed, a
+non-acked report would turn one leaked entry into a feedback loop. The air result is not
+knowable from the driver either way, so success is the only report that terminates.
+
+That reintroduces a double-release hazard worth watching: if a BlockAckReq confirmation
+ever does arrive, the RX path would return the same credit a second time.
+`wsm_release_tx_buffer` warns on the resulting underflow, so the sampled dmesg now
+includes it alongside the queue and buffer state.
