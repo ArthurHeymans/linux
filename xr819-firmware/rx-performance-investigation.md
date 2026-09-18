@@ -4528,3 +4528,78 @@ diagnose: the setup and flow stages are bounded, so a stalled board is reported 
 `WEDGE_DETECTED` in about a hundred seconds instead of consuming the whole outer
 timeout, and the BAR counters are now sampled from the wired management path every two
 seconds during the flow, so a board that dies mid-flow still leaves the evidence behind.
+
+## A matched pair: the BlockAckReq buys the loss figure and then stops the link
+
+The Sep 14 numbers cannot be compared against today's link, so the comparison was taken
+again, next to itself, on the same board, firmware `bar11` (`914e11a3`) and flow. Only
+the two places that ask mac80211 for a BlockAckReq differ: the hole signal
+(`tx->status.ampdu_len > tx->status.ampdu_ack_len`) and the failure path in
+`cw1200_tx_confirm_cb`. With both disabled nothing sets `IEEE80211_TX_STAT_AMPDU_NO_BACK`
+and `AGG BAR req` stays at zero for a whole run.
+
+| | no BlockAckReq | BlockAckReq |
+| --- | --- | --- |
+| sent in 30 s | 34,200 | 2,394 |
+| rate | 1139/s, the documented baseline was 1187/s | dies at ~8 s |
+| loss | 39.05% | 26.13% |
+| runs in the 64-68 band | 75 (22x64, 15x66, 14x68, 12x65, 12x67) | 1 |
+| `TX confirm` failures | 0-2 for the whole run | 276 and climbing |
+| AP `rx packets` at the end | 19,747, still climbing | 1,311, frozen |
+
+Both arms started from a clean baseline (5.97 ms and 5.28 ms average ping, 0% loss), so
+the difference is not a settling artifact. The BlockAckReq does what it was built for -
+loss 39.05% to 26.13%, and the window-shaped runs collapse from 75 to 1 - and it also
+ends the run.
+
+The stall has the same shape both times it was caught, and the counters date it:
+
+    successes  34 -> 1547 -> 1547 -> 1547 -> 1547 -> 1547      (frozen)
+    failures    0 ->  159 ->  184 ->  216 ->  246 ->  276      (climbing)
+    AP rx      28 ->  282 -> 1311 -> 1311 -> 1311 -> 1311      (frozen)
+    AGG BAR req 0 ->  127 ->  132 ->  138 ->  144 ->  150
+
+and again, with a lower Bar count: successes freeze at 385, AP reception at 306,
+failures climb 31 to 147.
+
+The no-BlockAckReq arm also measures the false-success defect directly. Its failure
+count stays at 0-2 while 39% of the frames never reach the AP: 31,547 firmware
+confirmations against 19,747 received frames. The firmware reports success for frames
+the air never carried. That single number explains most of the loss in both arms, and it
+is why the BlockAckReq arm showed 1,547 confirmations at a moment when the AP had
+received 282.
+
+## Why a BlockAckReq stops the link: a full TID queue that never drains
+
+Each TID queue holds 16 entries (`cw1200_queue_init(..., i, 16, cw1200_ttl[i])`), and
+every BlockAckReq in these runs is queued on queue 2 (`q=2 tid=8` in the tx log). The
+firmware never confirms one, and that is provable from the code rather than inferred:
+`cw1200_tx_confirm_cb` logs `XR819 BAR confirm` for any confirmation whose frame is a
+BlockAckReq, whatever the status, and that line has never appeared in any run while
+`Conf unmatched` stays at zero. So nothing removes a BlockAckReq's entry through the
+confirmation path at all; entries leave only when the GC timer expires them.
+
+That makes the failure self-reinforcing. Sixteen unretired entries fill queue 2,
+`cw1200_queue_put` sets `overfull`, `__cw1200_queue_lock` calls
+`ieee80211_stop_queue(2)`, and the unlock needs the queue to drain to half its capacity
+while the failure path keeps asking for more BlockAckReqs. The queue stops, the TID's
+traffic stops with it, the AP sees nothing more, and the failures being reported are for
+the frames already inside. That is the frozen-counter signature above, and it is the
+same defect the fire-and-forget change was reaching for, only placed correctly this time.
+
+## The retirement belongs after the hand-over, in the BH
+
+The change committed as `ad4125b1` retired the entry in `cw1200_tx`, between
+`cw1200_queue_put` and `cw1200_bh_wakeup`, which is before the frame can be transmitted,
+and it freed the skb from the xmit path. The BH is where a confirmation really arrives,
+and it already has everything needed to retire the entry there: `cw1200_queue_get`
+stamps the driver's packet id into the WSM TX buffer (`(*tx)->packet_id =
+item->packet_id`), and the 802.11 frame follows the header at
+`data + sizeof(struct wsm_tx)`.
+
+The driver now records the BlockAckReq's packet id in `wsm_get_tx` and, in
+`cw1200_bh_tx`, retires that entry through `cw1200_tx_confirm_cb` once
+`cw1200_data_write` has returned. That is after the frame is on the device, in the same
+context a firmware confirmation arrives in, so queue removal, skb destruction and the
+mac80211 status are the ones the normal path produces. Module `d6081b94`; its
+verification run is next.
