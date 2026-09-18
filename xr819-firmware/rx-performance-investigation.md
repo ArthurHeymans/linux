@@ -4460,3 +4460,71 @@ state documented earlier, and it needs a physical power cycle rather than anothe
 Should the synthetic confirmation interact with a later real one for the same packet id,
 the unmatched counter will say so; `Conf unmatched` exceeding zero after this change is
 expected and benign.
+
+## The fire-and-forget retirement retires the frame before it is transmitted
+
+The change that was to remove the throughput regression - retire a BlockAckReq's queue
+entry once the hardware has taken it - is placed before the hand-over rather than after
+it, so it does not do what its description says.
+
+In `cw1200_tx` the frame is queued under `ps_state_lock`:
+
+    spin_lock_bh(&priv->ps_state_lock);
+    BUG_ON(cw1200_queue_put(&priv->tx_queue[t.queue], t.skb, &t.txpriv));
+    spin_unlock_bh(&priv->ps_state_lock);
+
+Queuing is not transmission. The frame becomes hardware work only at the
+`cw1200_bh_wakeup(priv)` call further down, which is what makes the BH thread run
+`wsm_get_tx` -> `cw1200_queue_get` on that queue. The synthetic confirmation sits
+between the two. It reaches `cw1200_tx_confirm_cb`, which calls `cw1200_queue_remove`,
+which moves the item off `queue->queue` into the free pool - before the wakeup that
+would have transmitted it. The BlockAckReq is therefore retired, dropped, and never put
+on air, and the reorder-window release this path was supposed to buy cannot happen at
+all.
+
+Two further defects follow from the same placement. `cw1200_queue_remove` finishes in
+`stats->skb_dtor`, which is `cw1200_skb_dtor`, which ends in
+`ieee80211_tx_status_skb()` - that consumes the skb. The item has already been published
+to the queue, and `spin_unlock_bh` has re-enabled softirqs by then, so a BH thread that
+had picked the item up is copying from that skb into the SDIO write while the
+confirmation path frees it. That is a use-after-free on the transmit path. Reporting a
+frame as delivered from inside the driver's `tx` op is also a reentrancy class mac80211
+normally only sees from a bottom half: `ieee80211_tx_status_skb` can run rate control
+and queue wake logic while mac80211 is still inside `ieee80211_tx`.
+
+The verification run is consistent with the first defect and cannot distinguish the
+second. The board booted with firmware `bar11` (`914e11a3`) and module `f599ac94`,
+associated in two seconds, answered twenty pings, and then took 38 datagrams in thirty
+seconds against roughly 62,000 offered. Two of the 38 were lost in one run of two, so
+the sample contains no 64-datagram run, but 38 datagrams is far too few to say anything
+about the loss mechanism. The sender then stopped inside `send()`, its SSH session never
+returned, and the board came back from the test image's reboot answering ARP and ping
+with every TCP port refused. That is the wedged state again, not a measurement.
+
+None of this contradicts the BlockAckReq's effect on the peer: the management-publisher
+measurement that moved loss from 19.7% to 12.5% and reduced the 64-datagram runs from
+45 to 3 stands on its own evidence. This is only about where the host retires the entry.
+Retiring it has to happen after the frame has been written to the device, and it cannot
+be reported as a success the air never carried. Module `f599ac94` should not be run
+again as it stands.
+
+## The run harness assumed a fixed board address
+
+The run harness pinned the board at `192.168.0.104`, but the board takes its address
+from the lab router's DHCP and had moved to `192.168.0.121`; `.104` was held by a
+different device with a locally-administered MAC, which answers ping and is why the
+earlier failures read as a dead board. The harness now resolves the board by MAC, proves
+a candidate answers before using it, re-resolves across the boot window, and sweeps the
+subnet only when the neighbour table has no entry for that MAC. It also refuses to flash
+unless the three recovery files are present, and reports a failed recovery instead of
+silently doing nothing.
+
+The first probe of that change exposed a bad failure mode of its own: it treated "the
+board does not answer SSH" as "the board cannot be found" and aborted with
+`STEP_FAILED find_board` while the board was simply still booting after its recovery
+reboot. A known address now resolves even when sshd is not up yet, and waiting for
+readiness is left to the readiness test. Two more changes make a wedge cheaper to
+diagnose: the setup and flow stages are bounded, so a stalled board is reported as
+`WEDGE_DETECTED` in about a hundred seconds instead of consuming the whole outer
+timeout, and the BAR counters are now sampled from the wired management path every two
+seconds during the flow, so a board that dies mid-flow still leaves the evidence behind.
