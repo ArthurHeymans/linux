@@ -4677,29 +4677,49 @@ BlockAckReqs even with the AC stopped, replacing whatever the timer frees.
 
 **The hardware input-buffer credits are not the binding constraint.** Thirty buffers are
 reported and only nine to eleven are in use. A credit is taken in `wsm_alloc_tx_buffer()`
-before every `wsm_get_tx` and returned only from the confirmation path, so an unconfirmed
-frame does leak one for good, and `tx_burst = input_buffers - hw_bufs_used` would decay to
-nothing once all thirty were gone. That does not happen here, but it is a second failure
-mode waiting behind the first, and the fix returns the credit for that reason.
+before every `wsm_get_tx` and is returned when a confirmation arrives, so the theory here
+was that an unconfirmed frame leaks one for good and `tx_burst = input_buffers -
+hw_bufs_used` would decay to nothing once all thirty were gone. The next section records
+that this theory was wrong: the credit comes back, and returning it from the BH
+double-counts.
 
 **The failure path does drain.** An ordinary failure removes its entry
 (`cw1200_queue_remove`, txrx.c:1198); only `WSM_REQUEUE` with its flag set requeues. So the
 queue is not clogged by failures that never retire. It is clogged by the BlockAckReqs that
 each failure asks for and that nothing retires.
 
-## Retiring the BlockAckReq entry needs two things, not one
+## Retiring the BlockAckReq entry: the queue half works, the credit half was wrong
 
-The fix therefore retires each handed-over BlockAckReq in the BH, after
-`cw1200_data_write` has returned, and it has to do two things there rather than one.
+The fix retires each handed-over BlockAckReq in the BH, after `cw1200_data_write` has
+returned, through `cw1200_tx_confirm_cb`. Measured on the first attempt, the queue half
+does what it was built for: queue 2, which sat at `queued 9-11` with `locked: yes` for a
+whole run before, instead dipped, drained to `queued: 1, locked: no, overfull: no`, and
+stayed unlocked. With the queue free the sender also reached its full paced rate,
+51,182 datagrams in 30 s (1706/s), against about 1000/s in every stalling run.
 
-It retires the queue entry through `cw1200_tx_confirm_cb`, and it returns the hardware
-input-buffer credit with `wsm_release_tx_buffer(priv, 1)`, because that release is
-otherwise reached only from the RX confirmation path and would leak one of the thirty
-buffers per BlockAckReq.
+The same attempt falsified the other half. The first version also returned the hardware
+input-buffer credit with `wsm_release_tx_buffer(priv, 1)`, on the theory recorded above
+that an unconfirmed frame leaks one of the thirty buffers. The run says the credit does
+come back, and releasing it there double-counts. Three warnings on the BH kworker, in
+order: `WARNING: bh.c:166 at wsm_release_tx_buffer`, which is
+`WARN_ON(priv->hw_bufs_used < 0)`; `WARNING: queue.c:482 at cw1200_queue_get_skb`, a
+confirmation arriving for an entry the synthetic one had already retired; and
+`WARNING: bh.c:501 at cw1200_bh_rx_helper`, the RX path's credit-failure path. After that
+the radio was dead - frames handed over froze at 56, AP rx froze at 68, and the AP's own
+retries ran 2 to 359 while it dropped to MCS0 - so the station's receive path had aborted.
 
-Both calls sit *after* `print_hex_dump_bytes(..., data, ...)`, `wsm_txed(priv, data)` and
-the sequence update. The earlier placement, immediately after `cw1200_data_write`, left
-those uses reading a buffer whose skb the confirmation path had already consumed.
+The credit return has been removed. The theory in the section above that an unconfirmed
+frame necessarily leaks a buffer is therefore wrong as stated: whatever returns it, it
+comes back, and 9-11 of 30 in use at the stall is what a working pool looks like, not a
+leak in progress.
+
+This arm also cannot be read as anything about the air, and that is worth stating plainly:
+the radio died from this bug, so the run says nothing about the loss or the transmission
+problem that remains once the queue half is clean.
+
+The retirement sits *after* `print_hex_dump_bytes(..., data, ...)`, `wsm_txed(priv, data)`
+and the sequence update. The earlier placement, immediately after `cw1200_data_write`,
+left those uses reading a buffer whose skb the confirmation path had already consumed.
 
 The confirmation reports success deliberately, and mac80211 is why: in
 `net/mac80211/status.c` a BlockAckReq that is *not* acked is treated as failed and goes
@@ -4707,8 +4727,3 @@ through `ieee80211_set_bar_pending()`, which sends the request again on the next
 successful unicast on that TID. Since that next request would also go unconfirmed, a
 non-acked report would turn one leaked entry into a feedback loop. The air result is not
 knowable from the driver either way, so success is the only report that terminates.
-
-That reintroduces a double-release hazard worth watching: if a BlockAckReq confirmation
-ever does arrive, the RX path would return the same credit a second time.
-`wsm_release_tx_buffer` warns on the resulting underflow, so the sampled dmesg now
-includes it alongside the queue and buffer state.
