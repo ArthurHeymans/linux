@@ -4935,3 +4935,61 @@ scattered (no 64-runs), `LATE=0` - but this run had no air capture, so
 whether those 15 BARs reached air is still open. The AP side looked sick
 (retries frozen at 263, fell back to MCS0), so the loss number itself is
 suspect this hour.
+
+## Air verdict: zero BARs on air, aggregation torn down by the AP (2026-09-20)
+
+Flow `xr819-forced-d` attempt 3 (attempts 1-2 correctly gate-rejected on
+32/54 ms baselines), module `c3a6be02`, mgmt-bar firmware, with a 1200 s
+monitor capture fully overlapping the 18:48:41-18:49:18 flow. The capture is
+proven sensitive: it sees the ADDBA/DELBA exchange and EAPOL in detail.
+
+| | value |
+|---|---|
+| UDP | 9,203/22,508, loss 59.1% scattered, max run 2137 (edge), rest singles |
+| `LATE` | 0, no bursts |
+| BARs handed to firmware | 16 (`bar_tx`), 7 failure + ~9 forced |
+| matched BAR confirmations | 16 |
+| **BARs on air** | **0** |
+| station QoS data on air | 7,059 attempts, 6,784 unique IVs |
+| BAs from AP | **0**; 10,335 plain ACKs |
+| firmware claims | 13,966 ok / 25 fail; AP rx ~9,361 |
+
+Two firsts, both negative:
+
+1. **The management publisher does not transmit either.** 16 BARs in, 0 on
+air, with a capture that sees management frames fine. Combined with the
+morning run (host-path BARs: 366 in, 0 out), neither firmware path puts a
+BAR on air today. The Sep-14 "51 on air" is not reproduced by current
+source - whether by source drift since or by link state is open, but the
+firmware's real verdict (failed, late, unmatched) is consistent in every
+run: it never intends these frames to fly.
+2. **There is no aggregation to release.** Six seconds into the flow the AP
+fired a burst of a dozen ADDBA Requests within 2 ms, then a burst of
+DELBAs; the station answered one ADDBA Response. dmesg matches (`BA
+action=0 buf_size=64` then `action=1 buf_size=0`). The rest of the flow is
+plain per-frame ACKs. With no aggregate session, the reorder-window theory
+is inapplicable to this run's loss - and indeed there are no 64-runs, only
+scattered singles. The evening link is unaggregated; the morning link was
+aggregated with BAs flowing. Same rig, same day, different link mode.
+
+The ADDBA-then-instant-DELBA pattern (a dozen unanswered requests in 2 ms)
+also says the link is lossy for robust 6 Mb/s management, not just for
+data: the station isn't answering the AP's management frames. Together with
+two gate-rejected baselines (32/54 ms) before the one clean one, the
+picture is a degrading RF evening, not a stable instrument. Evening loss
+numbers (55-72%) should not be compared against morning numbers (20-40%);
+only within-evening matched arms count.
+
+What stands after today, in decreasing order of confidence:
+
+- The host side is now fully instrumented and honest: bounded spin,
+  ratelimited WARNs, verified recovery, true RUN-COUNTS, matched BAR
+  confirmations, synthetic-vs-real double-confirm decomposition.
+- The firmware confirms data it never transmits (~35% gap measured on air)
+  and fails BARs it never transmits (0 on air, failed-unmatched late).
+  Both halves of Sol's asymmetry are now air-backed.
+- BARs, forced or triggered, change nothing measurable while they never
+  reach air. Sol (ii) is blocked on transmission, not on will.
+- The durable targets are Sol (iii) - firmware TX-status/false-success -
+  plus the new ADDBA-teardown mechanism: who gives up on aggregation and
+  why, given the Sep-14 link sustained it.
