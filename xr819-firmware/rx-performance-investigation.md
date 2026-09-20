@@ -4993,3 +4993,44 @@ What stands after today, in decreasing order of confidence:
 - The durable targets are Sol (iii) - firmware TX-status/false-success -
   plus the new ADDBA-teardown mechanism: who gives up on aggregation and
   why, given the Sep-14 link sustained it.
+
+## Firmware TX-status chain, mapped (2026-09-20, source reading)
+
+Sol (iii) starts here. Traced end to end in current source, all verified:
+
+- Host status = `wsm_status_from_internal(hw_status)` (`tx.rs:10428`) -
+  a near-identity map of a HARDWARE status word (reverse-engineered vendor
+  table at `0x0000aff8`). The Rust layer does not invent success.
+- It flows from `HostClass0Completion.status` <- `complete_tx_pipe_slot`
+  <- the hardware completion drain, via `complete_context` ->
+  `dispatch_completed_context` -> confirmation states -> TX_CONFIRM_ID.
+- The Rust retry layer (`decide_retry`) only diverts to Rearm/GiveUp
+  (policy exhaustion via `resolve_head_retry_step`, watchdog, BA branches).
+  `SingleProbeMacBackend` is the ONLY production `SingleTxRetryBackend`
+  impl, and every `CompleteSuccess` return in it sits in an
+  aggregate/BlockAck branch. Ordinary frames have no software success path
+  - their success IS the hardware completion status, passed through.
+- `ack_failures` comes from the context `try_count`, incremented on rearm.
+
+So for ordinary frames the firmware believes whatever the completion drain
+yields, and the false-success candidates order themselves by testability:
+
+(a) completion attributed without transmission (stale/default status word
+or slot reuse) - fits the 35% air gap and the scattered shape;
+(b) success-on-submit (completion raised at GO, not at ACK);
+(c) misread ACK evidence (least likely - retries genuinely happen, ~15% on
+air, and GiveUp paths do fire).
+
+The single most suspicious point for the next dive: `complete_tx_pipe_slot`
+writes the passed-in `status` as `terminal_status` with no ACK/BA-evidence
+check for ordinary frames - so the check, if any, lives upstream of it, in
+whoever produces that `status` u16 from the pipe/slot/MMIO state. That is
+where the 11.7k phantom successes are born.
+
+Discriminating experiment, no hardware changes: export the per-confirmation
+`(status, try_count, ack_failures)` distribution through the existing
+`host_tx_diagnostics` counters or the MIB `0x100c` words. If claimed
+successes cluster at try_count==0/ack_failures==0 while air shows retries,
+they were never attempted (a). If they show attempts, correlate with pipe
+slot KIND/state at completion (b vs c). One firmware field ends the
+guessing.
