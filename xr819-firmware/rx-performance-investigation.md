@@ -4808,3 +4808,57 @@ releases them as a burst of old sequence numbers arriving together. That is loca
 receiver, so it needs no clock sync with the board, and it distinguishes "the peer
 buffered and discarded this" from "we never transmitted it" - which is the question the
 64-run loss has never actually been asked.
+
+## The air settles it: three-point correlation, 2026-09-20 (xr819-air-a attempt 2)
+
+First run with all three points at once: board handover counts, a monitor
+capture on the AR9271 (`wlp198s0f3u1`, ch6, `/tmp/xr819-mon.pcap`, 8.9 MB),
+and the AP/UDP receiver. Flow window 12:09:53-12:10:29 local, module
+`16246b954cb9` (accounting fix), clean 4.8 ms baseline, `RECOVERY_VERIFIED`
+afterwards. Attempt 1 was correctly discarded by the baseline gate (26/99 ms).
+
+Flow totals: `SENT=34307`, `RECEIVED=18640` of `OFFERED=31840`, `LOSS=41.46%`,
+978 miss-runs, max 71, 119 runs in the 64-68 band (66x37, 68x27, 67x26,
+65x16, 64x13). `LATE=0 LATE_BURSTS=0` again.
+
+| point | value | source |
+|---|---|---|
+| firmware claims delivered | 33,283 | `TX confirm ok` delta |
+| unique MPDUs on air | 21,498 | pcap CCMP IVs, SA=station, flow window |
+| air transmission attempts | 25,269 | same (3,771 retries, ~15%) |
+| AP received | ~19,055 | `AP rx` 27 -> 19082 |
+| UDP delivered | 18,640 | receiver |
+| BARs handed to firmware | 366 | `bar_tx` / `AGG BAR req` |
+| BARs on air | **0** | pcap, whole capture |
+| matched BAR confirmations | 0 | `bar_confirm` |
+| unmatched (failed) BAR confirmations | 333 | `Conf unmatched` |
+| BAs from AP | 8,828 | pcap, flow window (aggregation active) |
+
+Three readings, all lower bounds, all in the same direction:
+
+1. **At least ~11,785 claimed frames never went on air** (33,283 claimed vs
+   21,498 unique MPDUs; monitor miss rate at -29 dBm same-room is ~0-1%, and
+   air >= AP rx corroborates the capture). The false-success defect is now a
+direct measurement, not an inference: ~35% of claimed deliveries.
+2. **~2,443 lost on air** (21,498 unique vs ~19,055 at the AP, ~11%).
+3. **~415 dropped at the AP/host** (19,055 vs 18,640). `LATE=0` says the
+   host reorder buffer released nothing: frames arriving behind the stuck
+   window are dropped on arrival, which is the 64-run signature.
+
+And the asymmetry is now on the record from the air, not the driver logs:
+the firmware reports *success* for data it never transmits, and *failure*
+(late, unmatched) for the 366 BARs it also never transmits. Aggregation
+itself works - 8,828 BAs from the AP prove it. The defect is localized to
+the firmware's control/data TX-status path: BARs handed to it die inside it,
+and data MPDUs are claimed without transmission.
+
+Caveats kept: AP `rx packets` includes non-data frames, so the middle column
+is approximate; per-frame proof (802.11 seq vs WSM packet id) still needs
+the monitor + driver timestamp join. But no per-frame join can move 366 -> 0
+or 33,283 -> 21,498.
+
+What this promotes: Sol's (ii) - re-test management-publisher BARs with the
+burst probe, since the host-path BAR demonstrably never reaches air - and
+(iii), the firmware TX-status/BA accounting fix, as the durable target.
+Sol's (i), the lone-control-frame host path, is deferred further: there is
+nothing wrong on the host side to fix; the frame dies in firmware.
