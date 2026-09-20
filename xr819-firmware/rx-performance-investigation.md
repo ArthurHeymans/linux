@@ -4908,3 +4908,30 @@ pre-existing at HEAD, no source change by me). It associated, passed traffic
 for the full window, and recovered cleanly - evidence the gate manifest is
 stale, not that the image is bad. The drift still needs its own reckoning,
 but it did not predict behavior.
+
+## The confirm path misread its own frames (2026-09-20, found live)
+
+The forced trigger fired zero times across two flows (13k+ confirmations)
+with correct code in the right place - verified by brace-depth audit,
+rebuild, and a boot marker proving the image loads. The cause was one level
+down: in `cw1200_tx_confirm_cb`, the queued skb carries the WSM TX header
+prepended (`skb_push` in xmit, tracked in `txpriv->offset`, undone by
+`skb_pull` in the destructor). So `skb->data` there is WSM header bytes, not
+the 802.11 header, and all three frame-type checks in that function
+classified garbage and never matched: the BAR-confirm log (which is why
+`XR819 BAR confirm` never appeared in *any* run ever), the failure trigger
+(which is why the "323 BAR requests" in the air run came only from the
+hole-signal site), and the forced trigger. Fix: `hdr = skb->data +
+txpriv->offset`, the same restoration the destructor uses. This was a
+pre-existing diagnostic bug I copied, not a regression.
+
+With the fix, first flow (`c3a6be02`, mgmt-bar firmware): `bar_tx=15`,
+`bar_confirm=15` matched, `bar_request=8`, `retired_confirm=28`,
+`dmesg_lines=85`. Fifteen BARs requested (8 failure-driven + ~7 forced),
+all fifteen handed over and all fifteen confirmed matched - the first run in
+which the BAR lifecycle completes on the host path. Queue 2 locked mid-flow
+and unlocked at the end; board healthy, recovery verified. Loss 72.6%
+scattered (no 64-runs), `LATE=0` - but this run had no air capture, so
+whether those 15 BARs reached air is still open. The AP side looked sick
+(retries frozen at 263, fell back to MCS0), so the loss number itself is
+suspect this hour.
