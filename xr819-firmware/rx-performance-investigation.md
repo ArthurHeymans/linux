@@ -4862,3 +4862,49 @@ burst probe, since the host-path BAR demonstrably never reaches air - and
 (iii), the firmware TX-status/BA accounting fix, as the durable target.
 Sol's (i), the lone-control-frame host path, is deferred further: there is
 nothing wrong on the host side to fix; the frame dies in firmware.
+
+## Management-publisher retest: zero BARs, and why (2026-09-20, xr819-mgmt-b)
+
+Firmware `78880a43ad0c` (current source, management-publisher BAR routing,
+feature-free) + acct driver, clean 4.5 ms baseline, full 30 s flow, board
+healthy throughout (temp 65-70 C flat, `PRINTK_LINES` 9, `RECOVERY_VERIFIED`).
+Attempt 1 of 4; the long AP settle (connected + 15 s beacon stability) fixed
+the assoc race that ate the previous loop 0/4.
+
+| | bar11 + acct (host-path BARs) | mgmt-bar + acct |
+|---|---|---|
+| BARs requested | 323-366 | **0** |
+| BARs on air | 0 | 0 (none requested) |
+| firmware claims | 33,283 ok / 367 fail | 14,254 ok / **12 fail** |
+| AP received | ~19,055 | 9,593 |
+| UDP | 18,640/31,840, 41%, 64-runs | 9,568/21,499, **55.5%, scattered** |
+| unmatched confirmations | 333 failed | 0 |
+
+`SENT=24521 RECEIVED=9568 LOSS=55.50%`, 1898 miss-runs, max 1424 (one edge
+gap; the rest are singles/small), `LATE=0`. Queue 2 locked mid-flow
+(queued=pending=11-13, overfull) and unlocked at the end - retirement holds.
+
+The zero is the finding, and it is driver-side logic, not firmware: both BAR
+triggers (hole-signal and failure-driven `NO_BACK`) read the firmware's own
+report. bar11 reports hundreds of failures, which fire the triggers, whose
+BARs it then drops (333 failed-unmatched). mgmt-bar reports 12 failures in
+14k, so neither trigger ever fires and no BAR is ever requested. The
+false-success defect therefore suppresses its own remedy end to end: the
+firmware lies about success, the driver believes it, and the window loss goes
+unrepaired (55.5% scattered loss, no 64-runs because no BAR ever probes the
+window either way).
+
+Consequence for Sol's order: (ii) cannot be tested by waiting for the driver
+to request BARs - that waits on firmware honesty, which is (iii). The way in
+is the capped trigger-independent BAR Sol also specified: a few BARs per run
+requested regardless of what the firmware claims, through the
+management-publisher path that demonstrably transmits. That splits "BARs
+can't release the window" from "BARs are never asked for" - which this run
+shows is the actual state.
+
+Side note: this firmware was flashed despite failing the
+`RUNTIME REGISTER BACKOFF LINKED DRIFT` gate (two extra refs to 0x04002088,
+pre-existing at HEAD, no source change by me). It associated, passed traffic
+for the full window, and recovered cleanly - evidence the gate manifest is
+stale, not that the image is bad. The drift still needs its own reckoning,
+but it did not predict behavior.
