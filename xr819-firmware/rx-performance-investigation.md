@@ -4727,3 +4727,84 @@ through `ieee80211_set_bar_pending()`, which sends the request again on the next
 successful unicast on that TID. Since that next request would also go unconfirmed, a
 non-acked report would turn one leaked entry into a feedback loop. The air result is not
 knowable from the driver either way, so success is the only report that terminates.
+
+## The board's instability was self-inflicted, and the spin was an arithmetic bug
+
+Three separate things were taking the board down, and none of them was the radio. Two
+were ours, one was a stock Armbian cron job.
+
+**`apt-get` on every boot.** `/etc/cron.d/armbian-updates` runs
+`/usr/lib/armbian/armbian-apt-updates` on `@reboot` and `@daily`, and that runs
+`apt-get upgrade -s -qq`. Measured on an otherwise idle board: 72-93% of a core, load
+1.7-2.4, the SoC at 88-91 C, competing for the same SD card the rootfs lives on, and
+holding apt's locks. This board reboots on every harness attempt, so it was doing that
+constantly. `top` on the "idle" board was the tell: `PID 669 root R 92.9 %CPU apt-get`.
+Disabled, and the board's idle temperature went to 54-60 C.
+
+**The unbounded retry, and its real cause.** A stalled run spun in `wsm_get_tx` when a
+queue's link map claimed work for the link mask and the queue held nothing to deliver.
+The kernel log gives the rate: `cw1200_queue_get: 3460173 callbacks suppressed` in a five
+second window, roughly 700,000 iterations per second, each taking `spin_lock_bh`. That
+burns a core with bottom halves disabled, which starves that CPU's softirqs - including
+the SD-card path under the rootfs - so sshd stops answering while ping still works and
+only a power cycle brings it back.
+
+The root cause is one line in `cw1200_queue_get_num_queued()`:
+
+    if (link_id_map == (u32)-1)
+            ret = queue->num_queued - queue->num_pending;
+
+Both are `size_t`. `num_pending` had drifted **negative** - the status file showed
+`pending: 4294967286`, which is -10 - so the subtraction wraps and reports twenty
+available frames when there are none. That is the `link mask 0xffffffff` in the log, and
+it is why the queue kept being selected forever. The spin and the accounting bug are the
+same defect, and no radio conclusion drawn while it was live was trustworthy.
+
+**The warnings were also a brake.** Two `WARN_ON`s fired on expected outcomes - "nothing
+for this link mask" in `cw1200_queue_get`, and "confirmation for an entry that is gone"
+in `cw1200_queue_get_skb` - producing 513 and then 448 full stack traces per run, about
+128 lines/s. Behind a saturated 115200 baud console that accidentally throttled the spin
+to ~5 iterations/s, which is why the board survived ~100 s while getting very hot. It also
+means removing the warning and quieting the console made the board die *faster*: the
+brake had been the logging. That is worth remembering before "fixing" a symptom again.
+
+**And the harness hid its own state.** It logged the module it *intended* to install,
+never the one installed at boot, and `recover()` failed silently - which is how a test
+module survived a dozen reboots while the board was blamed instead.
+
+Fixed: the retry is bounded; `num_queued - num_pending` cannot invent work; the two
+decrements of `num_pending` cannot take it below zero and warn ratelimited when they would
+have; both `WARN_ON`s are ratelimited one-liners; the synthetic BlockAckReq confirmation
+runs in the BH loop rather than nested inside a transmit; the harness records the board's
+actual installed module, firmware, namespace and process state before touching it, and
+verifies its own restore with retries instead of rebooting into a test image; and each run
+now reports true per-run counts (BAR hand-overs, BAR confirmations, BAR requests,
+stale-queue hits) rather than six-line tails, which is what let a "12 BAR hand-overs"
+artifact nearly pass for evidence.
+
+Result: three consecutive runs completed with the board surviving, temperature flat at
+65-68 C, no wedges and no power cycles. The board is finally an instrument.
+
+## What the instrument shows about the radio
+
+With the driver and the board healthy, the radio problem is plain and the numbers are
+stable enough to act on: loss 30.36%, 60.57% and 70.29% across three arms, with 89, 89
+and ~16 runs in the 64-69 band - the window-shaped loss, which remains the dominant term.
+BARs are requested in the hundreds (339, 503, 990) and roughly 90% of them come back as
+*failed, unmatched* confirmations (309, 448, 893). The `XR819 BAR confirm` log line, which
+fires for a matched BAR confirmation at any status, is zero in every run.
+
+Two readings have to be corrected before conclusions follow from that. First, "the
+firmware reports the failure late" is an inference, not a measurement, and it was drawn
+while the accounting was broken. Second, 64 UDP datagrams is not 64 802.11 sequence
+numbers: BlockAckReqs and management frames consume sequence numbers too, so the
+64-slot-reorder-ring story does not follow from a 64-datagram run - and runs extending to
+71 need explaining rather than rounding.
+
+To answer it without a kernel change, the receiver now logs arrival timestamps and reports
+late arrivals grouped into bursts. A datagram whose sequence is below everything already
+received is one the peer was holding; a BlockAckReq that advances its reorder window
+releases them as a burst of old sequence numbers arriving together. That is local to the
+receiver, so it needs no clock sync with the board, and it distinguishes "the peer
+buffered and discarded this" from "we never transmitted it" - which is the question the
+64-run loss has never actually been asked.
