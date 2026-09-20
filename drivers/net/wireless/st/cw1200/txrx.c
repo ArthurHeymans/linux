@@ -776,6 +776,8 @@ void cw1200_tx(struct ieee80211_hw *dev,
 		.txpriv.tid = CW1200_MAX_TID,
 		.txpriv.rate_id = CW1200_INVALID_RATE_ID,
 	};
+	bool is_bar;
+
 	struct ieee80211_sta *sta;
 	struct wsm_tx *wsm;
 	bool tid_update = false;
@@ -824,6 +826,13 @@ void cw1200_tx(struct ieee80211_hw *dev,
 	ret = cw1200_tx_h_rate_policy(priv, &t, wsm);
 	if (ret)
 		goto drop;
+
+	is_bar = ieee80211_is_back_req(t.hdr->frame_control);
+	if (is_bar)
+		wiphy_info(priv->hw->wiphy,
+			   "XR819 BAR tx: len=%u hdrlen=%u q=%u tid=%u rate=0x%02x flags=0x%04x\n",
+			   skb->len, t.hdrlen, t.queue, t.txpriv.tid,
+			   wsm->max_tx_rate, wsm->flags);
 
 	sta = t.sta;
 
@@ -945,6 +954,25 @@ static void cw1200_xr819_tx_status(struct cw1200_common *priv,
 			WSM_TX_STATUS_XR819_AGG_LEN(arg->flags);
 		tx->status.ampdu_ack_len =
 			WSM_TX_STATUS_XR819_AGG_ACK_LEN(arg->flags);
+		/*
+		 * A member the peer did not acknowledge is a hole in its reorder window,
+		 * and every frame it buffers behind that hole is acknowledged without
+		 * being released - so leaving the hole alone turns one lost frame into a
+		 * run of them (measured: sixteen to sixty-four datagrams). This is the
+		 * only signal we get, because the frames behind the hole are reported
+		 * acked and their loss happens later, inside the peer.
+		 *
+		 * With this flag mac80211 builds a compressed BlockAckReq at this
+		 * frame's next sequence and sends it through the ordinary TX path, which
+		 * makes the peer release everything it has buffered up to there instead
+		 * of holding it until its 64-slot ring aliases. Marking it on the head
+		 * member is deliberate: the resulting start sequence sits just past the
+		 * frames that are already buffered, so they are delivered.
+		 */
+		if (tx->status.ampdu_len > tx->status.ampdu_ack_len) {
+			tx->flags |= IEEE80211_TX_STAT_AMPDU_NO_BACK;
+			cw1200_debug_ampdu_no_back(priv);
+		}
 	}
 
 	for (word = ARRAY_SIZE(arg->rate_try) - 1; word >= 0; word--) {
@@ -1028,6 +1056,23 @@ void cw1200_tx_confirm_cb(struct cw1200_common *priv,
 	if (arg->status)
 		pr_debug("TX failed: %d.\n", arg->status);
 
+	cw1200_debug_tx_confirm(priv, arg->status != 0);
+	{
+		/*
+		 * Read-only probe: cw1200_queue_get_skb() only looks the item up, so
+		 * asking here does not disturb the branches below. A confirmation
+		 * that fails this lookup is dropped by the chain and never reaches
+		 * mac80211, which is how an abandoned aggregate member can stay
+		 * invisible to it.
+		 */
+		struct sk_buff *probe_skb;
+		const struct cw1200_txpriv *probe_txpriv;
+		bool matched = cw1200_queue_get_skb(queue, arg->packet_id,
+						    &probe_skb, &probe_txpriv) == 0;
+		if (!matched)
+			cw1200_debug_tx_confirm_unmatched(priv, arg->status != 0);
+	}
+
 	if ((arg->status == WSM_REQUEUE) &&
 	    (arg->flags & WSM_TX_STATUS_REQUEUE)) {
 		/* "Requeue" means "implicit suspend" */
@@ -1057,6 +1102,23 @@ void cw1200_tx_confirm_cb(struct cw1200_common *priv,
 		int tx_count = arg->ack_failures;
 		u8 ht_flags = 0;
 		int i;
+		/*
+		 * The queued skb carries the WSM TX header prepended
+		 * (skb_push in the xmit path, accounted in txpriv->offset
+		 * and undone by skb_pull in cw1200_skb_dtor), so skb->data
+		 * is NOT the 802.11 header here. Reading frame_control
+		 * from skb->data classifies WSM header bytes and never
+		 * matches, silently disabling every frame-type check in
+		 * this function. Use the restored header pointer, as the
+		 * dtor does.
+		 */
+		struct ieee80211_hdr *hdr =
+			(struct ieee80211_hdr *)(skb->data + txpriv->offset);
+
+		if (ieee80211_is_back_req(hdr->frame_control))
+			wiphy_info(priv->hw->wiphy,
+				   "XR819 BAR confirm: status=%u rate=0x%02x ack_failures=%u flags=0x%04x\n",
+				   arg->status, arg->tx_rate, arg->ack_failures, arg->flags);
 
 		if (cw1200_ht_greenfield(&priv->ht_info))
 			ht_flags |= IEEE80211_TX_RC_GREEN_FIELD;
@@ -1088,6 +1150,26 @@ void cw1200_tx_confirm_cb(struct cw1200_common *priv,
 		} else {
 			if (tx_count)
 				++tx_count;
+			/*
+			 * A member the firmware could not deliver leaves a hole in the
+			 * peer's reorder window. mac80211 recovers from that on its own
+			 * when the failed subframe is reported with this flag: it builds
+			 * a compressed BlockAckReq at the next sequence and sends it
+			 * through the normal TX path, which makes the peer release the
+			 * window instead of running on until its 64-slot reorder ring
+			 * aliases the hole. Mirrors iwlwifi's "single frame failure in
+			 * an AMPDU queue => send BAR" (drivers/net/wireless/intel/
+			 * iwlwifi/mvm/tx.c).
+			 */
+			if (ieee80211_is_data_qos(hdr->frame_control) &&
+			    !(tx->flags & IEEE80211_TX_STAT_TX_FILTERED)) {
+				tx->flags |= IEEE80211_TX_STAT_AMPDU_NO_BACK;
+				cw1200_debug_ampdu_no_back(priv);
+				wiphy_info(priv->hw->wiphy,
+					   "XR819 BAR request: seq=0x%04x status=%u failures=%u flags=0x%04x\n",
+					   __le16_to_cpu(hdr->seq_ctrl),
+					   arg->status, arg->ack_failures, arg->flags);
+			}
 		}
 
 		if (cw1200_uses_xr819_wsm(priv) &&
@@ -1156,6 +1238,15 @@ void cw1200_skb_dtor(struct cw1200_common *priv,
 		     struct sk_buff *skb,
 		     const struct cw1200_txpriv *txpriv)
 {
+	/*
+	 * This is the driver's normal TX finalizer: cw1200_queue_remove() calls it
+	 * for every completed transmission, not only for drops. Marking NO_BACK
+	 * here therefore told mac80211 that successfully delivered QoS frames had
+	 * missed their BlockAck, which produced a BAR per frame - and those BARs
+	 * cannot be transmitted yet, so it cost 5.6x throughput (measured: 5,507
+	 * datagrams against ~31,000, loss 25% -> 47%). The flag belongs only on a
+	 * definitive failure reported by the firmware, in cw1200_tx_confirm_cb.
+	 */
 	skb_pull(skb, txpriv->offset);
 	if (txpriv->rate_id != CW1200_INVALID_RATE_ID) {
 		cw1200_notify_buffered_tx(priv, skb,

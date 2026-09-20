@@ -24,6 +24,7 @@
 #include "hwbus.h"
 #include "debug.h"
 #include "fwio.h"
+#include "txrx.h"
 
 static int cw1200_bh(void *arg);
 
@@ -516,6 +517,15 @@ static int cw1200_bh_tx_helper(struct cw1200_common *priv,
 		return -1; /* Error */
 	}
 
+	/*
+	 * The firmware never confirms a host-published control frame, so nothing
+	 * else would retire a BlockAckReq's queue entry: it would hold its TID
+	 * queue until the GC timer, and a run of them stops the queue and the link
+	 * with it. The frame is on the device now, so retire the entry through the
+	 * normal confirmation path - the same context a real confirmation arrives
+	 * in, unlike the xmit path, which runs before the wakeup that transmits.
+	 */
+
 	if (priv->wsm_enable_wsm_dumps)
 		print_hex_dump_bytes("--> ",
 				     DUMP_PREFIX_NONE,
@@ -524,6 +534,14 @@ static int cw1200_bh_tx_helper(struct cw1200_common *priv,
 
 	wsm_txed(priv, data);
 	priv->wsm_tx_seq = (priv->wsm_tx_seq + 1) & WSM_TX_SEQ_MAX;
+
+	/*
+	 * A handed-over BlockAckReq is confirmed by the caller, not here. Real
+	 * confirmations are served in this thread's rx path, never nested inside the tx
+	 * path, and cw1200_tx_confirm_cb ends by re-entering cw1200_bh_wakeup() and
+	 * runs mac80211's tx-status path - which can come back into the driver. Doing
+	 * that from inside a transmit is a reentrancy the real path never takes.
+	 */
 
 	if (*tx_burst > 1) {
 		cw1200_debug_tx_burst(priv);
@@ -697,6 +715,35 @@ static int cw1200_bh(void *arg)
 				break;
 			if (ret > 0) /* More to transmit */
 				tx = ret;
+
+			/*
+			 * Retire a BlockAckReq that was just handed to the device. The firmware
+			 * never confirms a host-published control frame, so nothing else would free
+			 * its entry, and a run of them pins the AC queue above its unlock threshold
+			 * (num_queued <= capacity >> 1, which is 8) and stops the link - measured:
+			 * queue 2 sat at queued 9-11, locked, for a whole run.
+			 *
+			 * Done here rather than inside the transmit so that the confirmation runs in
+			 * the context real confirmations arrive in, and after every use of the
+			 * written buffer.
+			 *
+			 * It reports success deliberately: mac80211 treats a BlockAckReq that is not
+			 * acked as failed and re-sends it via ieee80211_set_bar_pending(), and that
+			 * next one would go unconfirmed too, turning one leaked entry into a loop.
+			 *
+			 * It does not return the hardware input-buffer credit: a version that did
+			 * drove hw_bufs_used negative (WARNING at wsm_release_tx_buffer) and killed
+			 * the radio, so the credit comes back on its own.
+			 */
+			if (priv->tx_bar_packet_id) {
+				struct wsm_tx_confirm confirm = {
+					.packet_id = priv->tx_bar_packet_id,
+					.status = 0,
+				};
+
+				priv->tx_bar_packet_id = 0;
+				cw1200_tx_confirm_cb(priv, 0, &confirm);
+			}
 
 			/* Re-read ctrl reg */
 			if (cw1200_bh_read_ctrl_reg(priv, &ctrl_reg))

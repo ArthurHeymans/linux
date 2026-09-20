@@ -1703,6 +1703,16 @@ int wsm_get_tx(struct cw1200_common *priv, u8 **data,
 	u32 tx_allowed_mask = 0;
 	const struct cw1200_txpriv *txpriv = NULL;
 	int count = 0;
+	/*
+	 * Queues whose link map claims work for this mask but hold nothing to deliver.
+	 * The accounting can drift, and retrying such a queue is an infinite loop with
+	 * bottom halves disabled each time round - which burns a core and starves that
+	 * CPU's softirqs, stalling the SD card path underneath the rootfs until the
+	 * board stops answering sshd while still answering ping, and it heats the SoC
+	 * until a power cycle is the only way back. Allow one stale queue per queue and
+	 * then stop; the ratelimited warning in cw1200_queue_get keeps the signal.
+	 */
+	int stale = 0;
 
 	/* More is used only for broadcasts. */
 	bool more = false;
@@ -1714,6 +1724,7 @@ int wsm_get_tx(struct cw1200_common *priv, u8 **data,
 		*data = priv->wsm_cmd.ptr;
 		*tx_len = priv->wsm_cmd.len;
 		*burst = 1;
+		priv->tx_bar_packet_id = 0;
 		spin_unlock(&priv->wsm_cmd.lock);
 	} else {
 		for (;;) {
@@ -1746,12 +1757,28 @@ int wsm_get_tx(struct cw1200_common *priv, u8 **data,
 
 			if (cw1200_queue_get(queue,
 					     tx_allowed_mask,
-					     &wsm, &tx_info, &txpriv))
+					     &wsm, &tx_info, &txpriv)) {
+				if (++stale >= 4)
+					break;
 				continue;
+			}
 
 			if (wsm_handle_tx_data(priv, wsm,
 					       tx_info, txpriv, queue))
 				continue;  /* Handled by WSM */
+
+			/*
+			 * Record a BlockAckReq's packet id for the BH. A host-published
+			 * control frame is never turned into a TX confirmation by this
+			 * firmware, so nothing would retire its queue entry before the GC
+			 * timer, and a run of them holds the TID queue until it stops.
+			 * The BH retires it once the frame is on the device.
+			 */
+			priv->tx_bar_packet_id =
+				ieee80211_is_back_req(
+					((struct ieee80211_hdr *)
+					 ((u8 *)wsm + sizeof(struct wsm_tx)))->frame_control) ?
+				wsm->packet_id : 0;
 
 			wsm->hdr.id &= __cpu_to_le16(
 				~WSM_TX_LINK_ID(WSM_TX_LINK_ID_MAX));

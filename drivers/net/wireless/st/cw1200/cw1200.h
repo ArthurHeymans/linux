@@ -173,6 +173,11 @@ struct cw1200_common {
 	struct cw1200_queue		tx_queue[4];
 	struct cw1200_queue_stats	tx_queue_stats;
 	int				tx_burst_idx;
+	/* Packet id of the BlockAckReq the BH is about to write, 0 for any
+	 * other frame. The firmware never confirms a control frame, so the BH
+	 * retires that entry itself once the frame is on the device.
+	 */
+	u32			tx_bar_packet_id;
 
 	/* firmware/hardware info */
 	unsigned int tx_hdr_len;

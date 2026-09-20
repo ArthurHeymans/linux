@@ -43,6 +43,18 @@ struct cw1200_debug_priv {
 	int ba_acc;
 	int ba_cnt_rx;
 	int ba_acc_rx;
+	int tx_agg_metadata;
+	int tx_agg_metadata_head;
+	int tx_agg_metadata_ctl;
+	int tx_agg_metadata_len;
+	int tx_agg_metadata_ack;
+	int tx_agg_metadata_invalid;
+	int tx_agg_without_metadata;
+	int tx_ampdu_no_back;
+	int tx_confirm_ok;
+	int tx_confirm_fail;
+	int tx_confirm_unmatched;
+	int tx_confirm_unmatched_fail;
 };
 
 int cw1200_debug_init(struct cw1200_common *priv);
@@ -56,6 +68,51 @@ static inline void cw1200_debug_txed(struct cw1200_common *priv)
 static inline void cw1200_debug_txed_agg(struct cw1200_common *priv)
 {
 	++priv->debug->tx_agg;
+}
+
+static inline void cw1200_debug_txed_agg_metadata(
+	struct cw1200_common *priv, bool head, bool tx_ctl_ampdu,
+	int len, int ack_len)
+{
+	++priv->debug->tx_agg_metadata;
+	if (!head)
+		return;
+	++priv->debug->tx_agg_metadata_head;
+	if (tx_ctl_ampdu)
+		++priv->debug->tx_agg_metadata_ctl;
+	priv->debug->tx_agg_metadata_len += len;
+	priv->debug->tx_agg_metadata_ack += ack_len;
+	if (!len || ack_len > len)
+		++priv->debug->tx_agg_metadata_invalid;
+}
+
+static inline void cw1200_debug_txed_agg_without_metadata(
+	struct cw1200_common *priv)
+{
+	++priv->debug->tx_agg_without_metadata;
+}
+
+static inline void cw1200_debug_ampdu_no_back(struct cw1200_common *priv)
+{
+	++priv->debug->tx_ampdu_no_back;
+}
+
+static inline void cw1200_debug_tx_confirm(struct cw1200_common *priv, bool failed)
+{
+	if (failed)
+		++priv->debug->tx_confirm_fail;
+	else
+		++priv->debug->tx_confirm_ok;
+}
+
+/* A confirmation whose packet id no longer matches a queued item is dropped
+ * silently by cw1200_tx_confirm_cb, so it never reaches mac80211. */
+static inline void cw1200_debug_tx_confirm_unmatched(struct cw1200_common *priv,
+						     bool failed)
+{
+	++priv->debug->tx_confirm_unmatched;
+	if (failed)
+		++priv->debug->tx_confirm_unmatched_fail;
 }
 
 static inline void cw1200_debug_txed_multi(struct cw1200_common *priv,

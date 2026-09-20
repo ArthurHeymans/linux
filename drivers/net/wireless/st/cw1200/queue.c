@@ -262,7 +262,20 @@ size_t cw1200_queue_get_num_queued(struct cw1200_queue *queue,
 
 	spin_lock_bh(&queue->lock);
 	if (link_id_map == (u32)-1) {
-		ret = queue->num_queued - queue->num_pending;
+		/*
+		 * num_queued - num_pending is how many frames are still in queue->queue,
+		 * i.e. actually available to hand out. Both are size_t, so a num_pending
+		 * that has drifted below zero - the status file showed 4294967286, i.e.
+		 * -10, and moving - makes this wrap to a large number and report work that
+		 * does not exist. The caller then spins in wsm_get_tx at roughly 700,000
+		 * iterations/s with bottom halves disabled, which starves the SD-card path
+		 * under the rootfs until the board stops answering, and heats the SoC to
+		 * the point of needing a power cycle. Never invent work.
+		 */
+		if (queue->num_pending >= queue->num_queued)
+			ret = 0;
+		else
+			ret = queue->num_queued - queue->num_pending;
 	} else {
 		ret = 0;
 		for (i = 0, bit = 1; i < map_capacity; ++i, bit <<= 1) {
@@ -344,7 +357,19 @@ int cw1200_queue_get(struct cw1200_queue *queue,
 		}
 	}
 
-	if (!WARN_ON(ret)) {
+	/*
+	 * Nothing queued for this link mask. The caller scans queues and moves on, so
+	 * this is an expected outcome - but it was WARN_ON, and a stalled run produced
+	 * 513 of them in 100 s. Each one dumps a ~25 line stack trace, which is about
+	 * 128 lines/s, more than a 115200 baud console can carry and enough printk and
+	 * stack-unwinding work to take the SoC from 59 C to 82 C. Keep the signal, drop
+	 * the trace and the rate.
+	 */
+	if (ret)
+		pr_warn_ratelimited("cw1200: queue %d has nothing for link mask 0x%x\n",
+				    queue->queue_id, link_id_map);
+
+	if (!ret) {
 		*tx = (struct wsm_tx *)item->skb->data;
 		*tx_info = IEEE80211_SKB_CB(item->skb);
 		*txpriv = &item->txpriv;
@@ -389,7 +414,11 @@ int cw1200_queue_requeue(struct cw1200_queue *queue, u32 packet_id)
 		WARN_ON(1);
 		ret = -ENOENT;
 	} else {
-		--queue->num_pending;
+		if (queue->num_pending)
+			--queue->num_pending;
+		else
+			pr_warn_ratelimited("cw1200: queue %d requeue with num_pending already 0 (id %u)\n",
+					    queue->queue_id, packet_id);
 		++queue->link_map_cache[item->txpriv.link_id];
 
 		spin_lock_bh(&stats->lock);
@@ -436,7 +465,11 @@ int cw1200_queue_remove(struct cw1200_queue *queue, u32 packet_id)
 		gc_txpriv = item->txpriv;
 		gc_skb = item->skb;
 		item->skb = NULL;
-		--queue->num_pending;
+		if (queue->num_pending)
+			--queue->num_pending;
+		else
+			pr_warn_ratelimited("cw1200: queue %d remove with num_pending already 0 (id %u)\n",
+					    queue->queue_id, packet_id);
 		--queue->num_queued;
 		++queue->num_sent;
 		++item->generation;
@@ -479,7 +512,16 @@ int cw1200_queue_get_skb(struct cw1200_queue *queue, u32 packet_id,
 		WARN_ON(1);
 		ret = -EINVAL;
 	} else if (item->generation != item_generation) {
-		WARN_ON(1);
+		/*
+		 * The entry is gone or has been reused. That used to be WARN_ON, but it is an
+		 * expected outcome now: a BlockAckReq's entry is retired by the driver as soon
+		 * as it is handed over, and this firmware then reports a failure for it late,
+		 * so its confirmation finds nothing. 448 of these in one run, each dumping a
+		 * ~25 line stack trace, is a large cost for no diagnostic value beyond the
+		 * count - which cw1200_debug_tx_confirm_unmatched() already keeps.
+		 */
+		pr_warn_ratelimited("cw1200: queue %d confirmation for a retired entry (id %u)\n",
+				    queue->queue_id, packet_id);
 		ret = -ENOENT;
 	} else {
 		*skb = item->skb;

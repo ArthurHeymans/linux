@@ -289,6 +289,17 @@ static int cw1200_status_show(struct seq_file *seq, void *v)
 		   d->tx_burst);
 	seq_printf(seq, "TX TTL:     %d\n",
 		   d->tx_ttl);
+	seq_printf(seq, "AGG meta:   %d (%d heads, %d members without)\n",
+		   d->tx_agg_metadata, d->tx_agg_metadata_head,
+		   d->tx_agg_without_metadata);
+	seq_printf(seq, "AGG report: %d ctl, %d len, %d ack, %d invalid\n",
+		   d->tx_agg_metadata_ctl, d->tx_agg_metadata_len,
+		   d->tx_agg_metadata_ack, d->tx_agg_metadata_invalid);
+	seq_printf(seq, "AGG BAR req: %d\n", d->tx_ampdu_no_back);
+	seq_printf(seq, "TX confirm: %d ok, %d fail\n",
+		   d->tx_confirm_ok, d->tx_confirm_fail);
+	seq_printf(seq, "Conf unmatched: %d (%d failed)\n",
+		   d->tx_confirm_unmatched, d->tx_confirm_unmatched_fail);
 	seq_printf(seq, "Scan:       %s\n",
 		   atomic_read(&priv->scan.in_progress) ? "active" : "idle");
 
