@@ -41,6 +41,7 @@ pub unsafe fn activate_sta(
         }
         crate::vif::activate_sta(interface, request, configuration.station_id)
             .map_err(|_| JoinError::VifState)?;
+        crate::mac::program_joined_station_slot_timing(interface);
         if !crate::mac::program_active_vif_rate_tables(interface) {
             let _ = crate::vif::teardown(interface);
             return Err(JoinError::VifState);

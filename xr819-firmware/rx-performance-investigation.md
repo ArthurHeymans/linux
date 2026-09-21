@@ -5310,3 +5310,30 @@ immediately with terminal failure `0x0b` kept a normal 4.7 ms baseline but
 increased application loss to 69.50% and produced 87 lifecycle identity
 mismatches. Both experiments were removed. Timing remains strong localization
 evidence, not a safe replacement for the missing hardware retry indication.
+
+A subsequent retry-engine audit found the first durable improvement. The
+synthetic scan transition programs slot timing from scan PAS `+0x4f8`, which is
+zero in the open runtime, and JOIN previously never restored the active
+station's 2.4 GHz slot-time base. Restoring base 9 immediately after STA PAS
+activation, before active rate tables and response descriptors, reproduced
+across three qualified arms:
+
+- offered traffic rose from roughly 18--24k to 39.8--46.6k packets per 30 s;
+- received traffic rose to 21.8--26.2k;
+- loss improved from roughly 59--69% to 41.99--49.02%;
+- late statuses fell from 59.54% to 49.88--51.60%.
+
+Repeating the test without the extra IFS write produced the same result (50,277
+sender packets, 46,640 offered, 23,779 received), isolating the improvement to
+slot timing. The restoration is retained as a real JOIN fix. It is not the full
+false-success fix: approximately half of statuses remain in the late population,
+and immediate MIB reads show 5.7--9.7k completed frames still awaiting host
+confirmation under the doubled load.
+
+The historical vendor control (`/tmp/xr819-vendorbarcap.log`) remains the
+functional target: 31,783 of 31,919 offered packets received (0.43% loss), with
+34,672 AP RX packets for 34,761 sender calls. Its MIB counters do not count
+physical attempts directly: `tx_packets` counts host admissions and
+`tx_frames_multi_retried` counts completed frames whose retry byte exceeds one.
+Nevertheless, 31,895 such frames demonstrate that vendor completion carries
+substantial retry accounting where the open late-`0x11` path carries none.

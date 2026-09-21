@@ -460,6 +460,11 @@ fn publish_join_pas_with_io<I: PasOperationIo>(
         0,
         PasOperationBranch::JoinControl,
     );
+    io.write_u32(
+        pas.slot_timing_word().get(),
+        9,
+        PasOperationBranch::JoinControl,
+    );
 
     io.reset_backoff(interface);
 
@@ -1075,7 +1080,7 @@ mod tests {
             &request.bssid,
             &mut pas,
         );
-        assert_eq!(pas.accesses.len(), 40);
+        assert_eq!(pas.accesses.len(), 41);
         assert_eq!(pas.accesses.first().unwrap().branch, PasOperationBranch::JoinControl);
         assert_eq!(pas.accesses.last().unwrap().branch, PasOperationBranch::JoinFamilyPublication);
 
@@ -1126,17 +1131,18 @@ mod tests {
             Access { kind: AccessKind::Write, width: 4, address: pas.tsf_adjust_high().get(), value: 0, branch: PasOperationBranch::JoinControl },
             Access { kind: AccessKind::Write, width: 1, address: pas.nonzero_block_byte().get(), value: 0, branch: PasOperationBranch::JoinControl },
             Access { kind: AccessKind::Write, width: 1, address: pas.tbtt_window_control_byte().get(), value: 0, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 4, address: pas.slot_timing_word().get(), value: 9, branch: PasOperationBranch::JoinControl },
         ];
         assert_eq!(&io.accesses[..expected_prefix.len()], &expected_prefix);
-        assert_eq!(io.accesses[12], Access { kind: AccessKind::Read, width: 4, address: 0x0400_2088, value: 0, branch: PasOperationBranch::BackoffReset });
-        assert_eq!(io.accesses[13], Access { kind: AccessKind::Read, width: 4, address: 0x0400_208c, value: 0x55aa, branch: PasOperationBranch::BackoffReset });
-        assert_eq!(io.accesses[14], Access { kind: AccessKind::Write, width: 4, address: pas.retry_count(0).unwrap().get(), value: 0, branch: PasOperationBranch::BackoffReset });
-        assert_eq!(io.accesses[15], Access { kind: AccessKind::Read, width: 2, address: pas.cw_min(0).unwrap().get(), value: 0x10, branch: PasOperationBranch::BackoffReset });
-        assert_eq!(io.accesses[16], Access { kind: AccessKind::Write, width: 4, address: pas.contention_window(0).unwrap().get(), value: 0x10, branch: PasOperationBranch::BackoffReset });
-        assert_eq!(io.accesses.len(), 40);
-        assert_eq!(io.accesses[38], Access { kind: AccessKind::Write, width: 4, address: crate::dtcm::LOW_MAC_BEACON_INTERVAL.get(), value: 100 << 10, branch: PasOperationBranch::JoinFamilyPublication });
-        assert_eq!(io.accesses[39], Access { kind: AccessKind::Write, width: 4, address: crate::dtcm::LOW_MAC_BAND_BITS.get(), value: 2, branch: PasOperationBranch::JoinFamilyPublication });
-        assert!(io.accesses[26..38].iter().all(|access| access.branch == PasOperationBranch::JoinAddresses));
+        assert_eq!(io.accesses[13], Access { kind: AccessKind::Read, width: 4, address: 0x0400_2088, value: 0, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[14], Access { kind: AccessKind::Read, width: 4, address: 0x0400_208c, value: 0x55aa, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[15], Access { kind: AccessKind::Write, width: 4, address: pas.retry_count(0).unwrap().get(), value: 0, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[16], Access { kind: AccessKind::Read, width: 2, address: pas.cw_min(0).unwrap().get(), value: 0x10, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses[17], Access { kind: AccessKind::Write, width: 4, address: pas.contention_window(0).unwrap().get(), value: 0x10, branch: PasOperationBranch::BackoffReset });
+        assert_eq!(io.accesses.len(), 41);
+        assert_eq!(io.accesses[39], Access { kind: AccessKind::Write, width: 4, address: crate::dtcm::LOW_MAC_BEACON_INTERVAL.get(), value: 100 << 10, branch: PasOperationBranch::JoinFamilyPublication });
+        assert_eq!(io.accesses[40], Access { kind: AccessKind::Write, width: 4, address: crate::dtcm::LOW_MAC_BAND_BITS.get(), value: 2, branch: PasOperationBranch::JoinFamilyPublication });
+        assert!(io.accesses[27..39].iter().all(|access| access.branch == PasOperationBranch::JoinAddresses));
     }
 
     #[test]

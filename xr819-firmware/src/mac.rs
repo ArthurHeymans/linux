@@ -345,6 +345,20 @@ pub unsafe fn program_active_vif_rate_tables(interface: u8) -> bool {
     true
 }
 
+/// Restore joined-station slot timing after the synthetic scan channel
+/// transition. The scan PAS timing word is zero in the open runtime; JOIN only
+/// supports 2.4 GHz and must restore its 9 us slot-time base.
+pub unsafe fn program_joined_station_slot_timing(interface: u8) {
+    unsafe {
+        let base = read_u32(
+            crate::dtcm::pas_stride_view_unchecked(usize::from(interface))
+                .slot_timing_word()
+                .get(),
+        );
+        program_slot_timings(read_u16(crate::dtcm::LOW_MAC_RATE_CONFIG.get()), base);
+    }
+}
+
 unsafe fn program_pipe_slot(pointer: usize, slot: u8) {
     let Some(bus_address) = packet_ram::response_command_bus_address(pointer) else {
         return;
