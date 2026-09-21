@@ -5226,3 +5226,20 @@ producer accepts completion without valid ACK evidence. Descriptor construction
 and response timing match the vendor `txp_build_pipe_descriptor` /
 `tx_build_duration_desc` paths, so the next code audit belongs to MAC/PHY TX
 state and ACK-response qualification registers rather than host completion.
+
+A temporary `TXRG` image read those registers live after another healthy
+false-success run. Own MAC (`12:42:2a:37:70:07`), BSSID
+(`98:5f:41:18:76:17`), address-match modes, RX/event filters, event mask, and
+pipe IRQ state all matched the translated constants. One concrete vendor drift
+did appear: live mode was `0x07ebbadd`, missing bit `0x4000` from the expected
+`0x07ebfadd`. `publish_join_pas_with_io` wrote PAS `mode_byte = 1`, while vendor
+`mac_apply_channel_and_vif_config` treats `mode_byte == 2` as STA and sets that
+bit before `mac_program_mode_regs`.
+
+Changing the PAS byte to 2 produced the exact expected mode register and kept
+association/recovery healthy. It did **not** solve false success: on a 4.2 ms
+baseline the corrected image published about 12.5k frames while AP RX advanced
+only about 6.8k. The mode correction is retained as vendor fidelity, but the
+address/mode/filter register family is no longer the primary suspect. The
+remaining target is internal PHY TX completion versus MAC ACK qualification,
+state not exposed by the visible configuration registers.
