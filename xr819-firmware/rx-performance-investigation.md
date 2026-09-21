@@ -5398,3 +5398,18 @@ background/unowned traffic, not suppressed retry requests for the phantom
 MPDUs. Ordinary false-success frames receive only bare `0x11` with no pending
 ownership. The remaining defect is definitively in hardware ACK/response
 qualification before retry-event generation, not firmware retry routing.
+
+A broad halted PHY/RF comparison next exposed 161 differing words across
+`0x0ab8`, `0x0abb`, and `0x0abc`. Most are live calibration/sample windows, but
+one static translation error was concrete: vendor `dbg_expand_byte_table` reads
+32 bytes from DTCM `0x0400202c`, while the open hardcoded table corresponds to
+`0x0400201c`, sixteen bytes early. Applying the exact vendor source in isolation
+was not a fix. Two arms had unusable 0.8--1.2 second ping baselines; the qualified
+10.1 ms arm offered 39,913 packets, received 20,166, and lost 49.48%. It also
+produced 981 lifecycle identity mismatches and 13,290 more MAC starts than
+publications, showing substantially changed retry/slot behavior without vendor
+correctness. Vendor's halted `0x0abb8300` table no longer equals its initial
+source bytes, so later hardware/calibration evolution is part of the contract.
+The isolated source correction was removed; the next PHY work must reconstruct
+the complete detector-table calibration path rather than replacing only the
+initial table.
