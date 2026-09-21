@@ -6,6 +6,7 @@ import sys
 
 MAGIC = 0x54584C43  # "TXLC"
 PN_MAGIC = 0x5458504E  # "TXPN"
+RETRY_PROVENANCE_MAGIC = 0x54585250  # "TXRP"
 MIB_FIELDS = [
     "plcp_errors",
     "fcs_errors",
@@ -110,6 +111,35 @@ def main():
     print("observations:")
     for label, value in zip(labels, words[1:9]):
         print(f"  {label:<18} {value}")
+
+    if words[9] == RETRY_PROVENANCE_MAGIC:
+        report = words[9:22]
+        print("\nretry-event provenance:")
+        for label, value in zip(
+            [
+                "completion_events",
+                "status_11",
+                "retry_ineligible_active_11_state3",
+                "status_04",
+                "status_04_pending",
+                "status_19",
+                "status_19_pending",
+                "retry_without_pending",
+                "retry_status_ineligible",
+            ],
+            report[1:10],
+        ):
+            print(f"  {label:<24} {value}")
+        raw, scheduler, detail = report[10:13]
+        event = decode_event(raw)
+        print("\nlatest retry-class event:")
+        print(f"  raw_event               0x{raw:08x}")
+        print(f"  scheduler_word          0x{scheduler:08x}")
+        print(f"  delivered_status        0x{detail & 0xff:02x}")
+        print(f"  expected_status         0x{(detail >> 8) & 0xff:02x}")
+        print(f"  slot_state/kind         {(detail >> 16) & 0xff}/{detail >> 24}")
+        print(f"  decoded_type            0x{event['type']:02x}")
+        return 0
 
     if words[0] == PN_MAGIC:
         cursor = words[9]

@@ -189,6 +189,19 @@ static TX_LIFECYCLE: SharedTxLifecycle = SharedTxLifecycle(UnsafeCell::new(TxLif
     report: [0; 13],
 }));
 
+#[cfg(feature = "experimental-tx-retry-provenance")]
+const TX_RETRY_PROVENANCE_MAGIC: u32 = 0x5458_5250; // "TXRP"
+
+#[cfg(feature = "experimental-tx-retry-provenance")]
+struct SharedTxRetryProvenance(UnsafeCell<[u32; 13]>);
+
+#[cfg(feature = "experimental-tx-retry-provenance")]
+unsafe impl Sync for SharedTxRetryProvenance {}
+
+#[cfg(feature = "experimental-tx-retry-provenance")]
+static TX_RETRY_PROVENANCE: SharedTxRetryProvenance =
+    SharedTxRetryProvenance(UnsafeCell::new([0; 13]));
+
 /// Class-0 lifecycle counter slots.
 ///
 /// Throughput measured over the air spans 36-95 TXed for identical firmware,
@@ -1092,6 +1105,70 @@ pub unsafe fn capture_tx_status_accepted(
     let _ = (context, pipe, slot, delivered, expected, slot_kind, slot_state);
 }
 
+/// Count completion-class events together with the scheduler ownership word
+/// captured before either vendor retry routing or ordinary status dispatch.
+pub unsafe fn capture_tx_retry_provenance(
+    raw_event: u32,
+    status: u8,
+    pipe: u8,
+    scheduler_word: u32,
+) {
+    #[cfg(feature = "experimental-tx-retry-provenance")]
+    unsafe {
+        let values = &mut *TX_RETRY_PROVENANCE.0.get();
+        values[0] = TX_RETRY_PROVENANCE_MAGIC;
+        values[1] = values[1].wrapping_add(1);
+        let pending_mask = scheduler_word & (0x100_u32 << (pipe & 3));
+        match status {
+            0x11 => {
+                values[2] = values[2].wrapping_add(1);
+            }
+            4 | 0x19 => {
+                let (total, pending) = if status == 4 { (4, 5) } else { (6, 7) };
+                values[total] = values[total].wrapping_add(1);
+                if pending_mask != 0 {
+                    values[pending] = values[pending].wrapping_add(1);
+                } else {
+                    values[8] = values[8].wrapping_add(1);
+                }
+                values[10] = raw_event;
+                values[11] = scheduler_word;
+                values[12] = u32::from(status) | (u32::from(pipe) << 8);
+            }
+            _ => {}
+        }
+    }
+    #[cfg(not(feature = "experimental-tx-retry-provenance"))]
+    let _ = (raw_event, status, pipe, scheduler_word);
+}
+
+/// Record the ordinary-slot eligibility state seen when a retry-class status
+/// did not own the scheduler pending bit and fell through normal dispatch.
+pub unsafe fn capture_retry_status_ineligible(
+    status: u8,
+    pipe_active: bool,
+    expected_status: u8,
+    slot_state: u8,
+    slot_kind: u8,
+) {
+    #[cfg(feature = "experimental-tx-retry-provenance")]
+    if matches!(status, 4 | 0x19) {
+        unsafe {
+            let values = &mut *TX_RETRY_PROVENANCE.0.get();
+            values[9] = values[9].wrapping_add(1);
+            if pipe_active && expected_status == 0x11 && slot_state == 3 {
+                values[3] = values[3].wrapping_add(1);
+            }
+            values[12] = u32::from(status)
+                | (u32::from(expected_status) << 8)
+                | (u32::from(slot_state) << 16)
+                | (u32::from(slot_kind) << 24);
+        }
+    }
+    #[cfg(not(feature = "experimental-tx-retry-provenance"))]
+    let _ = (status, pipe_active, expected_status, slot_state, slot_kind);
+}
+
 /// Records ordinary completion after `complete_tx_pipe_slot` has enqueued it.
 pub unsafe fn capture_tx_ordinary_completed(context: u32, pipe: u8, slot: u8) {
     #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -1406,6 +1483,9 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
             let state = &*TX_LIFECYCLE.0.get();
             values[0] = TX_LIFECYCLE_MAGIC;
             values[1..9].copy_from_slice(&state.counters);
+            #[cfg(feature = "experimental-tx-retry-provenance")]
+            values[9..22].copy_from_slice(&*TX_RETRY_PROVENANCE.0.get());
+            #[cfg(not(feature = "experimental-tx-retry-provenance"))]
             values[9..22].copy_from_slice(&state.report);
             return;
         }

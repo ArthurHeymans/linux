@@ -2391,6 +2391,13 @@ static INELIGIBLE_TX_STATUS: IneligibleTxStatus = IneligibleTxStatus {
 #[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
 fn record_ineligible_tx_status(input: OrdinaryTxPipeStatusInput, status: u8) {
     unsafe {
+        crate::host_tx_diagnostics::capture_retry_status_ineligible(
+            status,
+            input.pipe_active,
+            input.expected_status,
+            input.slot_state,
+            input.slot_kind,
+        );
         let count = INELIGIBLE_TX_STATUS.count.get();
         count.write_volatile(count.read_volatile().wrapping_add(1));
         INELIGIBLE_TX_STATUS.last.get().write_volatile(
@@ -3693,6 +3700,14 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
         saved_scheduler_word: SchedulerWord,
     ) {
         let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) } & 3;
+        unsafe {
+            crate::host_tx_diagnostics::capture_tx_retry_provenance(
+                event.raw,
+                status,
+                pipe,
+                saved_scheduler_word.raw(),
+            )
+        };
         let pending_mask = saved_scheduler_word.raw() & (0x100_u32 << pipe);
         if pending_mask != 0 && matches!(status, 4 | 0x19) {
             unsafe {

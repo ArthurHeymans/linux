@@ -5384,3 +5384,17 @@ Repeating those JOIN-tail publications with the exact vendor bitmap semantics
 (clear `+0x08`, set `+0x0c`, clear `+0x10`) produced 26,970 of 48,693 packets
 (44.61% loss) on a 4.2 ms baseline. Thus the residual TBTT slots are not the
 ordinary-ACK false-success cause and the temporary code was removed.
+
+Feature-gated retry-event provenance then separated genuine physical retries
+from unrelated completion-class FIFO traffic. Across qualified runs, almost
+every status `0x19` carried the required `0x09c00e84` pending ownership bit;
+in the final arm 7,500 of 7,505 did, matching the 7,503 excess MAC starts above
+publications. This is the working physical retry path. Status `0x04` behaved
+differently: 595 were observed, only 5 had pending ownership, and 265 fell
+through ordinary status dispatch. Crucially, **zero** retry-class fallthroughs
+hit an active state-3 ordinary slot expecting `0x11`; the latest `0x04` saw no
+active slot (`expected = 0`, state 0, kind 0). Thus queued `0x04` events are
+background/unowned traffic, not suppressed retry requests for the phantom
+MPDUs. Ordinary false-success frames receive only bare `0x11` with no pending
+ownership. The remaining defect is definitively in hardware ACK/response
+qualification before retry-event generation, not firmware retry routing.
