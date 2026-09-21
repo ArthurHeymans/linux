@@ -5466,3 +5466,20 @@ control/phase-only translation lost 45.41%. Repeating with the complete
 borderline 20.095 ms baseline. Since the vendor branch is guarded by profile
 state and forcing it is consistently harmful, it is not active for this joined
 mode-zero path; both temporary translations were removed.
+
+The pivot away from halted final values first tried to read live vendor/open
+DTCM through the host AHB debug window. Every `0x0400....` read returned
+`0xffffffff`; that bus cannot address ARM DTCM, so the apparent equality was
+invalid and no state conclusion was drawn. Exact-PN telemetry was then extended
+to carry pipe/slot identity (`TXP2`) and to aggregate every counters-MIB sample.
+A fixed 2,048-completion cadence had aliased onto pipe 0/slot 1, so the low
+sampling offset now rotates across the sixteen possible pipe/slot positions.
+In the qualified rotating capture, all ordinary traffic used pipe 0 but covered
+slots 0--3. Of twelve firmware-success samples, ten exact PNs were absent from
+the monitor capture: slot 0 had 1/1 absent, slot 1 had 3/4 absent, slot 2 had
+3/3 absent, and slot 3 had 3/4 absent. Both present samples and absent samples
+occurred with each side of the start/status timing split. False success is
+therefore neither a physical-pipe fault, an individual slot fault, nor exactly
+classified by the previously observed bimodal delay. The next discriminator
+must compare the per-frame pre-GO TX vector/descriptor state and event-time
+MAC/PHY state.

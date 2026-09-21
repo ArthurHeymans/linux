@@ -5,7 +5,8 @@ import re
 import sys
 
 MAGIC = 0x54584C43  # "TXLC"
-PN_MAGIC = 0x5458504E  # "TXPN"
+PN_MAGIC = 0x5458504E  # "TXPN" (legacy PN-only records)
+PN_PIPE_MAGIC = 0x54585032  # "TXP2" (PN plus pipe/slot)
 RETRY_PROVENANCE_MAGIC = 0x54585250  # "TXRP"
 MIB_FIELDS = [
     "plcp_errors",
@@ -41,8 +42,8 @@ STAGES = [
 ]
 
 
-def parse_last_marked_block(text):
-    marked = None
+def parse_marked_blocks(text):
+    marked = []
     # Harnesses either prefix a block with "COUNTERS:" or print the 22 fields
     # directly below a timestamped MIB heading. A positive lookahead keeps the
     # leading plcp_errors line in every candidate section.
@@ -57,8 +58,8 @@ def parse_last_marked_block(text):
                 words.append(int(match.group(1)) & 0xFFFFFFFF)
             except ValueError:
                 break
-        if len(words) == len(MIB_FIELDS) and words[0] in (MAGIC, PN_MAGIC):
-            marked = words
+        if len(words) == len(MIB_FIELDS) and words[0] in (MAGIC, PN_MAGIC, PN_PIPE_MAGIC):
+            marked.append(words)
     return marked
 
 
@@ -93,10 +94,11 @@ def main():
         print(f"cannot read input: {error}")
         return 1
 
-    words = parse_last_marked_block(text)
-    if words is None:
+    marked_blocks = parse_marked_blocks(text)
+    if not marked_blocks:
         print("no TXLC counters block found")
         return 1
+    words = marked_blocks[-1]
 
     labels = [
         "published",
@@ -141,23 +143,44 @@ def main():
         print(f"  decoded_type            0x{event['type']:02x}")
         return 0
 
-    if words[0] == PN_MAGIC:
-        cursor = words[9]
-        available = min(cursor, 4)
-        print("\nperiodic accepted ordinary completions (newest first):")
-        for age in range(available):
-            record = (cursor - age - 1) & 3
-            base = 10 + record * 3
-            identity, pn_low, pn_generation = words[base:base + 3]
-            sequence = identity & 0xFFF
-            start_to_success = (identity >> 12) & 0x3FF
-            success_to_status = (identity >> 22) & 0x3FF
-            packet_number = pn_low | ((pn_generation & 0xFFFF) << 32)
-            completion_ordinal = pn_generation >> 16
+    if words[0] in (PN_MAGIC, PN_PIPE_MAGIC):
+        samples = []
+        seen = set()
+        for block in marked_blocks:
+            if block[0] not in (PN_MAGIC, PN_PIPE_MAGIC):
+                continue
+            cursor = block[9]
+            for age in reversed(range(min(cursor, 4))):
+                record = (cursor - age - 1) & 3
+                base = 10 + record * 3
+                identity, pn_low, pn_generation = block[base:base + 3]
+                sequence = identity & 0xFFF
+                start_to_success = (identity >> 12) & 0x3FF
+                success_to_status = (identity >> 22) & 0x3FF
+                packet_number = pn_low | ((pn_generation & 0xFFFF) << 32)
+                if block[0] == PN_PIPE_MAGIC:
+                    completion_ordinal = (pn_generation >> 16) & 0xFFF
+                    pipe = (pn_generation >> 28) & 3
+                    slot = pn_generation >> 30
+                else:
+                    completion_ordinal = pn_generation >> 16
+                    pipe = None
+                    slot = None
+                key = (packet_number, completion_ordinal, pipe, slot)
+                if key not in seen:
+                    seen.add(key)
+                    samples.append(
+                        (sequence, packet_number, start_to_success, success_to_status,
+                         completion_ordinal, pipe, slot)
+                    )
+        print("\nperiodic accepted ordinary completions (oldest first):")
+        for sequence, packet_number, start_to_success, success_to_status, completion_ordinal, pipe, slot in samples:
+            location = f"pipe/slot={pipe}/{slot} " if pipe is not None else ""
+            ordinal_label = "completion_mod4096" if pipe is not None else "completion"
             print(
-                f"  age={age} sequence={sequence:4d} SC=0x{sequence << 4:04x} "
+                f"  {location}sequence={sequence:4d} SC=0x{sequence << 4:04x} "
                 f"PN=0x{packet_number:012x} start->success={start_to_success} "
-                f"success->status={success_to_status} completion={completion_ordinal}"
+                f"success->status={success_to_status} {ordinal_label}={completion_ordinal}"
             )
         print("\n  -> match each sequence+PN pair against the monitor capture")
         return 0

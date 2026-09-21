@@ -130,7 +130,7 @@ unsafe impl Sync for SharedTxIdentity {}
 static TX_IDENTITY: SharedTxIdentity = SharedTxIdentity(UnsafeCell::new([0; 22]));
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
-const TX_LIFECYCLE_MAGIC: u32 = 0x5458_504e; // "TXPN"
+const TX_LIFECYCLE_MAGIC: u32 = 0x5458_5032; // "TXP2" (PN plus pipe/slot)
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 const TX_STAGE_PUBLISHED: u32 = 1 << 0;
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -940,6 +940,13 @@ fn tx_lifecycle_transition(stages: u32, required: u32, stage: u32) -> (u32, bool
     (stages | stage, stages & required == required)
 }
 
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+fn tx_pn_report_tail(packet_number: u64, completion_ordinal: u32, pipe: u8, slot: u8) -> u32 {
+    (packet_number >> 32) as u32
+        | ((completion_ordinal & 0x0fff) << 16)
+        | (u32::from(pipe & 3) << 28)
+        | (u32::from(slot & 3) << 30)
+}
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8) {
@@ -1294,7 +1301,10 @@ pub unsafe fn capture_completion_identity(
                 && lifecycle.stages & TX_STAGE_STATUS_ACCEPTED != 0
             {
                 let completion_ordinal = state.counters[4];
-                if completion_ordinal & 0x07ff != 0 {
+                // Rotate the low completion offset once per 2,048-frame
+                // window. Sampling a fixed multiple of 2,048 aliases a
+                // sixteen-slot round robin onto one pipe/slot forever.
+                if completion_ordinal & 0x07ff != (completion_ordinal >> 11) & 0x0f {
                     return;
                 }
                 let cursor = state.report[0];
@@ -1309,8 +1319,12 @@ pub unsafe fn capture_completion_identity(
                     | (start_to_success << 12)
                     | (success_to_status << 22);
                 state.report[base + 1] = lifecycle.packet_number as u32;
-                state.report[base + 2] = (lifecycle.packet_number >> 32) as u32
-                    | ((completion_ordinal & 0xffff) << 16);
+                state.report[base + 2] = tx_pn_report_tail(
+                    lifecycle.packet_number,
+                    completion_ordinal,
+                    pipe,
+                    slot,
+                );
                 state.report[0] = cursor.wrapping_add(1);
             } else {
                 state.counters[6] = state.counters[6].wrapping_add(1);
@@ -1563,6 +1577,10 @@ mod tests {
         );
         assert!(!valid);
 
-
+        let tail = super::tx_pn_report_tail(0x1234_5678_9abc, 0x1abc, 2, 3);
+        assert_eq!(tail & 0xffff, 0x1234);
+        assert_eq!((tail >> 16) & 0x0fff, 0x0abc);
+        assert_eq!((tail >> 28) & 3, 2);
+        assert_eq!(tail >> 30, 3);
     }
 }
