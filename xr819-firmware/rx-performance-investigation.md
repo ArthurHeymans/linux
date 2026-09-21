@@ -5364,3 +5364,23 @@ were still awaiting host confirmation in the final arm. The response-slot
 correction is retained as a second independently verified vendor-fidelity fix,
 while the remaining ordinary-ACK false-success path still requires another MAC
 configuration difference.
+
+A subsequent probe of another apparent dump delta showed why halted-state values
+must not be copied blindly. Both vendor and open had `0x09c00228 = 0x20000002`;
+a first experiment that zeroed it failed association twice and was discarded.
+Writing only vendor's halted `0x09c00224 = 0x01000002` kept a clean 4.1 ms
+baseline and delivered 27,650 of 46,445 offered packets (40.47% loss), which is
+within the spread of the 41.30--42.72% corrected arms and does not solve false
+success. Static analysis found no vendor firmware writer for `+0x24`; it is a
+hardware-derived status/default rather than a JOIN configuration word. The
+probe was removed.
+
+A fresh halted dump of the current image then removed most of the old apparent
+MMIO differences. Joined mode `0x0200`, hardware-derived `0x0208`, corrected BA
+bitmap `0x0a08`, and timing register `0x0e48` all matched vendor. The arm itself
+received 29,556 of 50,836 offered packets (41.86% loss). The only stable
+response-routing delta left was `0x0a0c` bits 6 and 17, vendor slots 8 and 19.
+Repeating those JOIN-tail publications with the exact vendor bitmap semantics
+(clear `+0x08`, set `+0x0c`, clear `+0x10`) produced 26,970 of 48,693 packets
+(44.61% loss) on a 4.2 ms baseline. Thus the residual TBTT slots are not the
+ordinary-ACK false-success cause and the temporary code was removed.
