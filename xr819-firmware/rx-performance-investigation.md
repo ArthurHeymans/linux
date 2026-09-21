@@ -5280,3 +5280,33 @@ the late population is already misclassified when hardware emits the same
 response-timeout/descriptor or MAC/PHY initialization difference that should
 produce the retry event. Timing-based failure classification remains a bounded
 fallback, not the preferred root fix.
+
+The remaining vendor-vs-Rust candidates were tested individually with the same
+whole-run timing census and healthy baselines. None moved the late population:
+
+- vendor JOIN response slots 8/16/19: 59.30% late;
+- STA PAS/BSSID publication before PHY channel transition: 58.69% late;
+- descriptor response-duration field +16: 58.38% late, with the same bucket
+  boundary, so that field is not the active late-status timer;
+- vendor-direction live-register context save: 61.09% late;
+- remove the extra pre-vendor-order MAC/RX initialization pass: 58.97% late;
+- vendor `mac_set_txop_limit(0)` JOIN tail: 59.03% late.
+
+Ghidra resolved the TXOP block literal at `0x00007b58` to `0x09c00e00`, so the
+last test exactly wrote `0x09c00e24 = 0` and reloaded `0x09c00e1c` from
+`0x09c00e38`; its negative result is not based on a guessed address. The tested
+fractions remain within the run-to-run RF spread around the 59.54% baseline.
+Per-frame descriptor construction was also instruction-audited equivalent to
+vendor, including duration sources, expected status `0x11`, command words, and
+trigger/duration/arm/GO ordering.
+
+At this point no exposed hardware result or known vendor initialization delta
+separates the false-success mode. The measured 9--32-tick empty interval is the
+only stable outcome discriminator, but two timing-based disposition tests show
+that it is not itself a fix. Feeding late protected-data `0x11` into the normal
+scheduler-pending retry handler raised idle ping to about 856 ms because that
+handler expects real pending-bit ownership. Retiring the same late population
+immediately with terminal failure `0x0b` kept a normal 4.7 ms baseline but
+increased application loss to 69.50% and produced 87 lifecycle identity
+mismatches. Both experiments were removed. Timing remains strong localization
+evidence, not a safe replacement for the missing hardware retry indication.
