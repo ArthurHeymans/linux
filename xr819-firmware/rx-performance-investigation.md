@@ -5261,3 +5261,22 @@ late timeout-like result. The translated vendor completion path currently maps
 both to `complete_tx_pipe_slot(..., 0)` and therefore reports both as success.
 The next discriminator is to classify the late mode as failed completion and
 verify that host TX status and retry behavior track the on-air result.
+
+Parallel open-source and vendor-decompilation audits found no omitted software
+ACK-validity gate. Vendor `mac_irq_handler` also reduces the raw completion to
+its six-bit status, and `txp_pipe_tx_status` passes matching `0x11` to
+`txp_fn_2441(..., 0)` without reading elapsed time, a response-result register,
+or the descriptor. The unexplained event bit 22 is ignored by vendor code.
+
+A temporary prompt/late provenance image then compared every accepted event in
+the two timing populations. The complete raw word was invariant within both
+classes and identical across them: `0x0140b711`. The pre-service scheduler word
+was invariant zero, and MAC `0x0a28` was invariant `0x19190000`. TX-ring
+completion `+0x1c` was invariant zero. MAC `0x0e90`, `0x0ea0`, and TX-ring
+cursor/pending `+0x20` varied within both classes rather than separating them.
+Thus the visible event and status-time registers provide no ACK/timeout bit;
+the late population is already misclassified when hardware emits the same
+`0x11` with no retry-pending indication. A proper fix now requires finding the
+response-timeout/descriptor or MAC/PHY initialization difference that should
+produce the retry event. Timing-based failure classification remains a bounded
+fallback, not the preferred root fix.
