@@ -5516,3 +5516,24 @@ per-context duration-slot address. The PHY/rate/length/fixed-opcode descriptor
 setup is therefore not the discriminator; address-bearing command identity must
 be checked against a complete AP-side PN trace rather than the monitor adapter,
 whose unique-PN coverage remained below the receiver count.
+
+## AP-complete PN trace corrects the false-success hypothesis
+
+A module-hash-guarded BPF map recorded every XR819 CCMP PN reaching both Intel
+AP PN-check paths without per-packet printing. In the stock run it observed
+53,190 unique PNs for 55,031 firmware publications and matched 11/12 sparse
+samples, while the application received only 28,884 packets. The monitor's
+sample absences were capture misses, not proof that acknowledged MPDUs failed
+to reach the AP. Investigation therefore returned to the already demonstrated
+64-entry receive-reorder alias: younger sequence/PN frames can advance beyond a
+delayed predecessor and make valid late frames fail replay validation.
+
+Allowing only one hardware-owned ordinary frame reduced application loss from
+41.61% to 28.30% and reduced the immediate confirmation backlog from 14,618 to
+529, but the default publisher still chose reusable host-context indices rather
+than PAS order. Combining one hardware owner with minimum PAS-ring-distance
+selection produced 191 missing of 46,621 offered packets (0.41%). The AP saw
+51,806 unique PNs for 51,809 firmware publications and all 12 sparse firmware
+success PNs. This restores vendor-level delivery without elapsed-time status
+classification or synthetic retries: publication and physical ownership now
+preserve the sequence/CCMP-PN order required by the receiver's finite BA window.

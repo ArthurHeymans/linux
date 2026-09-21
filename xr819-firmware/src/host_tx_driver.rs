@@ -334,7 +334,7 @@ impl HostTxDriver {
         let Some(owners) = self.hardware_runtime_owners() else {
             crate::halt_always!();
         };
-        if allow_hardware_publication {
+        if allow_hardware_publication && owners.is_empty() {
             unsafe { self.publish_ready_batch(mac_domain, owners) };
         }
         #[cfg(feature = "experimental-cycle-probe")]
@@ -996,11 +996,10 @@ impl HostTxDriver {
             reservation: first_reservation,
             frame_node: first_frame_node,
         });
-        let ordinary_len = if cfg!(feature = "experimental-four-slot-ordinary") {
-            plan.len()
-        } else {
-            plan.len().min(2)
-        };
+        // Preserve sequence/PN order at the receiver: a slow older slot must
+        // retire before a younger ordinary frame can reach the air and advance
+        // a finite BA reorder window past it.
+        let ordinary_len = 1;
         let target_len = if cfg!(feature = "experimental-depth-two-ampdu")
             && aggregate_len >= 2
         {
@@ -1235,7 +1234,7 @@ impl HostTxDriver {
         owners: host_tx_policy::Class0RuntimeOwners,
     ) {
         let mut first_index = None;
-        let mut ready_count = 0;
+        let mut first_distance = u8::MAX;
         for (index, state) in self.states.iter().enumerate() {
             let Some(HostTxState::Owned {
                 retained,
@@ -1255,23 +1254,14 @@ impl HostTxDriver {
             if owners.contains_pipe(pipe) {
                 continue;
             }
-            if first_index.is_none() {
+            let Some(distance) = (unsafe { vendor_host_tx::queued_pas_ring_distance(retained) })
+            else {
+                continue;
+            };
+            if distance < first_distance {
+                first_distance = distance;
                 first_index = Some(index);
             }
-            ready_count += 1;
-            if ready_count == 2 {
-                break;
-            }
-        }
-        if !cfg!(feature = "experimental-fast-loop")
-            && ready_count == 1
-            && self.scheduler_single_wait == 0
-        {
-            // The command lane admits at most one request after this service
-            // pass. Give it one pass to supply a partner before falling back
-            // to the latency-safe single-frame path.
-            self.scheduler_single_wait = 1;
-            return;
         }
         self.scheduler_single_wait = 0;
         let Some(first_index) = first_index else {
@@ -1413,188 +1403,30 @@ impl HostTxDriver {
         let pipe = first_reservation.pipe();
         let first_slot = first_reservation.slot();
 
-        let second_index = self.states.iter().position(|state| {
-            matches!(
-                state,
-                Some(HostTxState::Owned { retained, hardware: None, .. })
-                    if retained.phase() == vendor_host_tx::HostTxPhase::PasQueued
-                        && unsafe { vendor_host_tx::scheduler_live_diagnostic(retained) }.pipe == pipe
-            )
-        });
-        let Some(second_index) = second_index else {
-            match unsafe { first_reservation.publish(&mut guard, &mut first) } {
-                Ok(()) => {
-                    self.states[first_index] = Some(HostTxState::Owned {
-                        hardware: Some(HardwareOwner::single(
-                            pipe,
-                            first_slot,
-                            first.context().frame_node().raw(),
-                        )),
-                        retained: first,
-                        wait_diagnostic: 3,
-                    });
-                }
-                Err((reservation, _)) => {
-                    self.states[first_index] = Some(HostTxState::Reserved {
-                        retained: first,
-                        reservation,
-                        wait_diagnostic: first_wait,
-                    });
-                }
-            }
-            return;
-        };
-        let Some(HostTxState::Owned {
-            retained: mut second,
-            wait_diagnostic: second_wait,
-            hardware: None,
-        }) = self.states[second_index].take()
-        else {
-            let _ = unsafe { first_reservation.cancel(&mut guard, &mut first) };
-            self.states[first_index] = Some(HostTxState::Owned {
-                retained: first,
-                wait_diagnostic: first_wait,
-                hardware: None,
-            });
-            return;
-        };
-        let first_ampdu = unsafe { vendor_host_tx::ampdu_candidate(&first) };
-        let second_ampdu = unsafe { vendor_host_tx::ampdu_candidate(&second) };
-        if vendor_host_tx::can_form_ampdu_pair(first_ampdu, second_ampdu) {
-            unsafe {
-                host_tx_diagnostics::record_ampdu_candidate(
-                    first_ampdu.key.tid,
-                    first_ampdu.key.rate,
-                );
-            }
-        }
-        let second_slot = first_slot.wrapping_add(1) & 3;
-        let second_reservation = match unsafe {
-            vendor_host_tx::reserve_non_aggregate_scheduler_in_batch(
-                &mut guard,
-                &mut second,
-                pipe,
-                second_slot,
-                1,
-            )
-        } {
-            Ok(reservation) => reservation,
-            Err(_) => {
-                self.states[second_index] = Some(HostTxState::Owned {
-                    retained: second,
-                    wait_diagnostic: second_wait,
-                    hardware: None,
+        // Keep one ordinary frame in hardware at a time. A younger frame must
+        // not overtake a delayed predecessor by more than the receiver's finite
+        // BA reorder window and then cause that predecessor's valid PN to be
+        // rejected when it finally arrives.
+        match unsafe { first_reservation.publish(&mut guard, &mut first) } {
+            Ok(()) => {
+                self.states[first_index] = Some(HostTxState::Owned {
+                    hardware: Some(HardwareOwner::single(
+                        pipe,
+                        first_slot,
+                        first.context().frame_node().raw(),
+                    )),
+                    retained: first,
+                    wait_diagnostic: 3,
                 });
-                match unsafe { first_reservation.publish(&mut guard, &mut first) } {
-                    Ok(()) => {
-                        self.states[first_index] = Some(HostTxState::Owned {
-                            hardware: Some(HardwareOwner::single(
-                                pipe,
-                                first_slot,
-                                first.context().frame_node().raw(),
-                            )),
-                            retained: first,
-                            wait_diagnostic: 3,
-                        });
-                    }
-                    Err((reservation, _)) => {
-                        self.states[first_index] = Some(HostTxState::Reserved {
-                            retained: first,
-                            reservation,
-                            wait_diagnostic: first_wait,
-                        });
-                    }
-                }
-                return;
             }
-        };
-
-        let first_frame_node = first.context().frame_node().raw();
-        let second_frame_node = second.context().frame_node().raw();
-        #[cfg(feature = "experimental-depth-two-ampdu")]
-        if vendor_host_tx::can_form_ampdu_pair(first_ampdu, second_ampdu) {
-            match unsafe {
-                vendor_host_tx::publish_depth_two_ampdu(
-                    &mut guard,
-                    &mut first,
-                    &mut second,
-                    first_reservation,
-                    second_reservation,
-                )
-            } {
-                Ok((aggregate_pipe, aggregate_slot)) => {
-                    self.states[first_index] = Some(HostTxState::Owned {
-                        retained: first,
-                        wait_diagnostic: 3,
-                        hardware: Some(HardwareOwner::aggregate(
-                            aggregate_pipe,
-                            aggregate_slot,
-                            first_frame_node,
-                            first_frame_node,
-                            2,
-                        )),
-                    });
-                    self.states[second_index] = Some(HostTxState::Owned {
-                        retained: second,
-                        wait_diagnostic: 3,
-                        hardware: Some(HardwareOwner::aggregate(
-                            aggregate_pipe,
-                            aggregate_slot,
-                            second_frame_node,
-                            first_frame_node,
-                            2,
-                        )),
-                    });
-                    return;
-                }
-                Err(vendor_host_tx::AmpduPublishError::Ownership) => crate::halt_always!(),
-                Err(_) => {
-                    self.states[first_index] = Some(HostTxState::Owned {
-                        retained: first,
-                        wait_diagnostic: first_wait,
-                        hardware: None,
-                    });
-                    self.states[second_index] = Some(HostTxState::Owned {
-                        retained: second,
-                        wait_diagnostic: second_wait,
-                        hardware: None,
-                    });
-                    return;
-                }
+            Err((reservation, _)) => {
+                self.states[first_index] = Some(HostTxState::Reserved {
+                    retained: first,
+                    reservation,
+                    wait_diagnostic: first_wait,
+                });
             }
         }
-        let first_result = unsafe {
-            first_reservation.publish_in_batch(&mut guard, &mut first, tx::BatchPosition::First)
-        };
-        let Err((_reservation, _)) = first_result else {
-            let second_result = unsafe {
-                second_reservation.publish_in_batch(&mut guard, &mut second, tx::BatchPosition::Last)
-            };
-            if second_result.is_err() {
-                crate::halt_always!();
-            }
-            unsafe {
-                tx::finalize_staged_host_class0_pipe(
-                    &mut guard,
-                    pipe,
-                    first_slot,
-                    second_slot,
-                );
-                host_tx_diagnostics::record_batch_publication(2);
-            }
-            self.states[first_index] = Some(HostTxState::Owned {
-                retained: first,
-                wait_diagnostic: 3,
-                hardware: Some(HardwareOwner::single(pipe, first_slot, first_frame_node)),
-            });
-            self.states[second_index] = Some(HostTxState::Owned {
-                retained: second,
-                wait_diagnostic: 3,
-                hardware: Some(HardwareOwner::single(pipe, second_slot, second_frame_node)),
-            });
-            return;
-        };
-        crate::halt_always!();
     }
 
     unsafe fn service_index(
