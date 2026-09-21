@@ -130,7 +130,7 @@ unsafe impl Sync for SharedTxIdentity {}
 static TX_IDENTITY: SharedTxIdentity = SharedTxIdentity(UnsafeCell::new([0; 22]));
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
-const TX_LIFECYCLE_MAGIC: u32 = 0x5458_4c43; // "TXLC"
+const TX_LIFECYCLE_MAGIC: u32 = 0x5458_504e; // "TXPN"
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 const TX_STAGE_PUBLISHED: u32 = 1 << 0;
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -151,10 +151,10 @@ struct TxSlotLifecycle {
     packet_id: u32,
     context: u32,
     sequence: u16,
+    packet_number: u64,
     stages: u32,
     status_detail: u32,
     timestamps: [u32; 5],
-    event_raw: [u32; 3],
 }
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -163,10 +163,10 @@ const EMPTY_TX_SLOT_LIFECYCLE: TxSlotLifecycle = TxSlotLifecycle {
     packet_id: 0,
     context: 0,
     sequence: 0,
+    packet_number: 0,
     stages: 0,
     status_detail: 0,
     timestamps: [0; 5],
-    event_raw: [0; 3],
 };
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -927,10 +927,6 @@ fn tx_lifecycle_transition(stages: u32, required: u32, stage: u32) -> (u32, bool
     (stages | stage, stages & required == required)
 }
 
-#[cfg(feature = "experimental-tx-status-lifecycle")]
-fn pack_saturating_u16(low: u32, high: u32) -> u32 {
-    low.min(u32::from(u16::MAX)) | (high.min(u32::from(u16::MAX)) << 16)
-}
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8) {
@@ -944,15 +940,23 @@ unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8)
         let sequence = crate::dtcm::host_context_from_raw(context).map_or(0, |host| {
             crate::dtcm::shared_ptr::<u16>(host.sequence_number()).read_volatile()
         });
+        let packet_number = crate::dtcm::host_context_from_raw(context).map_or(0, |host| {
+            let frame_address = crate::dtcm::shared_ptr::<u32>(host.frame_address()).read_volatile();
+            let frame_length = usize::from(
+                crate::dtcm::shared_ptr::<u16>(host.frame_length()).read_volatile(),
+            );
+            let frame = core::slice::from_raw_parts(frame_address as *const u8, frame_length);
+            crate::crypto::tx_frame_packet_number(frame).unwrap_or(0)
+        });
         state.slots[index] = TxSlotLifecycle {
             generation,
             packet_id,
             context,
             sequence,
+            packet_number,
             stages: TX_STAGE_PUBLISHED,
             status_detail: 0,
             timestamps: [timestamp(), 0, 0, 0, 0],
-            event_raw: [0; 3],
         };
         record(
             EVENT_TX_LIFECYCLE,
@@ -975,7 +979,6 @@ unsafe fn tx_lifecycle_advance(
     counter: usize,
     timestamp_index: usize,
     detail: u32,
-    event_raw: Option<(usize, u32)>,
 ) {
     unsafe {
         let Some(index) = tx_lifecycle_slot(pipe, slot) else {
@@ -1003,9 +1006,7 @@ unsafe fn tx_lifecycle_advance(
         if stage_bit == TX_STAGE_STATUS_ACCEPTED {
             lifecycle.status_detail = detail;
         }
-        if let Some((index, raw)) = event_raw {
-            lifecycle.event_raw[index] = raw;
-        }
+
         lifecycle.timestamps[timestamp_index] = timestamp();
         record(
             EVENT_TX_LIFECYCLE,
@@ -1020,7 +1021,7 @@ unsafe fn tx_lifecycle_advance(
 }
 
 /// Records that the MAC selected the exact published ordinary slot.
-pub unsafe fn capture_tx_start(context: u32, pipe: u8, slot: u8, event_raw: u32) {
+pub unsafe fn capture_tx_start(context: u32, pipe: u8, slot: u8) {
     #[cfg(feature = "experimental-tx-status-lifecycle")]
     unsafe {
         tx_lifecycle_advance(
@@ -1033,15 +1034,14 @@ pub unsafe fn capture_tx_start(context: u32, pipe: u8, slot: u8, event_raw: u32)
             1,
             1,
             0,
-            Some((0, event_raw)),
         );
     }
     #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
-    let _ = (context, pipe, slot, event_raw);
+    let _ = (context, pipe, slot);
 }
 
 /// Records the MAC pipe-success event which moves an ordinary slot to state 3.
-pub unsafe fn capture_tx_pipe_success(context: u32, pipe: u8, slot: u8, event_raw: u32) {
+pub unsafe fn capture_tx_pipe_success(context: u32, pipe: u8, slot: u8) {
     #[cfg(feature = "experimental-tx-status-lifecycle")]
     unsafe {
         tx_lifecycle_advance(
@@ -1054,11 +1054,10 @@ pub unsafe fn capture_tx_pipe_success(context: u32, pipe: u8, slot: u8, event_ra
             2,
             2,
             0,
-            Some((1, event_raw)),
         );
     }
     #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
-    let _ = (context, pipe, slot, event_raw);
+    let _ = (context, pipe, slot);
 }
 
 /// Records an ordinary status accepted for the exact state-3 slot.
@@ -1070,7 +1069,6 @@ pub unsafe fn capture_tx_status_accepted(
     expected: u8,
     slot_kind: u8,
     slot_state: u8,
-    event_raw: u32,
 ) {
     #[cfg(feature = "experimental-tx-status-lifecycle")]
     unsafe {
@@ -1088,13 +1086,10 @@ pub unsafe fn capture_tx_status_accepted(
             3,
             3,
             detail,
-            Some((2, event_raw)),
         );
     }
     #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
-    let _ = (
-        context, pipe, slot, delivered, expected, slot_kind, slot_state, event_raw,
-    );
+    let _ = (context, pipe, slot, delivered, expected, slot_kind, slot_state);
 }
 
 /// Records ordinary completion after `complete_tx_pipe_slot` has enqueued it.
@@ -1114,7 +1109,6 @@ pub unsafe fn capture_tx_ordinary_completed(context: u32, pipe: u8, slot: u8) {
             4,
             4,
             0,
-            None,
         );
     }
     #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
@@ -1222,27 +1216,25 @@ pub unsafe fn capture_completion_identity(
                 && lifecycle.context == context
                 && lifecycle.stages & TX_STAGE_STATUS_ACCEPTED != 0
             {
-                let publish_to_start = lifecycle.timestamps[1].wrapping_sub(lifecycle.timestamps[0]);
-                let start_to_success = lifecycle.timestamps[2].wrapping_sub(lifecycle.timestamps[1]);
-                let success_to_status = lifecycle.timestamps[3].wrapping_sub(lifecycle.timestamps[2]);
-                let status_to_completion = lifecycle.timestamps[4].wrapping_sub(lifecycle.timestamps[3]);
-                state.report = [
-                    packet_id,
-                    context,
-                    u32::from(lifecycle.sequence),
-                    u32::from(pipe)
-                        | (u32::from(slot) << 8)
-                        | (u32::from(lifecycle.generation) << 16),
-                    lifecycle.stages,
-                    lifecycle.status_detail,
-                    u32::from(status) | (u32::from(retries) << 16),
-                    publish_to_start,
-                    pack_saturating_u16(start_to_success, success_to_status),
-                    pack_saturating_u16(status_to_completion, 0),
-                    lifecycle.event_raw[0],
-                    lifecycle.event_raw[1],
-                    lifecycle.event_raw[2],
-                ];
+                let completion_ordinal = state.counters[4];
+                if completion_ordinal & 0x07ff != 0 {
+                    return;
+                }
+                let cursor = state.report[0];
+                let base = 1 + (cursor as usize & 3) * 3;
+                let start_to_success = lifecycle.timestamps[2]
+                    .wrapping_sub(lifecycle.timestamps[1])
+                    .min(0x03ff);
+                let success_to_status = lifecycle.timestamps[3]
+                    .wrapping_sub(lifecycle.timestamps[2])
+                    .min(0x03ff);
+                state.report[base] = u32::from(lifecycle.sequence & 0x0fff)
+                    | (start_to_success << 12)
+                    | (success_to_status << 22);
+                state.report[base + 1] = lifecycle.packet_number as u32;
+                state.report[base + 2] = (lifecycle.packet_number >> 32) as u32
+                    | ((completion_ordinal & 0xffff) << 16);
+                state.report[0] = cursor.wrapping_add(1);
             } else {
                 state.counters[6] = state.counters[6].wrapping_add(1);
             }
@@ -1281,27 +1273,18 @@ pub unsafe fn capture_confirmation_identity(
     #[cfg(feature = "experimental-tx-status-lifecycle")]
     unsafe {
         let state = &mut *TX_LIFECYCLE.0.get();
-        let report_matches = state.report[0] == packet_id && state.report[1] == context;
         let slot = state.slots.iter_mut().find(|lifecycle| {
             lifecycle.packet_id == packet_id
                 && lifecycle.context == context
                 && lifecycle.stages & TX_STAGE_COMPLETED != 0
         });
-        let confirmation_timestamp = timestamp();
-        let completion_to_confirmation = slot
-            .as_ref()
-            .map_or(0, |lifecycle| confirmation_timestamp.wrapping_sub(lifecycle.timestamps[4]));
-        if report_matches || slot.is_some() {
+        if slot.is_some() {
             state.counters[5] = state.counters[5].wrapping_add(1);
         }
         if let Some(lifecycle) = slot {
             lifecycle.stages |= TX_STAGE_CONFIRMED;
         }
-        if report_matches {
-            state.report[4] |= TX_STAGE_CONFIRMED;
-            state.report[9] = (state.report[9] & 0xffff)
-                | (completion_to_confirmation.min(u32::from(u16::MAX)) << 16);
-        }
+
     }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
     let _ = (packet_id, context, status, retries);
@@ -1500,7 +1483,6 @@ mod tests {
         );
         assert!(!valid);
 
-        assert_eq!(super::pack_saturating_u16(0x1234, 0x5678), 0x5678_1234);
-        assert_eq!(super::pack_saturating_u16(0x1_0000, u32::MAX), u32::MAX);
+
     }
 }

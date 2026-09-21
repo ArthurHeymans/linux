@@ -237,6 +237,26 @@ fn pn_bytes(value: u64) -> [u8; 6] {
     ]
 }
 
+/// Return the 48-bit CCMP packet number already embedded in a protected TX
+/// frame. Diagnostics use this as the non-wrapping on-air identity; unlike the
+/// 12-bit sequence number it remains unique across a sustained flow.
+pub(crate) fn tx_frame_packet_number(frame: &[u8]) -> Option<u64> {
+    let control = frame_control(frame).ok()?;
+    if control & 0x400c != 0x4008 {
+        return None;
+    }
+    let header = header_length(control);
+    let ccmp = frame.get(header..header + CCMP_HEADER_LEN)?;
+    Some(
+        u64::from(ccmp[0])
+            | (u64::from(ccmp[1]) << 8)
+            | (u64::from(ccmp[4]) << 16)
+            | (u64::from(ccmp[5]) << 24)
+            | (u64::from(ccmp[6]) << 32)
+            | (u64::from(ccmp[7]) << 40),
+    )
+}
+
 fn tx_key(if_id: u8, receiver: &[u8]) -> Option<(usize, KeyRecord)> {
     unsafe {
         (*KEYS.0.get())
@@ -952,6 +972,14 @@ mod tests {
         payload[4..10].copy_from_slice(&peer);
         payload[12..28].copy_from_slice(&[0x11; 16]);
         crate::wsm::AddKeyRequest::parse(payload).unwrap()
+    }
+
+    #[test]
+    fn tx_packet_number_decodes_ccmp_wire_order() {
+        let mut frame = [0_u8; 34];
+        frame[..2].copy_from_slice(&0x4088_u16.to_le_bytes());
+        frame[26..34].copy_from_slice(&[0x8c, 0x31, 0, 0x20, 0x67, 0x45, 0x23, 0x01]);
+        assert_eq!(tx_frame_packet_number(&frame), Some(0x0123_4567_318c));
     }
 
     #[test]

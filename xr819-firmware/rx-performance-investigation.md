@@ -5142,3 +5142,87 @@ evidence is accepted for a frame the AP did not receive. Resolving those two
 requires the already-configured AR9271 monitor interface on channel 6 to capture
 the exact TXLC sequence concurrently; further software lifecycle stages cannot
 discriminate them.
+
+The first concurrent capture was healthy (5.0 ms baseline), sensitive throughout
+the sequence flow, and observed 10,777 station attempts at about -32 dBm. The
+firmware again completed a coherent chain for its latest sequence 387. That
+sequence was on air, but it appeared four times because 15,553 completions wrap
+the 12-bit sequence space:
+
+```
+sequence 387  PN 0x00000000018c
+sequence 387  PN 0x00000000118c
+sequence 387  PN 0x00000000218c
+sequence 387  PN 0x00000000318c
+```
+
+The last occurrence is consistent with the latest firmware completion, but a
+sequence alone cannot prove which wrap the lifecycle record described. The MIB
+report therefore now uses magic `TXPN` and retains a four-entry ring of exact
+`(sequence, CCMP PN, terminal status, retries, slot generation)` completions.
+The 48-bit PN is copied from the encrypted frame at publication and is identical
+to Wireshark's `wlan.ccmp.extiv`; it removes both sequence-wrap and retry
+ambiguity. Four terminal samples give an 80% chance of containing at least one
+missing frame at the measured 33% gap, and can be repeated without adding
+another software stage.
+
+The first `TXPN` capture produced the first exact per-frame proof. With a 5.2 ms
+baseline, zero sender errors, 15,060 measured publications, and no identity or
+ordering faults, firmware reported terminal success with zero retries for four
+exact MPDUs:
+
+| sequence | CCMP PN | monitor result |
+|---:|---:|---|
+| 2797 | `0x3af5` | present once |
+| 1631 | `0x3667` | **absent** |
+| 1632 | `0x3668` | **absent** |
+| 1755 | `0x36e3` | **absent** |
+
+The capture was strong (~-32 dBm), contained 11,401 unique station PNs during
+the flow, and saw neighbors around each hole (for example `0x3660`–`0x3670`
+with the claimed `0x3667/0x3668` missing). Sequence-only matches from earlier
+wraps exist, but the exact reported PNs do not. This is no longer an aggregate
+counter inference: three specific encrypted MPDUs completed through status
+`0x11` and host confirmation without appearing on air.
+
+The remaining split is whether the MAC skipped those MPDUs before RF or ran a
+full-length transaction and then synthesized/accepted false ACK evidence. The
+same four-entry ring can pack start-to-phase-3 and phase-3-to-status deltas in
+place of the now-redundant terminal-success/retry fields. A short first delta means skipped transmit; a normal airtime-sized first delta
+moves the defect into RF/ACK/status production.
+
+A tail-sampled timing arm was correctly treated as calibration only: all four
+exact PNs were on air. It established normal full-size-frame start-to-phase-3
+values of 218–271 ticks. Status followed either quickly (7–8 ticks) or after
+70–79 ticks, so status delay alone is not an air-presence discriminator.
+
+Sampling every 2,048th completion removed the drained-tail bias. The first
+monitor arm had inadequate RF coverage and was rejected even though tcpdump was
+running. After resetting the AR9271, the repeat had a 4.3 ms baseline, 0 kernel
+capture drops, -27 dBm station frames, 14,287 measured completions, and no
+identity/order faults. Exact results:
+
+| completion | sequence / PN | start -> phase-3 | phase-3 -> status | air |
+|---:|---|---:|---:|---|
+| 6144 | 2046 / `0x1806` | 246 | 87 | **absent** |
+| 8192 | 4088 / `0x2000` | 219 | 79 | **absent** |
+| 10240 | 2014 / `0x27e6` | 320 | 7 | present |
+| 12288 | 0 / `0x3008` | 254 | 8 | present |
+
+The capture contains strong neighboring PNs around both holes (for example
+`0x1800`, `0x1809`, `0x180d` and `0x1ffd`, `0x1ffe`, `0x2002`–`0x2004`,
+`0x2008`). Combined with the earlier high-coverage three-of-four exact-PN
+result, these are genuine phantom successes rather than sequence wrap or kernel
+capture loss.
+
+Most importantly, the two absent MPDUs spend 219/246 timer ticks between MAC
+start and phase-3 success, squarely inside the 218–320 range of observed
+full-size on-air frames. They are not completed at GO and do not take a short
+software/hardware bypass. The command runs for a full frame-sized transaction,
+then the MAC produces the same ACK-class `0x11` completion accepted by vendor
+logic. The remaining defect is below descriptor scheduling: either the PHY does
+not radiate a valid MPDU after consuming full airtime, or the response/status
+producer accepts completion without valid ACK evidence. Descriptor construction
+and response timing match the vendor `txp_build_pipe_descriptor` /
+`tx_build_duration_desc` paths, so the next code audit belongs to MAC/PHY TX
+state and ACK-response qualification registers rather than host completion.

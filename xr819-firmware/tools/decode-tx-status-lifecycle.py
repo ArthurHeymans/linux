@@ -5,6 +5,7 @@ import re
 import sys
 
 MAGIC = 0x54584C43  # "TXLC"
+PN_MAGIC = 0x5458504E  # "TXPN"
 MIB_FIELDS = [
     "plcp_errors",
     "fcs_errors",
@@ -55,7 +56,7 @@ def parse_last_marked_block(text):
                 words.append(int(match.group(1)) & 0xFFFFFFFF)
             except ValueError:
                 break
-        if len(words) == len(MIB_FIELDS) and words[0] == MAGIC:
+        if len(words) == len(MIB_FIELDS) and words[0] in (MAGIC, PN_MAGIC):
             marked = words
     return marked
 
@@ -109,6 +110,27 @@ def main():
     print("observations:")
     for label, value in zip(labels, words[1:9]):
         print(f"  {label:<18} {value}")
+
+    if words[0] == PN_MAGIC:
+        cursor = words[9]
+        available = min(cursor, 4)
+        print("\nperiodic accepted ordinary completions (newest first):")
+        for age in range(available):
+            record = (cursor - age - 1) & 3
+            base = 10 + record * 3
+            identity, pn_low, pn_generation = words[base:base + 3]
+            sequence = identity & 0xFFF
+            start_to_success = (identity >> 12) & 0x3FF
+            success_to_status = (identity >> 22) & 0x3FF
+            packet_number = pn_low | ((pn_generation & 0xFFFF) << 32)
+            completion_ordinal = pn_generation >> 16
+            print(
+                f"  age={age} sequence={sequence:4d} SC=0x{sequence << 4:04x} "
+                f"PN=0x{packet_number:012x} start->success={start_to_success} "
+                f"success->status={success_to_status} completion={completion_ordinal}"
+            )
+        print("\n  -> match each sequence+PN pair against the monitor capture")
+        return 0
 
     packet_id, context, sequence = words[9:12]
     pipe_slot_generation, stage_bits, status_detail, terminal = words[12:16]
