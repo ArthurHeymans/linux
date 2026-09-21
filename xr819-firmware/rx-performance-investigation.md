@@ -5412,4 +5412,57 @@ correctness. Vendor's halted `0x0abb8300` table no longer equals its initial
 source bytes, so later hardware/calibration evolution is part of the contract.
 The isolated source correction was removed; the next PHY work must reconstruct
 the complete detector-table calibration path rather than replacing only the
-initial table.
+initial table. A separate override with the complete stable live-vendor table
+also had no effect: its qualified 3.72 ms arm offered 49,302 packets, received
+28,205, and lost 42.79%, with 52,878 publications/completions, 56,049 physical
+starts, and zero lifecycle identity faults. The temporary table was removed.
+Thus neither the initial detector source nor its final halted values alone
+explain false success.
+
+A second vendor PHY dump classified 337 of 448 captured words as stable and
+reduced the vendor/open comparison to 54 stable differences. The dominant
+stable group is the sixteen-word dynamic-IQ correction banks: vendor repeatedly
+held packed pairs `(-38, -310)` and `(2, -26)`, while open held `(-35, -262)`
+and `(3, -27)`. An exact vendor-pair override initially yielded no qualified arm: one attempt
+had a 2.0 second ping average, one narrowly missed the gate at 36/152 ms
+average/maximum, and the third found the AP unavailable after `wpa_supplicant`
+restarted without NetworkManager reacquiring the interface. Reactivating the AP
+profile allowed a qualified repeat at 3.78 ms average ping. It offered 50,623
+packets, received 29,038, and lost 42.64%; firmware published 54,338 frames,
+started 57,147 physical attempts, and accepted 54,337 statuses, with one
+identity mismatch. This is no improvement over the current 41--42% loss range,
+so the temporary exact-pair override was removed. The stable dynamic-IQ delta
+is not the remaining false-success cause. The duplicated stable RF-result pair
+at `0x0abc00e8/00ec` and `0x0abc01e8/01ec` was likewise neutral when forced to
+the exact vendor values after calibration: two qualified arms lost 39.85% and
+45.48% (42.67% combined), spanning the normal open-firmware variation. The
+first arm's apparent improvement did not repeat, so this override was removed.
+
+An expanded 2,120-word AHB comparison added the digital PHY, detector, and
+auxiliary RF regions omitted by the first snapshot. Two vendor runs agreed on
+1,930 words; intersecting those with open firmware left 45 stable differences.
+Forcing the clustered digital-control values at `0x0ab8010c`, `0x0ab80110`,
+`0x0ab80128`, and `0x0ab80134` to the stable vendor state was neutral: the
+qualified 4.11 ms arm offered 48,749 packets, received 28,666, and lost 41.20%,
+with two lifecycle identity mismatches. The temporary override was removed.
+The three stable repeated pattern entries at `0x0ab80a1c`, `0x0ab80b00`, and
+`0x0ab80b38` were also not missing configuration: replacing open
+`0x09110911` with vendor `0x26202620` worsened qualified loss to 46.77%
+(47,243 offered, 25,149 received) and was removed. The stable detector/control
+pair at `0x0aba8060/8064` was neutral at 41.28% loss (50,445 offered, 29,623
+received) and was removed as well. Forcing the stable auxiliary result at
+`0x0abc80a0` from open `0x2e` to vendor `0x9d` worsened qualified loss to
+46.64% (49,294 offered, 26,305 received) and was removed. The remaining stable
+calibration word at `0x0abb8018` was also negative: vendor `0x75a` produced
+45.51% loss (49,528 offered, 26,989 received), so it was removed. All isolated
+stable differences from the expanded PHY/RF capture are therefore neutral or
+negative; the remaining divergence is an initialization/calibration sequence
+or an uncaptured MAC/PHY interface state, not one final halted register value.
+
+The conditional dispatcher-mode-3 branch inside vendor
+`phy_cal_step_measure()` was also tested as a possible missing transient. A
+control/phase-only translation lost 45.41%. Repeating with the complete
+`phy_set_bandwidth_mode(0)` side effects and vendor ordering lost 45.38% on a
+borderline 20.095 ms baseline. Since the vendor branch is guarded by profile
+state and forcing it is consistently harmful, it is not active for this joined
+mode-zero path; both temporary translations were removed.
