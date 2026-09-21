@@ -62,7 +62,7 @@ struct HardwareOwner {
     aggregate_len: u8,
 }
 
-#[cfg(all(target_arch = "arm", feature = "experimental-four-slot-ordinary"))]
+#[cfg(all(target_arch = "arm", feature = "four-slot-ordinary"))]
 struct ReservedBatchMember {
     index: usize,
     retained: vendor_host_tx::RetainedHostTx,
@@ -526,7 +526,7 @@ impl HostTxDriver {
 
     #[cfg(all(
         target_arch = "arm",
-        feature = "experimental-four-slot-ordinary",
+        feature = "four-slot-ordinary",
         feature = "experimental-depth-four-ampdu"
     ))]
     #[inline(never)]
@@ -589,7 +589,7 @@ impl HostTxDriver {
     /// Publish one or two ready PAS contexts onto a pipe without a retained
     /// runtime owner. A pair is staged into consecutive slots of the same pipe
     /// and crosses the MAC trigger boundary once.
-    #[cfg(feature = "experimental-four-slot-ordinary")]
+    #[cfg(feature = "four-slot-ordinary")]
     unsafe fn publish_ready_batch(
         &mut self,
         mac_domain: &mut crate::mac_domain::MacDomain,
@@ -636,7 +636,7 @@ impl HostTxDriver {
             }
             next.unwrap_or(usize::MAX)
         });
-        if !cfg!(feature = "experimental-fast-loop")
+        if !cfg!(feature = "fast-loop")
             && ready_count != 0
             && ready_count < host_tx_policy::MAX_ORDINARY_BATCH_DEPTH
             && self.scheduler_single_wait == 0
@@ -996,10 +996,11 @@ impl HostTxDriver {
             reservation: first_reservation,
             frame_node: first_frame_node,
         });
-        // Preserve sequence/PN order at the receiver: a slow older slot must
-        // retire before a younger ordinary frame can reach the air and advance
-        // a finite BA reorder window past it.
-        let ordinary_len = 1;
+        // Publish one bounded FIFO cohort, then let the service-level owner
+        // barrier retire every member before another cohort reaches hardware.
+        // Overtaking is therefore bounded by this four-slot transaction rather
+        // than growing without limit across repeated slot reuse.
+        let ordinary_len = plan.len();
         let target_len = if cfg!(feature = "experimental-depth-two-ampdu")
             && aggregate_len >= 2
         {
@@ -1227,7 +1228,7 @@ impl HostTxDriver {
         }
     }
 
-    #[cfg(not(feature = "experimental-four-slot-ordinary"))]
+    #[cfg(not(feature = "four-slot-ordinary"))]
     unsafe fn publish_ready_batch(
         &mut self,
         mac_domain: &mut crate::mac_domain::MacDomain,

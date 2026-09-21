@@ -421,10 +421,10 @@ pub const fn host_class0_is_requeue(completion: HostClass0Completion) -> bool {
 
 /// One service pass can retire the configured ordinary batch depth on each of
 /// four MAC pipes before the host driver starts draining copied identities.
-#[cfg(feature = "experimental-four-slot-ordinary")]
+#[cfg(feature = "four-slot-ordinary")]
 const HOST_CLASS0_COMPLETION_CAPACITY: usize =
     4 * crate::host_tx_policy::MAX_ORDINARY_BATCH_DEPTH;
-#[cfg(not(feature = "experimental-four-slot-ordinary"))]
+#[cfg(not(feature = "four-slot-ordinary"))]
 const HOST_CLASS0_COMPLETION_CAPACITY: usize = 4 * 2;
 
 struct BoundedCompletionQueue<T, const N: usize> {
@@ -3977,12 +3977,12 @@ fn publication_registration_allowed(
     match batch {
         BatchPosition::Only | BatchPosition::First => count == 0,
         BatchPosition::Middle => {
-            cfg!(feature = "experimental-four-slot-ordinary")
+            cfg!(feature = "four-slot-ordinary")
                 && (1..=2).contains(&count)
                 && prior_slots_are_contiguous
         }
         BatchPosition::Last => {
-            if cfg!(feature = "experimental-four-slot-ordinary") {
+            if cfg!(feature = "four-slot-ordinary") {
                 (1..=3).contains(&count) && prior_slots_are_contiguous
             } else {
                 count == 1
@@ -11173,13 +11173,13 @@ mod tests {
             BatchPosition::Last,
             0,
         ));
-        #[cfg(not(feature = "experimental-four-slot-ordinary"))]
+        #[cfg(not(feature = "four-slot-ordinary"))]
         assert!(!publication_registration_allowed(
             [true, false, false, false],
             BatchPosition::Middle,
             1,
         ));
-        #[cfg(feature = "experimental-four-slot-ordinary")]
+        #[cfg(feature = "four-slot-ordinary")]
         {
             assert!(publication_registration_allowed(
                 [true, false, false, false],

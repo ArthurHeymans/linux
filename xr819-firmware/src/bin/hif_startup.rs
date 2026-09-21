@@ -106,7 +106,7 @@ impl Firmware {
     }
 }
 
-#[cfg(feature = "experimental-fast-loop")]
+#[cfg(feature = "fast-loop")]
 fn publish_coalesced_host_tx_confirmations(firmware: &mut Firmware, host_request_waiting: bool) {
     const MAX_CONFIRMATIONS: usize = 4;
     if host_request_waiting || !firmware.transport.response_available() {
@@ -591,10 +591,10 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
-        #[cfg(feature = "experimental-fast-loop")]
+        #[cfg(feature = "fast-loop")]
         publish_coalesced_host_tx_confirmations(&mut firmware, host_request_waiting);
 
-        #[cfg(not(feature = "experimental-fast-loop"))]
+        #[cfg(not(feature = "fast-loop"))]
         if let Some(confirmation) = firmware.host_tx_driver.confirmation()
             && !host_request_waiting
             && firmware.transport.response_available()

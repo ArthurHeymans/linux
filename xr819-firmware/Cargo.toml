@@ -9,7 +9,7 @@ description = "Experimental open firmware for the XRadio XR819"
 crate-type = ["rlib"]
 
 [features]
-default = []
+default = ["four-slot-ordinary", "fast-loop"]
 # Optional bring-up recorder and snapshots. Normal firmware has no features.
 vendor-host-tx-diagnostics = []
 # Correlates each ordinary host TX across publication, MAC start, pipe-success,
@@ -42,7 +42,7 @@ experimental-list-first-depth-eight-ampdu = [
 # depth-two retry implementation byte-stable while deeper ownership evolves.
 experimental-depth-four-ampdu = [
     "experimental-depth-two-ampdu",
-    "experimental-four-slot-ordinary",
+    "four-slot-ordinary",
 ]
 # Extends the software aggregate plan and BA bookkeeping to eight members.
 # Hardware publication must still use the four-slot pipe as one aggregate owner.
@@ -78,7 +78,8 @@ experimental-aggregate-grouping-telemetry = [
     "experimental-ampdu-outcome-telemetry",
 ]
 # Coalesces ready TX confirmations and removes avoidable idle-pipe fill waits.
-experimental-fast-loop = []
+# Qualified as part of the default bounded FIFO TX pipeline.
+fast-loop = []
 # Records joined RX FIFO pressure and publication blockers in counters MIB words
 # 11 through 19 without changing the normal receive path.
 experimental-rx-path-diagnostics = []
@@ -102,9 +103,9 @@ experimental-fixed-iq-second-pair = []
 # Records first/final-pass dynamic-IQ controls, candidates, and correlations in
 # the unused tail of the RX FIFO backing allocation for hardware comparison.
 experimental-dynamic-iq-trace = []
-# Hardware-only vendor-depth ordinary batch bring-up. Normal firmware remains
-# capped at the previously qualified two-slot transaction.
-experimental-four-slot-ordinary = []
+# Publish bounded four-frame FIFO cohorts and wait for the whole cohort to
+# retire before admitting another one to hardware.
+four-slot-ordinary = []
 # Captures the initialized DTCM image at three startup checkpoints and exposes
 # it through private paginated read-MIB diagnostics.
 dtcm-contract-diagnostics = []

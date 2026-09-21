@@ -1418,9 +1418,11 @@ pub unsafe fn capture_confirmation_identity(
                 && lifecycle.context == context
                 && lifecycle.stages & TX_STAGE_COMPLETED != 0
         });
-        if slot.is_some() {
-            state.counters[5] = state.counters[5].wrapping_add(1);
-        }
+        // Confirmation transport can lag far enough for a physical slot's
+        // sparse identity sample to be overwritten by reuse. Count every host
+        // confirmation; use the slot lookup only to annotate samples that are
+        // still resident.
+        state.counters[5] = state.counters[5].wrapping_add(1);
         if let Some(lifecycle) = slot {
             lifecycle.stages |= TX_STAGE_CONFIRMED;
         }

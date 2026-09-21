@@ -5537,3 +5537,28 @@ selection produced 191 missing of 46,621 offered packets (0.41%). The AP saw
 success PNs. This restores vendor-level delivery without elapsed-time status
 classification or synthetic retries: publication and physical ownership now
 preserve the sequence/CCMP-PN order required by the receiver's finite BA window.
+
+## Bounded FIFO cohort restores safe pipelining
+
+A four-member FIFO cohort keeps the global owner barrier: up to four ordered
+frames are staged together, but no later cohort may enter hardware until every
+member retires. Overtaking is therefore bounded to three frames rather than
+accumulating across slot reuse. At fixed MCS5 the first run delivered 47,776 of
+47,894 packets (0.25% loss, about 15.3 Mbit/s). Enabling the fast confirmation
+loop increased capacity to 56,443 sends; the qualified repeat delivered 50,498
+of 50,742 (0.48%, about 16.2 Mbit/s), with 56,416 publications and 56,416 host
+confirmations. The earlier apparent confirmation backlog was diagnostic: the
+counter required the sparse physical-slot identity to remain resident until
+confirmation, so slot reuse hid valid confirmations. It now counts every host
+confirmation and uses identity lookup only to annotate still-resident samples.
+
+MCS7 remains RF-limited: 32,718 of 39,202 packets were delivered (16.54% loss,
+about 10.5 Mbit/s) with 16,793 excess MAC starts. Naive depth-two aggregation
+lost 22.25% even with an operational TX-BA session. The mature selective
+list-first depth-four path improved that to 7.69%, but still trailed the safe
+ordinary cohort and repeatedly cycled BA sessions. Aggregation therefore
+remains disabled; bounded ordinary pipelining is the qualified configuration.
+The clean default, non-diagnostic image then delivered 52,380 of 52,529 packets
+(0.28%, about 16.8 Mbit/s) from 58,308 sends with a 4.27 ms average baseline.
+The qualified cohort and confirmation-coalescing features are now defaults;
+the temporary experimental feature names were retired.
