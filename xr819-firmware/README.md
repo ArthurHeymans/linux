@@ -153,6 +153,18 @@ compile to no-ops and the normal counters layout is preserved. Fatal MAC
 exceptions remain available independently because they are part of terminal
 recovery diagnostics rather than the verbose host-TX trace stream.
 
+The temporary `experimental-tx-status-lifecycle` feature replaces that
+build's counters-MIB view with an ordinary-TX correlation report. Word 0 is
+`0x54584c43` (`TXLC`); words 1–8 count publication, MAC start, pipe-success,
+accepted status, completion, matching confirmation, slot-identity mismatch,
+and out-of-order stage observations. Words 9–21 describe the latest accepted
+ordinary completion: packet ID, context, 12-bit 802.11 sequence number,
+pipe/slot/generation, stage bitmap, delivered/expected/status-slot detail,
+terminal status plus retry count, and timestamps for publication through host
+confirmation. This feature exists only to distinguish a stale/reused slot from
+a hardware event chain that falsely claims an on-air success. Decode a captured
+counters block with `tools/decode-tx-status-lifecycle.py < run.log`.
+
 The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary target CCMP
 uses transfer classes 6/7, commands `0x1100`, `0x1240`, `0x1402/0x1403`, and
 `0x3008_1008/0x3008_1009`, with completion through registered IRQ 18 or 20

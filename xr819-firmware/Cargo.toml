@@ -12,6 +12,10 @@ crate-type = ["rlib"]
 default = []
 # Optional bring-up recorder and snapshots. Normal firmware has no features.
 vendor-host-tx-diagnostics = []
+# Correlates each ordinary host TX across publication, MAC start, pipe-success,
+# accepted status, completion, and host confirmation. Exposes the latest exact
+# identity plus aggregate invariant failures through the existing counters MIB.
+experimental-tx-status-lifecycle = ["vendor-host-tx-diagnostics"]
 # Hardware-only depth-two A-MPDU bring-up. Never enabled in normal firmware.
 experimental-depth-two-ampdu = []
 # Vendor-order depth-two discriminator: form and detach the complete PAS list

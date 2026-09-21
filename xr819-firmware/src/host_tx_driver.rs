@@ -472,6 +472,8 @@ impl HostTxDriver {
             host_tx_diagnostics::capture_completion_identity(
                 retained.packet_id(),
                 completion.context,
+                completion.pipe,
+                completion.slot,
                 completion.status,
                 completion.ack_failures,
             );
@@ -1635,12 +1637,6 @@ impl HostTxDriver {
                                     | (u32::from(slot) << 28),
                                 0,
                             );
-                            host_tx_diagnostics::capture_publication_identity(
-                                retained.packet_id(),
-                                retained.context().raw(),
-                                pipe,
-                                slot,
-                            );
                         }
                         let hardware = HardwareOwner::single(pipe, slot, retained.context().frame_node().raw());
                         HostTxState::Owned {
@@ -1757,12 +1753,6 @@ impl HostTxDriver {
                                                 | (u32::from(pipe) << 24)
                                                 | (u32::from(slot) << 28),
                                             0,
-                                        );
-                                        host_tx_diagnostics::capture_publication_identity(
-                                            retained.packet_id(),
-                                            retained.context().raw(),
-                                            pipe,
-                                            slot,
                                         );
                                     }
                                     hardware = Some(HardwareOwner::single(pipe, slot, retained.context().frame_node().raw()));

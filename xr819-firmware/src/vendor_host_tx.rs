@@ -1298,6 +1298,12 @@ impl HostSchedulerReservation {
         }
         unsafe {
             crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
+            crate::host_tx_diagnostics::capture_publication_identity(
+                retained.packet_id(),
+                retained.context().raw(),
+                self.pipe,
+                self.slot,
+            );
         }
         retained.phase = HostTxPhase::Scheduled;
         Ok(())

@@ -5034,3 +5034,85 @@ successes cluster at try_count==0/ack_failures==0 while air shows retries,
 they were never attempted (a). If they show attempts, correlate with pipe
 slot KIND/state at completion (b vs c). One firmware field ends the
 guessing.
+
+### Correction and implemented discriminator (2026-09-21)
+
+The `try_count == 0` discriminator above was wrong: `try_count` counts rearms,
+so a legitimate first-attempt success also has zero. The experiment now uses
+an explicit identity-preserving lifecycle instead.
+
+Feature `experimental-tx-status-lifecycle` tracks every ordinary host frame by
+`(packet_id, context, pipe, slot, slot_generation)` across:
+
+1. hardware publication;
+2. `service_pipe_tx_start` (slot state 2);
+3. `service_pipe_tx_success` (slot state 3);
+4. an accepted ordinary status, including delivered/expected status and the
+   observed slot kind/state;
+5. `complete_tx_pipe_slot` return;
+6. host confirmation publication.
+
+The counters MIB starts with `TXLC` (`0x54584c43`). Aggregate stage counts and
+identity/order failures occupy words 1–8. Words 9–21 preserve the latest exact
+ordinary completion, including the 802.11 sequence number and a timestamp for
+each stage, so it can be matched directly against the monitor capture. A
+non-zero identity mismatch proves stale status or slot reuse. A complete
+`0x3f` stage bitmap with no matching air sequence instead localizes the lie
+below the software lifecycle: GO/MAC event generation or hardware status
+production. The feature compiles out of normal firmware.
+
+First hardware attempt exposed two harness/diagnostic mistakes rather than a
+radio result. `ota-soak-run.sh` still hard-coded the board's obsolete `.104`
+lease while the board was healthy at `.121`; the dynamic-address harness is the
+valid runner. That run then returned `HWCK` (`0x4857434b`) instead of `TXLC`:
+the old AES self-test snapshot had higher MIB priority than every host-TX
+layout. `experimental-tx-status-lifecycle` now explicitly takes precedence;
+the same image still completed a 30-second MCS5 flow and automatic recovery
+verified the board's resting module afterward. The radio result from that run
+is discarded because no lifecycle words were observable.
+
+After two correctly rejected degraded baselines (148 ms and 369 ms average
+RTT), a third arm was healthy at 4.9 ms and carried 26,378 offered sequence
+packets. `TXLC` was finally visible, and exposed another instrumentation gap:
+publication stayed zero while start/pipe-success/status/completion reached
+15,440/15,440/14,544/14,544, making every later event an expected identity
+mismatch. The normal two-frame scheduler uses `publish_in_batch`, while the
+original hook existed only in two single-publication host-driver branches.
+The hook now lives at the common successful
+`HostSchedulerReservation::publish_in_batch` boundary, covering both single
+and batched ordinary frames without double-counting. No false-success
+conclusion is taken from the broken identity run; it validated the later four
+lifecycle taps and the MIB schema.
+
+The corrected image (`6365043157f5`) passed on the first healthy arm: 8.6 ms
+baseline, 21,767 offered application packets, and verified automatic recovery.
+Across the measured flow the firmware reported:
+
+```
+published          12712
+started            13856
+pipe_success       13856
+status_accepted    12712
+completed          12712
+confirmed          12712
+identity_mismatch      0
+out_of_order           0
+```
+
+The extra 1,144 starts/pipe-successes are physical retry attempts; every
+published frame eventually received accepted status `0x11`, terminal status
+zero, and a host confirmation. The latest exact frame carried packet ID
+`0x02020005`, sequence 2673, pipe/slot/generation `0/1/3177`, and the complete
+`0x3f` stage bitmap. Its measured chain was publication -> start 3539 ticks,
+start -> pipe-success 188, success -> accepted status 68, completion 2, and
+confirmation 78.
+
+This rules out stale slot reuse and every translated software attribution
+boundary: no identity or ordering fault occurred in 12,712 completions. Yet the
+AP's station counter advanced only about 8.2k packets while firmware claimed
+12.7k successes, reproducing the roughly 35% gap. The false success is therefore
+below `execute_popped_single_outstanding_event`: the MAC emits a phase-3
+pipe-success and matching `0x11` completion event for frames the AP does not
+observe. The next discriminator must capture the raw MAC event word and status
+producer registers around those two events, not add more host-confirmation
+logging.

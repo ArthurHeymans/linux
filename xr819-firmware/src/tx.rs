@@ -2790,7 +2790,27 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                 );
                 let pas_address = pas as usize;
                 write_u32(pas_address + 0x2c, read_u32(pas_address + 0x2c) | 0x200);
-                backend.complete_ordinary_status(pipe, FrameNodeAddress::new(pas), slot.raw());
+                let frame_node = FrameNodeAddress::new(pas);
+                let context = frame_node.context();
+                if context.host().is_some() {
+                    crate::host_tx_diagnostics::capture_tx_status_accepted(
+                        context.raw(),
+                        pipe,
+                        current,
+                        status,
+                        input.expected_status,
+                        input.slot_kind,
+                        input.slot_state,
+                    );
+                }
+                backend.complete_ordinary_status(pipe, frame_node, slot.raw());
+                if context.host().is_some() {
+                    crate::host_tx_diagnostics::capture_tx_ordinary_completed(
+                        context.raw(),
+                        pipe,
+                        current,
+                    );
+                }
                 match cursor {
                     OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current } => {
                         write_u8(record.current_slot().get(), next_current);
@@ -7542,6 +7562,13 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
         write_u32(0xfff0_1a98, read_u32(0xfff0_1a98).wrapping_add(1));
         write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
         write_u8(current_slot.address.state().get(), 3);
+        if current_frame.context().host().is_some() {
+            crate::host_tx_diagnostics::capture_tx_pipe_success(
+                current_frame.context().raw(),
+                pipe,
+                current,
+            );
+        }
 
         let pipe_state = read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get());
         let retry_rate = read_u8(current_slot.address.retry_rate().get());
@@ -7661,6 +7688,9 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         write_u8(live_slot.address.state().get(), 2);
         let frame_node = live_slot.frame_node;
         let context = frame_node.context();
+        if context.host().is_some() {
+            crate::host_tx_diagnostics::capture_tx_start(context.raw(), pipe, current);
+        }
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 3 {
             let secondary = read_u8(
                 crate::dtcm::rate_encoding_unchecked(usize::from(read_u8(

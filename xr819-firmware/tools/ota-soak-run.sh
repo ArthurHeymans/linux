@@ -13,7 +13,15 @@ set -u
 IMG=$1
 LABEL=$2
 SP=/nix/store/nkkj35yh0rmj71bwyz8wn7jg6mkm15bx-sshpass-1.10/bin/sshpass
-SSH="$SP -p 1234 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 root@192.168.0.104"
+BOARD_MAC=${BOARD_MAC:-02:42:2a:37:70:07}
+BOARD_HOST=${BOARD_HOST:-$(ip -4 neigh show | awk -v mac="$BOARD_MAC" '
+  tolower($0) ~ tolower(mac) { print $1; exit }
+')}
+if [ -z "$BOARD_HOST" ]; then
+  echo "BOARD_ADDRESS_UNKNOWN: set BOARD_HOST or refresh the neighbour table" >&2
+  exit 3
+fi
+SSH="$SP -p 1234 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 root@$BOARD_HOST"
 SCP="$SP -p 1234 scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2"
 
 # The exit trap installs a recovery image and reboots the board, so a run
@@ -46,9 +54,9 @@ wait_new_boot() {
 }
 
 recover() {
-  echo ===EXIT-BH-RX-TRACE===
+  echo '===EXIT-BH-RX-TRACE==='
   $SSH 'find /sys/kernel/debug/ieee80211 -path "*/cw1200/bh_rx_trace" -exec cat {} \;' 2>/dev/null || true
-  echo ===EXIT-STATUS===
+  echo '===EXIT-STATUS==='
   $SSH 'find /sys/kernel/debug/ieee80211 -path "*/cw1200/status" -exec cat {} \;' 2>/dev/null || true
   echo INSTALLING_RECOVERY
   $SSH 'cp /root/xr819-vendor-host-tx-event-drain.bin /lib/firmware/xr819/fw_xr819.bin; sync; systemctl reboot' 2>/dev/null || true

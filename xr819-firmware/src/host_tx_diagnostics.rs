@@ -129,6 +129,64 @@ unsafe impl Sync for SharedTxIdentity {}
 #[cfg(feature = "vendor-host-tx-diagnostics")]
 static TX_IDENTITY: SharedTxIdentity = SharedTxIdentity(UnsafeCell::new([0; 22]));
 
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const TX_LIFECYCLE_MAGIC: u32 = 0x5458_4c43; // "TXLC"
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const TX_STAGE_PUBLISHED: u32 = 1 << 0;
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const TX_STAGE_STARTED: u32 = 1 << 1;
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const TX_STAGE_PIPE_SUCCESS: u32 = 1 << 2;
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const TX_STAGE_STATUS_ACCEPTED: u32 = 1 << 3;
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const TX_STAGE_COMPLETED: u32 = 1 << 4;
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const TX_STAGE_CONFIRMED: u32 = 1 << 5;
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+#[derive(Clone, Copy)]
+struct TxSlotLifecycle {
+    generation: u16,
+    packet_id: u32,
+    context: u32,
+    sequence: u16,
+    stages: u32,
+    status_detail: u32,
+    timestamps: [u32; 5],
+}
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+const EMPTY_TX_SLOT_LIFECYCLE: TxSlotLifecycle = TxSlotLifecycle {
+    generation: 0,
+    packet_id: 0,
+    context: 0,
+    sequence: 0,
+    stages: 0,
+    status_detail: 0,
+    timestamps: [0; 5],
+};
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+struct TxLifecycleState {
+    counters: [u32; 8],
+    slots: [TxSlotLifecycle; 16],
+    report: [u32; 13],
+}
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+struct SharedTxLifecycle(UnsafeCell<TxLifecycleState>);
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+unsafe impl Sync for SharedTxLifecycle {}
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+static TX_LIFECYCLE: SharedTxLifecycle = SharedTxLifecycle(UnsafeCell::new(TxLifecycleState {
+    counters: [0; 8],
+    slots: [EMPTY_TX_SLOT_LIFECYCLE; 16],
+    report: [0; 13],
+}));
+
 /// Class-0 lifecycle counter slots.
 ///
 /// Throughput measured over the air spans 36-95 TXed for identical firmware,
@@ -857,6 +915,193 @@ pub unsafe fn trace(stage: u32, value0: u32, value1: u32) {
     let _ = (stage, value0, value1);
 }
 
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+fn tx_lifecycle_slot(pipe: u8, slot: u8) -> Option<usize> {
+    (pipe < 4 && slot < 4).then_some(usize::from(pipe) * 4 + usize::from(slot))
+}
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+fn tx_lifecycle_transition(stages: u32, required: u32, stage: u32) -> (u32, bool) {
+    (stages | stage, stages & required == required)
+}
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8) {
+    unsafe {
+        let Some(index) = tx_lifecycle_slot(pipe, slot) else {
+            return;
+        };
+        let state = &mut *TX_LIFECYCLE.0.get();
+        state.counters[0] = state.counters[0].wrapping_add(1);
+        let generation = state.slots[index].generation.wrapping_add(1).max(1);
+        let sequence = crate::dtcm::host_context_from_raw(context).map_or(0, |host| {
+            crate::dtcm::shared_ptr::<u16>(host.sequence_number()).read_volatile()
+        });
+        state.slots[index] = TxSlotLifecycle {
+            generation,
+            packet_id,
+            context,
+            sequence,
+            stages: TX_STAGE_PUBLISHED,
+            status_detail: 0,
+            timestamps: [timestamp(), 0, 0, 0, 0],
+        };
+        record(
+            EVENT_TX_LIFECYCLE,
+            1,
+            packet_id,
+            context,
+            u32::from(pipe) | (u32::from(slot) << 8) | (u32::from(generation) << 16),
+        );
+    }
+}
+
+#[cfg(feature = "experimental-tx-status-lifecycle")]
+unsafe fn tx_lifecycle_advance(
+    context: u32,
+    pipe: u8,
+    slot: u8,
+    stage_code: u16,
+    stage_bit: u32,
+    required: u32,
+    counter: usize,
+    timestamp_index: usize,
+    detail: u32,
+) {
+    unsafe {
+        let Some(index) = tx_lifecycle_slot(pipe, slot) else {
+            return;
+        };
+        let state = &mut *TX_LIFECYCLE.0.get();
+        state.counters[counter] = state.counters[counter].wrapping_add(1);
+        let lifecycle = &mut state.slots[index];
+        if lifecycle.context != context {
+            state.counters[6] = state.counters[6].wrapping_add(1);
+            record(
+                EVENT_TX_LIFECYCLE,
+                stage_code | 0x80,
+                lifecycle.packet_id,
+                context,
+                lifecycle.context,
+            );
+            return;
+        }
+        let (stages, valid) = tx_lifecycle_transition(lifecycle.stages, required, stage_bit);
+        if !valid {
+            state.counters[7] = state.counters[7].wrapping_add(1);
+        }
+        lifecycle.stages = stages;
+        if stage_bit == TX_STAGE_STATUS_ACCEPTED {
+            lifecycle.status_detail = detail;
+        }
+        lifecycle.timestamps[timestamp_index] = timestamp();
+        record(
+            EVENT_TX_LIFECYCLE,
+            stage_code,
+            lifecycle.packet_id,
+            context,
+            u32::from(pipe)
+                | (u32::from(slot) << 8)
+                | (u32::from(lifecycle.generation) << 16),
+        );
+    }
+}
+
+/// Records that the MAC selected the exact published ordinary slot.
+pub unsafe fn capture_tx_start(context: u32, pipe: u8, slot: u8) {
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    unsafe {
+        tx_lifecycle_advance(
+            context,
+            pipe,
+            slot,
+            2,
+            TX_STAGE_STARTED,
+            TX_STAGE_PUBLISHED,
+            1,
+            1,
+            0,
+        );
+    }
+    #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
+    let _ = (context, pipe, slot);
+}
+
+/// Records the MAC pipe-success event which moves an ordinary slot to state 3.
+pub unsafe fn capture_tx_pipe_success(context: u32, pipe: u8, slot: u8) {
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    unsafe {
+        tx_lifecycle_advance(
+            context,
+            pipe,
+            slot,
+            3,
+            TX_STAGE_PIPE_SUCCESS,
+            TX_STAGE_PUBLISHED | TX_STAGE_STARTED,
+            2,
+            2,
+            0,
+        );
+    }
+    #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
+    let _ = (context, pipe, slot);
+}
+
+/// Records an ordinary status accepted for the exact state-3 slot.
+pub unsafe fn capture_tx_status_accepted(
+    context: u32,
+    pipe: u8,
+    slot: u8,
+    delivered: u8,
+    expected: u8,
+    slot_kind: u8,
+    slot_state: u8,
+) {
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    unsafe {
+        let detail = u32::from(delivered)
+            | (u32::from(expected) << 8)
+            | (u32::from(slot_state) << 16)
+            | (u32::from(slot_kind) << 24);
+        tx_lifecycle_advance(
+            context,
+            pipe,
+            slot,
+            4,
+            TX_STAGE_STATUS_ACCEPTED,
+            TX_STAGE_PUBLISHED | TX_STAGE_STARTED | TX_STAGE_PIPE_SUCCESS,
+            3,
+            3,
+            detail,
+        );
+    }
+    #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
+    let _ = (context, pipe, slot, delivered, expected, slot_kind, slot_state);
+}
+
+/// Records ordinary completion after `complete_tx_pipe_slot` has enqueued it.
+pub unsafe fn capture_tx_ordinary_completed(context: u32, pipe: u8, slot: u8) {
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    unsafe {
+        tx_lifecycle_advance(
+            context,
+            pipe,
+            slot,
+            5,
+            TX_STAGE_COMPLETED,
+            TX_STAGE_PUBLISHED
+                | TX_STAGE_STARTED
+                | TX_STAGE_PIPE_SUCCESS
+                | TX_STAGE_STATUS_ACCEPTED,
+            4,
+            4,
+            0,
+        );
+    }
+    #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
+    let _ = (context, pipe, slot);
+}
+
 /// Preserve the completed frame header before its borrowed HIF buffer returns.
 #[inline(always)]
 pub unsafe fn capture_retry_feedback(
@@ -921,6 +1166,10 @@ pub unsafe fn capture_publication_identity(packet_id: u32, context: u32, pipe: u
         values[8] = context;
         values[9] = u32::from(pipe) | (u32::from(slot) << 8);
     }
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    unsafe {
+        tx_lifecycle_publish(packet_id, context, pipe, slot);
+    }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
     let _ = (packet_id, context, pipe, slot);
 }
@@ -929,7 +1178,14 @@ pub unsafe fn capture_publication_identity(packet_id: u32, context: u32, pipe: u
 ///
 /// # Safety
 /// `context` must remain live while the completion is recorded.
-pub unsafe fn capture_completion_identity(packet_id: u32, context: u32, status: u16, retries: u8) {
+pub unsafe fn capture_completion_identity(
+    packet_id: u32,
+    context: u32,
+    pipe: u8,
+    slot: u8,
+    status: u16,
+    retries: u8,
+) {
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
         let values = &mut *TX_IDENTITY.0.get();
@@ -938,8 +1194,39 @@ pub unsafe fn capture_completion_identity(packet_id: u32, context: u32, status: 
         values[12] = context;
         values[13] = u32::from(status) | (u32::from(retries) << 16);
     }
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    unsafe {
+        if let Some(index) = tx_lifecycle_slot(pipe, slot) {
+            let state = &mut *TX_LIFECYCLE.0.get();
+            let lifecycle = state.slots[index];
+            if lifecycle.packet_id == packet_id
+                && lifecycle.context == context
+                && lifecycle.stages & TX_STAGE_STATUS_ACCEPTED != 0
+            {
+                state.report = [
+                    packet_id,
+                    context,
+                    u32::from(lifecycle.sequence),
+                    u32::from(pipe)
+                        | (u32::from(slot) << 8)
+                        | (u32::from(lifecycle.generation) << 16),
+                    lifecycle.stages,
+                    lifecycle.status_detail,
+                    u32::from(status) | (u32::from(retries) << 16),
+                    lifecycle.timestamps[0],
+                    lifecycle.timestamps[1],
+                    lifecycle.timestamps[2],
+                    lifecycle.timestamps[3],
+                    lifecycle.timestamps[4],
+                    0,
+                ];
+            } else {
+                state.counters[6] = state.counters[6].wrapping_add(1);
+            }
+        }
+    }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
-    let _ = (packet_id, context, status, retries);
+    let _ = (packet_id, context, pipe, slot, status, retries);
 }
 
 /// Records one truthful HIF confirmation publication attempt.
@@ -967,6 +1254,26 @@ pub unsafe fn capture_confirmation_identity(
         values[16] = context;
         values[17] = (status & 0xffff) | (u32::from(retries) << 16);
         // values[21] carries the pipe cursor invariant; see `capture_pipe_cursor`.
+    }
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    unsafe {
+        let state = &mut *TX_LIFECYCLE.0.get();
+        let report_matches = state.report[0] == packet_id && state.report[1] == context;
+        let slot = state.slots.iter_mut().find(|lifecycle| {
+            lifecycle.packet_id == packet_id
+                && lifecycle.context == context
+                && lifecycle.stages & TX_STAGE_COMPLETED != 0
+        });
+        if report_matches || slot.is_some() {
+            state.counters[5] = state.counters[5].wrapping_add(1);
+        }
+        if let Some(lifecycle) = slot {
+            lifecycle.stages |= TX_STAGE_CONFIRMED;
+        }
+        if report_matches {
+            state.report[4] |= TX_STAGE_CONFIRMED;
+            state.report[12] = timestamp();
+        }
     }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
     let _ = (packet_id, context, status, retries);
@@ -1036,7 +1343,7 @@ pub unsafe fn capture_descriptor_length(word: u32) {
 pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transport) {
     {
         let snapshot = crate::crypto::hardware_ccmp_selftest_snapshot();
-        if snapshot[0] == 0x4857_434b {
+        if snapshot[0] == 0x4857_434b && !cfg!(feature = "experimental-tx-status-lifecycle") {
             let _ = transport;
             values.fill(0);
             values[..snapshot.len()].copy_from_slice(&snapshot);
@@ -1083,30 +1390,42 @@ pub fn populate_counters(values: &mut [u32; 22], transport: &crate::hif::Transpo
     #[cfg(feature = "vendor-host-tx-diagnostics")]
     unsafe {
         let _ = transport;
-        let identity = &*TX_IDENTITY.0.get();
-        if identity[0] == 0x5854_4944 {
-            values.copy_from_slice(identity);
+        #[cfg(feature = "experimental-tx-status-lifecycle")]
+        {
+            let state = &*TX_LIFECYCLE.0.get();
+            values[0] = TX_LIFECYCLE_MAGIC;
+            values[1..9].copy_from_slice(&state.counters);
+            values[9..22].copy_from_slice(&state.report);
             return;
         }
-        let recorder = FLIGHT_RECORDER.0.get();
-        let cursor = core::ptr::addr_of!((*recorder).cursor).read_volatile();
-        values.fill(0);
-        values[0] = cursor;
-        values[1] = core::ptr::addr_of!((*recorder).frozen).read_volatile();
-        values[2] = core::ptr::addr_of!((*recorder).freeze_reason).read_volatile();
-        values[3] = FLIGHT_RECORD_COUNT as u32;
-        let available = cursor.min(3);
-        for record_index in 0..available {
-            let sequence = cursor.wrapping_sub(record_index + 1);
-            let source =
-                core::ptr::addr_of!((*recorder).records[sequence as usize % FLIGHT_RECORD_COUNT]);
-            let base = 4 + record_index as usize * 6;
-            values[base] = core::ptr::addr_of!((*source).sequence).read_volatile();
-            values[base + 1] = core::ptr::addr_of!((*source).timestamp).read_volatile();
-            values[base + 2] = core::ptr::addr_of!((*source).event_flags).read_volatile();
-            values[base + 3] = core::ptr::addr_of!((*source).arg0).read_volatile();
-            values[base + 4] = core::ptr::addr_of!((*source).arg1).read_volatile();
-            values[base + 5] = core::ptr::addr_of!((*source).state).read_volatile();
+        #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
+        {
+            let identity = &*TX_IDENTITY.0.get();
+            if identity[0] == 0x5854_4944 {
+                values.copy_from_slice(identity);
+                return;
+            }
+            let recorder = FLIGHT_RECORDER.0.get();
+            let cursor = core::ptr::addr_of!((*recorder).cursor).read_volatile();
+            values.fill(0);
+            values[0] = cursor;
+            values[1] = core::ptr::addr_of!((*recorder).frozen).read_volatile();
+            values[2] = core::ptr::addr_of!((*recorder).freeze_reason).read_volatile();
+            values[3] = FLIGHT_RECORD_COUNT as u32;
+            let available = cursor.min(3);
+            for record_index in 0..available {
+                let sequence = cursor.wrapping_sub(record_index + 1);
+                let source = core::ptr::addr_of!(
+                    (*recorder).records[sequence as usize % FLIGHT_RECORD_COUNT]
+                );
+                let base = 4 + record_index as usize * 6;
+                values[base] = core::ptr::addr_of!((*source).sequence).read_volatile();
+                values[base + 1] = core::ptr::addr_of!((*source).timestamp).read_volatile();
+                values[base + 2] = core::ptr::addr_of!((*source).event_flags).read_volatile();
+                values[base + 3] = core::ptr::addr_of!((*source).arg0).read_volatile();
+                values[base + 4] = core::ptr::addr_of!((*source).arg1).read_volatile();
+                values[base + 5] = core::ptr::addr_of!((*source).state).read_volatile();
+            }
         }
     }
     #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
@@ -1127,5 +1446,30 @@ mod tests {
         assert_eq!(super::rate_try_failure_count([0, 0, 0]), 0);
         assert_eq!(super::rate_try_failure_count([0x1000_0021, 0x0000_3000, 0]), 7);
         assert_eq!(super::rate_try_failure_count([u32::MAX; 3]), u8::MAX);
+    }
+
+    #[cfg(feature = "experimental-tx-status-lifecycle")]
+    #[test]
+    fn tx_lifecycle_slots_and_stage_order_are_explicit() {
+        assert_eq!(super::tx_lifecycle_slot(0, 0), Some(0));
+        assert_eq!(super::tx_lifecycle_slot(3, 3), Some(15));
+        assert_eq!(super::tx_lifecycle_slot(4, 0), None);
+        assert_eq!(super::tx_lifecycle_slot(0, 4), None);
+
+        let published = super::TX_STAGE_PUBLISHED;
+        let (started, valid) = super::tx_lifecycle_transition(
+            published,
+            super::TX_STAGE_PUBLISHED,
+            super::TX_STAGE_STARTED,
+        );
+        assert!(valid);
+        assert_eq!(started, published | super::TX_STAGE_STARTED);
+
+        let (_, valid) = super::tx_lifecycle_transition(
+            published,
+            super::TX_STAGE_PUBLISHED | super::TX_STAGE_STARTED,
+            super::TX_STAGE_PIPE_SUCCESS,
+        );
+        assert!(!valid);
     }
 }
