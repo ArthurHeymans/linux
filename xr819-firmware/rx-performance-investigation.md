@@ -5490,4 +5490,13 @@ the gate now compares decimals. In the qualified 8.42 ms repeat, signatures
 `0xa50` and `0xaac` each occurred on both present and absent exact PNs
 (`1/6` and `1/4` present/absent respectively). The ordinary pre-GO TX-vector
 metadata is therefore not the discriminator. The next samples must retain
-status-event-time MAC/PHY state.
+status-event-time MAC/PHY state. `TXP4` hashed radio control, PHY control,
+bandwidth/timing/mode, MAC context, RX control, TX-ring state, and response
+bitmap at the accepted-status event. In a qualified 4.54 ms capture losing
+49.22%, event signature `0xbd6` covered two present and two absent exact PNs;
+other sampled signatures were mostly singletons. Thus even identical combined
+visible MAC/PHY event state can produce both real and phantom success. The
+monitor adapter's default mode reported every captured frame as FCS unverified
+and omitted failed-FCS frames, so the next air capture must explicitly enable
+its `fcsfail` monitor flag to distinguish an untransmitted MPDU from an emitted
+but undecodable one.

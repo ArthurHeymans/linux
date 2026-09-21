@@ -8,6 +8,7 @@ MAGIC = 0x54584C43  # "TXLC"
 PN_MAGIC = 0x5458504E  # "TXPN" (legacy PN-only records)
 PN_PIPE_MAGIC = 0x54585032  # "TXP2" (PN plus pipe/slot)
 PN_VECTOR_MAGIC = 0x54585033  # "TXP3" (PN, pipe/slot, TX-vector signature)
+PN_EVENT_MAGIC = 0x54585034  # "TXP4" (PN plus pre-GO/event signatures)
 RETRY_PROVENANCE_MAGIC = 0x54585250  # "TXRP"
 MIB_FIELDS = [
     "plcp_errors",
@@ -59,7 +60,7 @@ def parse_marked_blocks(text):
                 words.append(int(match.group(1)) & 0xFFFFFFFF)
             except ValueError:
                 break
-        if len(words) == len(MIB_FIELDS) and words[0] in (MAGIC, PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC):
+        if len(words) == len(MIB_FIELDS) and words[0] in (MAGIC, PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
             marked.append(words)
     return marked
 
@@ -144,24 +145,25 @@ def main():
         print(f"  decoded_type            0x{event['type']:02x}")
         return 0
 
-    if words[0] in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC):
+    if words[0] in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
         samples = []
         seen = set()
         for block in marked_blocks:
-            if block[0] not in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC):
+            if block[0] not in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
                 continue
             cursor = block[9]
             for age in reversed(range(min(cursor, 4))):
                 record = (cursor - age - 1) & 3
                 base = 10 + record * 3
                 identity, pn_low, pn_generation = block[base:base + 3]
-                sequence = identity & 0xFFF
+                identity_value = identity & 0xFFF
+                identity_label = "event_state" if block[0] == PN_EVENT_MAGIC else "sequence"
                 start_to_success = (identity >> 12) & 0x3FF
                 success_to_status = (identity >> 22) & 0x3FF
                 packet_number = pn_low | ((pn_generation & 0xFFFF) << 32)
-                if block[0] in (PN_PIPE_MAGIC, PN_VECTOR_MAGIC):
+                if block[0] in (PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
                     detail = (pn_generation >> 16) & 0xFFF
-                    detail_label = "tx_vector" if block[0] == PN_VECTOR_MAGIC else "completion_mod4096"
+                    detail_label = "tx_vector" if block[0] in (PN_VECTOR_MAGIC, PN_EVENT_MAGIC) else "completion_mod4096"
                     pipe = (pn_generation >> 28) & 3
                     slot = pn_generation >> 30
                 else:
@@ -173,15 +175,21 @@ def main():
                 if key not in seen:
                     seen.add(key)
                     samples.append(
-                        (sequence, packet_number, start_to_success, success_to_status,
-                         detail, detail_label, pipe, slot)
+                        (identity_value, identity_label, packet_number,
+                         start_to_success, success_to_status, detail,
+                         detail_label, pipe, slot)
                     )
         print("\nperiodic accepted ordinary completions (oldest first):")
-        for sequence, packet_number, start_to_success, success_to_status, detail, detail_label, pipe, slot in samples:
+        for identity_value, identity_label, packet_number, start_to_success, success_to_status, detail, detail_label, pipe, slot in samples:
             location = f"pipe/slot={pipe}/{slot} " if pipe is not None else ""
+            identity_text = (
+                f"event_state=0x{identity_value:03x}"
+                if identity_label == "event_state"
+                else f"sequence={identity_value:4d} SC=0x{identity_value << 4:04x}"
+            )
             detail_value = f"0x{detail:03x}" if detail_label == "tx_vector" else str(detail)
             print(
-                f"  {location}sequence={sequence:4d} SC=0x{sequence << 4:04x} "
+                f"  {location}{identity_text} "
                 f"PN=0x{packet_number:012x} start->success={start_to_success} "
                 f"success->status={success_to_status} {detail_label}={detail_value}"
             )

@@ -130,7 +130,7 @@ unsafe impl Sync for SharedTxIdentity {}
 static TX_IDENTITY: SharedTxIdentity = SharedTxIdentity(UnsafeCell::new([0; 22]));
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
-const TX_LIFECYCLE_MAGIC: u32 = 0x5458_5033; // "TXP3" (PN, pipe/slot, TX-vector signature)
+const TX_LIFECYCLE_MAGIC: u32 = 0x5458_5034; // "TXP4" (PN plus pre-GO/event signatures)
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 const TX_STAGE_PUBLISHED: u32 = 1 << 0;
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -153,6 +153,7 @@ struct TxSlotLifecycle {
     sequence: u16,
     packet_number: u64,
     tx_vector_signature: u16,
+    status_event_signature: u16,
     stages: u32,
     status_detail: u32,
     timestamps: [u32; 5],
@@ -166,6 +167,7 @@ const EMPTY_TX_SLOT_LIFECYCLE: TxSlotLifecycle = TxSlotLifecycle {
     sequence: 0,
     packet_number: 0,
     tx_vector_signature: 0,
+    status_event_signature: 0,
     stages: 0,
     status_detail: 0,
     timestamps: [0; 5],
@@ -980,6 +982,36 @@ fn tx_pn_report_tail(packet_number: u64, tx_vector_signature: u16, pipe: u8, slo
         | (u32::from(slot & 3) << 30)
 }
 
+#[cfg(all(feature = "experimental-tx-status-lifecycle", target_arch = "arm"))]
+#[inline(always)]
+unsafe fn tx_status_event_signature() -> u16 {
+    unsafe fn fold(hash: u32, address: usize) -> u32 {
+        unsafe { (hash ^ (address as *const u32).read_volatile()).wrapping_mul(0x0100_0193) }
+    }
+
+    unsafe {
+        let mut hash = 0x811c_9dc5;
+        hash = fold(hash, 0x0ac8_0064);
+        hash = fold(hash, 0x0abb_8004);
+        hash = fold(hash, 0x0ab8_0c00);
+        hash = fold(hash, 0x0aba_8040);
+        hash = fold(hash, 0x0abd_0004);
+        hash = fold(hash, crate::platform::mac_register(0x0224));
+        hash = fold(hash, crate::platform::mac_register(0x0228));
+        hash = fold(hash, crate::platform::mac_register(0x0600));
+        hash = fold(hash, crate::platform::mac_register(0x0a28));
+        hash = fold(hash, crate::platform::mac_register(0x0e48));
+        let folded = hash ^ (hash >> 12) ^ (hash >> 24);
+        folded as u16 & 0x0fff
+    }
+}
+
+#[cfg(all(feature = "experimental-tx-status-lifecycle", not(target_arch = "arm")))]
+#[inline(always)]
+fn tx_status_event_signature() -> u16 {
+    0
+}
+
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8) {
     unsafe {
@@ -1011,6 +1043,7 @@ unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8)
             sequence,
             packet_number,
             tx_vector_signature,
+            status_event_signature: 0,
             stages: TX_STAGE_PUBLISHED,
             status_detail: 0,
             timestamps: [timestamp(), 0, 0, 0, 0],
@@ -1144,6 +1177,14 @@ pub unsafe fn capture_tx_status_accepted(
             3,
             detail,
         );
+        if let Some(index) = tx_lifecycle_slot(pipe, slot) {
+            let lifecycle = &mut (*TX_LIFECYCLE.0.get()).slots[index];
+            if lifecycle.context == context
+                && lifecycle.stages & TX_STAGE_STATUS_ACCEPTED != 0
+            {
+                lifecycle.status_event_signature = tx_status_event_signature();
+            }
+        }
     }
     #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
     let _ = (context, pipe, slot, delivered, expected, slot_kind, slot_state);
@@ -1352,7 +1393,7 @@ pub unsafe fn capture_completion_identity(
                 let success_to_status = lifecycle.timestamps[3]
                     .wrapping_sub(lifecycle.timestamps[2])
                     .min(0x03ff);
-                state.report[base] = u32::from(lifecycle.sequence & 0x0fff)
+                state.report[base] = u32::from(lifecycle.status_event_signature & 0x0fff)
                     | (start_to_success << 12)
                     | (success_to_status << 22);
                 state.report[base + 1] = lifecycle.packet_number as u32;
