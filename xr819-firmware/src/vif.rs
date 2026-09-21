@@ -428,7 +428,7 @@ fn publish_join_pas_with_io<I: PasOperationIo>(
     );
     io.write_u8(pas.activity_state().get(), 2, PasOperationBranch::JoinControl);
     io.write_u8(pas.slot_bits().get(), 4, PasOperationBranch::JoinControl);
-    io.write_u8(pas.mode_byte().get(), 2, PasOperationBranch::JoinControl);
+    io.write_u8(pas.mode_byte().get(), 1, PasOperationBranch::JoinControl);
     let copied_path_byte = io.read_u8(
         crate::dtcm::low_mac_own_mac_byte_unchecked(0, 5).get(),
         PasOperationBranch::JoinControl,
@@ -1122,7 +1122,7 @@ mod tests {
             Access { kind: AccessKind::Write, width: 1, address: crate::dtcm::pas_stride_view(2).unwrap().activity_state().get(), value: 0, branch: PasOperationBranch::JoinControl },
             Access { kind: AccessKind::Write, width: 1, address: pas.activity_state().get(), value: 2, branch: PasOperationBranch::JoinControl },
             Access { kind: AccessKind::Write, width: 1, address: pas.slot_bits().get(), value: 4, branch: PasOperationBranch::JoinControl },
-            Access { kind: AccessKind::Write, width: 1, address: pas.mode_byte().get(), value: 2, branch: PasOperationBranch::JoinControl },
+            Access { kind: AccessKind::Write, width: 1, address: pas.mode_byte().get(), value: 1, branch: PasOperationBranch::JoinControl },
             Access { kind: AccessKind::Read, width: 1, address: crate::dtcm::low_mac_own_mac_byte(0, 5).unwrap().get(), value: 0xa5, branch: PasOperationBranch::JoinControl },
             Access { kind: AccessKind::Write, width: 1, address: pas.own_mac_byte(5).unwrap().get(), value: 0xa5, branch: PasOperationBranch::JoinControl },
             Access { kind: AccessKind::Write, width: 1, address: pas.path_selector_byte().get(), value: 0, branch: PasOperationBranch::JoinControl },

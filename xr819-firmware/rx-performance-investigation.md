@@ -5236,13 +5236,14 @@ did appear: live mode was `0x07ebbadd`, missing bit `0x4000` from the expected
 `mac_apply_channel_and_vif_config` treats `mode_byte == 2` as STA and sets that
 bit before `mac_program_mode_regs`.
 
-Changing the PAS byte to 2 produced the exact expected mode register and kept
+Changing the PAS byte to 2 produced that inferred mode register and kept
 association/recovery healthy. It did **not** solve false success: on a 4.2 ms
-baseline the corrected image published about 12.5k frames while AP RX advanced
-only about 6.8k. The mode correction is retained as vendor fidelity, but the
-address/mode/filter register family is no longer the primary suspect. The
-remaining target is internal PHY TX completion versus MAC ACK qualification,
-state not exposed by the visible configuration registers.
+baseline the changed image published about 12.5k frames while AP RX advanced
+only about 6.8k. A later halted live-vendor MMIO dump disproved the inference:
+joined vendor firmware itself has `0x09c00200 = 0x07ebbadd`, exactly the value
+produced by PAS `mode_byte = 1`. The temporary mode-byte change is therefore
+reverted; static branch naming was not sufficient evidence for the live JOIN
+state.
 
 A temporary whole-run phase-3-to-status census then separated that internal
 path without relying on four sampled frames. Over 12,542 accepted ordinary
@@ -5337,3 +5338,29 @@ physical attempts directly: `tx_packets` counts host admissions and
 `tx_frames_multi_retried` counts completed frames whose retry byte exceeds one.
 Nevertheless, 31,895 such frames demonstrate that vendor completion carries
 substantial retry accounting where the open late-`0x11` path carries none.
+
+A fresh halted-vendor comparison made the timing and response-path differences
+directly observable. Two vendor arms delivered 28,454/28,796 and
+29,478/29,804 packets (1.19% and 1.09% loss), with AP RX close to sender count.
+The live timing registers were `0x09c00e30 = 0x47`, `0x09c00e58 = 0x92`, and
+`0x09c00e5c = 0xda`; all independently decode to slot-time base 9 and validate
+the retained JOIN restoration exactly.
+
+The full vendor/open MMIO diff then exposed a response-slot translation error.
+Vendor `txp_program_pipe_slot_ex(slot, 1, 0, 0)` sets the slot bit in the
+`+0x08` response bitmap, but the open `clear_pipe_slot_ex` translation cleared
+it. Consequently vendor ended with `0x09c00a08 = 0x00180783`, while open had
+`0x00180183`: missing bits `0x600` are exactly response slots 11 and 12 holding
+the two BlockAck descriptors. The implementation now matches the vendor
+instruction sequence by retaining those slots in `+0x08`, clearing them from
+`+0x0c` and `+0x10`, and zeroing the associated field selector.
+
+The first qualified corrected arm had a 5.8 ms baseline, offered 47,333 packets,
+received 27,110, and lost 42.72%. A final arm with the live-vendor PAS mode
+restored offered 47,703 packets, received 28,003, and lost 41.30%. These results
+materially improve the slot-only 49.02% arm, but do not close the vendor gap:
+periodic lifecycle samples remain in the late population and 12,265 completions
+were still awaiting host confirmation in the final arm. The response-slot
+correction is retained as a second independently verified vendor-fidelity fix,
+while the remaining ordinary-ACK false-success path still requires another MAC
+configuration difference.

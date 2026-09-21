@@ -1065,12 +1065,17 @@ unsafe fn build_ba_descriptor(if_id: u8, pointer: usize) {
     }
 }
 
-unsafe fn clear_pipe_slot_ex(slot: u8) {
+/// Match vendor `txp_program_pipe_slot_ex(slot, 1, 0, 0)`.
+///
+/// The first boolean selects the response bitmap at `+0x08`; it does not
+/// request that all slot bitmaps be cleared.  Keeping the programmed BA slots
+/// in that bitmap is required for the MAC to recognize their response path.
+unsafe fn configure_response_pipe_slot(slot: u8) {
     let bit = slot - 2;
     unsafe {
         write_u32(
             crate::platform::mac_register(0x0a08),
-            read_u32(crate::platform::mac_register(0x0a08)) & !(1_u32 << bit),
+            read_u32(crate::platform::mac_register(0x0a08)) | (1_u32 << bit),
         );
         write_u32(
             crate::platform::mac_register(0x0a0c),
@@ -1085,10 +1090,7 @@ unsafe fn clear_pipe_slot_ex(slot: u8) {
         } else {
             crate::platform::mac_register(0x0a14)
         };
-        write_u32(
-            field_register,
-            read_u32(field_register) & !(3_u32 << (u32::from(bit) * 2)),
-        );
+        write_u32(field_register, 0);
     }
 }
 
@@ -1104,8 +1106,8 @@ unsafe fn set_pipe_enabled(slot: u8) {
 
 unsafe fn install_response_descriptors() {
     unsafe {
-        clear_pipe_slot_ex(2);
-        clear_pipe_slot_ex(3);
+        configure_response_pipe_slot(2);
+        configure_response_pipe_slot(3);
     }
     for (if_id, pointer) in [
         (0_u8, packet_ram::response_command(11)),
@@ -1132,8 +1134,8 @@ unsafe fn install_response_descriptors() {
     unsafe {
         set_pipe_enabled(2);
         set_pipe_enabled(3);
-        clear_pipe_slot_ex(0x0b);
-        clear_pipe_slot_ex(0x0c);
+        configure_response_pipe_slot(0x0b);
+        configure_response_pipe_slot(0x0c);
         set_pipe_enabled(0x0b);
         set_pipe_enabled(0x0c);
         let first = packet_offset(packet_ram::response_command(11));
