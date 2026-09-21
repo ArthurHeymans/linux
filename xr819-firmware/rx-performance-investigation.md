@@ -5482,4 +5482,12 @@ occurred with each side of the start/status timing split. False success is
 therefore neither a physical-pipe fault, an individual slot fault, nor exactly
 classified by the previously observed bimodal delay. The next discriminator
 must compare the per-frame pre-GO TX vector/descriptor state and event-time
-MAC/PHY state.
+MAC/PHY state. `TXP3` therefore added a normalized pre-GO TX-vector signature
+covering frame control, rate, length, duration, payload split, airtime, frame
+kind, interface, and duration slot while excluding reused pointers. The first
+arm was rejected because a temporary harness truncated 20.832 ms to integer 20;
+the gate now compares decimals. In the qualified 8.42 ms repeat, signatures
+`0xa50` and `0xaac` each occurred on both present and absent exact PNs
+(`1/6` and `1/4` present/absent respectively). The ordinary pre-GO TX-vector
+metadata is therefore not the discriminator. The next samples must retain
+status-event-time MAC/PHY state.

@@ -8932,6 +8932,7 @@ fn prepare_pre_go_publication<M: MacPipeMmio>(
             37,
             mmio.read_u32(record.producer_slot().get() as u32) & 0x00ff_ffff | 0x0100_0000,
         );
+        crate::host_tx_diagnostics::capture_pre_go_tx_vector(input.pipe, input.slot);
     }
 }
 

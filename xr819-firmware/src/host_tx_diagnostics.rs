@@ -130,7 +130,7 @@ unsafe impl Sync for SharedTxIdentity {}
 static TX_IDENTITY: SharedTxIdentity = SharedTxIdentity(UnsafeCell::new([0; 22]));
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
-const TX_LIFECYCLE_MAGIC: u32 = 0x5458_5032; // "TXP2" (PN plus pipe/slot)
+const TX_LIFECYCLE_MAGIC: u32 = 0x5458_5033; // "TXP3" (PN, pipe/slot, TX-vector signature)
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 const TX_STAGE_PUBLISHED: u32 = 1 << 0;
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -152,6 +152,7 @@ struct TxSlotLifecycle {
     context: u32,
     sequence: u16,
     packet_number: u64,
+    tx_vector_signature: u16,
     stages: u32,
     status_detail: u32,
     timestamps: [u32; 5],
@@ -164,6 +165,7 @@ const EMPTY_TX_SLOT_LIFECYCLE: TxSlotLifecycle = TxSlotLifecycle {
     context: 0,
     sequence: 0,
     packet_number: 0,
+    tx_vector_signature: 0,
     stages: 0,
     status_detail: 0,
     timestamps: [0; 5],
@@ -853,6 +855,36 @@ pub unsafe fn write_pre_go_snapshot_word(index: usize, value: u32) {
     let _ = (index, value);
 }
 
+/// Retains a compact signature of the per-frame TX-vector metadata gathered
+/// immediately before trigger/GO. Frame pointers and descriptor DMA addresses
+/// are deliberately excluded so equal physical configurations compare equal
+/// across host-context and slot reuse.
+#[inline(always)]
+pub unsafe fn capture_pre_go_tx_vector(pipe: u8, slot: u8) {
+    #[cfg(all(
+        feature = "vendor-host-tx-diagnostics",
+        feature = "experimental-tx-status-lifecycle"
+    ))]
+    unsafe {
+        let Some(index) = tx_lifecycle_slot(pipe, slot) else {
+            return;
+        };
+        let words = core::ptr::addr_of!((*PRE_GO_SNAPSHOT.0.get()).words).cast::<u32>();
+        let mut hash = 0x811c_9dc5_u32;
+        for word in 5..17 {
+            hash ^= words.add(word).read_volatile();
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+        let folded = hash ^ (hash >> 12) ^ (hash >> 24);
+        (*TX_LIFECYCLE.0.get()).slots[index].tx_vector_signature = folded as u16 & 0x0fff;
+    }
+    #[cfg(not(all(
+        feature = "vendor-host-tx-diagnostics",
+        feature = "experimental-tx-status-lifecycle"
+    )))]
+    let _ = (pipe, slot);
+}
+
 #[inline(always)]
 pub unsafe fn commit_pre_go_snapshot() {
     #[cfg(feature = "vendor-host-tx-diagnostics")]
@@ -941,9 +973,9 @@ fn tx_lifecycle_transition(stages: u32, required: u32, stage: u32) -> (u32, bool
 }
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
-fn tx_pn_report_tail(packet_number: u64, completion_ordinal: u32, pipe: u8, slot: u8) -> u32 {
+fn tx_pn_report_tail(packet_number: u64, tx_vector_signature: u16, pipe: u8, slot: u8) -> u32 {
     (packet_number >> 32) as u32
-        | ((completion_ordinal & 0x0fff) << 16)
+        | (u32::from(tx_vector_signature & 0x0fff) << 16)
         | (u32::from(pipe & 3) << 28)
         | (u32::from(slot & 3) << 30)
 }
@@ -957,6 +989,10 @@ unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8)
         let state = &mut *TX_LIFECYCLE.0.get();
         state.counters[0] = state.counters[0].wrapping_add(1);
         let generation = state.slots[index].generation.wrapping_add(1).max(1);
+        // `publish_host_class0_slot` builds and snapshots the TX vector before
+        // this irreversible publication callback. Preserve the signature it
+        // staged in the same physical slot while replacing the old lifecycle.
+        let tx_vector_signature = state.slots[index].tx_vector_signature;
         let sequence = crate::dtcm::host_context_from_raw(context).map_or(0, |host| {
             crate::dtcm::shared_ptr::<u16>(host.sequence_number()).read_volatile()
         });
@@ -974,6 +1010,7 @@ unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8)
             context,
             sequence,
             packet_number,
+            tx_vector_signature,
             stages: TX_STAGE_PUBLISHED,
             status_detail: 0,
             timestamps: [timestamp(), 0, 0, 0, 0],
@@ -1321,7 +1358,7 @@ pub unsafe fn capture_completion_identity(
                 state.report[base + 1] = lifecycle.packet_number as u32;
                 state.report[base + 2] = tx_pn_report_tail(
                     lifecycle.packet_number,
-                    completion_ordinal,
+                    lifecycle.tx_vector_signature,
                     pipe,
                     slot,
                 );
