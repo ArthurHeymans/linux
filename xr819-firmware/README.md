@@ -155,14 +155,14 @@ recovery diagnostics rather than the verbose host-TX trace stream.
 
 The temporary `experimental-tx-status-lifecycle` feature replaces that
 build's counters-MIB view with an ordinary-TX correlation report. Word 0 is
-`0x54585034` (`TXP4`); words 1–8 count publication, MAC start, pipe-success,
+`0x54585037` (`TXP7`); words 1–8 count publication, MAC start, pipe-success,
 accepted status, completion, matching confirmation, slot-identity mismatch,
 and out-of-order stage observations. Words 9–21 form a four-entry ring sampled
 once per 2,048 accepted ordinary completions with a rotating low offset,
 avoiding both pipe/slot aliasing and the successfully drained
-tail bias seen after a saturated flow. Each record carries the 12-bit 802.11
-normalized 12-bit pre-GO TX-vector and status-event MAC/PHY signatures, exact
-48-bit CCMP packet number, pipe/slot identity, and packed
+tail bias seen after a saturated flow. Each record carries normalized 12-bit
+separate pre-GO descriptor setup and terminal-command signatures, exact 48-bit CCMP
+packet number, pipe/slot identity, and packed
 start-to-pipe-success plus
 pipe-success-to-status deltas. The PN remains unique
 when the sequence wraps during a sustained flow, while the timings distinguish
@@ -170,8 +170,8 @@ a skipped RF transaction from a full-length transaction followed by false ACK
 status. This feature exists only to match firmware-claimed successes against a
 simultaneous monitor capture. The decoder collects and deduplicates records
 from every counters block in a run rather than reporting only the final
-four-entry ring. It remains backward-compatible with the earlier `TXP3`,
-`TXP2`, `TXPN`, and `TXLC` layouts:
+four-entry ring. It remains backward-compatible with the earlier `TXP6`,
+`TXP5`, `TXP4`, `TXP3`, `TXP2`, `TXPN`, and `TXLC` layouts:
 `tools/decode-tx-status-lifecycle.py < run.log`.
 
 The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary target CCMP

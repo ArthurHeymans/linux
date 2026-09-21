@@ -5499,4 +5499,20 @@ visible MAC/PHY event state can produce both real and phantom success. The
 monitor adapter's default mode reported every captured frame as FCS unverified
 and omitted failed-FCS frames, so the next air capture must explicitly enable
 its `fcsfail` monitor flag to distinguish an untransmitted MPDU from an emitted
-but undecodable one.
+but undecodable one. The matched `fcsfail` control showed this was not the
+cause: open captured 307 bad-FCS full-sized frames out of 39,508 (0.78%), while
+vendor captured 466 out of 37,914 (1.23%) and still delivered 99.65% of numbered
+packets. Bad-FCS capture noise is higher under the correct firmware. A first
+normalized full-descriptor hash (`TXP5`) was also over-sensitive: all twelve
+samples had distinct signatures because duration/address-bearing command words
+still varied. `TXP6` therefore retains only PHY rate/control, frame length,
+fixed opcodes, secondary command, terminal command, and sentinel, excluding
+addresses and duration/backoff state. TXP6 still produced twelve unique
+combined hashes, so TXP7 split setup words 0--4 from secondary/terminal words
+8/11/12. The setup signature repeated across real and phantom success:
+`0x0a9` had one present and two absent PNs, and `0xb28` had one of each. Every
+terminal signature remained unique because secondary command word 8 embeds the
+per-context duration-slot address. The PHY/rate/length/fixed-opcode descriptor
+setup is therefore not the discriminator; address-bearing command identity must
+be checked against a complete AP-side PN trace rather than the monitor adapter,
+whose unique-PN coverage remained below the receiver count.

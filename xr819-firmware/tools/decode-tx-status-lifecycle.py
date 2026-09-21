@@ -9,6 +9,9 @@ PN_MAGIC = 0x5458504E  # "TXPN" (legacy PN-only records)
 PN_PIPE_MAGIC = 0x54585032  # "TXP2" (PN plus pipe/slot)
 PN_VECTOR_MAGIC = 0x54585033  # "TXP3" (PN, pipe/slot, TX-vector signature)
 PN_EVENT_MAGIC = 0x54585034  # "TXP4" (PN plus pre-GO/event signatures)
+PN_DESCRIPTOR_MAGIC = 0x54585035  # "TXP5" (PN plus descriptor/event signatures)
+PN_COMMAND_MAGIC = 0x54585036  # "TXP6" (PN plus command/event signatures)
+PN_SPLIT_COMMAND_MAGIC = 0x54585037  # "TXP7" (PN plus setup/terminal signatures)
 RETRY_PROVENANCE_MAGIC = 0x54585250  # "TXRP"
 MIB_FIELDS = [
     "plcp_errors",
@@ -60,7 +63,7 @@ def parse_marked_blocks(text):
                 words.append(int(match.group(1)) & 0xFFFFFFFF)
             except ValueError:
                 break
-        if len(words) == len(MIB_FIELDS) and words[0] in (MAGIC, PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
+        if len(words) == len(MIB_FIELDS) and words[0] in (MAGIC, PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC, PN_DESCRIPTOR_MAGIC, PN_COMMAND_MAGIC, PN_SPLIT_COMMAND_MAGIC):
             marked.append(words)
     return marked
 
@@ -145,11 +148,11 @@ def main():
         print(f"  decoded_type            0x{event['type']:02x}")
         return 0
 
-    if words[0] in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
+    if words[0] in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC, PN_DESCRIPTOR_MAGIC, PN_COMMAND_MAGIC, PN_SPLIT_COMMAND_MAGIC):
         samples = []
         seen = set()
         for block in marked_blocks:
-            if block[0] not in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
+            if block[0] not in (PN_MAGIC, PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC, PN_DESCRIPTOR_MAGIC, PN_COMMAND_MAGIC, PN_SPLIT_COMMAND_MAGIC):
                 continue
             cursor = block[9]
             for age in reversed(range(min(cursor, 4))):
@@ -157,13 +160,27 @@ def main():
                 base = 10 + record * 3
                 identity, pn_low, pn_generation = block[base:base + 3]
                 identity_value = identity & 0xFFF
-                identity_label = "event_state" if block[0] == PN_EVENT_MAGIC else "sequence"
+                if block[0] == PN_SPLIT_COMMAND_MAGIC:
+                    identity_label = "terminal_shape"
+                elif block[0] in (PN_EVENT_MAGIC, PN_DESCRIPTOR_MAGIC, PN_COMMAND_MAGIC):
+                    identity_label = "event_state"
+                else:
+                    identity_label = "sequence"
                 start_to_success = (identity >> 12) & 0x3FF
                 success_to_status = (identity >> 22) & 0x3FF
                 packet_number = pn_low | ((pn_generation & 0xFFFF) << 32)
-                if block[0] in (PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
+                if block[0] in (PN_PIPE_MAGIC, PN_VECTOR_MAGIC, PN_EVENT_MAGIC, PN_DESCRIPTOR_MAGIC, PN_COMMAND_MAGIC, PN_SPLIT_COMMAND_MAGIC):
                     detail = (pn_generation >> 16) & 0xFFF
-                    detail_label = "tx_vector" if block[0] in (PN_VECTOR_MAGIC, PN_EVENT_MAGIC) else "completion_mod4096"
+                    if block[0] == PN_SPLIT_COMMAND_MAGIC:
+                        detail_label = "setup_shape"
+                    elif block[0] == PN_COMMAND_MAGIC:
+                        detail_label = "command_shape"
+                    elif block[0] == PN_DESCRIPTOR_MAGIC:
+                        detail_label = "descriptor"
+                    elif block[0] in (PN_VECTOR_MAGIC, PN_EVENT_MAGIC):
+                        detail_label = "tx_vector"
+                    else:
+                        detail_label = "completion_mod4096"
                     pipe = (pn_generation >> 28) & 3
                     slot = pn_generation >> 30
                 else:
@@ -182,12 +199,13 @@ def main():
         print("\nperiodic accepted ordinary completions (oldest first):")
         for identity_value, identity_label, packet_number, start_to_success, success_to_status, detail, detail_label, pipe, slot in samples:
             location = f"pipe/slot={pipe}/{slot} " if pipe is not None else ""
-            identity_text = (
-                f"event_state=0x{identity_value:03x}"
-                if identity_label == "event_state"
-                else f"sequence={identity_value:4d} SC=0x{identity_value << 4:04x}"
-            )
-            detail_value = f"0x{detail:03x}" if detail_label == "tx_vector" else str(detail)
+            if identity_label == "event_state":
+                identity_text = f"event_state=0x{identity_value:03x}"
+            elif identity_label == "terminal_shape":
+                identity_text = f"terminal_shape=0x{identity_value:03x}"
+            else:
+                identity_text = f"sequence={identity_value:4d} SC=0x{identity_value << 4:04x}"
+            detail_value = f"0x{detail:03x}" if detail_label in ("tx_vector", "descriptor", "command_shape", "setup_shape") else str(detail)
             print(
                 f"  {location}{identity_text} "
                 f"PN=0x{packet_number:012x} start->success={start_to_success} "

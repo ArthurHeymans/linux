@@ -130,7 +130,7 @@ unsafe impl Sync for SharedTxIdentity {}
 static TX_IDENTITY: SharedTxIdentity = SharedTxIdentity(UnsafeCell::new([0; 22]));
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
-const TX_LIFECYCLE_MAGIC: u32 = 0x5458_5034; // "TXP4" (PN plus pre-GO/event signatures)
+const TX_LIFECYCLE_MAGIC: u32 = 0x5458_5037; // "TXP7" (PN plus setup/terminal signatures)
 #[cfg(feature = "experimental-tx-status-lifecycle")]
 const TX_STAGE_PUBLISHED: u32 = 1 << 0;
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -152,8 +152,8 @@ struct TxSlotLifecycle {
     context: u32,
     sequence: u16,
     packet_number: u64,
-    tx_vector_signature: u16,
-    status_event_signature: u16,
+    descriptor_signature: u16,
+    terminal_signature: u16,
     stages: u32,
     status_detail: u32,
     timestamps: [u32; 5],
@@ -166,8 +166,8 @@ const EMPTY_TX_SLOT_LIFECYCLE: TxSlotLifecycle = TxSlotLifecycle {
     context: 0,
     sequence: 0,
     packet_number: 0,
-    tx_vector_signature: 0,
-    status_event_signature: 0,
+    descriptor_signature: 0,
+    terminal_signature: 0,
     stages: 0,
     status_detail: 0,
     timestamps: [0; 5],
@@ -857,12 +857,12 @@ pub unsafe fn write_pre_go_snapshot_word(index: usize, value: u32) {
     let _ = (index, value);
 }
 
-/// Retains a compact signature of the per-frame TX-vector metadata gathered
-/// immediately before trigger/GO. Frame pointers and descriptor DMA addresses
-/// are deliberately excluded so equal physical configurations compare equal
-/// across host-context and slot reuse.
+/// Retains a compact signature of the hardware descriptor command shape
+/// gathered immediately before trigger/GO. Address-bearing and duration words
+/// are excluded so equal PHY/rate/length/opcode configurations compare equal
+/// across host-context, slot reuse, and backoff timing.
 #[inline(always)]
-pub unsafe fn capture_pre_go_tx_vector(pipe: u8, slot: u8) {
+pub unsafe fn capture_pre_go_descriptor_shape(pipe: u8, slot: u8) {
     #[cfg(all(
         feature = "vendor-host-tx-diagnostics",
         feature = "experimental-tx-status-lifecycle"
@@ -872,13 +872,21 @@ pub unsafe fn capture_pre_go_tx_vector(pipe: u8, slot: u8) {
             return;
         };
         let words = core::ptr::addr_of!((*PRE_GO_SNAPSHOT.0.get()).words).cast::<u32>();
-        let mut hash = 0x811c_9dc5_u32;
-        for word in 5..17 {
-            hash ^= words.add(word).read_volatile();
-            hash = hash.wrapping_mul(0x0100_0193);
+        let mut setup = 0x811c_9dc5_u32;
+        for descriptor_word in 0..5 {
+            setup ^= words.add(17 + descriptor_word).read_volatile();
+            setup = setup.wrapping_mul(0x0100_0193);
         }
-        let folded = hash ^ (hash >> 12) ^ (hash >> 24);
-        (*TX_LIFECYCLE.0.get()).slots[index].tx_vector_signature = folded as u16 & 0x0fff;
+        let mut terminal = 0x811c_9dc5_u32;
+        for descriptor_word in [8, 11, 12] {
+            terminal ^= words.add(17 + descriptor_word).read_volatile();
+            terminal = terminal.wrapping_mul(0x0100_0193);
+        }
+        let setup = setup ^ (setup >> 12) ^ (setup >> 24);
+        let terminal = terminal ^ (terminal >> 12) ^ (terminal >> 24);
+        let lifecycle = &mut (*TX_LIFECYCLE.0.get()).slots[index];
+        lifecycle.descriptor_signature = setup as u16 & 0x0fff;
+        lifecycle.terminal_signature = terminal as u16 & 0x0fff;
     }
     #[cfg(not(all(
         feature = "vendor-host-tx-diagnostics",
@@ -975,41 +983,11 @@ fn tx_lifecycle_transition(stages: u32, required: u32, stage: u32) -> (u32, bool
 }
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
-fn tx_pn_report_tail(packet_number: u64, tx_vector_signature: u16, pipe: u8, slot: u8) -> u32 {
+fn tx_pn_report_tail(packet_number: u64, descriptor_signature: u16, pipe: u8, slot: u8) -> u32 {
     (packet_number >> 32) as u32
-        | (u32::from(tx_vector_signature & 0x0fff) << 16)
+        | (u32::from(descriptor_signature & 0x0fff) << 16)
         | (u32::from(pipe & 3) << 28)
         | (u32::from(slot & 3) << 30)
-}
-
-#[cfg(all(feature = "experimental-tx-status-lifecycle", target_arch = "arm"))]
-#[inline(always)]
-unsafe fn tx_status_event_signature() -> u16 {
-    unsafe fn fold(hash: u32, address: usize) -> u32 {
-        unsafe { (hash ^ (address as *const u32).read_volatile()).wrapping_mul(0x0100_0193) }
-    }
-
-    unsafe {
-        let mut hash = 0x811c_9dc5;
-        hash = fold(hash, 0x0ac8_0064);
-        hash = fold(hash, 0x0abb_8004);
-        hash = fold(hash, 0x0ab8_0c00);
-        hash = fold(hash, 0x0aba_8040);
-        hash = fold(hash, 0x0abd_0004);
-        hash = fold(hash, crate::platform::mac_register(0x0224));
-        hash = fold(hash, crate::platform::mac_register(0x0228));
-        hash = fold(hash, crate::platform::mac_register(0x0600));
-        hash = fold(hash, crate::platform::mac_register(0x0a28));
-        hash = fold(hash, crate::platform::mac_register(0x0e48));
-        let folded = hash ^ (hash >> 12) ^ (hash >> 24);
-        folded as u16 & 0x0fff
-    }
-}
-
-#[cfg(all(feature = "experimental-tx-status-lifecycle", not(target_arch = "arm")))]
-#[inline(always)]
-fn tx_status_event_signature() -> u16 {
-    0
 }
 
 #[cfg(feature = "experimental-tx-status-lifecycle")]
@@ -1024,7 +1002,8 @@ unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8)
         // `publish_host_class0_slot` builds and snapshots the TX vector before
         // this irreversible publication callback. Preserve the signature it
         // staged in the same physical slot while replacing the old lifecycle.
-        let tx_vector_signature = state.slots[index].tx_vector_signature;
+        let descriptor_signature = state.slots[index].descriptor_signature;
+        let terminal_signature = state.slots[index].terminal_signature;
         let sequence = crate::dtcm::host_context_from_raw(context).map_or(0, |host| {
             crate::dtcm::shared_ptr::<u16>(host.sequence_number()).read_volatile()
         });
@@ -1042,8 +1021,8 @@ unsafe fn tx_lifecycle_publish(packet_id: u32, context: u32, pipe: u8, slot: u8)
             context,
             sequence,
             packet_number,
-            tx_vector_signature,
-            status_event_signature: 0,
+            descriptor_signature,
+            terminal_signature,
             stages: TX_STAGE_PUBLISHED,
             status_detail: 0,
             timestamps: [timestamp(), 0, 0, 0, 0],
@@ -1177,14 +1156,6 @@ pub unsafe fn capture_tx_status_accepted(
             3,
             detail,
         );
-        if let Some(index) = tx_lifecycle_slot(pipe, slot) {
-            let lifecycle = &mut (*TX_LIFECYCLE.0.get()).slots[index];
-            if lifecycle.context == context
-                && lifecycle.stages & TX_STAGE_STATUS_ACCEPTED != 0
-            {
-                lifecycle.status_event_signature = tx_status_event_signature();
-            }
-        }
     }
     #[cfg(not(feature = "experimental-tx-status-lifecycle"))]
     let _ = (context, pipe, slot, delivered, expected, slot_kind, slot_state);
@@ -1393,13 +1364,13 @@ pub unsafe fn capture_completion_identity(
                 let success_to_status = lifecycle.timestamps[3]
                     .wrapping_sub(lifecycle.timestamps[2])
                     .min(0x03ff);
-                state.report[base] = u32::from(lifecycle.status_event_signature & 0x0fff)
+                state.report[base] = u32::from(lifecycle.terminal_signature & 0x0fff)
                     | (start_to_success << 12)
                     | (success_to_status << 22);
                 state.report[base + 1] = lifecycle.packet_number as u32;
                 state.report[base + 2] = tx_pn_report_tail(
                     lifecycle.packet_number,
-                    lifecycle.tx_vector_signature,
+                    lifecycle.descriptor_signature,
                     pipe,
                     slot,
                 );
