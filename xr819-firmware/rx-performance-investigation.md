@@ -5054,9 +5054,11 @@ Feature `experimental-tx-status-lifecycle` tracks every ordinary host frame by
 
 The counters MIB starts with `TXLC` (`0x54584c43`). Aggregate stage counts and
 identity/order failures occupy words 1–8. Words 9–21 preserve the latest exact
-ordinary completion, including the 802.11 sequence number and a timestamp for
-each stage, so it can be matched directly against the monitor capture. A
-non-zero identity mismatch proves stale status or slot reuse. A complete
+ordinary completion, including the 802.11 sequence number, packed inter-stage
+deltas, and the raw event-FIFO words that caused start, pipe-success, and
+accepted status, so it can be matched directly against the monitor capture and
+the hardware producer can be identified. A non-zero identity mismatch proves
+stale status or slot reuse. A complete
 `0x3f` stage bitmap with no matching air sequence instead localizes the lie
 below the software lifecycle: GO/MAC event generation or hardware status
 production. The feature compiles out of normal firmware.
@@ -5116,3 +5118,27 @@ pipe-success and matching `0x11` completion event for frames the AP does not
 observe. The next discriminator must capture the raw MAC event word and status
 producer registers around those two events, not add more host-confirmation
 logging.
+
+That raw-event discriminator ran in image `d99eea484439` after rejecting one
+71 ms baseline. The accepted arm had a 5.4 ms baseline, offered 25,154 packets,
+and recovered automatically. During the sequence flow, publication advanced
+14,143 while the AP station RX counter advanced 9,436: another 4,707-frame
+(33.3%) claimed-success gap with zero identity or ordering faults. The latest
+exact completion had these FIFO words:
+
+```
+start         0x0242b71a  type=0x37 pipe=0 phase=2 pipe marker
+pipe-success  0x0243b71a  type=0x37 pipe=0 phase=3 pipe marker
+status        0x0140b711  type=0x37 pipe=0 phase=0 completion marker status=0x11
+```
+
+So pipe-success and status are not two interpretations of one FIFO word. The
+MAC emits a distinct ACK-class completion event 68 timer ticks after the
+phase-3 event; start to phase-3 was 247 ticks, consistent with real frame
+airtime rather than success immediately at GO. This eliminates
+success-on-submit and narrows the defect to the hardware response decision:
+either the transmitter fails to reach air but synthesizes `0x11`, or ACK
+evidence is accepted for a frame the AP did not receive. Resolving those two
+requires the already-configured AR9271 monitor interface on channel 6 to capture
+the exact TXLC sequence concurrently; further software lifecycle stages cannot
+discriminate them.

@@ -160,9 +160,10 @@ accepted status, completion, matching confirmation, slot-identity mismatch,
 and out-of-order stage observations. Words 9–21 describe the latest accepted
 ordinary completion: packet ID, context, 12-bit 802.11 sequence number,
 pipe/slot/generation, stage bitmap, delivered/expected/status-slot detail,
-terminal status plus retry count, and timestamps for publication through host
-confirmation. This feature exists only to distinguish a stale/reused slot from
-a hardware event chain that falsely claims an on-air success. Decode a captured
+terminal status plus retry count, packed inter-stage deltas, and the raw MAC
+FIFO words that produced start, pipe-success, and accepted status. This feature
+exists only to distinguish a stale/reused slot from a hardware event chain that
+falsely claims an on-air success. Decode a captured
 counters block with `tools/decode-tx-status-lifecycle.py < run.log`.
 
 The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary target CCMP

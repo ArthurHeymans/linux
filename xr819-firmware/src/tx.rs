@@ -2705,7 +2705,11 @@ pub trait TxStatusPolicy: PipeSlotCompletionEffects {
 /// # Safety
 /// Pipe records, frame nodes, completion state, and MMIO must be valid and
 /// exclusively owned by the caller.
-pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend: &mut B) {
+pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(
+    status: u8,
+    event_raw: u32,
+    backend: &mut B,
+) {
     let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) } & 3;
     let record = pipe_record_address(pipe);
     let current = unsafe { read_u8(record.current_slot().get()) };
@@ -2801,6 +2805,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                         input.expected_status,
                         input.slot_kind,
                         input.slot_state,
+                        event_raw,
                     );
                 }
                 backend.complete_ordinary_status(pipe, frame_node, slot.raw());
@@ -2857,7 +2862,11 @@ pub fn plan_mac_tx_status_accounting(status: u8) -> MacTxStatusAccountingPlan {
 /// # Safety
 /// Statistics aliases, MAC status state, and RX lookup state must be mapped and
 /// exclusively owned by the popped-event executor.
-pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, backend: &mut B) {
+pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(
+    status: u8,
+    event_raw: u32,
+    backend: &mut B,
+) {
     unsafe {
         let plan = plan_mac_tx_status_accounting(status);
         if plan.increment_range_counter {
@@ -2882,7 +2891,7 @@ pub unsafe fn service_mac_irq_tx_status_dispatch<B: TxStatusPolicy>(status: u8, 
                 write_u32(crate::dtcm::MAC_BEACON_CONTROL_STATE.get(), 1);
             }
         }
-        service_txp_pipe_tx_status(status, backend);
+        service_txp_pipe_tx_status(status, event_raw, backend);
     }
 }
 
@@ -3642,7 +3651,7 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
                         write_u8(crate::dtcm::LOW_MAC_EVENT_PENDING.get(), 0);
                         #[cfg(feature = "experimental-cycle-probe")]
                         crate::cycle_probe::note_phase2(pipe);
-                        service_pipe_tx_start(pipe, self.backend);
+                        service_pipe_tx_start(pipe, event.raw, self.backend);
                     }
                 } else {
                     unsafe { service_mac_irq_count_status(event_type) };
@@ -3661,7 +3670,7 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
                 }
                 if event_type == 0x37 {
                     let pipe = selected_pipe.unwrap_or(0);
-                    service_pipe_tx_success(pipe, self.backend);
+                    service_pipe_tx_success(pipe, event.raw, self.backend);
                 } else {
                     service_mac_nonpipe_completion_event(event_type);
                 }
@@ -3716,7 +3725,7 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
             };
         }
         if !(event.event_type == 0x39 && status == 6) {
-            unsafe { service_mac_irq_tx_status_dispatch(status, self.backend) };
+            unsafe { service_mac_irq_tx_status_dispatch(status, event.raw, self.backend) };
         }
         #[cfg(feature = "vendor-host-tx-diagnostics")]
         if event.event_type == 0x39 && status == 2 {
@@ -7542,7 +7551,11 @@ unsafe fn service_expired_partial_block_ack_retry(
     }
 }
 
-pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: &mut B) {
+pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(
+    pipe: u8,
+    event_raw: u32,
+    backend: &mut B,
+) {
     unsafe {
         trace_tx_stage(TX_TRACE_SUCCESS);
         trace_tx_value(0x2c, u32::from(pipe));
@@ -7567,6 +7580,7 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
                 current_frame.context().raw(),
                 pipe,
                 current,
+                event_raw,
             );
         }
 
@@ -7656,7 +7670,11 @@ pub trait PipeStartEffects {
 /// # Safety
 /// Pipe/slot/frame records, packet headers, duration tables, DMA producer and
 /// PHY MMIO must be valid and exclusively owned.
-pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut B) {
+pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(
+    pipe: u8,
+    event_raw: u32,
+    backend: &mut B,
+) {
     unsafe {
         #[cfg(feature = "experimental-cycle-probe")]
         crate::cycle_probe::note_tx_start(read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()));
@@ -7689,7 +7707,12 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
         let frame_node = live_slot.frame_node;
         let context = frame_node.context();
         if context.host().is_some() {
-            crate::host_tx_diagnostics::capture_tx_start(context.raw(), pipe, current);
+            crate::host_tx_diagnostics::capture_tx_start(
+                context.raw(),
+                pipe,
+                current,
+                event_raw,
+            );
         }
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 3 {
             let secondary = read_u8(

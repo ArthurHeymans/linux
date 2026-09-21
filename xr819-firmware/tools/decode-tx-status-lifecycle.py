@@ -60,8 +60,24 @@ def parse_last_marked_block(text):
     return marked
 
 
-def elapsed(start, end):
-    return (end - start) & 0xFFFFFFFF if start and end else None
+def decode_event(raw):
+    markers = []
+    for bit, name in [
+        (25, "pipe"),
+        (24, "completion"),
+        (23, "pipe_service"),
+        (26, "beacon"),
+        (30, "fatal"),
+    ]:
+        if raw & (1 << bit):
+            markers.append(name)
+    return {
+        "type": (raw >> 8) & 0x3F,
+        "pipe": (raw >> 18) & 3,
+        "phase": (raw >> 16) & 3,
+        "status": raw & 0x3F,
+        "markers": markers,
+    }
 
 
 def main():
@@ -117,12 +133,31 @@ def main():
     print(f"  slot               kind={slot_kind} state={slot_state}")
     print(f"  terminal/retries   0x{terminal_status:04x}/{retries}")
 
-    timestamps = words[16:22]
-    print("\ntimestamps and deltas:")
-    for index, (name, timestamp) in enumerate(zip(STAGES, timestamps)):
-        delta = elapsed(timestamps[index - 1], timestamp) if index else None
-        suffix = "" if delta is None else f" (+{delta})"
-        print(f"  {name:<18} 0x{timestamp:08x}{suffix}")
+    publish_to_start = words[16]
+    start_to_success = words[17] & 0xFFFF
+    success_to_status = words[17] >> 16
+    status_to_completion = words[18] & 0xFFFF
+    completion_to_confirmation = words[18] >> 16
+    print("\nstage deltas:")
+    print(f"  published -> started       {publish_to_start}")
+    print(f"  started -> pipe_success    {start_to_success}")
+    print(f"  pipe_success -> status     {success_to_status}")
+    print(f"  status -> completed        {status_to_completion}")
+    print(f"  completed -> confirmed     {completion_to_confirmation}")
+
+    event_names = ["start", "pipe_success", "status"]
+    event_words = words[19:22]
+    print("\nraw MAC FIFO events:")
+    for name, raw in zip(event_names, event_words):
+        event = decode_event(raw)
+        markers = ",".join(event["markers"]) or "none"
+        print(
+            f"  {name:<12} 0x{raw:08x} type=0x{event['type']:02x} "
+            f"pipe={event['pipe']} phase={event['phase']} status=0x{event['status']:02x} "
+            f"markers={markers}"
+        )
+    if event_words[1] == event_words[2]:
+        print("  -> pipe success and accepted status came from the same FIFO word")
 
     if words[7]:
         print("\n  -> slot identity changed before a later lifecycle event")
