@@ -5243,3 +5243,21 @@ only about 6.8k. The mode correction is retained as vendor fidelity, but the
 address/mode/filter register family is no longer the primary suspect. The
 remaining target is internal PHY TX completion versus MAC ACK qualification,
 state not exposed by the visible configuration registers.
+
+A temporary whole-run phase-3-to-status census then separated that internal
+path without relying on four sampled frames. Over 12,542 accepted ordinary
+statuses, the delay distribution was sharply bimodal:
+
+- 5,068 (40.41%) arrived within 8 timer ticks;
+- none arrived in 9--32 ticks;
+- 6 (0.05%) arrived in 33--64 ticks;
+- 7,168 arrived in 65--128 ticks and 300 after 128 ticks (59.54% combined).
+
+The same qualified arm's application loss was 59.40%. The near identity of the
+late-status fraction and packet-loss fraction, together with the empty
+9--32-tick gap and the earlier exact-PN holes at 68--79 ticks, identifies two
+hardware outcomes that both produce accepted status `0x11`: prompt ACK and a
+late timeout-like result. The translated vendor completion path currently maps
+both to `complete_tx_pipe_slot(..., 0)` and therefore reports both as success.
+The next discriminator is to classify the late mode as failed completion and
+verify that host TX status and retry behavior track the on-air result.
