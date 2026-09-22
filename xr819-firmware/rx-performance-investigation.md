@@ -5605,3 +5605,165 @@ UDP delivered 13.4 Mbit/s with 1/22,929 datagrams lost. Board-to-host TCP held
 delivered 19.6 Mbit/s with 262/33,619 lost (0.78%). Baseline ping averaged
 4.88 ms; final ping averaged 7.51 ms with zero loss. This qualifies TX/RX TCP
 and UDP operation without aggregation and with fully drained queues.
+
+## Post-reboot thermal and matched-control attempt (2026-09-22)
+
+The subsequent five-minute MCS5 sequence soak ended in a board-wide thermal
+shutdown, not a proven firmware queue wedge. The prior-boot journal records
+repeated `sunxi-mmc 1c10000.mmc: data error, sending stop command`, then
+`cpu-thermal: critical temperature reached` and `HARDWARE PROTECTION shutdown
+(Temperature too high)` at uptime 382 s. Its host evidence shows 558,932 /
+559,928 delivered (0.18% loss), including five 64-frame and two 65-frame
+missing runs; those gaps precede the shutdown, but their cause is not established.
+The preserved `/root/last-dmesg.txt` contained only the earlier SDIO errors;
+the persistent prior-boot journal supplied the decisive thermal messages.
+
+A stock-vendor MCS5 control with the same recovery host module completed a
+30-second sequence flow with a guarded 85 C abort threshold. It delivered
+30,756 / 31,006 (0.81% loss), with three long missing runs of 35, 36, and 80,
+and reached 77.4 C from roughly 70 C near boot. The vendor's 20-packet ping
+flood again had its historically reproducible ~580 ms queued latency (as in
+`/tmp/xr819-rate-vendor-{a,b}.log`), so the original 20 ms baseline gate was
+not a valid vendor admission test. Do not compare this one run's loss directly
+to the historical fixed-MCS5 aggregate runs or claim thermal parity from
+unmatched start temperatures and no equally loaded open run.
+
+Three guarded open-image attempts were rejected before traffic: twice the
+35-second join gate observed `SCANNING`, and once the associated link's baseline
+ping averaged 2162 ms.
+The AP recorded 244 retries and 19 TX failures during that baseline despite
+-28 dBm signal and fell to MCS0. Those are rejected setup attempts, not
+throughput or thermal results. Recovery copies were verified before reboot;
+subsequent post-boot comparison of all three recovery files passed. The
+boot-time Armbian apt-updates cron entry remains disabled, and no SDIO errors
+were present on that recovery boot. The workstation serving as AP was also
+busy with unrelated jobs (load 6.86, 13.76, 12.36 at inspection), another
+uncontrolled variable; no jobs were stopped. Further MCS or thermal A/B work
+must first establish a qualified open-image baseline, check AP fitness, and
+retain an explicit temperature cutoff rather than repeating an unguarded soak.
+A fourth attempt on a quieter AP host demonstrated that the 35-second join
+gate can itself produce a false failure: it reported `SCANNING`, but diagnostic
+`wpa_cli status` a moment later showed `COMPLETED`, and the kernel recorded a
+successful association at board uptime 89 s. A subsequent 65-second gate also
+expired at `SCANNING` without even listing the lab AP in scan results, while
+the AP journal recorded the four-way handshake completing right as the setup
+aborted (22:33:08), followed by the harness disconnect at 22:33:20. The
+temporary guarded harness then waited up to 120 seconds. On the next run,
+`wpa_cli` really remained `SCANNING` at that boundary, the target lab BSSID
+was missing from the scan cache, and the one late association attempt at board
+uptime 135 s timed out after three requests. That is a genuine unqualified
+link, not another 35/65-second boundary race. No traffic ran on any of these
+attempts. The earlier `SCANNING` results must not be claimed as proven firmware
+association failures without end-of-window status.
+
+Restarting the Intel AP with `nmcli connection down xr819-lab-intel`, a
+five-second pause, and `nmcli connection up xr819-lab-intel ifname wlp4s0`
+preceded the first new qualified open MCS5 arm. It joined in 52 s, baseline
+ping averaged 4.17 ms, and the 30-second board-TX sequence flow delivered
+52,103 / 52,185 (0.16% loss, every gap isolated) at about 16.7 Mbit/s payload.
+The AP recorded zero TX retries and one TX failure. The thermal sampler peaked
+at 77.0 C; recovery was verified. This is a correlation with AP restart, not
+evidence that the restart alone fixed the earlier scans. An immediately
+subsequent vendor control associated in two seconds but its 20/20 ping flood
+averaged 975 ms, with zero AP retries/failures, so the then-configured vendor
+queued-baseline gate (400--700 ms) rejected it before traffic. Older vendor
+state-dump runs also had ~970 ms queued ping floods; that gate was too narrow.
+A wider explicitly vendor-only queued-baseline gate preserves the latency
+warning and requires all replies and no AP retries/failures before exploratory
+traffic; it must not silently label the vendor link low-latency or claim a
+fully matched baseline against the 4.17 ms open arm.
+
+A vendor rerun after that rejection passed the explicit queued-baseline gate:
+20/20 replies, 583.4 ms average, and no AP retries/failures before traffic.
+With the same host module, fixed MCS5, AP, 20-Mbit/s offered sequence-flow
+method, and 30-second duration, vendor delivered 31,234 / 31,345 (0.35% loss,
+about 10.0 Mbit/s application payload); the open arm above delivered about
+16.7 Mbit/s at 0.16% loss. Vendor's sequence receiver showed one 37-frame
+missing run and one two-frame run; open had only isolated missing frames.
+Vendor peaked at 78.3 C and open at 77.0 C, with different initial temperatures
+(~68.5 C versus ~64.4 C) and time-to-association, so neither maximum alone
+proves a firmware power difference. The vendor's ~583 ms queued ping baseline
+versus open's 4.17 ms is an important asymmetry: this is a matched TX workload,
+not matched link latency. Both runs finished under the 85 C guard; vendor
+recovery completion must still be checked before treating the board as idle.
+
+The next fixed-MCS6 pair on the same AP and recovery host module repeated the
+TX-throughput direction: open delivered 51,112 / 51,167 (0.11% loss, all 55
+gaps isolated), about 16.4 Mbit/s, with 4.08 ms baseline ping and AP-observed
+MCS6. Vendor delivered 31,942 / 32,045 (0.32% loss, one 35-frame run), about
+10.2 Mbit/s; its accepted vendor-only queued baseline averaged 553 ms. Open
+peaked at 79.7 C, vendor at 80.4 C. These are one arm each, and the different
+baseline latency remains a qualification on any firmware-parity claim. No
+thermal cutoff was reached; both loaded the CPU near its 1.008 GHz maximum.
+The comparison suggests no large vendor-versus-open heat delta in these short
+runs, but cannot attribute heat to radio power, CPU work, or the SDIO bus.
+
+The fixed-MCS7 open arm qualified on a 4.04 ms baseline, then delivered
+48,049 / 48,599 (1.13% loss, about 15.4 Mbit/s). Unlike MCS5/6 it had
+six exact-64 gaps, one 65-gap and one 52-gap; the AP saw MCS7 and received
+53,405 of 53,925 board sends. Thus the current non-aggregating image still
+exposes window-sized losses at fixed MCS7, while the lower fixed rates had
+only isolated misses in these short arms. Temperature peaked at 81.5 C,
+below the 85 C abort guard. A first vendor MCS7 control was rejected before
+traffic solely for one AP retry among 26 baseline transmissions; its 20/20
+ping flood otherwise had the known queued vendor shape. The vendor-only gate
+was corrected to allow at most two retries, still requiring zero TX failures.
+The accepted repeat delivered 33,197 / 33,329 (0.40% loss, about 10.6 Mbit/s)
+and showed one 37-frame run plus one two-frame run, not the open image's 64/65
+pattern. Its baseline averaged 583 ms, AP-observed rate was MCS7, and peak
+board temperature was 80.5 C, also below the 85 C guard. These are single
+arms, and vendor ping latency is not matched to the open image. The short
+runs say nothing about whether the open image's 64/65 gaps cause the long-soak
+thermal shutdown.
+
+At fixed MCS4 the open arm delivered 45,646 / 45,692 (0.10% loss,
+~14.6 Mbit/s) after a 4.49 ms baseline; all 46 gaps were isolated. Vendor
+with the same host module and AP delivered 27,116 / 27,351 (0.86% loss,
+~8.7 Mbit/s), with 37- and 80-frame gaps, and its queued baseline averaged
+546 ms. Both AP observations confirmed MCS4. Peak temperature was 82.6 C
+open versus 80.5 C vendor, still below the 85 C cutoff. The vendor's 80-frame
+gap demonstrates that large application gaps are not unique to our firmware;
+there is not enough evidence to treat the MCS7 open 64/65 signature as a
+firmware-specific mechanism on this comparison alone.
+
+The first new open MCS3 attempt was rejected before traffic: it joined after
+93 s but baseline ping averaged 176 ms, and the AP recorded 68 retries and
+8 TX failures at -27 dBm. After restarting the Intel AP, a fresh open arm
+joined in 2 s, baseline 4.30 ms, and delivered 37,366 / 37,480 (0.30% loss,
+~12.0 Mbit/s), every gap isolated. Matched fixed-MCS3 vendor delivered
+21,831 / 22,579 (3.31% loss, ~7.0 Mbit/s) with 38-, 54- and 80-frame
+missing runs, plus many isolated/two-frame misses; its queued baseline
+averaged 563 ms. Both AP receive reports confirmed MCS3. Peak temperature
+was 82.8 C open versus 79.8 C vendor, below the abort guard, but the two
+links still have sharply different baseline latency. Do not treat the
+pre-restart open arm as a performance datum.
+
+At fixed MCS2, open delivered 31,405 / 33,968 (7.55% loss,
+~10.0 Mbit/s) and the AP fell to MCS0 for downlink while recording 408
+retries and 29 TX failures under offered load. The first vendor arm was
+rejected before traffic solely because its 20/20 baseline ping averaged
+1.23 s (zero AP retries/failures), matching older vendor diagnostic queued
+baselines; the explicitly vendor-only queued-latency gate was widened without
+relaxing packet delivery or the thermal limit. The repeat delivered 17,792 /
+19,948 (10.81% loss, ~5.7 Mbit/s), with runs up to 80 frames and a 569 ms
+queued ping baseline. Both AP receive rates confirmed MCS2. Open reached
+82.7 C versus vendor 78.9 C in these single short arms; the open image
+handled much more traffic, so the temperature difference does not measure
+radio idle-power efficiency.
+
+The attempted open MCS1 arm must not be counted. It passed preflight from
+recovery firmware, but never logged a new boot ID or association. The outer
+650 s guard expired; the EXIT trap failed all three recovery-copy attempts
+because SSH no longer answered (`installed=? expected=?`). At inspection,
+the board still answered Ethernet ping at its MAC-resolved address
+`192.168.0.121`, but TCP/22 and sampled other ports returned `closed`.
+The installed firmware/module and boot ID are therefore unknown: the trap's
+"left up" text is not proof of a healthy or recovered system. Stop hardware
+runs until console or a reboot restores SSH and all three recovery files have
+been independently compared after boot. The earlier MCS1 result remains the
+only qualified open MCS1 datum; no new vendor MCS1 arm was started.
+
+Local evidence: `/tmp/xr819-soak-previous-boot-{kernel,journal}.log`,
+`/tmp/xr819-vendor-mcs5-thermal-evidence.log`,
+`/tmp/xr819-vendor-mcs5-loaded-thermal.txt`, and the guarded harness
+`/tmp/xr819-thermal-guarded-compare.sh`.
