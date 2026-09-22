@@ -5593,3 +5593,15 @@ and about 16.8 Mbit/s. Safe aggregation now requires an in-firmware priority
 BAR (or equivalent BA teardown/window-advance transaction) before admitting
 any later cohort after a member is abandoned; host-queued BAR recovery cannot
 meet that ordering boundary.
+
+## Clean default bidirectional qualification
+
+The clean non-diagnostic default image completed a fixed-MCS5 bidirectional
+qualification with every inter-phase snapshot at zero used buffers and final
+ping 50/50. Host-to-board TCP delivered 12.3 Mbit/s overall after a slow first
+interval, reaching 18.0--18.7 Mbit/s in the final ten seconds. Host-to-board
+UDP delivered 13.4 Mbit/s with 1/22,929 datagrams lost. Board-to-host TCP held
+13.7--14.0 Mbit/s throughout and averaged 13.9 Mbit/s. Board-to-host UDP
+delivered 19.6 Mbit/s with 262/33,619 lost (0.78%). Baseline ping averaged
+4.88 ms; final ping averaged 7.51 ms with zero loss. This qualifies TX/RX TCP
+and UDP operation without aggregation and with fully drained queues.
