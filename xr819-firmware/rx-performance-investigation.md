@@ -5562,3 +5562,34 @@ The clean default, non-diagnostic image then delivered 52,380 of 52,529 packets
 (0.28%, about 16.8 Mbit/s) from 58,308 sends with a 4.27 ms average baseline.
 The qualified cohort and confirmation-coalescing features are now defaults;
 the temporary experimental feature names were retired.
+
+## Aggregation remains unsafe because abandoned holes outrun BAR recovery
+
+A compact outcome-only diagnostic and complete AP PN/window tracing localized
+the residual aggregate loss. The AP saw essentially every transmitted PN, but
+its 64-entry reorder release repeatedly dequeued a sequence exactly 64 ahead
+of the logical slot. Typical 10-second bins rejected 1,100--2,000 of roughly
+1,200--2,100 reorder-release PN checks; the application lost 7--9% despite the
+bounded ordinary cohort barrier. Firmware outcome telemetry showed valid all-
+ACK and partial BlockAcks, selective and whole-aggregate retries, and no invalid
+plan, missing session, or feedback-count mismatch.
+
+One real firmware bug was removed experimentally: an aggregate that exhausted
+retry handling without retained member-level BA evidence fell through generic
+success. Failing it instead was correct but did not prevent permanent sequence
+holes. The firmware emitted partial aggregate feedback, but the historical BA
+session driver did not understand the later XR819 metadata. A feedback-capable
+driver plus `AMPDU_NO_BACK` reduced loss to 1.94% and aliases by roughly 3--5x,
+proving BAR advancement addresses the right receiver state. It remained late:
+mac80211 derives BAR SSN from the reported head frame and queues the BAR behind
+saturated data. Adding BAR queue retirement without its stale-queue guard
+wedged the board (ping alive, SSH unavailable); adding the guard prevented the
+wedge but regressed to 47.09% loss. A direct BAR at head sequence plus aggregate
+length still arrived too late and lost 23.25%.
+
+All aggregate/BAR candidates were discarded and the board restored. The
+qualified default remains non-aggregate four-frame FIFO cohorts at 0.28% loss
+and about 16.8 Mbit/s. Safe aggregation now requires an in-firmware priority
+BAR (or equivalent BA teardown/window-advance transaction) before admitting
+any later cohort after a member is abandoned; host-queued BAR recovery cannot
+meet that ordering boundary.
