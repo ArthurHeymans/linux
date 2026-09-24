@@ -59,7 +59,7 @@ SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {
 # checker), so both multisets are pinned empty.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001000: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ("_RNvNtCsbx17WDetRei_14xr819_firmware3phy22prepare_rf_mode0_stage", 0x04001000): 1,
+    ("_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy22prepare_rf_mode0_stage", 0x04001000): 1,
 })
 STRUCT = '#[repr(C, align(2))] struct RfScaleHalfwordTable { entries: [SharedU16; 64] }'
 REQUIRED = (

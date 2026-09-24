@@ -54,11 +54,11 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x0400860C): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reprogram_after_channel', 0x04008606): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan23publish_scan_completion', 0x0400860C): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan5begin', 0x0400860C): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x0400860C): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x0400860C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac23reprogram_after_channel', 0x04008606): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan23publish_scan_completion', 0x0400860C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan5begin', 0x0400860C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan7service', 0x0400860C): 2,
     }
 )
 

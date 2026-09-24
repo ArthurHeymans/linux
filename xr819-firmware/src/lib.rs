@@ -8,7 +8,6 @@ pub(crate) mod backoff;
 pub mod command;
 pub mod configuration;
 pub mod crypto;
-pub mod cycle_probe;
 pub mod download;
 pub mod dtcm;
 pub mod exception;
@@ -31,13 +30,6 @@ macro_rules! halt_always {
     };
 }
 
-/// Records a recoverable corruption report and allows execution to continue.
-#[macro_export]
-macro_rules! halt_unless_reporting {
-    () => {};
-}
-
-pub mod host_tx_diagnostics;
 #[cfg(target_arch = "arm")]
 pub mod host_tx_driver;
 // Deliberately not ARM-gated: `host_tx_driver` is invisible to host test runs,
@@ -54,8 +46,6 @@ pub mod radio;
 pub mod rate_policy;
 pub(crate) mod rx_model;
 pub mod scan;
-pub mod stage_probe;
-pub mod tcm;
 pub mod tx;
 pub mod vendor_host_tx;
 pub mod vif;

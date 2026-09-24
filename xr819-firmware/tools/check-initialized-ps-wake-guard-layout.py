@@ -65,7 +65,7 @@ SANCTIONED_CONSUMER_FUNCTIONS: dict[str, set[str]] = {}
 # written through it.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x040010E4: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ("_RNvNtCsbx17WDetRei_14xr819_firmware3mac24initialize_tx_pipe_state", 0x040010E4): 1,
+    ("_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac24initialize_tx_pipe_state", 0x040010E4): 1,
 })
 STRUCT = '#[repr(C, align(4))] struct PsWakeGuardWords { word_10e4: SharedU32, opaque_04: OpaqueBytes<0x04>, word_10ec: SharedU32, word_10f0: SharedU32, opaque_10: OpaqueBytes<0x04> }'
 REQUIRED = (

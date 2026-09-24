@@ -319,54 +319,10 @@ the contract:
 3. after MAC/pipe/internal-pool startup completes;
 4. immediately before and after a warm Rust reload.
 
-Compare by contract, not by whole-image equality. The reviewed transition ranges and the selected canonical values already
-proved from startup source live in
-`tools/dtcm-initialized-snapshot-contract.json`; validate raw target dumps with:
-
-```sh
-python3 tools/compare-dtcm-initialized-snapshots.py \
-  before.bin after.bin --transition zero-to-platform
-python3 tools/compare-dtcm-initialized-snapshots.py \
-  before.bin after.bin --transition platform-to-startup
-python3 tools/compare-dtcm-initialized-snapshots.py \
-  before.bin after.bin --transition warm-entry-to-startup
-```
-
-The `dtcm-contract-diagnostics` feature now captures all three checkpoints into
-ordinary ITCM immediately at their defined startup boundaries. It exposes the
-captures through private read-MIB IDs `0xff00..0xff47`: entry uses
-`0xff00..0xff17`, platform uses `0xff18..0xff2f`, and startup uses
-`0xff30..0xff47`. Each stage has 24 pages with at most 352 snapshot bytes per response so
-the complete WSM confirmation fits the 384-byte HIF output slot. Feature-free
-firmware contains neither the buffers nor the MIB path.
-
-Build the diagnostic image with:
-
-```sh
-cargo +nightly build --release --bin hif-startup \
-  --features dtcm-contract-diagnostics \
-  --target thumbv5te-none-eabi -Z build-std=core
-```
-
-Save the 72 raw read-MIB confirmations (or their diagnostic data portions), then
-assemble and compare them with:
-
-```sh
-python3 tools/assemble-dtcm-initialized-snapshots.py responses/*.bin \
-  --output-dir snapshots
-python3 tools/compare-dtcm-initialized-snapshots.py \
-  snapshots/entry.bin snapshots/platform.bin --transition zero-to-platform
-python3 tools/compare-dtcm-initialized-snapshots.py \
-  snapshots/platform.bin snapshots/startup.bin --transition platform-to-startup
-```
-
-On a warm firmware reload, use that run's `entry.bin` and `startup.bin` with the
-`warm-entry-to-startup` transition. The diagnostic firmware also compares the
-zeroed entry image internally before reconstruction and places a bounded result
-in the ordinary startup indication label. `u` is the count of
-changed bytes outside reviewed writer ranges, `f` lists their first offsets, `c`
-is the count of canonical startup-value mismatches, and `e` lists their first
-offsets. This path requires no extra WSM command or MMIO read.
+Compare by contract, not by whole-image equality. The snapshot-capturing
+`dtcm-contract-diagnostics` image, its reviewed contract JSON, and the
+assembly/comparison tools were removed from the working tree; they remain on
+the `archive/xr819-experiments` bookmark for future qualification runs.
 
 Qualified zero-baseline target evidence from diagnostic image
 `e113a4bfc0aa0c382ecf9e43b85d83e217c968ff0e54cd9035b98d39a3659992`:
@@ -380,9 +336,7 @@ Qualified zero-baseline target evidence from diagnostic image
   `XR819 DTCM u=0000 f=none c=0000 e=none`, with BH alive, WSM idle, and zero
   used buffers.
 
-The normal software gate builds the ARM diagnostic image, verifies its stack and
-linker envelope, checks that the generated firmware contract matches the reviewed
-JSON, and runs synthetic capture/assembly/comparison regressions.
+Open contract obligations:
 
 - zero-stable ranges must remain zero until their named initializer runs;
 - rebuilt fields must eventually gain canonical startup values rather than only

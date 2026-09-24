@@ -71,14 +71,14 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21prepare_probe_context', 0x04009080): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx23release_context_address', 0x04009080): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx23release_context_address', 0x04009084): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx24initialize_internal_pool', 0x04009080): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx24initialize_internal_pool', 0x04009084): 2,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx24initialize_internal_pool', 0x04009364): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx27release_wsm_context_address', 0x04009084): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009080): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21prepare_probe_context', 0x04009080): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx23release_context_address', 0x04009080): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx23release_context_address', 0x04009084): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx24initialize_internal_pool', 0x04009080): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx24initialize_internal_pool', 0x04009084): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx24initialize_internal_pool', 0x04009364): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27release_wsm_context_address', 0x04009084): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009080): 1,
     }
 )
 

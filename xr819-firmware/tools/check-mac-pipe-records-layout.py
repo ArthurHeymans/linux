@@ -58,27 +58,22 @@ FORBIDDEN_FORMS = (
 # `LiveTxSlot` methods from `Ms7` to `Ms8` and publication from `MsN` to `MsO`.
 # Queued partial-BlockAck retry adds another backend field and advances only
 # that publication method's disambiguator from `MsO` to `MsP`.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001720: 5,
-    0x04001722: 1,
-    0x04001723: 3,
-    0x0400172C: 2,
-    0x04001738: 1,
-})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
-    ('_RNvMs8_NtCsbx17WDetRei_14xr819_firmware2txNtB5_10LiveTxSlot14from_pipe_slot', 0x0400172C): 1,
-    ('_RINvMs8_NtCsbx17WDetRei_14xr819_firmware2txNtB6_10LiveTxSlot9from_mmioNtB6_19VolatileMacPipeMmioEB8_', 0x0400172C): 1,
-    ('_RNvMsP_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx25scheduler_live_diagnostic', 0x04001723): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001720): 3,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04001723): 2,
-    ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation6cancel', 0x04001738): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001723): 1,
-    ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx36release_aggregate_retry_command_maskNtB2_19VolatileMacPipeMmioEB4_', 0x04001722): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac18rebuild_pipe_state', 0x04001720): 2,
-})
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001720: 5, 0x04001722: 1, 0x04001723: 2, 0x0400172C: 2, 0x04001738: 1})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
+    {
+        ('_RINvMs7_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB6_10LiveTxSlot9from_mmioNtB6_19VolatileMacPipeMmioEB8_', 0x0400172C): 1,
+        ('_RINvNtCs2QKOjPfuf9x_14xr819_firmware2tx36release_aggregate_retry_command_maskNtB2_19VolatileMacPipeMmioEB4_', 0x04001722): 2,
+        ('_RNvMs1_NtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
+        ('_RNvMs7_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_10LiveTxSlot14from_pipe_slot', 0x0400172C): 1,
+        ('_RNvMsP_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
+        ('_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001738): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001720): 3,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001723): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx32finalize_staged_host_class0_pipe', 0x04001723): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac18rebuild_pipe_state', 0x04001720): 2,
+    }
+)
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:

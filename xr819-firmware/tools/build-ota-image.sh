@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and pack the feature-free production firmware.
+# Build and pack the production firmware.
 #
 # Run tools/check.sh separately when qualification checks are required.
 set -euo pipefail
@@ -375,5 +375,3 @@ if [[ -n "${XR819_INITIALIZED_PRE_HOST_PAS_RADIO_STOP_WORD_PARENT_ELF:-}" ]]; th
 else
   echo "== initialized-pre-host-PAS-radio-stop-word codegen gate skipped: set XR819_INITIALIZED_PRE_HOST_PAS_RADIO_STOP_WORD_PARENT_ELF to the exact parent ELF; this supplemental symbol gate does not replace complete-file identity =="
 fi
-
-echo "features=none"

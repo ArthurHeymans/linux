@@ -7,7 +7,6 @@
 use crate::configuration;
 use crate::crypto;
 use crate::hif::{ReceivedRequest, SHARED_BUFFER_SIZE, Transport};
-use crate::host_tx_diagnostics;
 use crate::host_tx_driver::HostTxDriver;
 use crate::join;
 use crate::mac_domain::MacDomain;
@@ -18,11 +17,6 @@ use crate::rate_policy;
 use crate::scan;
 use crate::tx;
 use crate::vif;
-#[cfg(any(
-    feature = "dtcm-contract-diagnostics",
-    feature = "experimental-dynamic-iq-trace"
-))]
-use crate::wsm::encode_read_mib_data_response_in_place;
 use crate::wsm::{
     ADD_KEY_REQ_ID, AddKeyRequest, CONFIGURATION_REQ_ID, ConfigurationRequest, EDCA_PARAMS_REQ_ID,
     EdcaParameters, JOIN_REQ_ID, JoinRequest, READ_MIB_REQ_ID, REMOVE_KEY_REQ_ID, RESET_REQ_ID,
@@ -31,7 +25,7 @@ use crate::wsm::{
     TxQueueParameters, TxRequest,
     WRITE_MIB_REQ_ID, WriteMibRequest, encode_configuration_response, encode_join_response,
     encode_read_mib_data_response, encode_read_mib_response, encode_status_response,
-    encode_tx_confirm, encode_xr819_tx_confirm, encode_xr819_tx_confirm_details,
+    encode_tx_confirm, encode_xr819_tx_confirm,
 };
 
 /// Scan-owned active probe TX is part of the qualified station behavior.
@@ -56,31 +50,24 @@ unsafe fn service_management_request(
     publish_response: &mut bool,
 ) -> Result<usize, crate::wsm::Error> {
     match unsafe { tx::service_host_management_tx(events, Some((request, if_id)), 0) } {
-        tx::HostManagementTxReport::Published {
-            packet_id,
-            bisect_stage,
-        } => {
+        tx::HostManagementTxReport::Published { .. } => {
             *publish_response = true;
-            if bisect_stage != 0 {
-                encode_xr819_tx_confirm_details(packet_id, STATUS_FAILURE, 0, bisect_stage, output)
-            } else {
-                let edca =
-                    unsafe { (platform::mac_register(0x0e64) as *const u32).read_volatile() };
-                let quantum0 =
-                    unsafe { (platform::mac_register(0x0e70) as *const u32).read_volatile() };
-                let quantum1 =
-                    unsafe { (platform::mac_register(0x0e74) as *const u32).read_volatile() };
-                let metadata =
-                    unsafe { (packet_ram::interface_metadata() as *const u8).read_volatile() };
-                let secondary =
-                    unsafe { (packet_ram::duration_word(0) as *const u8).read_volatile() };
-                let event_id = 0x5852_0000 | (edca & 0xffff);
-                let data = (quantum0 & 0xff)
-                    | ((quantum1 & 0xff) << 8)
-                    | (u32::from(metadata) << 16)
-                    | (u32::from(secondary) << 24);
-                encode_debug_event(event_id, data, output).ok_or(crate::wsm::Error::Truncated)
-            }
+            let edca =
+                unsafe { (platform::mac_register(0x0e64) as *const u32).read_volatile() };
+            let quantum0 =
+                unsafe { (platform::mac_register(0x0e70) as *const u32).read_volatile() };
+            let quantum1 =
+                unsafe { (platform::mac_register(0x0e74) as *const u32).read_volatile() };
+            let metadata =
+                unsafe { (packet_ram::interface_metadata() as *const u8).read_volatile() };
+            let secondary =
+                unsafe { (packet_ram::duration_word(0) as *const u8).read_volatile() };
+            let event_id = 0x5852_0000 | (edca & 0xffff);
+            let data = (quantum0 & 0xff)
+                | ((quantum1 & 0xff) << 8)
+                | (u32::from(metadata) << 16)
+                | (u32::from(secondary) << 24);
+            encode_debug_event(event_id, data, output).ok_or(crate::wsm::Error::Truncated)
         }
         tx::HostManagementTxReport::Failed { packet_id, .. } => {
             encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
@@ -93,11 +80,7 @@ unsafe fn service_management_request(
 }
 
 #[inline(always)]
-fn encode_standard_read_mib(
-    mib_id: u16,
-    transport: &Transport,
-    output: &mut [u8],
-) -> Result<usize, crate::wsm::Error> {
+fn encode_read_mib(mib_id: u16, output: &mut [u8]) -> Result<usize, crate::wsm::Error> {
     if mib_id != 0x100c {
         return encode_read_mib_response(STATUS_FAILURE, mib_id, output);
     }
@@ -107,7 +90,6 @@ fn encode_standard_read_mib(
     let (dwell_arm, dwell_deadline, dwell_now, _dwell_waits) = scan::diagnostic_dwell();
     let (_scan_status, scan_error) = scan::diagnostic_error();
     let _iq = crate::phy::iq_hardware_diagnostics();
-    #[allow(unused_mut)]
     let mut values = [
         diagnostics.producer_changes,
         diagnostics.bad_magic,
@@ -147,52 +129,16 @@ fn encode_standard_read_mib(
             unsafe { (packet_ram::rx_fifo_base() as *const u32).read_volatile() }
         },
     ];
-    host_tx_diagnostics::populate_counters(&mut values, transport);
-    #[cfg(feature = "experimental-rx-path-diagnostics")]
-    {
-        let diagnostics = radio::rx_path_diagnostics();
-        values[11] = diagnostics.pending_passes;
-        values[12] = diagnostics.blocked_by_host_request;
-        values[13] = diagnostics.pending_bytes_max;
-        values[14] = diagnostics.host_transfers_max;
-        values[15] = diagnostics.decrypt_drops;
-        values[16] = diagnostics.decrypt_authentication;
-        values[17] = diagnostics.decrypt_missing_key;
-        values[18] = diagnostics.auth_group;
-        values[19] = diagnostics.auth_unicast;
-        values[20] = diagnostics.auth_retry;
-        values[21] = diagnostics.auth_last_signature;
+    // A completed hardware CCMP self-test replaces the counters with its result.
+    let selftest = crate::crypto::hardware_ccmp_selftest_snapshot();
+    if selftest[0] == 0x4857_434b {
+        values = selftest;
     }
-    #[cfg(feature = "experimental-service-probe")]
-    crate::stage_probe::populate(&mut values);
-    #[cfg(feature = "experimental-cycle-probe")]
-    crate::cycle_probe::populate(&mut values);
     let mut data = [0_u8; 88];
     for (index, value) in values.into_iter().enumerate() {
         data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
     encode_read_mib_data_response(0, mib_id, &data, output)
-}
-
-#[inline(always)]
-fn encode_extended_read_mib(
-    mib_id: u16,
-    transport: &Transport,
-    output: &mut [u8],
-) -> Result<usize, crate::wsm::Error> {
-    #[cfg(feature = "experimental-dynamic-iq-trace")]
-    if let Some(length) =
-        unsafe { crate::phy::write_dynamic_iq_trace_mib(mib_id, &mut output[12..]) }
-    {
-        return encode_read_mib_data_response_in_place(0, mib_id, length, output);
-    }
-    #[cfg(feature = "dtcm-contract-diagnostics")]
-    if let Some(length) =
-        unsafe { crate::dtcm::write_initialized_image_snapshot_mib(mib_id, &mut output[12..]) }
-    {
-        return encode_read_mib_data_response_in_place(0, mib_id, length, output);
-    }
-    encode_standard_read_mib(mib_id, transport, output)
 }
 
 fn retain_configuration(
@@ -219,12 +165,6 @@ enum SingleOutcome {
     Settled,
 }
 
-/// Maximum TX admissions per pass under multi-dispatch: one full depth-4
-/// batch. The first sync command, failed admission, or empty queue ends the
-/// loop, preserving single-shot semantics for everything but TX refill.
-#[cfg(feature = "experimental-multi-dispatch")]
-const MAX_TX_ADMIT_PER_PASS: u8 = 4;
-
 pub unsafe fn service_one(
     transport: &mut Transport,
     events: &mut tx::MacEventQueue,
@@ -234,37 +174,6 @@ pub unsafe fn service_one(
     pending_join_complete: &mut Option<u32>,
 ) {
     if !transport.publication_available() {
-        return;
-    }
-    #[cfg(feature = "experimental-multi-dispatch")]
-    {
-        // Vendor `hif_rx_process()` reschedules itself while descriptors are
-        // ready instead of waiting for the next pass. Drain up to a full
-        // batch of TX admissions here; anything else settles the pass.
-        let mut admitted = 0_u8;
-        loop {
-            let Some(request) = transport.poll_request() else {
-                break;
-            };
-            let outcome = unsafe {
-                dispatch_single_request(
-                    transport,
-                    events,
-                    mac_domain,
-                    host_tx_driver,
-                    &mut *response_scratch,
-                    pending_join_complete,
-                    request,
-                )
-            };
-            if outcome == SingleOutcome::Settled {
-                break;
-            }
-            admitted += 1;
-            if admitted >= MAX_TX_ADMIT_PER_PASS {
-                break;
-            }
-        }
         return;
     }
     let Some(request) = transport.poll_request() else {
@@ -300,9 +209,6 @@ unsafe fn dispatch_single_request(
     let mut publish_response = true;
     let request_id = request.id;
     let request_if_id = request.if_id;
-    unsafe {
-        host_tx_diagnostics::record_hif_event(1, request_id, request_if_id);
-    }
     let mut request_buffer = Some(request.buffer);
     let mut outcome = SingleOutcome::Settled;
     let request_payload = request_buffer
@@ -391,7 +297,7 @@ unsafe fn dispatch_single_request(
             .get(..2)
             .map(|value| u16::from_le_bytes([value[0], value[1]]))
             .unwrap_or(0);
-        encode_extended_read_mib(mib_id, &*transport, output)
+        encode_read_mib(mib_id, output)
     } else if request_id == ADD_KEY_REQ_ID {
         let status = AddKeyRequest::parse(request_payload)
             .ok()
@@ -439,27 +345,8 @@ unsafe fn dispatch_single_request(
         }
         encode_join_response(status, -160, 200, output)
     } else if request_id == TX_REQ_ID {
-        unsafe {
-            host_tx_diagnostics::trace(
-                0x4854_0004,
-                u32::from(request_if_id)
-                    | (u32::try_from(request_payload.len()).unwrap_or(u32::MAX) << 8),
-                0,
-            );
-        }
         match TxRequest::parse(request_payload) {
             Ok(tx_request) => {
-                unsafe {
-                    let frame_control =
-                        u16::from_le_bytes([tx_request.frame[0], tx_request.frame[1]]);
-                    host_tx_diagnostics::trace(
-                        0x4854_0005,
-                        u32::from(frame_control)
-                            | (u32::try_from(tx_request.frame.len()).unwrap_or(u32::MAX) << 16),
-                        u32::from(tx_request.is_unicast_data())
-                            | (u32::from(tx_request.is_unicast_eapol()) << 1),
-                    );
-                }
                 // A BlockAckReq is a control frame: the management publisher transmits
                 // it as a single frame (with the four FCS octets the MAC requires) and
                 // its class-6 completion returns the host packet id, which hif_startup
@@ -477,13 +364,8 @@ unsafe fn dispatch_single_request(
                     if admitted {
                         publish_response = false;
                         outcome = SingleOutcome::AdmittedTx;
-                        #[cfg(feature = "experimental-cycle-probe")]
-                        crate::cycle_probe::note_admit();
                         Ok(0)
                     } else {
-                        unsafe {
-                            host_tx_diagnostics::trace(0x4854_00e1, packet_id, 0);
-                        }
                         encode_xr819_tx_confirm(packet_id, STATUS_FAILURE, output)
                     }
                 } else if !host_tx_driver.management_runtime_available() {
@@ -517,9 +399,6 @@ unsafe fn dispatch_single_request(
 
     if publish_response && let Ok(length) = response_length {
         let response_id = u16::from_le_bytes([output[2], output[3]]) & 0x1fff;
-        unsafe {
-            host_tx_diagnostics::record_hif_event(2, response_id, length as u8);
-        }
         if response_id & 0x0400 != 0
             && let Some(buffer) = request_buffer.take()
         {

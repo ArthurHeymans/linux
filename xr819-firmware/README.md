@@ -44,42 +44,6 @@ external annotated Ghidra archive are summarized in
 address-labelled decompiler exports are available under
 [`../xr819-decompilation/`](../xr819-decompilation/).
 
-## TX publication execution bisect
-
-Set `XR819_TX_BISECT_STAGE` while building `hif-startup` to stop normal
-management-frame publication at one controlled boundary and return a failed
-WSM TX confirmation instead of touching later hardware state. The confirmation
-retains the WSM packet ID and reports the selected stage in `ack_failures`, so
-Linux's ordinary TX-confirm debug logging is sufficient to observe it.
-
-The boundaries are:
-
-1. TX request parsed, before context preparation;
-2. context and command storage prepared, before publication;
-3. pipe and hardware-ring validation complete;
-4. frame ownership and timestamp initialized;
-5. PAS command built, software slot selected, and hardware GO cleared;
-6. EDCA timing published;
-7. quantum published, immediately before `PIPE_IRQ_TRIGGER`;
-8. immediately after `PIPE_IRQ_TRIGGER`.
-
-For example:
-
-```sh
-XR819_TX_BISECT_STAGE=1 cargo build --release --bin hif-startup \
-  --target thumbv5te-none-eabi -Z build-std=core
-```
-
-Stage zero or an unset variable preserves normal behavior. Start at stage 1
-and advance until the confirmation disappears; the first missing confirmation
-identifies the operation range that stops ordinary HIF progress.
-
-`XR819_TX_BISECT_SUBTYPE` selects the frame class: 0 through 15 select an IEEE
-802.11 subtype, 253 selects protected data, 254 selects non-authentication
-frames, and 255 selects all frames. Protected-data stage 8 returns a clean
-failed confirmation, proving that its current stall begins only after final
-hardware-ring activation.
-
 ## WPA, protected data, and crypto status
 
 The STA path now performs authentication, association, immediate ACK response,
@@ -120,7 +84,7 @@ The ordinary vendor path is now specified end-to-end in
 Implementation has moved away from class-6 context copying: `vendor_host_tx.rs`
 models exact host-context initialization, mode-0 pending-list append, PAS-ring
 compaction/insertion, and pending-task outcomes. HIF requests now carry an
-explicit packet-RAM release token. The normal feature-free firmware admits
+explicit packet-RAM release token. The firmware admits
 ordinary non-EAPOL data into a real host-pool context and retains the original
 request token. It now applies vendor-shaped header
 classification, per-link/TID sequence assignment, target hardware CCMP, VIF-slot
@@ -139,40 +103,11 @@ and class-0 servicing are serialized while either owns the shared MAC runtime.
 ownership as mutually exclusive states, including RESET cancellation. Detached
 HIF requests use an owning `RequestBuffer`, so payload borrows cannot outlive
 the packet-RAM owner, and a single non-copyable `MacEventQueue` capability is
-passed to every MAC-event consumer. The feature-gated scheduler now permits one
-bounded batch on each MAC pipe, with at most two ordinary slots or one depth-two
-aggregate per pipe. The `experimental-four-slot-ordinary` hardware feature
-extends the same pre-GO transaction to the vendor's four ordinary slots; deeper
-single-slot aggregate construction remains unimplemented.
-
-The optional `vendor-host-tx-diagnostics` feature retains the bring-up
-observability without burdening the normal station image. It enables retained stage/frame/descriptor snapshots, HIF request counters,
-bounded WSM debug events, and the latest native retry-feedback words through
-the existing counters MIB. Without the feature, trace writers
-compile to no-ops and the normal counters layout is preserved. Fatal MAC
-exceptions remain available independently because they are part of terminal
-recovery diagnostics rather than the verbose host-TX trace stream.
-
-The temporary `experimental-tx-status-lifecycle` feature replaces that
-build's counters-MIB view with an ordinary-TX correlation report. Word 0 is
-`0x54585037` (`TXP7`); words 1–8 count publication, MAC start, pipe-success,
-accepted status, completion, matching confirmation, slot-identity mismatch,
-and out-of-order stage observations. Words 9–21 form a four-entry ring sampled
-once per 2,048 accepted ordinary completions with a rotating low offset,
-avoiding both pipe/slot aliasing and the successfully drained
-tail bias seen after a saturated flow. Each record carries normalized 12-bit
-separate pre-GO descriptor setup and terminal-command signatures, exact 48-bit CCMP
-packet number, pipe/slot identity, and packed
-start-to-pipe-success plus
-pipe-success-to-status deltas. The PN remains unique
-when the sequence wraps during a sustained flow, while the timings distinguish
-a skipped RF transaction from a full-length transaction followed by false ACK
-status. This feature exists only to match firmware-claimed successes against a
-simultaneous monitor capture. The decoder collects and deduplicates records
-from every counters block in a run rather than reporting only the final
-four-entry ring. It remains backward-compatible with the earlier `TXP6`,
-`TXP5`, `TXP4`, `TXP3`, `TXP2`, `TXPN`, and `TXLC` layouts:
-`tools/decode-tx-status-lifecycle.py < run.log`.
+passed to every MAC-event consumer. The scheduler publishes one bounded FIFO
+cohort of up to four ordinary slots per MAC pipe in a single pre-GO
+transaction and waits for the whole cohort to retire before admitting another.
+A-MPDU aggregation is not implemented; the experimental aggregation bring-up
+and its diagnostics are preserved on the `archive/xr819-experiments` bookmark.
 
 The vendor AES accelerator is mapped at `0x09c5_0000`. Ordinary target CCMP
 uses transfer classes 6/7, commands `0x1100`, `0x1240`, `0x1402/0x1403`, and
@@ -319,8 +254,7 @@ Not yet implemented or production-complete:
   (direct literals and direct field-root expressions are already closed; older
   family-local alias arithmetic remains under audit);
 - controlled degraded-RF fallback and long-duration soak qualification;
-- production promotion of the qualified feature-gated four-slot ordinary path
-  and deeper single-slot A-MPDUs;
+- A-MPDU aggregation;
 - CCMP replay protection;
 - production recovery policy for architected CPU exceptions and unrecoverable
   packet-controller faults.
@@ -343,8 +277,7 @@ check with:
 ./tools/check.sh
 ```
 
-Operational station behavior is feature-free; Cargo features are reserved for
-diagnostics. Build the packed production image with:
+The firmware has no Cargo features. Build the packed production image with:
 
 ```sh
 ./tools/build-ota-image.sh firmware.bin
@@ -378,27 +311,6 @@ uses the reserved DTCM stack at `0x0400c000`. The main image contains no native
 DTCM payload, so section loading cannot overlap active bootstrap frames. Moving
 this stack into staging SRAM was tested separately and rejected after repeated
 TX failures and a lost final ping.
-
-### Split high-SRAM extensions
-
-The validated low Thumb startup occupies exactly `0x7500` downloaded bytes and
-is timing/layout sensitive. `download-boot-low` preserves that low image while
-copying later payload bytes to executable SRAM at `0xfff00000`. It installs a
-low Thumb/ARM veneer at `0x00009720` after vendor SRAM initialization.
-
-Build and package an extension with:
-
-```sh
-cargo +nightly build --release --bin hif-extension-probe \
-    --target armv5te-none-eabi -Z build-std=core
-llvm-objcopy -O binary \
-    target/armv5te-none-eabi/release/hif-extension-probe extension.bin
-./tools/build-split-extension.py stable.bin extension.bin combined.bin
-```
-
-The packaging tool verifies the stable image hash and original startup call
-before applying the four-byte call redirection. It must not be used with an
-arbitrary low image.
 
 ### Packet-RAM ownership
 
@@ -513,15 +425,7 @@ rejects integer-root constants and arithmetic through local aliases. The
 current startup writer matrix,
 access rules, and
 cold/warm snapshot procedure are
-recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md). The optional
-`dtcm-contract-diagnostics` image captures entry, post-platform, and
-post-startup copies of the initialized `0x2078` bytes and publishes them through
-paginated private read-MIB responses. It also reports the firmware-internal warm
-contract comparison through the ordinary startup indication, avoiding MMIO and
-post-startup WSM diagnostics. The entry snapshot is now taken after Rust zeroes the initialized prefix, so
-diagnostic transitions validate reconstruction from the production baseline
-rather than preserving loader bytes. Feature-free firmware has no snapshot
-storage, diagnostic MIB path, or startup-label report.
+recorded in [`dtcm-runtime-contract.md`](dtcm-runtime-contract.md).
 
 The current linked ITCM image ends at `0x000142e8`, leaving about 31 KiB below
 the conservative `0x0001c000` observed envelope. Further decoded CPU-only state
@@ -536,12 +440,6 @@ veneer and validates the terminal exception chain at 224 of each 256-byte mode
 stack. Handwritten assembly helpers use a reported disassembly-prologue
 fallback; reachable recursion or indirect calls fail analysis rather than being
 silently ignored.
-
-An explicit `tcm-size-diagnostic` feature adds ARM interworking helpers for the
-CP15 TCM type and region registers. The registers are read only when the host
-requests diagnostic MIB `0x100c`; normal startup remains unchanged. This is a
-destructive research feature: the XR819 core may not implement the newer TCM
-type-register format, so use it only before a planned power cycle.
 
 ## Fast hardware iteration
 

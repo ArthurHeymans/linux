@@ -50,10 +50,10 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
     0x04000194: 2,
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x04000138): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04000194): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04000194): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac24initialize_tx_pipe_state', 0x04000138): 1,
+    ('_RINvNtCs2QKOjPfuf9x_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x04000138): 1,
+    ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04000194): 1,
+    ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04000194): 1,
+    ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac24initialize_tx_pipe_state', 0x04000138): 1,
 })
 
 

@@ -19,18 +19,6 @@ fn rust_array(name: &str, bytes: &[u8]) -> String {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    for (name, default) in [
-        ("XR819_TX_BISECT_STAGE", "0"),
-        ("XR819_TX_BISECT_SUBTYPE", "255"),
-        ("XR819_DATA_DIAGNOSTIC_LENGTH", "0"),
-        ("XR819_PROBE_WATCHDOG", ""),
-    ] {
-        println!("cargo:rerun-if-env-changed={name}");
-        println!(
-            "cargo:rustc-env={name}={}",
-            env::var(name).unwrap_or_else(|_| default.to_owned())
-        );
-    }
 
     let key = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,

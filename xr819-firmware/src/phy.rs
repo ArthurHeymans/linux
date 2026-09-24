@@ -2023,13 +2023,6 @@ unsafe fn run_vendor_dynamic_mode_calibration() {
     // into the halfword table at 0x04000dd0. The DFT phase seeds and all search
     // steps likewise come directly from the stack image built there.
     let control_configuration = 0x07ff_0110_u32;
-    #[cfg(feature = "dtcm-contract-diagnostics")]
-    let table_value = unsafe {
-        crate::dtcm::rf_mode_halfword_unchecked(12)
-            .cast_mut::<u16>()
-            .read_volatile() as u32
-    };
-    #[cfg(not(feature = "dtcm-contract-diagnostics"))]
     // The Rust image clears the vendor COPY-data DTCM area at reset. Mode 12
     // consumes entry 12 (`0x001c`); zero selects gain 0xc0 instead of 0x70c0
     // and suppresses the dynamic-IQ calibration tone. The DTCM contract image
@@ -2060,24 +2053,6 @@ unsafe fn run_vendor_dynamic_mode_calibration() {
     let mut samples = [0_u32; 64];
     let _ = unsafe { run_vendor_dynamic_iq_hardware_calibration(configuration, &mut samples) };
 
-    #[cfg(feature = "experimental-fixed-iq-correction")]
-    unsafe {
-        // Board-local channel-6 discriminator from two vendor-firmware runtime
-        // dumps. Do not generalize this pair to other boards or channels.
-        let vendor_channel6 = dynamic_iq_correction_plan([-36, -312, 3, -26]);
-        apply_dynamic_iq_correction_plan(vendor_channel6);
-        replicate_dynamic_iq_correction_banks(vendor_channel6);
-    }
-
-    #[cfg(feature = "experimental-fixed-iq-second-pair")]
-    unsafe {
-        // Isolate stage six: preserve the dynamically searched first pair and
-        // replace only the second pair with the stable vendor channel-6 value.
-        let first = unpack_dynamic_iq_pair((0x0abb_8068 as *const u32).read_volatile());
-        let vendor_second = dynamic_iq_correction_plan([first.0, first.1, 3, -26]);
-        apply_dynamic_iq_correction_plan(vendor_second);
-        replicate_dynamic_iq_correction_banks(vendor_second);
-    }
 }
 
 unsafe fn begin_channel_transition(
@@ -3829,153 +3804,6 @@ pub unsafe fn execute_dynamic_iq_hardware_stage(
     }
 }
 
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-const DYNAMIC_IQ_TRACE_HEADER_WORDS: usize = 4;
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-const DYNAMIC_IQ_TRACE_RECORD_WORDS: usize = 12;
-
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-fn dynamic_iq_trace_base() -> *mut u32 {
-    // The typed DTCM research margin is retained no-init storage with no
-    // runtime owner. Reuse its first 640 bytes so the trace is host-readable
-    // after initialization without changing the fixed DTCM layout.
-    crate::dtcm::DTCM_RUNTIME_END.get() as *mut u32
-}
-
-#[cfg(feature = "experimental-dynamic-iq-trace")]
-pub const DYNAMIC_IQ_TRACE_FIRST_MIB: u16 = 0xff80;
-#[cfg(feature = "experimental-dynamic-iq-trace")]
-pub const DYNAMIC_IQ_TRACE_LAST_MIB: u16 = 0xff82;
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-const DYNAMIC_IQ_TRACE_PAGE_BYTES: usize = 320;
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-const DYNAMIC_IQ_TRACE_SAMPLE_BYTES: usize = 316;
-
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-pub unsafe fn write_dynamic_iq_trace_mib(mib_id: u16, output: &mut [u8]) -> Option<usize> {
-    let page = mib_id.checked_sub(DYNAMIC_IQ_TRACE_FIRST_MIB)? as usize;
-    if page > usize::from(DYNAMIC_IQ_TRACE_LAST_MIB - DYNAMIC_IQ_TRACE_FIRST_MIB) {
-        return None;
-    }
-    let length = if mib_id == DYNAMIC_IQ_TRACE_LAST_MIB {
-        DYNAMIC_IQ_TRACE_SAMPLE_BYTES
-    } else {
-        DYNAMIC_IQ_TRACE_PAGE_BYTES
-    };
-    if output.len() < length {
-        return None;
-    }
-    let source = unsafe {
-        dynamic_iq_trace_base()
-            .cast::<u8>()
-            .add(page * DYNAMIC_IQ_TRACE_PAGE_BYTES)
-    };
-    for (index, byte) in output[..length].iter_mut().enumerate() {
-        *byte = unsafe { source.add(index).read_volatile() };
-    }
-    Some(length)
-}
-
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-unsafe fn record_dynamic_iq_analog_trace(
-    configuration: DynamicIqHardwareCalibrationConfiguration,
-    synth_register: u32,
-    snapshot: &DynamicIqBandRegisterSnapshot,
-) {
-    let base = unsafe { dynamic_iq_trace_base().add(224) };
-    let words = [
-        0x414e_4c47, // "ANLG"
-        configuration.table_value,
-        synth_register,
-        configuration.calibration_command as u32,
-        snapshot.abc00b4,
-        unsafe { (0x0abc_0020 as *const u32).read_volatile() },
-        unsafe { (0x0abc_0030 as *const u32).read_volatile() },
-        unsafe { (0x0abb_801c as *const u32).read_volatile() },
-        unsafe { (0x0abc_00b4 as *const u32).read_volatile() },
-        unsafe { (0x0abb_8004 as *const u32).read_volatile() },
-        unsafe { (0x0abb_805c as *const u32).read_volatile() },
-        unsafe { (0x0abb_8060 as *const u32).read_volatile() },
-        unsafe { (0x0abb_8064 as *const u32).read_volatile() },
-        unsafe { (0x0abb_81a4 as *const u32).read_volatile() },
-        unsafe { (0x0abb_81a8 as *const u32).read_volatile() },
-    ];
-    for (index, word) in words.into_iter().enumerate() {
-        unsafe { base.add(index).write_volatile(word) };
-    }
-}
-
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-unsafe fn reset_dynamic_iq_trace(pass_count: u32) {
-    let base = dynamic_iq_trace_base();
-    let word_count = DYNAMIC_IQ_TRACE_HEADER_WORDS + 13 * DYNAMIC_IQ_TRACE_RECORD_WORDS;
-    for index in 0..word_count {
-        unsafe { base.add(index).write_volatile(0) };
-    }
-    unsafe {
-        base.write_volatile(0x4951_5452); // "IQTR"
-        base.add(1).write_volatile(2);
-        base.add(2).write_volatile(pass_count);
-        base.add(3)
-            .write_volatile(DYNAMIC_IQ_TRACE_RECORD_WORDS as u32);
-    }
-}
-
-#[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-unsafe fn record_dynamic_iq_trace(
-    pass_index: u32,
-    pass_count: u32,
-    stage: u8,
-    candidate: [i32; 4],
-    control: DynamicIqStageControl,
-    result: DynamicIqHardwareStageResult,
-    samples: &[u32; 64],
-) {
-    if pass_index + 1 != pass_count {
-        return;
-    }
-    let record_index = usize::from(stage);
-    let base = unsafe {
-        dynamic_iq_trace_base().add(
-            DYNAMIC_IQ_TRACE_HEADER_WORDS + record_index * DYNAMIC_IQ_TRACE_RECORD_WORDS,
-        )
-    };
-    let pack = |value: DynamicIqCorrelation| {
-        u32::from(value.real as u16) | (u32::from(value.imaginary as u16) << 16)
-    };
-    let checksum = samples.iter().fold(0_u32, |sum, value| {
-        sum.rotate_left(5).wrapping_add(*value)
-    });
-    let words = [
-        pass_index.wrapping_shl(8) | u32::from(stage),
-        control.hardware,
-        control.correlation,
-        candidate[0] as u32,
-        candidate[1] as u32,
-        candidate[2] as u32,
-        candidate[3] as u32,
-        pack(result.measurement.first),
-        pack(result.measurement.second),
-        pack(result.measurement.third),
-        u32::from(result.capture_ready),
-        checksum,
-    ];
-    for (index, word) in words.into_iter().enumerate() {
-        unsafe { base.add(index).write_volatile(word) };
-    }
-    if stage == 1 {
-        let sample_base = unsafe {
-            dynamic_iq_trace_base()
-                .cast::<u8>()
-                .add(2 * DYNAMIC_IQ_TRACE_PAGE_BYTES)
-                .cast::<u32>()
-        };
-        for (index, sample) in samples.iter().enumerate() {
-            unsafe { sample_base.add(index).write_volatile(*sample) };
-        }
-    }
-}
-
 /// Connect the pass/dispatcher state machine to the detached MMIO acquisition
 /// path. Readiness timeouts are accumulated for diagnostics but retain vendor
 /// behavior by allowing every pass to continue with the copied sample window.
@@ -3996,12 +3824,6 @@ pub unsafe fn run_dynamic_iq_hardware_search(
     dft_configuration: DynamicIqDftConfiguration,
     samples: &mut [u32; 64],
 ) -> DynamicIqHardwareSearchResult {
-    #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-    let pass_count = dynamic_iq_search_pass_count(requested_passes, configuration_flags);
-    #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-    unsafe {
-        reset_dynamic_iq_trace(pass_count);
-    }
     let mut all_captures_ready = true;
     let search = run_dynamic_iq_averaged_search(
         initial,
@@ -4021,18 +3843,6 @@ pub unsafe fn run_dynamic_iq_hardware_search(
             let result = unsafe {
                 execute_dynamic_iq_hardware_stage(candidate, execution, control, stage_dft, samples)
             };
-            #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-            unsafe {
-                record_dynamic_iq_trace(
-                    pass_index,
-                    pass_count,
-                    stage,
-                    candidate,
-                    control,
-                    result,
-                    samples,
-                );
-            }
             all_captures_ready &= result.capture_ready;
             Some(result.measurement)
         },
@@ -4106,10 +3916,6 @@ pub unsafe fn run_dynamic_iq_hardware_calibration(
             configuration.calibration_command,
         )
     };
-    #[cfg(all(feature = "experimental-dynamic-iq-trace", target_arch = "arm"))]
-    unsafe {
-        record_dynamic_iq_analog_trace(configuration, synth_register, &snapshot);
-    }
     let first_saved = unpack_dynamic_iq_pair(snapshot.abb8068);
     let second_saved = unpack_dynamic_iq_pair(snapshot.abb80a8);
     let saved_values = [first_saved.0, first_saved.1, second_saved.0, second_saved.1];

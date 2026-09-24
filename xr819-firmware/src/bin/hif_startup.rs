@@ -6,10 +6,9 @@ use core::cell::UnsafeCell;
 use core::mem::{MaybeUninit, size_of};
 use core::panic::PanicInfo;
 use xr819_firmware::command::{
-    ENABLE_SINGLE_PROBE_EXPERIMENT, encode_debug_event, service_one as service_one_command,
+    ENABLE_SINGLE_PROBE_EXPERIMENT, service_one as service_one_command,
 };
 use xr819_firmware::configuration;
-use xr819_firmware::cycle_probe;
 use xr819_firmware::hif::{HifQueues, HifRingState, SHARED_BUFFER_SIZE, Transport};
 use xr819_firmware::mac;
 use xr819_firmware::mac_domain::MacDomain;
@@ -28,9 +27,9 @@ use xr819_firmware::vif;
 use xr819_firmware::wsm::{
     StartupIndication, encode_join_complete_indication, encode_scan_complete_indication,
     encode_xr819_multi_tx_confirm_header, encode_xr819_tx_confirm_details,
-    encode_xr819_tx_confirm_retry_details, encode_xr819_tx_confirm_retry_entry,
+    encode_xr819_tx_confirm_retry_entry,
 };
-use xr819_firmware::{host_tx_diagnostics, host_tx_driver::HostTxDriver};
+use xr819_firmware::host_tx_driver::HostTxDriver;
 
 /// Const-initialized storage taken once by the single reset-time owner.
 ///
@@ -73,7 +72,6 @@ struct Firmware {
     pending_scan_completion: Option<scan::ScanCompletion>,
     pending_join_complete: Option<u32>,
     pending_tx_confirmation: Option<(u32, u32, u8, u8)>,
-    pending_tx_debug_event: Option<(u32, u32)>,
     #[cfg(target_arch = "arm")]
     last_watchdog_tick: u32,
     #[cfg(target_arch = "arm")]
@@ -97,7 +95,6 @@ impl Firmware {
             pending_scan_completion: None,
             pending_join_complete: None,
             pending_tx_confirmation: None,
-            pending_tx_debug_event: None,
             #[cfg(target_arch = "arm")]
             last_watchdog_tick: 0,
             #[cfg(target_arch = "arm")]
@@ -106,7 +103,6 @@ impl Firmware {
     }
 }
 
-#[cfg(feature = "fast-loop")]
 fn publish_coalesced_host_tx_confirmations(firmware: &mut Firmware, host_request_waiting: bool) {
     const MAX_CONFIRMATIONS: usize = 4;
     if host_request_waiting || !firmware.transport.response_available() {
@@ -140,19 +136,9 @@ fn publish_coalesced_host_tx_confirmations(firmware: &mut Firmware, host_request
         {
             return;
         }
-        unsafe {
-            host_tx_diagnostics::capture_confirmation_identity(
-                confirmation.packet_id,
-                confirmation.context,
-                confirmation.status,
-                confirmation.ack_failures,
-            );
-        }
         let Some(release) = (unsafe { firmware.host_tx_driver.finish_confirmation() }) else {
             return;
         };
-        #[cfg(feature = "experimental-cycle-probe")]
-        cycle_probe::note_confirm();
         if first_release.is_none() {
             first_release = Some(release);
         } else {
@@ -347,19 +333,7 @@ extern "C" fn rust_main() -> ! {
         clear_rust_bss();
         xr819_firmware::dtcm::zero_initialized_data();
     }
-    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-    unsafe {
-        xr819_firmware::dtcm::capture_initialized_image_snapshot(
-            xr819_firmware::dtcm::SnapshotStage::Entry,
-        )
-    };
     initialize_runtime_state();
-    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-    unsafe {
-        xr819_firmware::dtcm::capture_initialized_image_snapshot(
-            xr819_firmware::dtcm::SnapshotStage::Platform,
-        )
-    };
     if !wait_for_host_download_completion(10_000_000) {
         loop {
             core::hint::spin_loop();
@@ -419,25 +393,10 @@ extern "C" fn rust_main() -> ! {
         // Vendor `0x5a8` initializes this pool only after `0x14c` returns.
         xr819_firmware::tx::initialize_internal_pool();
     }
-    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-    unsafe {
-        xr819_firmware::dtcm::capture_initialized_image_snapshot(
-            xr819_firmware::dtcm::SnapshotStage::Startup,
-        )
-    };
     // Vendor `0xc80` is the final hardware-visible step before `0x158fc`.
     enable_packet_controller();
     debug_stop(9, 0x5354_4709);
 
-    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-    let mut startup_label_storage = [0u8; 128];
-    #[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-    let startup_label: &[u8] = {
-        let length =
-            unsafe { xr819_firmware::dtcm::write_warm_snapshot_report(&mut startup_label_storage) };
-        &startup_label_storage[..length]
-    };
-    #[cfg(not(all(feature = "dtcm-contract-diagnostics", target_arch = "arm")))]
     let startup_label: &[u8] = b"XR819 open Rust native";
 
     let buffer = unsafe { transport.output_buffer() };
@@ -485,16 +444,8 @@ extern "C" fn rust_main() -> ! {
     // the rate from the counter delta between harness samples. An increment is
     // nearly free where an MMIO read is not.
     loop {
-        #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-        unsafe {
-            xr819_firmware::hif::validate_tx_boundary(0x20, 0xff, 0xff, 0, 0);
-        }
         let _ = service_masked_packet_dma_interrupt();
         let _ = firmware.transport.service_interrupt();
-        #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-        unsafe {
-            xr819_firmware::hif::validate_tx_boundary(0x21, 0xff, 0xff, 0, 0);
-        }
         // Vendor runs a 200 ms timer (`FUN_00003bac`) that decrements each
         // programmed pipe's watchdog byte and recovers a pipe that has stayed
         // armed without completing. Without it an armed pipe is unrecoverable:
@@ -525,19 +476,12 @@ extern "C" fn rust_main() -> ! {
         // TX confirmations to starve the command lane.
         let host_request_waiting = firmware.transport.request_available();
 
-        if let Some(event) = unsafe {
+        unsafe {
             firmware.host_tx_driver.service(
                 &mut firmware.mac_events,
                 &mut firmware.mac_domain,
                 !tx::host_management_runtime_active(),
-                firmware.pending_tx_debug_event.is_none(),
-            )
-        } {
-            firmware.pending_tx_debug_event = Some(event);
-        }
-        #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-        unsafe {
-            xr819_firmware::hif::validate_tx_boundary(0x22, 0xff, 0xff, 0, 0);
+            );
         }
 
         let management_runtime_available = firmware.host_tx_driver.management_runtime_available();
@@ -552,17 +496,6 @@ extern "C" fn rust_main() -> ! {
             } = unsafe { tx::service_host_management_tx(&mut firmware.mac_events, None, 32) }
         {
             firmware.pending_tx_confirmation = Some((packet_id, status, tx_rate, ack_failures));
-        }
-
-        if let Some((event_id, data)) = firmware.pending_tx_debug_event
-            && !host_request_waiting
-            && firmware.transport.output_available()
-        {
-            let output = unsafe { firmware.transport.output_buffer() };
-            if let Some(length) = encode_debug_event(event_id, data, output) {
-                firmware.pending_tx_debug_event = None;
-                firmware.transport.publish(length as u16);
-            }
         }
 
         if let Some(status) = firmware.pending_join_complete
@@ -586,54 +519,10 @@ extern "C" fn rust_main() -> ! {
             if let Ok(length) = encoded {
                 firmware.pending_tx_confirmation = None;
                 firmware.transport.publish(length as u16);
-                #[cfg(feature = "experimental-cycle-probe")]
-                cycle_probe::note_confirm();
             }
         }
 
-        #[cfg(feature = "fast-loop")]
         publish_coalesced_host_tx_confirmations(&mut firmware, host_request_waiting);
-
-        #[cfg(not(feature = "fast-loop"))]
-        if let Some(confirmation) = firmware.host_tx_driver.confirmation()
-            && !host_request_waiting
-            && firmware.transport.response_available()
-        {
-            let encoded = encode_xr819_tx_confirm_retry_details(
-                confirmation.packet_id,
-                confirmation.status,
-                confirmation.tx_rate,
-                confirmation.ack_failures,
-                confirmation.flags,
-                confirmation.rate_try,
-                &mut *firmware.response_scratch,
-            );
-            if encoded.is_ok() {
-                unsafe {
-                    host_tx_diagnostics::capture_confirmation_identity(
-                        confirmation.packet_id,
-                        confirmation.context,
-                        confirmation.status,
-                        confirmation.ack_failures,
-                    );
-                }
-            }
-            if let Ok(length) = encoded
-                && let Some(release) = unsafe { firmware.host_tx_driver.finish_confirmation() }
-            {
-                #[cfg(feature = "experimental-cycle-probe")]
-                cycle_probe::note_confirm();
-                unsafe {
-                    firmware.transport.publish_request_in_place(
-                        release,
-                        &firmware.response_scratch[..length],
-                        length as u16,
-                    );
-                }
-            }
-        } else if firmware.host_tx_driver.confirmation().is_some() {
-            unsafe { host_tx_diagnostics::trace(0x4854_4000, 0, 0) };
-        }
 
         // Retain completion until a HIF descriptor is available. This prevents
         // a full ring from overwriting an unreclaimed zero-copy RX token.
@@ -709,18 +598,6 @@ extern "C" fn rust_main() -> ! {
             }
         }
 
-        #[cfg(feature = "experimental-rx-path-diagnostics")]
-        if scan::active_interface().is_none()
-            && vif::active_interface().is_some()
-            && (host_request_waiting || firmware.pending_scan_completion.is_some())
-        {
-            radio::observe_joined_rx_opportunity(
-                host_request_waiting,
-                firmware.pending_scan_completion.is_some(),
-                false,
-            );
-        }
-
         // Control indications and inbound host requests take priority over RX.
         // Otherwise a steady joined RX stream can consume the last firmware-to-
         // host descriptor every pass, preventing `poll_request()` from ever
@@ -738,8 +615,6 @@ extern "C" fn rust_main() -> ! {
             } else if let Some(if_id) = vif::active_interface() {
                 let channel = vif::snapshot(if_id).map(|state| state.channel).unwrap_or(0);
                 let publication_available = firmware.transport.publication_available();
-                #[cfg(feature = "experimental-rx-path-diagnostics")]
-                radio::observe_joined_rx_opportunity(false, false, publication_available);
                 if publication_available
                     && let Some(indication) =
                         unsafe { radio::poll_joined_indication(if_id, channel) }

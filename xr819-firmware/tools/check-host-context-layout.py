@@ -49,19 +49,13 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {
-        0x04005A24: 1,
-        0x040083D4: 1,
-        0x040087B0: 3,
-    }
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04005A24: 1, 0x040083D4: 1, 0x040087B0: 3})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04005A24): 1,
-        ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040083D4): 1,
-        ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040087B0): 8,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx17free_host_context', 0x040087B0): 1,
+        ('_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x04005A24): 1,
+        ('_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040083D4): 1,
+        ('_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040087B0): 7,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx17free_host_context', 0x040087B0): 1,
     }
 )
 

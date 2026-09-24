@@ -60,14 +60,12 @@ FORBIDDEN_FORMS = (
 # Scoping selective-retry and partial-BlockAck state by exact pipe/slot perturbs
 # the shared inactive-runtime helper and adds one reviewed decoded access to the
 # existing power-save timer anchor at `0x04009608`.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x040094FE: 2, 0x04009504: 2, 0x04009608: 1}
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x040094FE: 2, 0x04009504: 2, 0x04009608: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x040094FE): 2,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009504): 2,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009608): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x040094FE): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009504): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04009608): 1,
     }
 )
 

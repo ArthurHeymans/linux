@@ -169,62 +169,9 @@ const TX_TRACE_PHASE2: u32 = 1 << 5;
 const TX_TRACE_START: u32 = 1 << 6;
 const TX_TRACE_PHY2: u32 = 1 << 7;
 const TX_TRACE_SUCCESS: u32 = 1 << 8;
-const TX_PUBLICATION_BISECT_STAGE: u8 = env!("XR819_TX_BISECT_STAGE").as_bytes()[0] - b'0';
-const TX_PUBLICATION_BISECT_SUBTYPE: u8 = parse_decimal_u8(env!("XR819_TX_BISECT_SUBTYPE"));
-const DATA_DIAGNOSTIC_LENGTH: usize =
-    parse_decimal_u16(env!("XR819_DATA_DIAGNOSTIC_LENGTH")) as usize;
 #[cfg(target_arch = "arm")]
 const MAC_FATAL_MAGIC: u32 = 0x5852_4651;
 
-const fn parse_decimal_u8(value: &str) -> u8 {
-    parse_decimal_u16(value) as u8
-}
-
-const fn parse_decimal_u16(value: &str) -> u16 {
-    let bytes = value.as_bytes();
-    let mut result = 0_u16;
-    let mut index = 0;
-    while index < bytes.len() {
-        result = result * 10 + (bytes[index] - b'0') as u16;
-        index += 1;
-    }
-    result
-}
-
-const fn publication_bisect_matches(configured: u8, reached: u8) -> bool {
-    configured != 0 && configured == reached
-}
-
-struct SharedPublicationBisectStage(UnsafeCell<u8>);
-
-unsafe impl Sync for SharedPublicationBisectStage {}
-
-static ACTIVE_PUBLICATION_BISECT_STAGE: SharedPublicationBisectStage =
-    SharedPublicationBisectStage(UnsafeCell::new(0));
-
-fn select_publication_bisect(frame: &[u8]) {
-    let frame_control = frame
-        .get(..2)
-        .map(|value| u16::from_le_bytes([value[0], value[1]]))
-        .unwrap_or(0);
-    let subtype = (frame_control >> 4) as u8 & 0x0f;
-    let protected_data = frame_control & 0x400c == 0x4008;
-    let stage = if TX_PUBLICATION_BISECT_SUBTYPE == 0xff
-        || (TX_PUBLICATION_BISECT_SUBTYPE == 0xfe && subtype != 11)
-        || (TX_PUBLICATION_BISECT_SUBTYPE == 0xfd && protected_data)
-        || TX_PUBLICATION_BISECT_SUBTYPE == subtype
-    {
-        TX_PUBLICATION_BISECT_STAGE
-    } else {
-        0
-    };
-    unsafe { *ACTIVE_PUBLICATION_BISECT_STAGE.0.get() = stage };
-}
-
-fn publication_bisect_reached(reached: u8) -> bool {
-    let configured = unsafe { *ACTIVE_PUBLICATION_BISECT_STAGE.0.get() };
-    publication_bisect_matches(configured, reached)
-}
 const MAC_BEACON_TIMER: u32 = crate::platform::mac_register(0x0e00) as u32;
 
 unsafe fn read_u8(address: usize) -> u8 {
@@ -421,11 +368,8 @@ pub const fn host_class0_is_requeue(completion: HostClass0Completion) -> bool {
 
 /// One service pass can retire the configured ordinary batch depth on each of
 /// four MAC pipes before the host driver starts draining copied identities.
-#[cfg(feature = "four-slot-ordinary")]
 const HOST_CLASS0_COMPLETION_CAPACITY: usize =
     4 * crate::host_tx_policy::MAX_ORDINARY_BATCH_DEPTH;
-#[cfg(not(feature = "four-slot-ordinary"))]
-const HOST_CLASS0_COMPLETION_CAPACITY: usize = 4 * 2;
 
 struct BoundedCompletionQueue<T, const N: usize> {
     entries: [Option<T>; N],
@@ -593,42 +537,6 @@ static TX_DEBUG_SNAPSHOT: SharedTxDebugSnapshot =
 
 struct SharedTxExecTrace(UnsafeCell<[u32; 12]>);
 unsafe impl Sync for SharedTxExecTrace {}
-
-/// Instrumentation for the host-management publication handoff, which has no
-/// other live observable: how many publications armed, how many stopped at a
-/// bisect stage and the last stage seen, how many completions arrived with the
-/// last status, and how many service polls found none.
-struct SharedManagementTrace(UnsafeCell<[u32; 7]>);
-
-unsafe impl Sync for SharedManagementTrace {}
-
-#[cfg(target_arch = "arm")]
-static MANAGEMENT_TRACE: SharedManagementTrace = SharedManagementTrace(UnsafeCell::new([0; 7]));
-
-#[cfg(target_arch = "arm")]
-unsafe fn management_trace_bump(index: usize) {
-    unsafe {
-        let cell = &mut (*MANAGEMENT_TRACE.0.get());
-        if let Some(word) = cell.get_mut(index) {
-            *word = word.wrapping_add(1);
-        }
-    }
-}
-
-#[cfg(target_arch = "arm")]
-unsafe fn management_trace_set(index: usize, value: u32) {
-    unsafe {
-        if let Some(word) = (*MANAGEMENT_TRACE.0.get()).get_mut(index) {
-            *word = value;
-        }
-    }
-}
-
-#[cfg(not(target_arch = "arm"))]
-unsafe fn management_trace_bump(_index: usize) {}
-
-#[cfg(not(target_arch = "arm"))]
-unsafe fn management_trace_set(_index: usize, _value: u32) {}
 
 static TX_EXEC_TRACE: SharedTxExecTrace = SharedTxExecTrace(UnsafeCell::new([0; 12]));
 
@@ -1756,47 +1664,8 @@ impl TxDescriptorAddress {
     const fn word_unchecked(self, index: u32) -> u32 { self.0.wrapping_add(index * 4) }
 }
 
-
-/// Parse `XR819_PROBE_WATCHDOG` at build time; anything that is not a decimal
-/// value below 128 falls back to the production reload of 5.
-#[cfg(feature = "experimental-cycle-probe")]
-const fn probe_watchdog_value(value: Option<&str>) -> u8 {
-    let Some(value) = value else { return 5 };
-    let bytes = value.as_bytes();
-    if bytes.is_empty() {
-        return 5;
-    }
-    let mut parsed = 0_u16;
-    let mut index = 0;
-    while index < bytes.len() {
-        let digit = bytes[index];
-        if digit < b'0' || digit > b'9' {
-            return 5;
-        }
-        parsed = parsed * 10 + (digit - b'0') as u16;
-        if parsed > 127 {
-            return 5;
-        }
-        index += 1;
-    }
-    parsed as u8
-}
-
-/// Per-pipe watchdog reload the firmware writes at GO. The probe may override
-/// it at build time (`XR819_PROBE_WATCHDOG`) to test whether completion
-/// reporting is gated by the MAC's watchdog countdown; production always
-/// reloads 5.
-#[inline(always)]
-const fn watchdog_reload() -> u8 {
-    #[cfg(feature = "experimental-cycle-probe")]
-    {
-        probe_watchdog_value(option_env!("XR819_PROBE_WATCHDOG"))
-    }
-    #[cfg(not(feature = "experimental-cycle-probe"))]
-    {
-        5
-    }
-}
+/// Per-pipe watchdog reload the firmware writes at GO.
+const PIPE_WATCHDOG_RELOAD: u8 = 5;
 
 fn pipe_record_address(pipe: u8) -> crate::dtcm::MacPipeRecordAddress {
     crate::dtcm::MacPipeRecordAddress::from_index_unchecked(usize::from(pipe & 3))
@@ -1906,70 +1775,6 @@ pub fn pipe_cursor_diagnostic<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u
         | (((ring_word >> 24) & 7) << 20)
         | (((ring_word >> 27) & 7) << 24);
     (packed, ring_word)
-}
-
-#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
-unsafe fn capture_status2_ownership(
-    event: MacEvent,
-    saved_scheduler_word: SchedulerWord,
-    mismatch_count: u8,
-    phase: u32,
-) {
-    let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) } & 3;
-    let pipe_state = pipe_state_address(pipe) as usize;
-    let slot_index = unsafe { read_u8(pipe_state + 2) };
-    let slot = (slot_index < 4)
-        .then_some(pipe_state + 0x0c + usize::from(slot_index) * 0x18)
-        .unwrap_or(0);
-    let slot_word = |offset: usize| {
-        if slot != 0 {
-            unsafe { read_u32(slot + offset) }
-        } else {
-            0
-        }
-    };
-    let command = slot_word(0x14) as usize;
-    let hardware_ring = unsafe { read_u32(pipe_state + 8) } as usize;
-    let diagnostic_pointer_word = |address: usize, offset: usize| {
-        let Some(word) = address.checked_add(offset) else { return 0 };
-        if packet_ram::contains_owned_range(word, core::mem::size_of::<u32>()) {
-            unsafe { read_u32(word) }
-        } else {
-            0
-        }
-    };
-    let (completion_consumer, completion_producer) = unsafe { COMPLETION_RING.cursors() };
-    let words = [
-        event.raw,
-        saved_scheduler_word.raw(),
-        phase << 24 | u32::from(mismatch_count) << 8 | u32::from(pipe),
-        unsafe { read_u32(crate::dtcm::MAC_CURRENT_SLOT.get()) },
-        pipe_state as u32,
-        unsafe { read_u32(pipe_state) },
-        unsafe { read_u32(pipe_state + 4) },
-        slot as u32,
-        slot_word(0),
-        slot_word(8),
-        slot_word(0x0c),
-        command as u32,
-        hardware_ring as u32,
-        diagnostic_pointer_word(hardware_ring, 0),
-        diagnostic_pointer_word(hardware_ring, 0x14),
-        diagnostic_pointer_word(command, 0),
-        diagnostic_pointer_word(command, 4),
-        diagnostic_pointer_word(command, 8),
-        diagnostic_pointer_word(command, 0x14),
-        diagnostic_pointer_word(command, 0x18),
-        diagnostic_pointer_word(command, 0x1c),
-        u32::from(unsafe { read_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get()) }),
-        u32::from(unsafe { read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()) }),
-        u32::from(unsafe { active_pas_contexts() }),
-        completion_consumer,
-        completion_producer,
-        unsafe { read_u32(PIPE_IRQ_PENDING as usize) },
-        unsafe { read_u32(MAC_EVENT_READINESS as usize) },
-    ];
-    unsafe { crate::host_tx_diagnostics::record_status2_snapshot(phase, &words) };
 }
 
 fn current_slot<M: MacPipeMmio>(
@@ -2207,10 +2012,6 @@ pub unsafe fn enter_mac_fatal_quiescence(
     unsafe { core::ptr::addr_of_mut!((*record).valid).write_volatile(MAC_FATAL_MAGIC) };
     unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
     unsafe {
-        crate::host_tx_diagnostics::freeze_status2_snapshots();
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        let rx = crate::radio::fatal_command_snapshot();
-        #[cfg(not(feature = "vendor-host-tx-diagnostics"))]
         let rx = [0_u32; 11];
         // The vendor traces the raw event before treating bit 30 as terminal.
         // Capture the still-live RX producer delta at that same boundary so a
@@ -2368,63 +2169,6 @@ pub fn plan_ordinary_tx_pipe_status(
     }
 }
 
-/// Sticky record of the last refused TX status on an armed pipe, plus how many
-/// were refused. Read back through the cursor-divergence report, because the
-/// counters MIB stops answering once the pipe wedges.
-#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
-struct IneligibleTxStatus {
-    count: core::cell::UnsafeCell<u32>,
-    last: core::cell::UnsafeCell<u32>,
-    seen: core::cell::UnsafeCell<u32>,
-}
-
-#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
-unsafe impl Sync for IneligibleTxStatus {}
-
-#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
-static INELIGIBLE_TX_STATUS: IneligibleTxStatus = IneligibleTxStatus {
-    count: core::cell::UnsafeCell::new(0),
-    last: core::cell::UnsafeCell::new(0),
-    seen: core::cell::UnsafeCell::new(0),
-};
-
-#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
-fn record_ineligible_tx_status(input: OrdinaryTxPipeStatusInput, status: u8) {
-    unsafe {
-        crate::host_tx_diagnostics::capture_retry_status_ineligible(
-            status,
-            input.pipe_active,
-            input.expected_status,
-            input.slot_state,
-            input.slot_kind,
-        );
-        let count = INELIGIBLE_TX_STATUS.count.get();
-        count.write_volatile(count.read_volatile().wrapping_add(1));
-        INELIGIBLE_TX_STATUS.last.get().write_volatile(
-            u32::from(status)
-                | (u32::from(input.expected_status) << 8)
-                | (u32::from(input.slot_state) << 16)
-                | (u32::from(input.slot_kind) << 24),
-        );
-        // Bitmap of every distinct status value the MAC has delivered, so a
-        // single report shows whether `expected_status` was ever offered.
-        let seen = INELIGIBLE_TX_STATUS.seen.get();
-        seen.write_volatile(seen.read_volatile() | (1_u32 << (status & 0x1f)));
-    }
-}
-
-/// `(refused count, last refused word, delivered-status bitmap)`.
-#[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
-pub(crate) fn ineligible_tx_status_snapshot() -> (u32, u32, u32) {
-    unsafe {
-        (
-            INELIGIBLE_TX_STATUS.count.get().read_volatile(),
-            INELIGIBLE_TX_STATUS.last.get().read_volatile(),
-            INELIGIBLE_TX_STATUS.seen.get().read_volatile(),
-        )
-    }
-}
-
 const fn aggregate_retry_command_owned(slot_kind: u8, slot_state: u8) -> bool {
     slot_kind == 1 && slot_state == 4
 }
@@ -2518,7 +2262,6 @@ unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
         let Some(slot) = RetirableTxSlot::from_pipe_slot(pipe, slot) else {
             crate::halt_always!();
         };
-        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::RETIRED);
         let aggregate = match slot {
             RetirableTxSlot::Empty(_) => false,
             RetirableTxSlot::Live(slot) => {
@@ -2535,9 +2278,6 @@ unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
             }
         }
         if aggregate {
-            crate::host_tx_diagnostics::record_ampdu_outcome(
-                crate::host_tx_diagnostics::ampdu_outcome::RETIRED_UNMATCHED,
-            );
             write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
         }
         match cursor {
@@ -2549,7 +2289,7 @@ unsafe fn retire_unmatched_tx_slot<B: TxStatusPolicy>(
                 write_u8(record.producer_slot().get(), next_head);
                 write_u8(record.state().get(), 0);
                 write_u8(record.control().get(), 0);
-                write_u8(record.watchdog().get(), watchdog_reload());
+                write_u8(record.watchdog().get(), PIPE_WATCHDOG_RELOAD);
             }
         }
     }
@@ -2620,8 +2360,6 @@ pub const fn plan_pipe_watchdog(programmed: bool, armed: bool, counter: i8) -> P
 #[cfg(target_arch = "arm")]
 pub unsafe fn service_pipe_watchdog_tick_runtime() {
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
-    #[cfg(feature = "experimental-depth-four-ampdu")]
-    let _ = unsafe { service_expired_partial_block_ack_retry(&mut runtime.backend) };
     unsafe { service_pipe_watchdog_tick(&mut runtime.backend) };
 }
 
@@ -2653,14 +2391,11 @@ pub unsafe fn service_pipe_watchdog_tick<B: TxStatusPolicy>(backend: &mut B) {
                         },
                         Err(()) => crate::halt_always!(),
                     };
-                    crate::host_tx_diagnostics::bump(
-                        crate::host_tx_diagnostics::counter::WATCHDOG_RECOVERED,
-                    );
                     retire_unmatched_tx_slot(pipe, current, cursor, backend);
                     // Vendor `txp_fn_4155` clears the programmed/abort bits and
                     // reloads the counter after a recovery pass.
                     write_u8(record.control().get(), read_u8(record.control().get()) & 0xf6);
-                    write_u8(record.watchdog().get(), watchdog_reload());
+                    write_u8(record.watchdog().get(), PIPE_WATCHDOG_RELOAD);
                 }
             }
         }
@@ -2731,28 +2466,8 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
             pipe_last: read_u8(record.last_slot().get()),
             pipe_status: read_u8(record.watchdog().get()),
         };
-        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::STATUS);
-        crate::host_tx_diagnostics::observe(
-            crate::host_tx_diagnostics::counter::LAST_STATUS,
-            u32::from(status),
-        );
-        crate::host_tx_diagnostics::observe(
-            crate::host_tx_diagnostics::counter::LAST_EXPECTED,
-            u32::from(input.expected_status),
-        );
         let plan = plan_ordinary_tx_pipe_status(input, status);
         if matches!(plan, OrdinaryTxPipeStatusPlan::Ineligible) {
-            crate::host_tx_diagnostics::bump(
-                crate::host_tx_diagnostics::counter::STATUS_INELIGIBLE,
-            );
-            // An armed pipe that keeps rejecting statuses never retires its
-            // slot, so record why the gate refused. `expected_status` is the
-            // slot's `frame + 0x56` byte; the pipe stalls when no delivered
-            // status ever equals it.
-            #[cfg(all(target_arch = "arm", feature = "vendor-host-tx-diagnostics"))]
-            if input.pipe_active {
-                record_ineligible_tx_status(input, status);
-            }
             return;
         }
 
@@ -2782,7 +2497,6 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                 initialize_pipe_status,
                 cursor,
             } => {
-                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::COMPLETED);
                 if initialize_pipe_status {
                     write_u8(record.watchdog().get(), 1);
                 }
@@ -2798,26 +2512,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                 let pas_address = pas as usize;
                 write_u32(pas_address + 0x2c, read_u32(pas_address + 0x2c) | 0x200);
                 let frame_node = FrameNodeAddress::new(pas);
-                let context = frame_node.context();
-                if context.host().is_some() {
-                    crate::host_tx_diagnostics::capture_tx_status_accepted(
-                        context.raw(),
-                        pipe,
-                        current,
-                        status,
-                        input.expected_status,
-                        input.slot_kind,
-                        input.slot_state,
-                    );
-                }
                 backend.complete_ordinary_status(pipe, frame_node, slot.raw());
-                if context.host().is_some() {
-                    crate::host_tx_diagnostics::capture_tx_ordinary_completed(
-                        context.raw(),
-                        pipe,
-                        current,
-                    );
-                }
                 match cursor {
                     OrdinaryTxPipeCursorPlan::AdvanceCurrent { next_current } => {
                         write_u8(record.current_slot().get(), next_current);
@@ -2827,7 +2522,7 @@ pub unsafe fn service_txp_pipe_tx_status<B: TxStatusPolicy>(status: u8, backend:
                         write_u8(record.producer_slot().get(), next_head);
                         write_u8(record.state().get(), 0);
                         write_u8(record.control().get(), 0);
-                        write_u8(record.watchdog().get(), watchdog_reload());
+                        write_u8(record.watchdog().get(), PIPE_WATCHDOG_RELOAD);
                     }
                 }
             }
@@ -3402,7 +3097,7 @@ where
             if current == last {
                 mmio.write_u8(record.state().get() as u32, 0);
                 mmio.write_u8(record.control().get() as u32, 0);
-                mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
+                mmio.write_u8(record.watchdog().get() as u32, PIPE_WATCHDOG_RELOAD);
             }
             mmio.write_u32(
                 PIPE_IRQ_PENDING,
@@ -3435,7 +3130,7 @@ where
             if current == last {
                 mmio.write_u8(record.state().get() as u32, 0);
                 mmio.write_u8(record.control().get() as u32, 0);
-                mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
+                mmio.write_u8(record.watchdog().get() as u32, PIPE_WATCHDOG_RELOAD);
             }
             mmio.write_u32(
                 PIPE_IRQ_PENDING,
@@ -3620,11 +3315,6 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
         let saved = capture_pipe_scheduler_word(&mut VolatileMacPipeMmio);
         {
             let _ = saved;
-            unsafe {
-                crate::host_tx_diagnostics::bump(
-                    crate::host_tx_diagnostics::counter::SUPPRESSED_EXCEPTION,
-                );
-            }
         }
     }
 
@@ -3647,8 +3337,6 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
                         trace_tx_stage(TX_TRACE_PHASE2);
                         trace_tx_value(0x1c, event.raw);
                         write_u8(crate::dtcm::LOW_MAC_EVENT_PENDING.get(), 0);
-                        #[cfg(feature = "experimental-cycle-probe")]
-                        crate::cycle_probe::note_phase2(pipe);
                         service_pipe_tx_start(pipe, self.backend);
                     }
                 } else {
@@ -3700,14 +3388,6 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
         saved_scheduler_word: SchedulerWord,
     ) {
         let pipe = unsafe { read_u8(crate::dtcm::MAC_CURRENT_PIPE.get()) } & 3;
-        unsafe {
-            crate::host_tx_diagnostics::capture_tx_retry_provenance(
-                event.raw,
-                status,
-                pipe,
-                saved_scheduler_word.raw(),
-            )
-        };
         let pending_mask = saved_scheduler_word.raw() & (0x100_u32 << pipe);
         if pending_mask != 0 && matches!(status, 4 | 0x19) {
             unsafe {
@@ -3719,30 +3399,8 @@ impl<B: SingleOutstandingMacHardwareEffects> PoppedMacEventEffects
             return;
         }
 
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        if event.event_type == 0x39 && status == 2 {
-            unsafe {
-                capture_status2_ownership(
-                    event,
-                    saved_scheduler_word,
-                    self.backend.mismatch_count(pipe),
-                    1,
-                )
-            };
-        }
         if !(event.event_type == 0x39 && status == 6) {
             unsafe { service_mac_irq_tx_status_dispatch(status, self.backend) };
-        }
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        if event.event_type == 0x39 && status == 2 {
-            unsafe {
-                capture_status2_ownership(
-                    event,
-                    saved_scheduler_word,
-                    self.backend.mismatch_count(pipe),
-                    2,
-                )
-            };
         }
         if !pipe_service_escalation || pending_mask == 0 {
             return;
@@ -3883,7 +3541,7 @@ unsafe fn cancel_scheduler_timer(timer: u32) -> bool {
 /// Exact matching-payload `timer_start` (`0xf2aa`) for cooperative completion
 /// timers.
 #[cfg(target_arch = "arm")]
-unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
+unsafe fn start_scheduler_timer(timer: u32, duration: u32) {
     unsafe {
         if read_u32(timer as usize + 4) != 0 {
             let _ = cancel_scheduler_timer(timer);
@@ -3892,32 +3550,17 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) -> u8 {
         let deadline = read_u32(0x0ac0_0004)
             .wrapping_add(crate::dtcm::initialized_timer_counter_ptr().read_volatile())
             .wrapping_add(duration);
-        if publication_bisect_reached(5) {
-            return 5;
-        }
 
-        if publication_bisect_reached(6) {
-            let previous = mask_irq_fiq_terminal();
-            restore_irq_fiq(previous);
-            return 6;
-        }
 
         let previous = mask_irq_fiq_terminal();
         let became_head = insert_scheduler_timer_list(&mut VolatileMacPipeMmio, timer, deadline);
         restore_irq_fiq(previous);
-        if publication_bisect_reached(7) {
-            return 7;
-        }
 
         if became_head && read_u32(crate::dtcm::SCHEDULER_HARDWARE_TIMER_GUARD.get()) == 0 {
             write_u32(0x0ac0_001c, 0);
             write_u32(0x0ac0_0014, duration);
             write_u32(0x0ac0_001c, 0xc1);
         }
-        if publication_bisect_reached(8) {
-            return 8;
-        }
-        0
     }
 }
 
@@ -3976,27 +3619,9 @@ fn publication_registration_allowed(
         (1..=count).all(|offset| occupied[(usize::from(slot) + 4 - offset) & 3]);
     match batch {
         BatchPosition::Only | BatchPosition::First => count == 0,
-        BatchPosition::Middle => {
-            cfg!(feature = "four-slot-ordinary")
-                && (1..=2).contains(&count)
-                && prior_slots_are_contiguous
-        }
-        BatchPosition::Last => {
-            if cfg!(feature = "four-slot-ordinary") {
-                (1..=3).contains(&count) && prior_slots_are_contiguous
-            } else {
-                count == 1
-            }
-        }
+        BatchPosition::Middle => (1..=2).contains(&count) && prior_slots_are_contiguous,
+        BatchPosition::Last => (1..=3).contains(&count) && prior_slots_are_contiguous,
     }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-#[derive(Clone, Copy)]
-struct RetainedAmpduBlockAck {
-    /// Exact CPU-form frame-node identities; zero terminates the member prefix.
-    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    observation: PlannedBlockAck,
 }
 
 #[cfg(target_arch = "arm")]
@@ -4005,8 +3630,6 @@ pub struct SingleProbeMacBackend {
     mismatch: [u8; 4],
     selective_retry: [Option<FrameNodeAddress>; 16],
     partial_give_up: [Option<(FrameNodeAddress, FrameNodeAddress)>; 16],
-    #[cfg(feature = "experimental-depth-two-ampdu")]
-    depth_two_block_ack: [Option<RetainedAmpduBlockAck>; 16],
     publications: [Option<PublishedSlotIdentity>; 16],
     completed: BoundedCompletionQueue<HostClass0Completion, HOST_CLASS0_COMPLETION_CAPACITY>,
 }
@@ -4019,8 +3642,6 @@ impl SingleProbeMacBackend {
             mismatch: [0; 4],
             selective_retry: [None; 16],
             partial_give_up: [None; 16],
-            #[cfg(feature = "experimental-depth-two-ampdu")]
-            depth_two_block_ack: [None; 16],
             publications: [None; 16],
             completed: BoundedCompletionQueue::new(),
         }
@@ -4049,122 +3670,12 @@ impl SingleProbeMacBackend {
         self.retry[retry_index].reset();
         self.selective_retry[retry_index] = None;
         self.partial_give_up[retry_index] = None;
-        #[cfg(feature = "experimental-depth-two-ampdu")]
-        {
-            self.depth_two_block_ack[retry_index] = None;
-        }
         if matches!(batch, BatchPosition::Only | BatchPosition::First) {
             self.mismatch[pipe_index] = 0;
         }
         let publication_index = pipe_index * 4 + usize::from(slot & 3);
         self.publications[publication_index] = Some(publication);
         true
-    }
-
-    #[cfg(feature = "experimental-depth-two-ampdu")]
-    fn register_ampdu_publications(
-        &mut self,
-        members: [Option<ContextAddress>;
-            crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-        pipe: u8,
-        slot: u8,
-    ) -> bool {
-        let member_count = members.iter().take_while(|member| member.is_some()).count();
-        if members[member_count..].iter().any(Option::is_some) {
-            return false;
-        }
-        let pipe_index = usize::from(pipe & 3);
-        let Some(retry_index) = pipe_slot_state_index(pipe, slot) else {
-            return false;
-        };
-        let pipe_start = pipe_index * 4;
-        if self.publications[pipe_start..pipe_start + 4]
-            .iter()
-            .any(Option::is_some)
-        {
-            return false;
-        }
-
-        #[cfg(feature = "experimental-list-first-depth-five-ampdu")]
-        if (5..=8).contains(&member_count) {
-            let spill_start = (0..4)
-                .filter(|candidate| *candidate != pipe_index)
-                .map(|candidate| candidate * 4)
-                .find(|start| {
-                    self.publications[*start..*start + 4]
-                        .iter()
-                        .all(Option::is_none)
-                });
-            let Some(spill_start) = spill_start else {
-                return false;
-            };
-            let mut staged = [None; 8];
-            for position in 0..member_count {
-                let Some(context) = members[position] else {
-                    return false;
-                };
-                let Some(publication) = PublishedSlotIdentity::new(context, pipe, slot) else {
-                    return false;
-                };
-                staged[position] = Some(publication);
-            }
-            let Some(indices) = ampdu_publication_indices(slot, 4) else {
-                return false;
-            };
-            self.retry[retry_index].reset();
-            self.mismatch[pipe_index] = 0;
-            self.selective_retry[retry_index] = None;
-            self.partial_give_up[retry_index] = None;
-            self.depth_two_block_ack[retry_index] = None;
-            for position in 0..4 {
-                self.publications[pipe_start + indices[position]] = staged[position];
-            }
-            for position in 4..member_count {
-                self.publications[spill_start + position - 4] = staged[position];
-            }
-            return true;
-        }
-
-        if member_count > 4 {
-            return false;
-        }
-        let Some(indices) = ampdu_publication_indices(slot, member_count) else {
-            return false;
-        };
-        let mut staged = [None; 4];
-        for position in 0..member_count {
-            let Some(context) = members[position] else {
-                return false;
-            };
-            let Some(publication) = PublishedSlotIdentity::new(context, pipe, slot) else {
-                return false;
-            };
-            staged[position] = Some(publication);
-        }
-
-        self.retry[retry_index].reset();
-        self.mismatch[pipe_index] = 0;
-        self.selective_retry[retry_index] = None;
-        self.partial_give_up[retry_index] = None;
-        self.depth_two_block_ack[retry_index] = None;
-        for position in 0..member_count {
-            self.publications[pipe_start + indices[position]] = staged[position];
-        }
-        true
-    }
-
-    #[cfg(feature = "experimental-depth-two-ampdu")]
-    fn register_ampdu_publication(
-        &mut self,
-        first: ContextAddress,
-        second: ContextAddress,
-        pipe: u8,
-        slot: u8,
-    ) -> bool {
-        let mut members = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        members[0] = Some(first);
-        members[1] = Some(second);
-        self.register_ampdu_publications(members, pipe, slot)
     }
 
     fn push_completion(&mut self, completion: HostClass0Completion) {
@@ -4177,35 +3688,6 @@ impl SingleProbeMacBackend {
         self.completed.take()
     }
 
-    #[cfg(feature = "experimental-member-requeue")]
-    fn push_requeue(&mut self, frame_node: FrameNodeAddress) -> bool {
-        let context = frame_node.context();
-        let Some((index, publication)) = self
-            .publications
-            .iter()
-            .enumerate()
-            .find_map(|(index, publication)| {
-                publication
-                    .filter(|publication| {
-                        publication.context == context && publication.frame_node == frame_node
-                    })
-                    .map(|publication| (index, publication))
-            })
-        else {
-            return false;
-        };
-        self.publications[index] = None;
-        self.completed
-            .push(HostClass0Completion {
-                context: context.raw(),
-                frame_node: frame_node.raw(),
-                pipe: publication.pipe,
-                slot: publication.slot,
-                status: HOST_CLASS0_REQUEUE_STATUS,
-                ack_failures: 0,
-            })
-            .is_ok()
-    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -4281,52 +3763,6 @@ impl TxStatusPolicy for SingleProbeMacBackend {
         let _ = crate::backoff::reset(&mut crate::backoff::VolatileBackoffBankIo, link, queue);
     }
 
-    #[cfg(all(feature = "experimental-depth-four-ampdu", feature = "experimental-member-requeue"))]
-    unsafe fn complete_ordinary_status(&mut self, pipe: u8, frame: FrameNodeAddress, slot_raw: u32) {
-        unsafe {
-            let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
-            if read_u8(slot.kind().get()) == 1 && frame.context().host().is_some() {
-                let Some(index) = retained_slot_state_index(pipe, slot_raw) else {
-                    terminal_probe_backend_fault(pipe);
-                };
-                if let Some(observation) = self.depth_two_block_ack[index] {
-                    let slot_index = (index & 3) as u8;
-                    let Some(live) = LiveTxSlot::from_mmio(
-                        &mut VolatileMacPipeMmio, pipe, slot_index, slot_raw, Some(frame),
-                    ) else { terminal_probe_backend_fault(pipe); };
-                    let record = pipe_record_address(pipe);
-                    if read_u8(slot.state().get()) != 5
-                        || read_u8(record.state().get()) != 1
-                        || read_u8(record.current_slot().get()) != slot_index
-                    { terminal_probe_backend_fault(pipe); }
-                    let Some((plan, members, _)) = depth_four_selective_plan_for(frame, &observation)
-                    else { terminal_probe_backend_fault(pipe); };
-                    let member_count = usize::from(observation.observation.member_count);
-                    let identities_match = members[..member_count].iter().all(|member| {
-                        self.publications.iter().flatten().any(|entry| {
-                            entry.pipe == pipe && entry.slot == slot_index
-                                && entry.frame_node.raw() == *member
-                                && entry.command == live.command
-                        })
-                    });
-                    let capacity = self.completed.entries.iter().filter(|entry| entry.is_none()).count();
-                    if !identities_match || usize::from(plan.retry_count) > capacity {
-                        terminal_probe_backend_fault(pipe);
-                    }
-                    // This is ordinary state-5 retirement, not a retry IRQ.
-                    // The finisher requeues in reverse insertion order and does
-                    // not acknowledge IRQs or advance the caller's cursors.
-                    if !finish_depth_four_selective_actions(slot_raw, plan, members, self) {
-                        terminal_probe_backend_fault(pipe);
-                    }
-                    self.depth_two_block_ack[index] = None;
-                    return;
-                }
-            }
-            // Preserve the existing completion policy without retained evidence.
-            complete_tx_pipe_slot(frame, slot_raw, 0, self);
-        }
-    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -4401,7 +3837,7 @@ impl PowerSaveCompletionEffects for SingleProbeMacBackend {
     }
 
     fn timer_start(&mut self, timer: u32, duration: u32) {
-        let _ = unsafe { start_scheduler_timer(timer, duration) };
+        unsafe { start_scheduler_timer(timer, duration) };
     }
 
     fn send_pending_poll_or_qos_null(&mut self, _interface: u8) {}
@@ -4419,7 +3855,7 @@ impl CompletionDrainEffects for SingleProbeMacBackend {
                 context,
                 status,
                 |completion_class, context| {
-                    if completion_class == 0 && true {
+                    if completion_class == 0 {
                         // Class-0 ownership lasts until inherited confirmation
                         // handoff; current HIF returns request credit before
                         // output enqueue. This does not match vendor lifetime.
@@ -4507,622 +3943,6 @@ impl SingleFrameRearmBackend for SingleProbeMacBackend {
     }
 }
 
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-unsafe fn collect_ampdu_contexts(
-    first_frame_node: FrameNodeAddress,
-) -> Option<(
-    [Option<ContextAddress>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    usize,
-)> {
-    unsafe {
-        let mut contexts: [
-            Option<ContextAddress>;
-            crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
-        ] = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        let mut current = first_frame_node;
-        let mut count = 0_usize;
-        loop {
-            if count == crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
-                || contexts[..count]
-                    .iter()
-                    .flatten()
-                    .any(|context| context.frame_node() == current)
-            {
-                return None;
-            }
-            let context = current.context();
-            contexts[count] = Some(context);
-            count += 1;
-            let next = read_u32(context.next_in_ampdu_address());
-            if next == 0 {
-                break;
-            }
-            current = FrameNodeAddress::from_raw(next)?;
-        }
-        (count >= 2).then_some((contexts, count))
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-unsafe fn prepare_whole_ampdu_retry(
-    first_frame_node: FrameNodeAddress,
-) -> Option<[Option<ContextAddress>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH]> {
-    unsafe {
-        let (contexts, member_count) = collect_ampdu_contexts(first_frame_node)?;
-        let first = contexts[0]?;
-        let tid = read_u8(first.tid_address());
-        let session_active = tid < 8
-            && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
-
-        let mut shared_next_rate = None;
-        for index in 0..member_count {
-            let context = contexts[index]?;
-            let host = context.host()?;
-            let rate = read_u8(context.tx_rate_address());
-            let policy = crate::rate_policy::get(read_u8(context.retry_policy_address()))?;
-            let tries = read_u16(context.try_count_address());
-            let control = read_u32(context.control_bits_address());
-            let long_frame = (control & 0x7ff) >> 9 != 0;
-            let crate::rate_policy::RetryStep::Rearm { rate: next_rate } =
-                crate::rate_policy::retry_step(policy, rate, tries, long_frame)
-            else {
-                return None;
-            };
-            host.rate_try(usize::from(rate >> 3))?;
-            if index == 0 {
-                shared_next_rate = Some(next_rate);
-            }
-        }
-        let shared_next_rate = shared_next_rate?;
-        if !session_active {
-            return None;
-        }
-
-        for index in 0..member_count {
-            let context = contexts[index]?;
-            let host = context.host()?;
-            let rate = read_u8(context.tx_rate_address());
-            let status_address = host.rate_try(usize::from(rate >> 3))?.get();
-            let shift = u32::from((rate & 7) * 4);
-            let status = read_u32(status_address);
-            let attempts = (status >> shift) & 0x0f;
-            if attempts < 0x0f {
-                write_u32(
-                    status_address,
-                    (status & !(0x0f << shift)) | ((attempts + 1) << shift),
-                );
-            }
-            let flags = read_u32(context.control_bits_address());
-            let rate_changed =
-                shared_next_rate != rate && (flags & 0x20 == 0 || shared_next_rate > 13);
-            write_u8(
-                context.tx_rate_address(),
-                if rate_changed { shared_next_rate } else { rate },
-            );
-            write_u32(
-                context.control_bits_address(),
-                flags
-                    | 0x10
-                    | 0x0008_0000
-                    | if rate_changed && rate > 3 && shared_next_rate < 4 {
-                        0x0004_0000
-                    } else {
-                        0
-                    },
-            );
-            write_u16(
-                context.try_count_address(),
-                read_u16(context.try_count_address()).wrapping_add(1),
-            );
-        }
-        Some(contexts)
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-#[cfg_attr(feature = "experimental-depth-four-ampdu", inline(always))]
-unsafe fn rearm_whole_ampdu(
-    pipe: u8,
-    slot_raw: u32,
-    first_frame_node: FrameNodeAddress,
-    pending_mask: Option<u32>,
-) -> Result<(), ProbeBuildError> {
-    unsafe {
-        if pipe >= 4 {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        let record = pipe_record_address(pipe);
-        let current = read_u8(record.current_slot().get());
-        let Some(live_slot) = LiveTxSlot::from_mmio(
-            &mut VolatileMacPipeMmio,
-            pipe,
-            current,
-            slot_raw,
-            Some(first_frame_node),
-        ) else {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        };
-        let slot = live_slot.address;
-        let contexts = collect_ampdu_contexts(live_slot.frame_node)
-            .map(|(contexts, _)| contexts)
-            .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
-        let command = live_slot.command;
-        let descriptor_node = read_u32(slot.auxiliary().get());
-        let Some(descriptor_index) = crate::dtcm::mac_software_record_node_index(descriptor_node)
-        else {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        };
-        // The transfer word at command +0x18 contains the MAC bus encoding,
-        // not a CPU pointer. Keep the CPU-form packet-RAM address from the
-        // exact software-record free-list node retained by this slot.
-        let packet_record = read_u32(descriptor_node as usize + 4);
-        if packet_ram::software_record_index(packet_record as usize) != Some(descriptor_index) {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        prepare_host_ampdu(
-            contexts.map(|context| context.map(ContextAddress::raw)),
-            pipe,
-            current,
-            slot_raw,
-            command,
-            descriptor_node,
-            packet_record,
-        )?;
-
-        let Some(ring) = TxHardwareRingAddress::for_pipe(
-            pipe,
-            read_u32(record.hardware_ring().get()),
-        ) else {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        };
-        // Retry ownership is already live in the hardware ring. Rebuild the
-        // command in place, preserve slot state 4, trigger the pipe, then
-        // release only this slot's command-mask bit. Re-running GO would
-        // publish a second active owner.
-        write_u8(slot.state().get(), 4);
-        write_u32(PIPE_IRQ_TRIGGER as usize, (1_u32 << pipe) << 25);
-        write_u32(
-            ring.cursor_and_pending_mask() as usize,
-            read_u32(ring.cursor_and_pending_mask() as usize) & !(1_u32 << current),
-        );
-        if let Some(pending_mask) = pending_mask {
-            write_u32(
-                PIPE_IRQ_PENDING as usize,
-                0_u32.wrapping_sub(pending_mask.wrapping_add(1)),
-            );
-        }
-        Ok(())
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-unsafe fn depth_two_block_ack_actions_for(
-    first_frame_node: FrameNodeAddress,
-    observation: RetainedAmpduBlockAck,
-) -> Option<([BlockAckMemberAction; 2], [FrameNodeAddress; 2])> {
-    unsafe {
-        if observation.observation.member_count != 2 {
-            return None;
-        }
-        let first = first_frame_node.context();
-        let second_raw = read_u32(first.next_in_ampdu_address());
-        if second_raw == 0 {
-            return None;
-        }
-        let second_frame_node = FrameNodeAddress::from_raw(second_raw)?;
-        let members = [first_frame_node, second_frame_node];
-        if observation.members[0] != first_frame_node.raw()
-            || observation.members[1] != second_frame_node.raw()
-            || observation.members[2..].iter().any(|member| *member != 0)
-        {
-            return None;
-        }
-        let tid = read_u8(first.tid_address());
-        let session_active = tid < 8
-            && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
-        Some((
-            plan_depth_two_block_ack_actions(
-                [
-                    observation.observation.states[0],
-                    observation.observation.states[1],
-                ],
-                [true; 2],
-                session_active,
-            ),
-            members,
-        ))
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-unsafe fn prepare_selective_member_retry(frame_node: FrameNodeAddress) -> bool {
-    unsafe {
-        let context = frame_node.context();
-        let Some(host) = context.host() else { return false };
-        let rate = read_u8(context.tx_rate_address());
-        let Some(status_field) = host.rate_try(usize::from(rate >> 3)) else { return false };
-        let Some(policy) = crate::rate_policy::get(read_u8(context.retry_policy_address())) else {
-            return false;
-        };
-        let try_count = read_u16(context.try_count_address());
-        let flags = read_u32(context.control_bits_address());
-        let long_frame = (flags & 0x7ff) >> 9 != 0;
-        let crate::rate_policy::RetryStep::Rearm { rate: next_rate } =
-            crate::rate_policy::retry_step(policy, rate, try_count, long_frame)
-        else {
-            return false;
-        };
-        let shift = u32::from((rate & 7) * 4);
-        let status = read_u32(status_field.get());
-        let attempts = (status >> shift) & 0x0f;
-        if attempts < 0x0f {
-            write_u32(
-                status_field.get(),
-                (status & !(0x0f << shift)) | ((attempts + 1) << shift),
-            );
-        }
-        let rate_changed = next_rate != rate && (flags & 0x20 == 0 || next_rate > 13);
-        write_u8(context.tx_rate_address(), if rate_changed { next_rate } else { rate });
-        write_u32(
-            context.control_bits_address(),
-            flags
-                | 0x10
-                | 0x0008_0000
-                | if rate_changed && rate > 3 && next_rate < 4 {
-                    0x0004_0000
-                } else {
-                    0
-                },
-        );
-        write_u16(context.try_count_address(), try_count.wrapping_add(1));
-        true
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-unsafe fn enqueue_acknowledged_aggregate_member(frame_node: FrameNodeAddress) {
-    unsafe {
-        let context = frame_node.context();
-        write_u32(
-            context.ownership_bits_address(),
-            read_u32(context.ownership_bits_address()) | 0x0c00,
-        );
-        let class_bits = ((read_u32(context.control_bits_address()) >> 18) & 0x0c) as u16;
-        write_u16(
-            context.auxiliary_state_address(),
-            read_u16(context.auxiliary_state_address()) | 1 | class_bits,
-        );
-        write_u16(context.terminal_status_address(), 0);
-        write_u32(context.completion_timestamp_address(), read_u32(0x0ac0_0004));
-        enqueue_completion_frame_node(frame_node, || false);
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-unsafe fn convert_depth_two_slot_to_selective_retry(
-    link: u8,
-    slot_raw: u32,
-    missing: FrameNodeAddress,
-) {
-    unsafe {
-        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
-        let descriptor = read_u32(slot.auxiliary().get());
-        if descriptor != 0 {
-            write_u32(descriptor as usize, read_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()));
-            write_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get(), descriptor);
-        }
-        write_u8(slot.kind().get(), 0);
-        write_u8(slot.retry_rate().get(), read_u8(missing.context().retry_rate_address()));
-        write_u8(slot.control_02().get(), 0);
-        write_u32(slot.frame().get(), missing.raw());
-        write_u32(slot.auxiliary().get(), 0);
-        write_u32(missing.context().next_in_ampdu_address(), 0);
-        if link < 8 {
-            for member in 0..16 {
-                write_u32(
-                    crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
-                        .member_unchecked(usize::from(link), member)
-                        .get(),
-                    0,
-                );
-            }
-        }
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
-#[inline(never)]
-unsafe fn selective_member_retry_rate(frame_node: FrameNodeAddress) -> Option<u8> {
-    unsafe {
-        let context = frame_node.context();
-        let host = context.host()?;
-        let rate = read_u8(context.tx_rate_address());
-        host.rate_try(usize::from(rate >> 3))?;
-        let policy = crate::rate_policy::get(read_u8(context.retry_policy_address()))?;
-        let try_count = read_u16(context.try_count_address());
-        let flags = read_u32(context.control_bits_address());
-        let long_frame = (flags & 0x7ff) >> 9 != 0;
-        let crate::rate_policy::RetryStep::Rearm { rate: next_rate } =
-            crate::rate_policy::retry_step(policy, rate, try_count, long_frame)
-        else {
-            return None;
-        };
-        Some(if next_rate != rate && (flags & 0x20 == 0 || next_rate > 13) {
-            next_rate
-        } else {
-            rate
-        })
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
-#[inline(never)]
-#[cfg_attr(feature = "experimental-depth-eight-ampdu", inline(always))]
-unsafe fn depth_four_selective_plan_for(
-    first_frame_node: FrameNodeAddress,
-    observation: &RetainedAmpduBlockAck,
-) -> Option<(
-    SelectiveAmpduRetryPlan,
-    [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    u8,
-)> {
-    unsafe {
-        let mut members = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        let mut current = first_frame_node;
-        let mut member_count = 0_usize;
-        loop {
-            if member_count == crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
-                || members[..member_count].contains(&current.raw())
-            {
-                return None;
-            }
-            members[member_count] = current.raw();
-            member_count += 1;
-            let next = read_u32(current.context().next_in_ampdu_address());
-            if next == 0 {
-                break;
-            }
-            current = FrameNodeAddress::from_raw(next)?;
-        }
-        if member_count < 2 || member_count != usize::from(observation.observation.member_count) {
-            return None;
-        }
-        if observation.members != members {
-            return None;
-        }
-        let first = first_frame_node.context();
-        let tid = read_u8(first.tid_address());
-        let session_active = tid < 8
-            && crate::configuration::operational_tx_ba_tids() & (1_u8 << tid) != 0;
-        let mut reason_mask = if session_active { 0 } else { 1 };
-        let mut retry_allowed = [false; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        let mut retry_rates = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        for index in 0..member_count {
-            let member = FrameNodeAddress::from_raw(members[index])?;
-            retry_rates[index] = selective_member_retry_rate(member);
-            retry_allowed[index] = retry_rates[index].is_some();
-            match observation.observation.states[index] {
-                BlockAckMemberState::OutsideWindow => reason_mask |= 2,
-                BlockAckMemberState::Missing if retry_rates[index].is_none() => reason_mask |= 4,
-                _ => (),
-            }
-        }
-        let selected_rate = retry_rates.iter().take(member_count).flatten().next().copied();
-        if selected_rate.is_some()
-            && retry_rates
-                .iter()
-                .take(member_count)
-                .flatten()
-                .any(|rate| Some(*rate) != selected_rate)
-        {
-            reason_mask |= 8;
-        }
-        let mut retry_observation = observation.observation;
-        #[cfg(feature = "experimental-outside-window-retry")]
-        for state in retry_observation.states.iter_mut().take(member_count) {
-            if *state == BlockAckMemberState::OutsideWindow {
-                *state = BlockAckMemberState::Missing;
-            }
-        }
-        Some((
-            plan_selective_ampdu_retry(
-                retry_observation,
-                retry_allowed,
-                session_active,
-                retry_rates,
-            ),
-            members,
-            reason_mask,
-        ))
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
-#[inline(never)]
-unsafe fn enqueue_terminal_depth_four_member(frame_node: FrameNodeAddress, status: u16) {
-    unsafe {
-        let context = frame_node.context();
-        write_u32(
-            context.ownership_bits_address(),
-            read_u32(context.ownership_bits_address()) | 0x0c00,
-        );
-        let class_bits = ((read_u32(context.control_bits_address()) >> 18) & 0x0c) as u16;
-        write_u16(
-            context.auxiliary_state_address(),
-            read_u16(context.auxiliary_state_address()) | 1 | class_bits,
-        );
-        write_u16(context.terminal_status_address(), status);
-        write_u32(context.completion_timestamp_address(), read_u32(0x0ac0_0004));
-        enqueue_completion_frame_node(frame_node, || false);
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
-#[inline(never)]
-unsafe fn rewrite_depth_four_member_table(
-    link: u8,
-    members: &[u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-) {
-    unsafe {
-        if link >= 8 {
-            return;
-        }
-        for index in 0..16 {
-            let value = if index < members.len() && members[index] != 0 {
-                FrameNodeAddress::new(members[index]).context().raw()
-            } else {
-                0
-            };
-            write_u32(
-                crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
-                    .member_unchecked(usize::from(link), index)
-                    .get(),
-                value,
-            );
-        }
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
-#[inline(never)]
-unsafe fn apply_depth_four_selective_retry(
-    slot_raw: u32,
-    plan: SelectiveAmpduRetryPlan,
-    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-) -> Option<(FrameNodeAddress, usize)> {
-    unsafe {
-        let retry_count = usize::from(plan.retry_count);
-        if retry_count == 0
-            || retry_count > crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
-        {
-            return None;
-        }
-        let mut retries = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        for (position, member_index) in plan
-            .retry_members
-            .iter()
-            .take(retry_count)
-            .copied()
-            .enumerate()
-        {
-            let index = usize::from(member_index?);
-            let member = FrameNodeAddress::from_raw(*members.get(index)?)?;
-            if !prepare_selective_member_retry(member) {
-                return None;
-            }
-            retries[position] = member.raw();
-        }
-        for (index, action) in plan.actions.into_iter().enumerate() {
-            let Some(action) = action else { continue };
-            if action == BlockAckMemberAction::Retry {
-                continue;
-            }
-            let member = FrameNodeAddress::from_raw(members[index])?;
-            write_u32(member.context().next_in_ampdu_address(), 0);
-            let status = if action == BlockAckMemberAction::Confirm {
-                0
-            } else {
-                crate::host_tx_diagnostics::bump(
-                    crate::host_tx_diagnostics::counter::GIVE_UP,
-                );
-                0x0b
-            };
-            enqueue_terminal_depth_four_member(member, status);
-        }
-
-        let head = FrameNodeAddress::new(retries[0]);
-        if retry_count == 1 {
-            write_u32(head.context().next_in_ampdu_address(), 0);
-        } else {
-            for index in 0..retry_count {
-                let member = FrameNodeAddress::new(retries[index]);
-                let next = retries.get(index + 1).copied().unwrap_or(0);
-                write_u32(member.context().next_in_ampdu_address(), next);
-                let flags = read_u32(member.context().control_bits_address());
-                write_u32(
-                    member.context().control_bits_address(),
-                    (flags & !0x40) | if index == 0 { 0x40 } else { 0 },
-                );
-            }
-            let link = read_u8(head.context().link_id_address());
-            rewrite_depth_four_member_table(link, &retries);
-        }
-        write_u32(
-            crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw)
-                .frame()
-                .get(),
-            head.raw(),
-        );
-        Some((head, retry_count))
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
-#[inline(never)]
-unsafe fn finish_depth_four_selective_actions(
-    slot_raw: u32,
-    plan: SelectiveAmpduRetryPlan,
-    members: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    backend: &mut SingleProbeMacBackend,
-) -> bool {
-    unsafe {
-        #[cfg(not(feature = "experimental-member-requeue"))]
-        if plan.retry_count != 0 {
-            return false;
-        }
-        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_raw);
-        let descriptor = read_u32(slot.auxiliary().get());
-        if descriptor != 0 {
-            write_u32(descriptor as usize, read_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get()));
-            write_u32(crate::dtcm::MAC_SOFTWARE_RECORDS.get(), descriptor);
-        }
-        write_u32(slot.frame().get(), 0);
-        let Some(first) = FrameNodeAddress::from_raw(members[0]) else {
-            return false;
-        };
-        rewrite_depth_four_member_table(
-            read_u8(first.context().link_id_address()),
-            &[0; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-        );
-        for (index, action) in plan.actions.into_iter().enumerate() {
-            let Some(action) = action else { continue };
-            if action == BlockAckMemberAction::Retry {
-                continue;
-            }
-            let Some(member) = FrameNodeAddress::from_raw(members[index]) else {
-                return false;
-            };
-            write_u32(member.context().next_in_ampdu_address(), 0);
-            if action == BlockAckMemberAction::Confirm {
-                enqueue_terminal_depth_four_member(member, 0);
-            } else {
-                crate::host_tx_diagnostics::bump(
-                    crate::host_tx_diagnostics::counter::GIVE_UP,
-                );
-                enqueue_terminal_depth_four_member(member, 0x0b);
-            }
-        }
-        #[cfg(feature = "experimental-member-requeue")]
-        for index in (0..plan.actions.len()).rev() {
-            if plan.actions[index] != Some(BlockAckMemberAction::Retry) {
-                continue;
-            }
-            let member = FrameNodeAddress::new(members[index]);
-            write_u32(member.context().next_in_ampdu_address(), 0);
-            if !prepare_selective_member_retry(member) || !backend.push_requeue(member) {
-                return false;
-            }
-        }
-        write_u8(
-            crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
-            read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
-        );
-        true
-    }
-}
-
 #[cfg(target_arch = "arm")]
 impl SingleProbeMacBackend {
     #[inline(always)]
@@ -5147,75 +3967,6 @@ impl SingleProbeMacBackend {
         ) else {
             terminal_probe_backend_fault(pipe);
         };
-        #[cfg(feature = "experimental-depth-two-ampdu")]
-        if unsafe { read_u8(live_slot.address.kind().get()) == 1 } {
-            let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
-                terminal_probe_backend_fault(pipe)
-            };
-            #[cfg(feature = "experimental-depth-four-ampdu")]
-            if let Some(observation) = self.depth_two_block_ack[retry_index]
-                .filter(|observation| observation.observation.member_count > 2)
-            {
-                let Some((plan, members, _)) =
-                    (unsafe { depth_four_selective_plan_for(frame_node, &observation) })
-                else {
-                    terminal_probe_backend_fault(pipe)
-                };
-                unsafe {
-                    crate::host_tx_diagnostics::record_ampdu_outcome(if pending_mask.is_some() {
-                        crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_REARM
-                    } else {
-                        crate::host_tx_diagnostics::ampdu_outcome::WATCHDOG_REARM
-                    })
-                };
-                self.depth_two_block_ack[retry_index] = None;
-                let Some((retry_head, retry_count)) =
-                    (unsafe { apply_depth_four_selective_retry(slot, plan, members) })
-                else {
-                    terminal_probe_backend_fault(pipe)
-                };
-                unsafe {
-                    crate::host_tx_diagnostics::record_ampdu_depth(
-                        3,
-                        if retry_count == 1 { 3 } else { 4 },
-                    )
-                };
-                if retry_count == 1 {
-                    let link = unsafe { read_u8(retry_head.context().link_id_address()) };
-                    unsafe { convert_depth_two_slot_to_selective_retry(link, slot, retry_head) };
-                    execute_fixed_rate_single_frame_rearm_with_ack(
-                        &mut VolatileMacPipeMmio,
-                        pipe,
-                        slot,
-                        retry_head,
-                        pending_mask,
-                        self,
-                    );
-                } else if unsafe {
-                    rearm_whole_ampdu(pipe, slot, retry_head, pending_mask)
-                }
-                .is_err()
-                {
-                    terminal_probe_backend_fault(pipe);
-                }
-                return;
-            }
-            if let Some(missing) = self.selective_retry[retry_index].take() {
-                let link = unsafe { read_u8(missing.context().link_id_address()) };
-                unsafe { convert_depth_two_slot_to_selective_retry(link, slot, missing) };
-                execute_fixed_rate_single_frame_rearm_with_ack(
-                    &mut VolatileMacPipeMmio,
-                    pipe,
-                    slot,
-                    missing,
-                    pending_mask,
-                    self,
-                );
-            } else if unsafe { rearm_whole_ampdu(pipe, slot, frame_node, pending_mask) }.is_err() {
-                terminal_probe_backend_fault(pipe);
-            }
-            return;
-        }
         execute_fixed_rate_single_frame_rearm_with_ack(
             &mut VolatileMacPipeMmio,
             pipe,
@@ -5246,155 +3997,6 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
                     .get(),
             ) == 1
         } {
-            #[cfg(feature = "experimental-depth-two-ampdu")]
-            {
-                #[cfg(feature = "experimental-depth-four-ampdu")]
-                if let Some(observation) = self.depth_two_block_ack[retry_index]
-                    .filter(|observation| observation.observation.member_count > 2)
-                {
-                    let Some((plan, _, reason_mask)) = (unsafe {
-                        depth_four_selective_plan_for(frame_node, &observation)
-                    }) else {
-                        unsafe {
-                            crate::host_tx_diagnostics::record_ampdu_outcome(
-                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_INVALID,
-                            )
-                        };
-                        return SingleTxRetryDecision::GiveUp;
-                    };
-                    if plan.retry_count != 0 {
-                        unsafe {
-                            crate::host_tx_diagnostics::record_ampdu_outcome(
-                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_REARM,
-                            )
-                        };
-                        #[cfg(feature = "experimental-member-requeue")]
-                        return SingleTxRetryDecision::CompleteSuccess;
-                        #[cfg(not(feature = "experimental-member-requeue"))]
-                        {
-                            self.retry[retry_index].record_rearm();
-                            return SingleTxRetryDecision::Rearm;
-                        }
-                    }
-                    unsafe {
-                        crate::host_tx_diagnostics::record_ampdu_outcome(
-                            crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_EMPTY,
-                        );
-                        for (reason, outcome) in [
-                            (
-                                1,
-                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_NO_SESSION,
-                            ),
-                            (
-                                2,
-                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_OUTSIDE_WINDOW,
-                            ),
-                            (
-                                4,
-                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_NO_RATE,
-                            ),
-                            (
-                                8,
-                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_PLAN_MIXED_RATE,
-                            ),
-                        ] {
-                            if reason_mask & reason != 0 {
-                                crate::host_tx_diagnostics::record_ampdu_outcome(outcome);
-                            }
-                        }
-                    };
-                    return SingleTxRetryDecision::CompleteSuccess;
-                }
-                let observation = self.depth_two_block_ack[retry_index].take();
-                if let Some(observation) = observation
-                    && observation.observation.member_count > 2
-                {
-                    let member_count = usize::from(observation.observation.member_count);
-                    let total_miss = observation
-                        .observation
-                        .states
-                        .iter()
-                        .take(member_count)
-                        .all(|state| *state == BlockAckMemberState::Missing);
-                    return if total_miss
-                        && unsafe { prepare_whole_ampdu_retry(frame_node) }.is_some()
-                    {
-                        self.retry[retry_index].record_rearm();
-                        SingleTxRetryDecision::Rearm
-                    } else {
-                        SingleTxRetryDecision::GiveUp
-                    };
-                }
-                if let Some((actions, members)) = observation.and_then(|observation| unsafe {
-                    depth_two_block_ack_actions_for(frame_node, observation)
-                }) {
-                    if actions == [BlockAckMemberAction::Confirm; 2] {
-                        return SingleTxRetryDecision::CompleteSuccess;
-                    }
-                    let member_retry_index = actions
-                        .iter()
-                        .position(|action| *action == BlockAckMemberAction::Retry);
-                    let confirm_index = actions
-                        .iter()
-                        .position(|action| *action == BlockAckMemberAction::Confirm);
-                    let give_up_index = actions
-                        .iter()
-                        .position(|action| *action == BlockAckMemberAction::GiveUp);
-                    if let (Some(member_retry_index), Some(confirm_index)) =
-                        (member_retry_index, confirm_index)
-                        && actions.iter().all(|action| {
-                            matches!(
-                                action,
-                                BlockAckMemberAction::Retry | BlockAckMemberAction::Confirm
-                            )
-                        })
-                    {
-                        if unsafe { prepare_selective_member_retry(members[member_retry_index]) } {
-                            unsafe {
-                                write_u32(members[confirm_index].context().next_in_ampdu_address(), 0);
-                                enqueue_acknowledged_aggregate_member(members[confirm_index]);
-                            }
-                            self.selective_retry[retry_index] = Some(members[member_retry_index]);
-                            self.retry[retry_index].record_rearm();
-                            return SingleTxRetryDecision::Rearm;
-                        }
-                        self.partial_give_up[retry_index] =
-                            Some((members[confirm_index], members[member_retry_index]));
-                        return SingleTxRetryDecision::CompleteSuccess;
-                    }
-                    if let (Some(give_up_index), Some(confirm_index)) =
-                        (give_up_index, confirm_index)
-                        && actions.iter().all(|action| {
-                            matches!(
-                                action,
-                                BlockAckMemberAction::GiveUp | BlockAckMemberAction::Confirm
-                            )
-                        })
-                    {
-                        self.partial_give_up[retry_index] =
-                            Some((members[confirm_index], members[give_up_index]));
-                        return SingleTxRetryDecision::CompleteSuccess;
-                    }
-                }
-                // A missing or unusable bitmap retains the already-qualified
-                // conservative whole-aggregate retry path.
-                return if let Some(contexts) = unsafe { prepare_whole_ampdu_retry(frame_node) } {
-                    unsafe {
-                        crate::host_tx_diagnostics::record_ampdu_outcome(
-                            if contexts[2].is_some() {
-                                crate::host_tx_diagnostics::ampdu_outcome::DEEP_WHOLE_REARM
-                            } else {
-                                crate::host_tx_diagnostics::ampdu_outcome::DEPTH_TWO_WHOLE
-                            },
-                        )
-                    };
-                    self.retry[retry_index].record_rearm();
-                    SingleTxRetryDecision::Rearm
-                } else {
-                    SingleTxRetryDecision::GiveUp
-                };
-            }
-            #[cfg(not(feature = "experimental-depth-two-ampdu"))]
             return SingleTxRetryDecision::AwaitBlockAck;
         }
         let Some(context) = crate::dtcm::host_context_from_raw(
@@ -5495,62 +4097,6 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         ) else {
             terminal_probe_backend_fault(pipe);
         };
-        #[cfg(feature = "experimental-depth-two-ampdu")]
-        let Some(retry_index) = retained_slot_state_index(pipe, slot) else {
-            terminal_probe_backend_fault(pipe)
-        };
-        #[cfg(feature = "experimental-depth-four-ampdu")]
-        if let Some(observation) = self.depth_two_block_ack[retry_index]
-            .filter(|observation| observation.observation.member_count > 2)
-        {
-            unsafe {
-                crate::host_tx_diagnostics::record_ampdu_outcome(
-                    crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_COMPLETE,
-                )
-            };
-            let Some((plan, members, _)) =
-                (unsafe { depth_four_selective_plan_for(frame_node, &observation) })
-            else {
-                terminal_probe_backend_fault(pipe)
-            };
-            self.depth_two_block_ack[retry_index] = None;
-            if !unsafe { finish_depth_four_selective_actions(slot, plan, members, self) } {
-                terminal_probe_backend_fault(pipe);
-            }
-        } else if let Some((acknowledged, missing)) =
-            self.partial_give_up[retry_index].take()
-        {
-            unsafe {
-                crate::host_tx_diagnostics::record_ampdu_outcome(
-                    crate::host_tx_diagnostics::ampdu_outcome::PARTIAL_GIVE_UP,
-                );
-                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP);
-                write_u32(acknowledged.context().next_in_ampdu_address(), 0);
-                enqueue_acknowledged_aggregate_member(acknowledged);
-                let link = read_u8(missing.context().link_id_address());
-                convert_depth_two_slot_to_selective_retry(link, slot, missing);
-                complete_tx_pipe_slot(missing, slot, 0x0b, self);
-            }
-        } else {
-            unsafe { complete_tx_pipe_slot(frame_node, slot, 0, self) };
-        }
-        #[cfg(all(
-            feature = "experimental-depth-two-ampdu",
-            not(feature = "experimental-depth-four-ampdu")
-        ))]
-        if let Some((acknowledged, missing)) = self.partial_give_up[retry_index].take() {
-            unsafe {
-                crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP);
-                write_u32(acknowledged.context().next_in_ampdu_address(), 0);
-                enqueue_acknowledged_aggregate_member(acknowledged);
-                let link = read_u8(missing.context().link_id_address());
-                convert_depth_two_slot_to_selective_retry(link, slot, missing);
-                complete_tx_pipe_slot(missing, slot, 0x0b, self);
-            }
-        } else {
-            unsafe { complete_tx_pipe_slot(frame_node, slot, 0, self) };
-        }
-        #[cfg(not(feature = "experimental-depth-two-ampdu"))]
         unsafe {
             complete_tx_pipe_slot(frame_node, slot, 0, self);
         }
@@ -5566,7 +4112,6 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         slot: u32,
         status: u16,
     ) {
-        unsafe { crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::GIVE_UP) };
         if pipe >= 4 {
             crate::halt_always!();
         }
@@ -5581,9 +4126,6 @@ impl SingleTxRetryBackend for SingleProbeMacBackend {
         unsafe { complete_tx_pipe_slot(frame_node, slot, status, self) };
         if aggregate {
             unsafe {
-                crate::host_tx_diagnostics::record_ampdu_outcome(
-                    crate::host_tx_diagnostics::ampdu_outcome::RETRY_EVENT_GIVE_UP,
-                );
                 write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
             }
         }
@@ -5881,10 +4423,6 @@ pub unsafe fn publish_host_class0_slot(
     if TxHardwareRingAddress::for_pipe(pipe, hardware_ring).is_none() {
         return Err(ProbeBuildError::PipeStateUnavailable);
     }
-    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-    unsafe {
-        crate::hif::validate_tx_boundary(0x12, pipe, slot, command, hardware_ring);
-    }
 
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     if !runtime
@@ -5894,29 +4432,6 @@ pub unsafe fn publish_host_class0_slot(
         return Err(ProbeBuildError::InvalidContextPointer);
     }
     unsafe {
-        // `txq_build_aggregate_lists()` has already started command 1 before
-        // scheduler reservation and descriptor construction. Publication must
-        // not restart that asynchronous PHY transition at the GO boundary.
-        // `tx_frame_done_release` claims global and per-VIF active-TX
-        // accounting before PAS insertion. Completion drains the matching
-        // counts after hardware ownership ends.
-        // Retain the descriptor's PHY-length word for post-completion
-        // diagnostics; the slot may be recycled before the host reads MIBs.
-        crate::host_tx_diagnostics::capture_descriptor_length(read_u32(command as usize + 0x14));
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        crate::radio::record_tx_command_signature(0, command);
-        // Vendor `txp_fn_4425` asserts producer == hardware ring cursor. Record
-        // both immediately before GO so a divergence is attributable to the
-        // publication that consumed the stale slot.
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        {
-            let (packed, ring_word) = pipe_cursor_diagnostic(&mut VolatileMacPipeMmio, pipe);
-            crate::host_tx_diagnostics::trace(0x4358_0001, packed, ring_word);
-            crate::host_tx_diagnostics::capture_pipe_cursor(
-                packed,
-                !pipe_cursor_invariant_holds(packed),
-            );
-        }
         execute_single_probe_publication(
             &mut VolatileMacPipeMmio,
             SingleProbePublicationInput {
@@ -5933,428 +4448,6 @@ pub unsafe fn publish_host_class0_slot(
                 batch,
             },
         );
-    }
-    Ok(())
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-pub unsafe fn prepare_host_ampdu(
-    contexts: [Option<u32>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    pipe: u8,
-    slot: u8,
-    slot_record: u32,
-    command: u32,
-    descriptor_node: u32,
-    packet_record: u32,
-) -> Result<(), ProbeBuildError> {
-    let member_count = contexts.iter().take_while(|context| context.is_some()).count();
-    if !(2..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&member_count)
-        || contexts[member_count..].iter().any(Option::is_some)
-    {
-        return Err(ProbeBuildError::UnsupportedPublicationShape);
-    }
-
-    let descriptor_index = crate::dtcm::mac_software_record_node_index(descriptor_node);
-    if pipe >= 4
-        || slot >= 4
-        || packet_ram::tx_command_index(command as usize)
-            != Some((usize::from(pipe), usize::from(slot)))
-        || descriptor_index.is_none()
-        || packet_ram::software_record_index(packet_record as usize) != descriptor_index
-    {
-        return Err(ProbeBuildError::UnsupportedPublicationShape);
-    }
-
-    let first_raw = contexts[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
-    let first_host = crate::dtcm::host_context_from_raw(first_raw)
-        .ok_or(ProbeBuildError::InvalidContextPointer)?;
-    let first = ContextAddress::new(first_raw);
-    let rate = unsafe { read_u8(first.tx_rate_address()) };
-    let mut special_ack = false;
-    let mut word_count = 0_usize;
-    let mut aggregate_length = 0_u32;
-    for index in 0..member_count {
-        let raw = contexts[index].ok_or(ProbeBuildError::InvalidContextPointer)?;
-        let host = crate::dtcm::host_context_from_raw(raw)
-            .ok_or(ProbeBuildError::InvalidContextPointer)?;
-        if host.expected_frame_state().raw()
-            != unsafe { read_u32(host.frame_state_address().get()) }
-        {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        let context = ContextAddress::new(raw);
-        if unsafe { read_u8(context.tx_rate_address()) } != rate {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        let frame_state = unsafe { read_u32(context.frame_state_address_address()) };
-        let frame_length = unsafe { read_u16(context.frame_length_address()) };
-        unsafe { emit_host_frame_descriptor_at(context.raw(), frame_state)? };
-        special_ack |= unsafe { read_u32(context.control_bits_address()) } & 0x0030_0000 == 0;
-        unsafe {
-            write_u32(
-                packet_record as usize + word_count * 4,
-                ampdu_transfer_word(frame_state.wrapping_add(8) as usize),
-            );
-        }
-        word_count += 1;
-        if index + 1 == member_count {
-            aggregate_length = aggregate_length
-                .checked_add(u32::from(frame_length) + 8)
-                .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
-        } else {
-            unsafe { write_u32(packet_record as usize + word_count * 4, 0x6600_0000) };
-            word_count += 1;
-            if let Some(spacing) = ampdu_spacing_word(ampdu_spacing_selector(
-                crate::configuration::mpdu_start_spacing(),
-                rate,
-            )) {
-                unsafe { write_u32(packet_record as usize + word_count * 4, spacing) };
-                word_count += 1;
-            }
-            let padded = u32::from(frame_length)
-                .checked_add(0x0b)
-                .ok_or(ProbeBuildError::UnsupportedPublicationShape)?
-                & !3;
-            aggregate_length = aggregate_length
-                .checked_add(padded)
-                .and_then(|length| {
-                    length.checked_add(
-                        u32::from(ampdu_spacing_selector(
-                            crate::configuration::mpdu_start_spacing(),
-                            rate,
-                        )) * 4,
-                    )
-                })
-                .ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
-        }
-    }
-    unsafe { write_u32(packet_record as usize + word_count * 4, 0xe400_0000) };
-    let aggregate_length = u16::try_from(aggregate_length)
-        .map_err(|_| ProbeBuildError::UnsupportedPublicationShape)?;
-
-    let tx_flags = unsafe { read_u32(first.control_bits_address()) };
-    let request_flag_rate_bits = unsafe { read_u8(first.request_flag_rate_bits_address()) };
-    let legacy_mode = unsafe { read_u8(crate::dtcm::LOW_MAC_LEGACY_MODE.get()) };
-    let rate_attribute = unsafe {
-        crate::dtcm::rate_encoding_unchecked(usize::from(rate))
-            .cast_mut::<u8>()
-            .read_volatile()
-    };
-    let hardware_rate = unsafe {
-        crate::dtcm::rate_attribute_unchecked(usize::from(rate))
-            .cast_mut::<u8>()
-            .read_volatile()
-    };
-    let phy = build_phy_rate_words(
-        rate,
-        legacy_mode,
-        tx_flags,
-        request_flag_rate_bits,
-        rate_attribute,
-    );
-    let first_length = unsafe { read_u16(first.frame_length_address()) };
-
-    unsafe {
-        for index in 0..16_u32 {
-            write_u32(command as usize + index as usize * 4, 0);
-        }
-        build_single_frame_duration(
-            &mut VolatileMacPipeMmio,
-            command,
-            first.frame_node(),
-            special_ack,
-        );
-        if special_ack {
-            write_u32(command as usize + 4, read_u32(command as usize + 4) | 0x8c);
-        }
-        let phy_words = [
-            0x5100_0000 | (phy.rate & 0x00ff_ffff),
-            0x5000_0000 | (finalize_phy_control(phy, rate, first_length) & 0x00ff_ffff),
-            0x5200_0000 | (u32::from(hardware_rate) << 16) | u32::from(aggregate_length),
-        ];
-        for (index, word) in phy_words.into_iter().enumerate() {
-            write_u32(command as usize + 0x0c + index * 4, word);
-        }
-        write_u32(command as usize + 0x18, ampdu_transfer_word(packet_record as usize));
-        let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(slot_record);
-        write_u8(slot.kind().get(), 1);
-        write_u8(slot.retry_rate().get(), if special_ack { 0x0c } else { 0xff });
-        write_u8(slot.control_02().get(), u8::from(special_ack));
-        write_u8(slot.state().get(), 0);
-        write_u32(slot.frame().get(), first_host.pas().raw());
-        write_u32(slot.auxiliary().get(), descriptor_node);
-        let aggregate_airtime = u32::from(read_u16(first.payload_extended_address()))
-            .wrapping_add(0xb4)
-            .wrapping_add(0x20);
-        write_u32(
-            slot.duration().get(),
-            (u32::from(read_u16(first.payload_extended_address())) << 15)
-                + if special_ack { 0x20b4 } else { 0 },
-        );
-        write_u32(first.word_48_address(), aggregate_airtime);
-        for index in 0..member_count {
-            let context = ContextAddress::new(
-                contexts[index].ok_or(ProbeBuildError::UnsupportedPublicationShape)?,
-            );
-            let next = if index + 1 == member_count {
-                0
-            } else {
-                crate::dtcm::host_context_from_raw(
-                    contexts[index + 1].ok_or(ProbeBuildError::UnsupportedPublicationShape)?,
-                )
-                    .ok_or(ProbeBuildError::InvalidContextPointer)?
-                    .pas()
-                    .raw()
-            };
-            write_u32(context.next_in_ampdu_address(), next);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-pub unsafe fn prepare_depth_two_host_ampdu(
-    first_context: u32,
-    second_context: u32,
-    pipe: u8,
-    slot: u8,
-    slot_record: u32,
-    command: u32,
-    descriptor_node: u32,
-    packet_record: u32,
-) -> Result<(), ProbeBuildError> {
-    unsafe {
-        let mut contexts = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        contexts[0] = Some(first_context);
-        contexts[1] = Some(second_context);
-        prepare_host_ampdu(
-            contexts,
-            pipe,
-            slot,
-            slot_record,
-            command,
-            descriptor_node,
-            packet_record,
-        )
-    }
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-pub unsafe fn publish_depth_two_host_ampdu(
-    first_context: u32,
-    second_context: u32,
-    pipe: u8,
-    slot: u8,
-) -> Result<(), ProbeBuildError> {
-    if pipe >= 4 || slot >= 4 {
-        return Err(ProbeBuildError::UnsupportedPublicationShape);
-    }
-    let pipe_state = pipe_state_address(pipe);
-    let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
-    let Some(ring) = TxHardwareRingAddress::for_pipe(pipe, hardware_ring) else {
-        return Err(ProbeBuildError::PipeStateUnavailable);
-    };
-    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
-    if !runtime.backend.register_ampdu_publication(
-        ContextAddress::new(first_context),
-        ContextAddress::new(second_context),
-        pipe,
-        slot,
-    ) {
-        return Err(ProbeBuildError::UnsupportedPublicationShape);
-    }
-    unsafe {
-        // Vendor `txq_build_aggregate_lists` enters PHY operation 1 before it
-        // selects and publishes any aggregate-capable PAS contexts.
-        if start_phy_operation_1() != 0 {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        let timestamp = read_u32(0x0ac0_0004);
-        for context in [ContextAddress::new(first_context), ContextAddress::new(second_context)] {
-            write_u32(
-                context.ownership_bits_address(),
-                read_u32(context.ownership_bits_address()) | 0x180,
-            );
-            write_u32(context.scheduler_timestamp_address(), timestamp);
-        }
-        let first = ContextAddress::new(first_context);
-        let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
-        write_u8(record.current_slot().get(), slot);
-        write_u8(record.last_slot().get(), slot);
-        write_u32(ring.go() as usize, 0);
-
-        // Common tail of vendor `txp_scheduler_run` after every descriptor
-        // shape: publish the interface EDCA timing and the selected pipe's
-        // duration quantum before the trigger/GO boundary.
-        let interface = usize::from(read_u8(first.interface_address()));
-        let pas = crate::dtcm::pas_stride_view_unchecked(interface);
-        let edca_slot_timing = read_u32(pas.packed_aifs().get());
-        let edca_slot_timing_cache = crate::dtcm::mac_edca_slot_timing_ptr() as usize;
-        if read_u32(edca_slot_timing_cache) != edca_slot_timing {
-            write_u32(crate::platform::mac_register(0x0e64), edca_slot_timing);
-            write_u32(edca_slot_timing_cache, edca_slot_timing);
-        }
-        let queue = usize::from(read_u8(
-            crate::dtcm::queue_to_access_category_unchecked(usize::from(pipe)).get(),
-        ));
-        let mut quantum = u32::from(read_u16(pas.txop_limit_unchecked(queue).get()));
-        let airtime = read_u32(first.word_48_address()) & 0xffff;
-        if quantum == 0 {
-            if (read_u32(first.control_bits_address()) & 0x0fff) >> 10 != 0 {
-                quantum = airtime;
-            }
-        } else if quantum <= airtime {
-            write_u16(
-                first.auxiliary_state_address(),
-                read_u16(first.auxiliary_state_address()) | 8,
-            );
-            quantum = airtime;
-        }
-        let quantum_destination = read_u32(
-            crate::dtcm::duration_quantum_pointer_unchecked(usize::from(pipe)).get(),
-        );
-        write_u32(quantum_destination as usize, quantum.wrapping_add(0x1f) >> 5);
-        if !finalize_staged_pipe(
-            &mut VolatileMacPipeMmio,
-            pipe,
-            pipe_state,
-            hardware_ring,
-            slot,
-            slot,
-        ) {
-            return Err(ProbeBuildError::PipeStateUnavailable);
-        }
-        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
-        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
-    }
-    Ok(())
-}
-
-#[cfg(all(target_arch = "arm", feature = "experimental-list-first-ampdu"))]
-pub fn host_ampdu_publication_available(pipe: u8) -> bool {
-    if pipe >= 4 {
-        return false;
-    }
-    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
-    let start = usize::from(pipe) * 4;
-    runtime.backend.publications[start..start + 4]
-        .iter()
-        .all(Option::is_none)
-}
-
-#[cfg(all(
-    target_arch = "arm",
-    feature = "experimental-list-first-depth-five-ampdu"
-))]
-pub fn host_deep_publication_available(pipe: u8, member_count: usize) -> bool {
-    if !(5..=8).contains(&member_count) || !host_ampdu_publication_available(pipe) {
-        return false;
-    }
-    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
-    (0..4).filter(|candidate| *candidate != usize::from(pipe)).any(|candidate| {
-        let start = candidate * 4;
-        runtime.backend.publications[start..start + 4]
-            .iter()
-            .all(Option::is_none)
-    })
-}
-
-#[cfg(all(
-    target_arch = "arm",
-    any(
-        feature = "experimental-depth-four-ampdu",
-        feature = "experimental-list-first-ampdu"
-    )
-))]
-#[inline(never)]
-pub unsafe fn publish_planned_host_ampdu(
-    contexts: [u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    pipe: u8,
-    slot: u8,
-) -> Result<(), ProbeBuildError> {
-    let member_count = contexts.iter().take_while(|context| **context != 0).count();
-    if pipe >= 4
-        || slot >= 4
-        || !(if cfg!(feature = "experimental-list-first-ampdu") { 2 } else { 3 }
-            ..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH)
-            .contains(&member_count)
-        || contexts[member_count..].iter().any(|context| *context != 0)
-    {
-        return Err(ProbeBuildError::UnsupportedPublicationShape);
-    }
-    let typed = contexts.map(|context| (context != 0).then(|| ContextAddress::new(context)));
-    let pipe_state = pipe_state_address(pipe);
-    let hardware_ring = unsafe { read_u32(pipe_state as usize + 8) };
-    let Some(ring) = TxHardwareRingAddress::for_pipe(pipe, hardware_ring) else {
-        return Err(ProbeBuildError::PipeStateUnavailable);
-    };
-    let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
-    if !runtime
-        .backend
-        .register_ampdu_publications(typed, pipe, slot)
-    {
-        return Err(ProbeBuildError::UnsupportedPublicationShape);
-    }
-    unsafe {
-        if start_phy_operation_1() != 0 {
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        let timestamp = read_u32(0x0ac0_0004);
-        for context in typed.iter().take(member_count).flatten().copied() {
-            write_u32(
-                context.ownership_bits_address(),
-                read_u32(context.ownership_bits_address()) | 0x180,
-            );
-            write_u32(context.scheduler_timestamp_address(), timestamp);
-        }
-        let first = typed[0].ok_or(ProbeBuildError::UnsupportedPublicationShape)?;
-        let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(pipe_state);
-        write_u8(record.current_slot().get(), slot);
-        write_u8(record.last_slot().get(), slot);
-        write_u32(ring.go() as usize, 0);
-
-        let interface = usize::from(read_u8(first.interface_address()));
-        let pas = crate::dtcm::pas_stride_view_unchecked(interface);
-        let edca_slot_timing = read_u32(pas.packed_aifs().get());
-        let edca_slot_timing_cache = crate::dtcm::mac_edca_slot_timing_ptr() as usize;
-        if read_u32(edca_slot_timing_cache) != edca_slot_timing {
-            write_u32(crate::platform::mac_register(0x0e64), edca_slot_timing);
-            write_u32(edca_slot_timing_cache, edca_slot_timing);
-        }
-        let queue = usize::from(read_u8(
-            crate::dtcm::queue_to_access_category_unchecked(usize::from(pipe)).get(),
-        ));
-        let mut quantum = u32::from(read_u16(pas.txop_limit_unchecked(queue).get()));
-        let airtime = read_u32(first.word_48_address()) & 0xffff;
-        if quantum == 0 {
-            if (read_u32(first.control_bits_address()) & 0x0fff) >> 10 != 0 {
-                quantum = airtime;
-            }
-        } else if quantum <= airtime {
-            write_u16(
-                first.auxiliary_state_address(),
-                read_u16(first.auxiliary_state_address()) | 8,
-            );
-            quantum = airtime;
-        }
-        let quantum_destination = read_u32(
-            crate::dtcm::duration_quantum_pointer_unchecked(usize::from(pipe)).get(),
-        );
-        write_u32(quantum_destination as usize, quantum.wrapping_add(0x1f) >> 5);
-        if !finalize_staged_pipe(
-            &mut VolatileMacPipeMmio,
-            pipe,
-            pipe_state,
-            hardware_ring,
-            slot,
-            slot,
-        ) {
-            return Err(ProbeBuildError::PipeStateUnavailable);
-        }
-        for _ in 0..member_count {
-            crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::PUBLISHED);
-        }
-        crate::host_tx_diagnostics::record_ampdu_depth(1, member_count as u8);
     }
     Ok(())
 }
@@ -6393,7 +4486,6 @@ pub unsafe fn take_host_class0_completion() -> Option<HostClass0Completion> {
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     runtime.backend.take_completion()
 }
-
 
 /// Compact read-only snapshot of the bounded class-0 MAC backend.
 ///
@@ -7149,7 +5241,7 @@ pub unsafe fn dispatch_phy_command_2(secondary: u8) {
 /// PHY operation state and the cooperative timer list must be exclusively
 /// owned.
 #[cfg(target_arch = "arm")]
-pub unsafe fn start_phy_operation_1() -> u8 {
+pub unsafe fn start_phy_operation_1() {
     unsafe {
         debug_assert_eq!(phy_dispatch_switch_target(1), 0x0001_6f8c);
         let output = crate::dtcm::MAC_PHY_OPERATION_OUTPUT.get();
@@ -7165,13 +5257,10 @@ pub unsafe fn start_phy_operation_1() -> u8 {
             crate::dtcm::MAC_PHY_OPERATION_STATE.get(),
             u32::from(read_u8(output)),
         );
-        if publication_bisect_reached(4) {
-            return 4;
-        }
         start_scheduler_timer(
             crate::dtcm::MAC_PHY_OPERATION_TIMER.get() as u32,
             read_u32(crate::dtcm::MAC_PHY_OPERATION_TIMEOUT.get()),
-        )
+        );
     }
 }
 
@@ -7240,16 +5329,6 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 } else if status == 0x0b {
                     final_link_state = 0x0b;
                 }
-                #[cfg(feature = "experimental-depth-two-ampdu")]
-                if context.host().is_some() {
-                    write_u32(
-                        context.ownership_bits_address(),
-                        read_u32(context.ownership_bits_address()) | 0x800,
-                    );
-                    enqueue_completion_frame_node(frame_node, || {
-                        backend.special_completion_gate(frame_node)
-                    });
-                }
             } else {
                 write_u32(
                     context.ownership_bits_address(),
@@ -7265,25 +5344,6 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
                 break;
             }
             frame_node = FrameNodeAddress::new(next);
-        }
-
-        #[cfg(feature = "experimental-depth-two-ampdu")]
-        if slot_kind == 1 && first_frame_node.context().host().is_some() {
-            if link < 8 {
-                for member in 0..16 {
-                    write_u32(
-                        crate::dtcm::MAC_AGGREGATE_SLOT_TABLES
-                            .member_unchecked(usize::from(link), member)
-                            .get(),
-                        0,
-                    );
-                }
-            }
-            write_u8(
-                crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get(),
-                read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get()).wrapping_sub(1),
-            );
-            return;
         }
 
         if slot_kind == 1 {
@@ -7374,189 +5434,6 @@ pub unsafe fn complete_tx_pipe_slot<B: PipeSlotCompletionEffects>(
     }
 }
 
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-/// Consume a received compressed BlockAck for the currently owned bounded
-/// aggregate. Vendor `complete_tx_pipe_slot` copies the BA start sequence and
-/// bitmap into per-link state before `bab_process_ba_bitmap`; the bounded
-/// bring-up path classifies the exact retained two-to-four member chain.
-/// Receipt only updates retained evidence; TX status/retry handling owns retirement.
-///
-/// Returns true when the frame is a matching BA and therefore belongs to the
-/// low-MAC rather than the host RX indication path.
-///
-/// # Safety
-/// `frame` must address a live RX FIFO frame for `length` bytes, and callers
-/// must serialize this with TX publication/completion under the cooperative
-/// reactor's existing IRQ/FIQ exclusion.
-pub unsafe fn consume_depth_two_block_ack(frame: usize, length: usize) -> bool {
-    unsafe {
-        if length < 0x1c || read_u16(frame) & 0x00fc != 0x0094 {
-            return false;
-        }
-
-        let tid = (read_u16(frame + 0x10) >> 12) as u8;
-        let runtime = &mut *PROBE_EXPERIMENT.0.get();
-        let candidate = runtime.backend.publications.iter().flatten().copied().find(|entry| {
-            let Some(slot) = entry.live_slot() else {
-                return false;
-            };
-            if read_u8(slot.kind().get()) != 1
-                || read_u32(entry.context.next_in_ampdu_address()) == 0
-                || read_u8(entry.context.tid_address()) != tid
-            {
-                return false;
-            }
-            let interface = read_u8(entry.context.interface_address());
-            (0..3).all(|word| {
-                crate::vif::own_mac_word(interface, word)
-                    == Some(read_u16(frame + 4 + word * 2))
-            })
-        });
-        let Some(publication) = candidate else {
-            return false;
-        };
-
-        let mut member_nodes = [0_u32; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        let mut sequences = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-        let mut current = publication.frame_node;
-        let mut member_count = 0_usize;
-        loop {
-            if member_count == crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH
-                || member_nodes[..member_count].contains(&current.raw())
-                || !runtime.backend.publications.iter().flatten().any(|entry| {
-                    entry.pipe == publication.pipe
-                        && entry.slot == publication.slot
-                        && entry.context == current.context()
-                        && entry.frame_node == current
-                })
-            {
-                return true;
-            }
-            member_nodes[member_count] = current.raw();
-            sequences[member_count] = Some(read_u16(current.context().sequence_number_address()));
-            member_count += 1;
-
-            let next_raw = read_u32(current.context().next_in_ampdu_address());
-            if next_raw == 0 {
-                break;
-            }
-            let Some(next) = FrameNodeAddress::from_raw(next_raw) else {
-                return true;
-            };
-            current = next;
-        }
-
-        let start = read_u16(frame + 0x12) >> 4;
-        let bitmap = u64::from(read_u32(frame + 0x14))
-            | (u64::from(read_u32(frame + 0x18)) << 32);
-        let Some(current) = classify_planned_block_ack(start, bitmap, sequences) else {
-            return true;
-        };
-        if usize::from(current.member_count) != member_count {
-            return true;
-        }
-        let pipe = publication.pipe;
-        let Some(retry_index) = pipe_slot_state_index(pipe, publication.slot) else {
-            crate::halt_always!();
-        };
-        let retained = &mut runtime.backend.depth_two_block_ack[retry_index];
-        let previous = retained
-            .filter(|observation| observation.members == member_nodes)
-            .map(|observation| observation.observation);
-        let Some(observation) = merge_planned_block_ack(previous, current) else {
-            return true;
-        };
-        #[cfg(feature = "experimental-depth-four-ampdu")]
-        if previous.is_none() && member_count > 2 {
-            let outcome = if observation.states[..member_count]
-                .iter()
-                .all(|state| *state == BlockAckMemberState::Acknowledged)
-            {
-                crate::host_tx_diagnostics::ampdu_outcome::BA_ALL_ACK_RX
-            } else {
-                crate::host_tx_diagnostics::ampdu_outcome::BA_PARTIAL_RX
-            };
-            crate::host_tx_diagnostics::record_ampdu_outcome(outcome);
-        }
-        *retained = Some(RetainedAmpduBlockAck {
-            members: member_nodes,
-            observation,
-        });
-
-        // RX supplies evidence, not hardware-command retirement authority.
-        // Keep even all-ACK observations for the existing status/retry paths;
-        // do not acknowledge a TX IRQ or recycle command/cursor ownership here.
-        true
-    }
-}
-/// Exact matching-payload `txp_pipe_tx_success` at Ghidra `0x9cdc`
-/// (r2 `0x9cb8`).
-///
-/// # Safety
-/// The selected pipe, all referenced slots/frame nodes, PHY command state,
-/// and completion structures must be valid and exclusively owned.
-#[cfg(all(target_arch = "arm", feature = "experimental-depth-four-ampdu"))]
-unsafe fn service_expired_partial_block_ack_retry(
-    backend: &mut SingleProbeMacBackend,
-) -> bool {
-    unsafe {
-        for pipe in 0..4_u8 {
-            let record = pipe_record_address(pipe);
-            let programmed = read_u8(record.control().get()) & 1 != 0;
-            let armed = read_u8(record.state().get()) == 1;
-            let counter = read_u8(record.watchdog().get()) as i8;
-            if plan_pipe_watchdog(programmed, armed, counter) != PipeWatchdogAction::Expired {
-                continue;
-            }
-            let slot_index = read_u8(record.current_slot().get());
-            if slot_index >= 4 {
-                continue;
-            }
-            let retry_index = usize::from(pipe) * 4 + usize::from(slot_index);
-            let Some(observation) = backend.depth_two_block_ack[retry_index] else {
-                continue;
-            };
-            let Some(frame_node) = FrameNodeAddress::from_raw(observation.members[0]) else {
-                continue;
-            };
-            let Some(publication) = backend.publications.iter().flatten().find(|publication| {
-                publication.pipe == pipe
-                    && publication.slot == slot_index
-                    && publication.frame_node == frame_node
-            }) else {
-                continue;
-            };
-            let Some(slot) = publication.live_slot() else {
-                continue;
-            };
-            if backend.decide_retry(
-                RetryEvent::WatchdogExpiry,
-                pipe,
-                slot.raw(),
-                frame_node,
-            ) != SingleTxRetryDecision::Rearm
-            {
-                crate::host_tx_diagnostics::record_ampdu_outcome(
-                    crate::host_tx_diagnostics::ampdu_outcome::WATCHDOG_NO_REARM,
-                );
-                continue;
-            }
-            let slot_state = read_u8(slot.state().get());
-            if slot_state == 3 {
-                write_u8(slot.state().get(), 4);
-                write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 1);
-            }
-            // The watchdog proves the MAC transaction is no longer active, so
-            // retrying here cannot race a late status IRQ. This rearm therefore
-            // releases ownership without acknowledging PIPE_IRQ_PENDING.
-            backend.rearm_with_optional_irq_ack(pipe, slot.raw(), frame_node, None);
-            write_u8(record.watchdog().get(), watchdog_reload());
-            return true;
-        }
-        false
-    }
-}
-
 pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: &mut B) {
     unsafe {
         trace_tx_stage(TX_TRACE_SUCCESS);
@@ -7577,13 +5454,6 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
         write_u32(0xfff0_1a98, read_u32(0xfff0_1a98).wrapping_add(1));
         write_u8(crate::dtcm::LOW_MAC_PIPE_BUSY.get(), 0);
         write_u8(current_slot.address.state().get(), 3);
-        if current_frame.context().host().is_some() {
-            crate::host_tx_diagnostics::capture_tx_pipe_success(
-                current_frame.context().raw(),
-                pipe,
-                current,
-            );
-        }
 
         let pipe_state = read_u8(crate::dtcm::mac_pipe_state_unchecked(pipe_index).get());
         let retry_rate = read_u8(current_slot.address.retry_rate().get());
@@ -7643,15 +5513,6 @@ pub unsafe fn service_pipe_tx_success<B: PipeSuccessEffects>(pipe: u8, backend: 
             }
         }
 
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        {
-            let (packed, ring_word) = pipe_cursor_diagnostic(&mut VolatileMacPipeMmio, pipe);
-            crate::host_tx_diagnostics::trace(0x4358_0002, packed, ring_word);
-            crate::host_tx_diagnostics::capture_pipe_cursor(
-                packed,
-                !pipe_cursor_invariant_holds(packed),
-            );
-        }
         write_u8(crate::dtcm::mac_pipe_event_flag_unchecked(usize::from(pipe)).get(), 0);
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 4 {
             dispatch_phy_command_3();
@@ -7673,8 +5534,6 @@ pub trait PipeStartEffects {
 /// PHY MMIO must be valid and exclusively owned.
 pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut B) {
     unsafe {
-        #[cfg(feature = "experimental-cycle-probe")]
-        crate::cycle_probe::note_tx_start(read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()));
         trace_tx_stage(TX_TRACE_START);
         trace_tx_value(0x24, u32::from(pipe));
         write_u32(
@@ -7699,13 +5558,9 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
             crate::halt_always!();
         };
 
-        crate::host_tx_diagnostics::bump(crate::host_tx_diagnostics::counter::TX_START);
         write_u8(live_slot.address.state().get(), 2);
         let frame_node = live_slot.frame_node;
         let context = frame_node.context();
-        if context.host().is_some() {
-            crate::host_tx_diagnostics::capture_tx_start(context.raw(), pipe, current);
-        }
         if read_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get()) == 3 {
             let secondary = read_u8(
                 crate::dtcm::rate_encoding_unchecked(usize::from(read_u8(
@@ -7713,11 +5568,7 @@ pub unsafe fn service_pipe_tx_start<B: PipeStartEffects>(pipe: u8, backend: &mut
                 )))
                 .get(),
             );
-            #[cfg(feature = "experimental-cycle-probe")]
-            let command2_entry = crate::cycle_probe::command2_enter();
             dispatch_phy_command_2(secondary);
-            #[cfg(feature = "experimental-cycle-probe")]
-            crate::cycle_probe::command2_exit(command2_entry);
             if read_u8(crate::dtcm::MAC_PHY_DISPATCH_OUTPUT.get()) == 4 {
                 write_u32(crate::dtcm::MAC_PHY_OPERATION_STATE.get(), 4);
             } else {
@@ -8837,105 +6688,6 @@ fn single_frame_slot_matches(
     slot_frame_node == expected_frame_node && slot_kind == 0 && slot_frame_kind == frame_kind
 }
 
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-fn prepare_pre_go_publication<M: MacPipeMmio>(
-    mmio: &mut M,
-    input: SingleProbePublicationInput,
-    ring: TxHardwareRingAddress,
-    duration: u32,
-) {
-    let frame = input.frame_node;
-    let descriptor = TxDescriptorAddress::new(input.command_storage);
-    let record = crate::dtcm::MacPipeRecordAddress::from_raw_unchecked(input.pipe_state);
-    let slot = crate::dtcm::MacPipeSlotAddress::from_raw_unchecked(input.slot_record);
-    // Vendor txp_scheduler_run performs no descriptor readback between its
-    // trigger and GO writes. Gather the expensive image directly into BSS
-    // while the pipe is inactive, avoiding a 152-byte firmware stack copy.
-    unsafe {
-        crate::host_tx_diagnostics::begin_pre_go_snapshot();
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            0,
-            mmio.read_u32(slot.state_word().get() as u32) & 0x00ff_ffff | 0x0100_0000,
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(1, duration);
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            2,
-            mmio.read_u32(slot.frame().get() as u32),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            3,
-            mmio.read_u32(slot.auxiliary().get() as u32),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            4,
-            mmio.read_u32(slot.command().get() as u32),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(5, mmio.read_u32(frame.control_bits()));
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            6,
-            u32::from(mmio.read_u16(frame.frame_length())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            7,
-            u32::from(mmio.read_u16(frame.frame_control())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            8,
-            u32::from(mmio.read_u8(frame.request_flag_rate_bits())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            9,
-            u32::from(mmio.read_u8(frame.tx_rate())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            10,
-            u32::from(mmio.read_u16(frame.duration())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            11,
-            u32::from(mmio.read_u16(frame.payload_extended())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            12,
-            u32::from(mmio.read_u16(frame.payload_base())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(13, mmio.read_u32(frame.total_airtime()));
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            14,
-            u32::from(mmio.read_u8(frame.frame_kind())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            15,
-            u32::from(mmio.read_u8(frame.interface())),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            16,
-            u32::from(mmio.read_u8(frame.duration_slot())),
-        );
-        for index in 0..16_u32 {
-            crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-                17 + index as usize,
-                mmio.read_u32(descriptor.word_unchecked(index)),
-            );
-        }
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(33, duration);
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            34,
-            mmio.read_u32(ring.diagnostic_word_0c()),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            35,
-            mmio.read_u32(ring.diagnostic_word_10()),
-        );
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(36, 0);
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(
-            37,
-            mmio.read_u32(record.producer_slot().get() as u32) & 0x00ff_ffff | 0x0100_0000,
-        );
-        crate::host_tx_diagnostics::capture_pre_go_descriptor_shape(input.pipe, input.slot);
-    }
-}
-
 pub fn execute_single_probe_publication<M: MacPipeMmio>(
     mmio: &mut M,
     input: SingleProbePublicationInput,
@@ -8968,9 +6720,6 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     let timestamp = mmio.read_u32(0x0ac0_0004);
     mmio.write_u32(frame.scheduler_timestamp(), timestamp);
     mmio.write_u32(frame.next_in_ampdu(), 0);
-    if publication_bisect_reached(4) {
-        return 4;
-    }
 
     let timing = SingleFramePasTiming {
         payload_extended: mmio.read_u16(frame.payload_extended()),
@@ -8990,14 +6739,6 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     }
     mmio.write_u8(record.last_slot().get() as u32, slot_index);
     mmio.write_u32(ring.go(), 0);
-    #[cfg(feature = "vendor-host-tx-diagnostics")]
-    {
-        let diagnostic_duration = mmio.read_u32(slot.duration().get() as u32);
-        prepare_pre_go_publication(mmio, input, ring, diagnostic_duration);
-    }
-    if publication_bisect_reached(5) {
-        return 5;
-    }
 
     let interface = u32::from(mmio.read_u8(frame.interface()));
     let pas = crate::dtcm::pas_stride_view_unchecked(interface as usize);
@@ -9009,9 +6750,6 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
             edca_slot_timing,
         );
         mmio.write_u32(edca_slot_timing_cache, edca_slot_timing);
-    }
-    if publication_bisect_reached(6) {
-        return 6;
     }
 
     let queue = u32::from(mmio.read_u8(
@@ -9033,9 +6771,6 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         crate::dtcm::duration_quantum_pointer_unchecked(usize::from(pipe)).get() as u32,
     );
     mmio.write_u32(quantum_destination, quantum.wrapping_add(0x1f) >> 5);
-    if publication_bisect_reached(7) {
-        return 7;
-    }
 
     if !matches!(input.batch, BatchPosition::Only) {
         // A staged batch remains entirely software-owned until
@@ -9044,20 +6779,7 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
         return 0;
     }
 
-    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-    unsafe {
-        crate::hif::validate_tx_boundary(
-            0x13,
-            pipe,
-            slot_index,
-            input.command_storage,
-            input.hardware_ring,
-        );
-    }
     mmio.write_u32(PIPE_IRQ_TRIGGER, (1_u32 << pipe) << 25);
-    if publication_bisect_reached(8) {
-        return 8;
-    }
 
     let active_count = mmio
         .read_u8(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32)
@@ -9074,36 +6796,8 @@ pub fn execute_single_probe_publication<M: MacPipeMmio>(
     mmio.write_u8(record.state().get() as u32, 1);
     let pipe_flags = mmio.read_u8(record.control().get() as u32) | 1;
     mmio.write_u8(record.control().get() as u32, pipe_flags);
-    mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
-    #[cfg(feature = "vendor-host-tx-diagnostics")]
-    unsafe {
-        let actual_ring_duration = mmio.read_u32(ring.duration_fifo());
-        crate::host_tx_diagnostics::write_pre_go_snapshot_word(33, actual_ring_duration);
-        crate::host_tx_diagnostics::commit_pre_go_snapshot();
-    }
-    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-    unsafe {
-        crate::hif::validate_tx_boundary(
-            0x14,
-            pipe,
-            slot_index,
-            input.command_storage,
-            input.hardware_ring,
-        );
-    }
+    mmio.write_u8(record.watchdog().get() as u32, PIPE_WATCHDOG_RELOAD);
     mmio.write_u32(ring.go(), 1);
-    #[cfg(feature = "experimental-cycle-probe")]
-    crate::cycle_probe::note_go(pipe);
-    #[cfg(all(feature = "vendor-host-tx-diagnostics", target_arch = "arm"))]
-    unsafe {
-        crate::hif::validate_tx_boundary(
-            0x15,
-            pipe,
-            slot_index,
-            input.command_storage,
-            input.hardware_ring,
-        );
-    }
     0
 }
 
@@ -9153,10 +6847,8 @@ fn finalize_staged_pipe<M: MacPipeMmio>(
     mmio.write_u8(record.state().get() as u32, 1);
     let pipe_flags = mmio.read_u8(record.control().get() as u32) | 1;
     mmio.write_u8(record.control().get() as u32, pipe_flags);
-    mmio.write_u8(record.watchdog().get() as u32, watchdog_reload());
+    mmio.write_u8(record.watchdog().get() as u32, PIPE_WATCHDOG_RELOAD);
     mmio.write_u32(ring.go(), 1);
-    #[cfg(feature = "experimental-cycle-probe")]
-    crate::cycle_probe::note_go(pipe);
     true
 }
 
@@ -9195,7 +6887,6 @@ pub struct PublishedProbePublication {
     pub pipe: u8,
     pub slot: u8,
     pub checksum: u32,
-    pub bisect_stage: u8,
 }
 
 /// Software-owned pipe reservation with a fully written command list.
@@ -9261,12 +6952,11 @@ impl PreparedProbePublication {
                     .unwrap_or(ProbeBuildError::UnsupportedPublicationShape));
             }
 
-            let publication = |bisect_stage| PublishedProbePublication {
+            let publication = PublishedProbePublication {
                 context: ContextAddress::new(self.context.context),
                 pipe: self.pipe,
                 slot: self.slot,
                 checksum: self.checksum,
-                bisect_stage,
             };
 
             if !backend.register_publication(
@@ -9280,14 +6970,8 @@ impl PreparedProbePublication {
                     .err()
                     .unwrap_or(ProbeBuildError::InvalidContextPointer));
             }
-            if publication_bisect_reached(3) {
-                return Ok(publication(3));
-            }
             if self.start_phy {
-                let phy_bisect_stage = start_phy_operation_1();
-                if phy_bisect_stage != 0 {
-                    return Ok(publication(phy_bisect_stage));
-                }
+                start_phy_operation_1();
             }
             let pipe_state = pipe_state_address(self.pipe);
             let hardware_ring = read_u32(pipe_state as usize + 8);
@@ -9327,25 +7011,11 @@ impl PreparedProbePublication {
                     .err()
                     .unwrap_or(ProbeBuildError::PipeStateUnavailable));
             }
-            if publication_bisect_reached(5) {
-                return Ok(publication(5));
-            }
-            if publication_bisect_reached(6) {
-                return Ok(publication(6));
-            }
             // Vendor queue accounting increments the global active-completion
             // count before hardware ownership. `service_completion_drain`
             // performs the matching decrement before callback return.
             set_active_pas_contexts(active_pas_contexts().wrapping_add(1));
-            if publication_bisect_reached(7) {
-                return Ok(publication(7));
-            }
             reset_tx_trace(self.pipe, self.slot);
-            if publication_bisect_reached(8) {
-                return Ok(publication(8));
-            }
-            #[cfg(feature = "vendor-host-tx-diagnostics")]
-            crate::radio::record_tx_command_signature(6, self.command.raw());
             execute_single_probe_publication(
                 &mut VolatileMacPipeMmio,
                 SingleProbePublicationInput {
@@ -9363,7 +7033,7 @@ impl PreparedProbePublication {
             // Mirror the execution record through ordinary WSM event
             // indications so the host can dump it without resetting the core.
             trace_tx_stage(TX_TRACE_GO);
-            Ok(publication(0))
+            Ok(publication)
         }
     }
 
@@ -10455,7 +8125,6 @@ pub enum HostManagementTxReport {
     Idle,
     Published {
         packet_id: u32,
-        bisect_stage: u8,
     },
     Servicing,
     Completed {
@@ -10510,8 +8179,6 @@ pub unsafe fn service_host_management_tx(
 ) -> HostManagementTxReport {
     let runtime = unsafe { &mut *PROBE_EXPERIMENT.0.get() };
     if let Some(published) = runtime.host_published {
-        // Instrumentation: entered the waiting-for-completion state.
-        unsafe { management_trace_bump(6) };
         if let Some((request, _)) = request {
             return HostManagementTxReport::Failed {
                 packet_id: request.packet_id,
@@ -10521,13 +8188,8 @@ pub unsafe fn service_host_management_tx(
         let report =
             unsafe { service_single_probe_runtime_inactive(&mut runtime.backend, max_events) };
         let Some(completion) = report.completion else {
-            unsafe { management_trace_bump(4) };
             return HostManagementTxReport::Servicing;
         };
-        unsafe {
-            management_trace_bump(3);
-            management_trace_set(5, u32::from(completion.status));
-        }
         let context = ContextAddress::new(completion.context);
         let completion_status = completion.status;
         if context != published.context {
@@ -10571,13 +8233,6 @@ pub unsafe fn service_host_management_tx(
             error: ProbeBuildError::PipeSlotBusy,
         };
     }
-    select_publication_bisect(request.frame);
-    if publication_bisect_reached(1) {
-        return HostManagementTxReport::Published {
-            packet_id: request.packet_id,
-            bisect_stage: 1,
-        };
-    }
     let prepared = match unsafe { prepare_host_management_publication(request, if_id) } {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -10587,12 +8242,6 @@ pub unsafe fn service_host_management_tx(
             };
         }
     };
-    if publication_bisect_reached(2) {
-        return HostManagementTxReport::Published {
-            packet_id: request.packet_id,
-            bisect_stage: 2,
-        };
-    }
     let published = match unsafe { prepared.publish(&mut runtime.backend) } {
         Ok(published) => published,
         Err(error) => {
@@ -10602,23 +8251,11 @@ pub unsafe fn service_host_management_tx(
             };
         }
     };
-    if published.bisect_stage == 0 {
-        runtime.host_published = Some(published);
-        runtime.host_packet_id = request.packet_id;
-        runtime.host_rate = request.max_tx_rate;
-        // Instrumentation: publication armed and waiting for its completion.
-        unsafe { management_trace_bump(0) };
-    } else {
-        // Instrumentation: publication stopped at a bisect stage, so nothing is
-        // waiting for a completion and no confirmation can follow.
-        unsafe {
-            management_trace_bump(1);
-            management_trace_set(2, u32::from(published.bisect_stage));
-        }
-    }
+    runtime.host_published = Some(published);
+    runtime.host_packet_id = request.packet_id;
+    runtime.host_rate = request.max_tx_rate;
     HostManagementTxReport::Published {
         packet_id: request.packet_id,
-        bisect_stage: published.bisect_stage,
     }
 }
 
@@ -11038,7 +8675,7 @@ pub(crate) fn plan_planned_block_ack_actions(
     })
 }
 
-#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SelectiveAmpduRetryPlan {
     pub actions: [Option<BlockAckMemberAction>;
@@ -11047,8 +8684,7 @@ pub(crate) struct SelectiveAmpduRetryPlan {
     pub retry_count: u8,
 }
 
-#[cfg(any(test, feature = "experimental-depth-four-ampdu"))]
-#[cfg_attr(feature = "experimental-depth-eight-ampdu", inline(always))]
+#[cfg(test)]
 pub(crate) fn plan_selective_ampdu_retry(
     observation: PlannedBlockAck,
     retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
@@ -11173,13 +8809,6 @@ mod tests {
             BatchPosition::Last,
             0,
         ));
-        #[cfg(not(feature = "four-slot-ordinary"))]
-        assert!(!publication_registration_allowed(
-            [true, false, false, false],
-            BatchPosition::Middle,
-            1,
-        ));
-        #[cfg(feature = "four-slot-ordinary")]
         {
             assert!(publication_registration_allowed(
                 [true, false, false, false],
@@ -12675,7 +10304,7 @@ mod tests {
         mmio.set(pipe_state + 4, 8);
         mmio.set(crate::dtcm::LOW_MAC_ACTIVE_TX_COUNT.get() as u32, 2);
 
-        let bisect_stage = execute_single_probe_publication(
+        let result = execute_single_probe_publication(
             &mut mmio,
             SingleProbePublicationInput {
                 pipe: 0,
@@ -12690,7 +10319,7 @@ mod tests {
             },
         );
 
-        assert_eq!(bisect_stage, 0);
+        assert_eq!(result, 0);
         assert_eq!(mmio.get(frame.raw() + 0x2c), 0x103);
         assert_eq!(mmio.get(frame.raw() + 0x18), 0x1234);
         assert_eq!(mmio.get(frame.raw() + 0x3c), 0);
@@ -12798,17 +10427,6 @@ mod tests {
             .map(|&(_, value)| value)
             .collect::<std::vec::Vec<_>>();
         assert_eq!(duration_writes, [0x1111, 0x2222, 0x3333, 0x4444]);
-    }
-
-    #[test]
-    fn publication_bisect_matches_only_the_selected_nonzero_boundary() {
-        assert_eq!(parse_decimal_u8("0"), 0);
-        assert_eq!(parse_decimal_u8("15"), 15);
-        assert_eq!(parse_decimal_u8("255"), 255);
-        assert!(!publication_bisect_matches(0, 0));
-        assert!(!publication_bisect_matches(0, 6));
-        assert!(publication_bisect_matches(6, 6));
-        assert!(!publication_bisect_matches(6, 7));
     }
 
     #[test]
@@ -13661,7 +11279,11 @@ mod tests {
             validated_tx_frame(0x0901_4fe8, 42).map(TxFrameAddress::raw),
             Some(0x0901_4fe8),
         );
-        assert_eq!(validated_tx_frame(0x0901_4fe8, 23), None);
+        assert_eq!(
+            validated_tx_frame(0x0901_4fe8, CONTROL_FRAME_MIN_LENGTH).map(TxFrameAddress::raw),
+            Some(0x0901_4fe8),
+        );
+        assert_eq!(validated_tx_frame(0x0901_4fe8, CONTROL_FRAME_MIN_LENGTH - 1), None);
         assert_eq!(validated_tx_frame(0x0001_4fe8, 42), None);
         assert_eq!(
             validated_tx_frame(packet_ram::RUNTIME_CPU_END - 24, 24).map(TxFrameAddress::raw),
@@ -13726,7 +11348,7 @@ mod tests {
         );
         assert_eq!(
             build_single_frame_pipe_descriptor(SingleFramePipeInput {
-                frame_length: DOT11_FIXED_HEADER_LENGTH - 1,
+                frame_length: CONTROL_FRAME_MIN_LENGTH - 1,
                 ..input
             }),
             Err(ProbeBuildError::PacketRamMismatch),
@@ -14136,30 +11758,6 @@ mod tests {
             ..input
         })
         .is_none());
-    }
-
-    #[cfg(feature = "experimental-depth-eight-ampdu")]
-    #[test]
-    fn planned_depth_eight_ampdu_fits_the_packet_record_stream() {
-        let members = core::array::from_fn(|index| {
-            Some(PlannedAmpduMember {
-                frame_state: 0x0901_0000 + index as u32 * 0x400,
-                frame_length: 1500,
-            })
-        });
-        let descriptor = build_planned_ampdu_descriptor(PlannedAmpduInput {
-            members,
-            phy_rate_word: 0x031407,
-            phy_control_word: 0x06c006,
-            hardware_rate: 0x0c,
-            spacing_selector: 2,
-        })
-        .expect("eight members must fit the 0x2a0-byte software record");
-        assert_eq!(descriptor.member_count, 8);
-        assert_eq!(descriptor.length, 23);
-        assert_eq!(descriptor.aggregate_length, 0x2f58);
-        assert_eq!(descriptor.words[22], 0xe400_0000);
-        assert_eq!(descriptor.phy_words[2], 0x520c_2f58);
     }
 
     #[test]

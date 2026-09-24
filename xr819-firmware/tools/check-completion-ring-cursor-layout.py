@@ -64,7 +64,7 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
 })
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
     ('rust_main', 0x04000260): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04000260): 1,
+    ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04000260): 1,
 })
 STRUCT = '#[repr(C, align(4))] struct CompletionCallbackPrefix { completion_prefix_suffix: OpaqueBytes<0x30>, p2p_action_offsets: [SharedU8; 8] } #[repr(C, align(4))] struct RingCursorMapTables { beacon_mask_words: [SharedU32; 8], mib_defaults_template: OpaqueBytes<0x30> }'
 REQUIRED = (

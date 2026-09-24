@@ -47,25 +47,20 @@ FORBIDDEN_FORMS = (
 # Checked live-slot construction later materializes two instruction-shaped
 # words and one additional decoded load for that existing owner. Shared
 # retry-slot validation folds one of those instruction-shaped words again.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001D12: 1,
-    0x04001D18: 2,
-    0x04001D1C: 1,
-    0x04001D2C: 4,
-    0x04001D38: 2,
-    0x04001D40: 3,
-})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_phy_operation_1', 0x04001D18): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_phy_operation_1', 0x04001D38): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001D2C): 5,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001D40): 5,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x04001D12): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001D1C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001D2C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x04001D18): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x04001D38): 1,
-})
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001D12: 1, 0x04001D18: 2, 0x04001D1C: 1, 0x04001D2C: 4, 0x04001D38: 2, 0x04001D40: 2})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
+    {
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21start_phy_operation_1', 0x04001D18): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21start_phy_operation_1', 0x04001D38): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001D2C): 5,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001D40): 4,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x04001D12): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001D1C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy25finish_channel_transition', 0x04001D2C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan7service', 0x04001D18): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan7service', 0x04001D38): 1,
+    }
+)
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:

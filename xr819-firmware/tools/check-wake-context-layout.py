@@ -64,7 +64,7 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
     {0x04003670: 1}
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
-    {('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04003670): 2}
+    {('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac23reinitialize_after_wake', 0x04003670): 2}
 )
 
 

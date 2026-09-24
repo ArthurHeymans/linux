@@ -8,8 +8,6 @@
 use core::arch::asm;
 #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
 use core::arch::global_asm;
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-use core::cell::UnsafeCell;
 
 use crate::packet_ram;
 use crate::radio::{self, PendingIndication, RxToken};
@@ -67,24 +65,6 @@ const TX_DESCRIPTOR_BASE: usize = 0x0ab0_0100;
 const RX_BUFFER_SIZE: usize = packet_ram::HIF_INPUT_SIZE;
 const RX_BUFFER_COUNT: usize = packet_ram::HIF_INPUT_COUNT;
 
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-struct SharedOutputHeaders(UnsafeCell<[u32; 64]>);
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe impl Sync for SharedOutputHeaders {}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-static OUTPUT_HEADERS: SharedOutputHeaders = SharedOutputHeaders(UnsafeCell::new([0; 64]));
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-struct SharedOutputHashes(UnsafeCell<[u32; 64]>);
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe impl Sync for SharedOutputHashes {}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-static OUTPUT_HASHES: SharedOutputHashes = SharedOutputHashes(UnsafeCell::new([0; 64]));
-
 /// Size of each of the four linker-owned HIF output buffers. The exact pre-HIF
 /// clock transition makes this packet-memory bank CPU-accessible.
 pub const SHARED_BUFFER_SIZE: usize = packet_ram::HIF_OUTPUT_SIZE;
@@ -122,73 +102,6 @@ fn response_storage_available(
 
 const fn descriptor_sequence(header_id: u16) -> u32 {
     ((header_id >> 13) & 3) as u32
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn output_prefix_hash(buffer: u32, length: u16) -> u32 {
-    let count = usize::from(length).min(64);
-    let mut hash = 0x811c_9dc5_u32;
-    for offset in 0..count {
-        let byte = unsafe { ((buffer as usize + offset) as *const u8).read_volatile() };
-        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
-    }
-    hash
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn matching_tx_command(words: [u32; 4]) -> (u32, u32, u32) {
-    let mut best_command = 0_u32;
-    let mut best_state = 0_u32;
-    let mut best_score = 0_u8;
-    for pipe in 0..4 {
-        for slot in 0..4 {
-            let command = packet_ram::tx_command(pipe, slot);
-            let mut score = 0_u8;
-            let mut first_match = 0_usize;
-            for offset in (0x0c..=0x40).step_by(4) {
-                let command_word = unsafe { ((command + offset) as *const u32).read_volatile() };
-                if words
-                    .iter()
-                    .copied()
-                    .any(|word| word != 0 && word == command_word)
-                {
-                    score = score.saturating_add(1);
-                    if first_match == 0 {
-                        first_match = offset;
-                    }
-                }
-            }
-            if score > best_score {
-                best_score = score;
-                best_command = command as u32;
-                best_state = pipe as u32
-                    | ((slot as u32) << 8)
-                    | ((first_match as u32) << 16)
-                    | (u32::from(score) << 24);
-            }
-        }
-    }
-    let ring_state = if best_command == 0 {
-        0
-    } else {
-        let pipe = usize::try_from(best_state & 3).unwrap_or(0);
-        unsafe { (crate::platform::tx_ring_register(pipe, 0x20) as *const u32).read_volatile() }
-    };
-    (best_command, best_state, ring_state)
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-pub unsafe fn validate_tx_boundary(phase: u32, pipe: u8, slot: u8, command: u32, ring: u32) {
-    unsafe { radio::validate_tx_boundary(phase, pipe, slot, command, ring) };
-    // Report-only mode. This is the fourth halting detector for the same
-    // corruption: it fires when an RX slot already staged for the host is
-    // overwritten. Like the others it stops the firmware on first sight, which
-    // makes any throughput measurement impossible.
-    // Do NOT count corruption here. This runs several times per main-loop pass,
-    // so a counter bump at this point measures call frequency rather than
-    // corruption events (it read 2,162,040 on the first attempt). Corruption is
-    // counted where it is actually detected, in `radio.rs`.
-    return;
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -236,24 +149,6 @@ pub struct ReceivedRequest {
     pub id: u16,
     pub if_id: u8,
     pub buffer: RequestBuffer,
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-pub struct DebugSnapshot {
-    pub tx_queued: u32,
-    pub tx_producer: u32,
-    pub tx_consumer: u32,
-    pub tx_length_mask: u32,
-    pub descriptor_address: u32,
-    pub descriptor_control: u32,
-    pub hif_control: u32,
-    pub hif_length_mask: u32,
-    pub rx_producer: u32,
-    pub rx_consumer: u32,
-    pub rx_descriptor_address: u32,
-    pub rx_descriptor_control: u32,
-    pub request_polls: u32,
-    pub malformed_requests: u32,
 }
 
 /// Firmware-owned HIF ring cursors formerly stored in the vendor DTCM record
@@ -324,10 +219,6 @@ pub struct Transport {
     prepared_shared_slot: Option<u8>,
     tx_completion_pending: bool,
     rx_request_pending: bool,
-    #[cfg(feature = "vendor-host-tx-diagnostics")]
-    request_polls: u32,
-    #[cfg(feature = "vendor-host-tx-diagnostics")]
-    malformed_requests: u32,
 }
 
 #[cfg(all(target_arch = "arm", not(target_feature = "thumb-mode")))]
@@ -508,11 +399,6 @@ pub unsafe fn publish_terminal_exception<const N: usize>(registers: [u32; N], na
     // Report-and-continue builds must not kill the link they are measuring.
     {
         let _ = (registers, name);
-        unsafe {
-            crate::host_tx_diagnostics::bump(
-                crate::host_tx_diagnostics::counter::SUPPRESSED_EXCEPTION,
-            );
-        }
     };
 }
 
@@ -601,10 +487,6 @@ impl Transport {
             prepared_shared_slot: None,
             tx_completion_pending: false,
             rx_request_pending: false,
-            #[cfg(feature = "vendor-host-tx-diagnostics")]
-            request_polls: 0,
-            #[cfg(feature = "vendor-host-tx-diagnostics")]
-            malformed_requests: 0,
         }
     }
 
@@ -615,46 +497,9 @@ impl Transport {
         publish_emergency_descriptor(self.shared, length);
     }
 
-    #[cfg(feature = "vendor-host-tx-diagnostics")]
-    fn validate_staged_tx_buffers(&self) {
-        let producer = tx_producer();
-        let mut consumer = self.state.tx_consumer;
-        while consumer != producer {
-            let queue_slot = (consumer & 63) as usize;
-            let descriptor_slot = (consumer & 3) as usize;
-            let buffer_address = self.queues.tx_buffers[queue_slot];
-            let expected = unsafe { (*OUTPUT_HEADERS.0.get())[queue_slot] };
-            let actual = if buffer_address == 0 {
-                0
-            } else {
-                unsafe { (buffer_address as *const u32).read_volatile() }
-            };
-            if buffer_address == 0 || actual != expected {
-                // Report-only: publishing here would kill the link outright.
-                // The exception path writes WSM id 0x0800 with no sequence bits
-                // and bypasses `stage_next_tx`, so the host sees an
-                // out-of-sequence message and terminates its BH thread. That is
-                // acceptable when halting and fatal when continuing.
-                {
-                    unsafe {
-                        crate::host_tx_diagnostics::bump(
-                            crate::host_tx_diagnostics::counter::OUTPUT_CORRUPTION,
-                        );
-                    }
-                    consumer = consumer.wrapping_add(1);
-                    continue;
-                }
-                crate::halt_always!();
-            }
-            consumer = consumer.wrapping_add(1);
-        }
-    }
-
     /// Polls and acknowledges HIF status like the reference IRQ 13 handler
     /// before it dispatches the corresponding software events.
     pub fn service_interrupt(&mut self) -> u32 {
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        self.validate_staged_tx_buffers();
         let status = self.shared.status.get();
         if status != 0 {
             self.shared.interrupt_ack.set(status);
@@ -670,30 +515,6 @@ impl Transport {
             drain_write_buffer();
         }
         status
-    }
-
-    #[cfg(feature = "vendor-host-tx-diagnostics")]
-    pub fn debug_snapshot(&self) -> DebugSnapshot {
-        let rx_consumer = self.state.rx_consumer;
-        let rx_descriptor = unsafe {
-            &(*(RX_DESCRIPTOR_BASE as *const RxShared)).descriptors[(rx_consumer & 31) as usize]
-        };
-        DebugSnapshot {
-            tx_queued: self.state.tx_queued,
-            tx_producer: tx_producer(),
-            tx_consumer: self.state.tx_consumer,
-            tx_length_mask: self.state.tx_length_mask,
-            descriptor_address: self.shared.tx[0].address.get(),
-            descriptor_control: self.shared.tx[0].control.get(),
-            hif_control: self.shared.control.get(),
-            hif_length_mask: self.shared.interrupt_ack.get(),
-            rx_producer: self.state.rx_producer,
-            rx_consumer,
-            rx_descriptor_address: rx_descriptor.address.get(),
-            rx_descriptor_control: rx_descriptor.control.get(),
-            request_polls: self.request_polls,
-            malformed_requests: self.malformed_requests,
-        }
     }
 
     fn stage_next_tx(&mut self) {
@@ -720,15 +541,6 @@ impl Transport {
             (((staged.wrapping_add(unsafe { emergency_sequence_skew() })) as u16) & 7) << 13;
         let sequenced_id = (header_id & 0x1fff) | sequence;
         unsafe { ((buffer_address + 2) as *mut u16).write_volatile(sequenced_id) };
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        {
-            unsafe {
-                (*OUTPUT_HEADERS.0.get())[queue_slot] =
-                    u32::from(length) | (u32::from(sequenced_id) << 16);
-                (*OUTPUT_HASHES.0.get())[queue_slot] =
-                    output_prefix_hash(buffer_address as u32, length);
-            }
-        }
 
         let descriptor_slot = (staged & 3) as usize;
         let descriptor = &self.shared.tx[descriptor_slot];
@@ -736,15 +548,6 @@ impl Transport {
         let descriptor_control =
             owned_descriptor_length(length) | (descriptor_sequence(header_id) << 13);
         descriptor.control.set(descriptor_control);
-        unsafe {
-            crate::host_tx_diagnostics::record(
-                crate::host_tx_diagnostics::EVENT_DESCRIPTOR_STAGE,
-                descriptor_slot as u16,
-                buffer_address as u32,
-                (u32::from(header_id) << 16) | u32::from(length),
-                descriptor_control,
-            );
-        }
         set_tx_producer(staged.wrapping_add(1));
     }
 
@@ -764,20 +567,11 @@ impl Transport {
 
             let queue_slot = (queue_consumer & 63) as usize;
             let buffer_address = self.queues.tx_buffers[queue_slot];
-            let header = if buffer_address == 0 {
+            let _header = if buffer_address == 0 {
                 0
             } else {
                 unsafe { (buffer_address as *const u32).read_volatile() }
             };
-            unsafe {
-                crate::host_tx_diagnostics::record(
-                    crate::host_tx_diagnostics::EVENT_DESCRIPTOR_RECLAIM,
-                    descriptor_slot as u16,
-                    buffer_address,
-                    header,
-                    self.shared.tx[descriptor_slot].control.get(),
-                );
-            }
 
             consumer = consumer.wrapping_add(1);
             self.state.tx_consumer = consumer;
@@ -790,25 +584,11 @@ impl Transport {
             self.state.tx_reclaimed = queue_consumer;
             if let Some(token) = self.output_releases[queue_slot].take() {
                 unsafe {
-                    crate::host_tx_diagnostics::record(
-                        crate::host_tx_diagnostics::EVENT_MESSAGE_RELEASE,
-                        0x0804,
-                        buffer_address,
-                        queue_consumer,
-                        0,
-                    );
                     radio::complete_host_transfer(token);
                 }
             }
             if let Some(shared_slot) = self.output_shared_slots[queue_slot].take() {
                 self.shared_slots_in_use[usize::from(shared_slot)] = false;
-            }
-            #[cfg(feature = "vendor-host-tx-diagnostics")]
-            {
-                unsafe {
-                    (*OUTPUT_HEADERS.0.get())[queue_slot] = 0;
-                    (*OUTPUT_HASHES.0.get())[queue_slot] = 0;
-                }
             }
             self.queues.tx_buffers[queue_slot] = 0;
         }
@@ -872,15 +652,6 @@ impl Transport {
             .control
             .write(DescriptorControl::LENGTH.val((RX_BUFFER_SIZE as u32 + 1) & 0x1fff));
         self.state.rx_producer = producer.wrapping_add(1);
-        unsafe {
-            crate::host_tx_diagnostics::record(
-                crate::host_tx_diagnostics::EVENT_REQUEST_CREDIT,
-                producer_slot as u16,
-                buffer_address as u32,
-                producer.wrapping_add(1),
-                self.state.rx_consumer,
-            );
-        }
     }
 
     pub fn release_request(&mut self, token: RequestReleaseToken) {
@@ -931,10 +702,6 @@ impl Transport {
     }
 
     pub fn poll_request(&mut self) -> Option<ReceivedRequest> {
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        {
-            self.request_polls = self.request_polls.wrapping_add(1);
-        }
         self.reclaim_tx();
         // Every request may need an immediate response. Queue space alone is
         // insufficient: RX output can occupy all shared response buffers.
@@ -962,25 +729,12 @@ impl Transport {
         let buffer_address = self.queues.rx_buffers[slot] as usize;
         let descriptor_len = (control & 0x1ffe) as usize;
         if buffer_address == 0 || descriptor_len < 4 {
-            #[cfg(feature = "vendor-host-tx-diagnostics")]
-            {
-                self.malformed_requests = self.malformed_requests.wrapping_add(1);
-            }
             self.recycle_rx_buffer(consumer, buffer_address);
             return None;
         }
 
         let wire_len = unsafe { (buffer_address as *const u16).read_volatile() as usize };
         let raw_id = unsafe { ((buffer_address + 2) as *const u16).read_volatile() };
-        unsafe {
-            crate::host_tx_diagnostics::record(
-                crate::host_tx_diagnostics::EVENT_REQUEST_SEEN,
-                slot as u16,
-                buffer_address as u32,
-                (u32::from(raw_id) << 16) | wire_len as u32,
-                control,
-            );
-        }
         // Host-to-firmware descriptors may contain requests only. Under heavy
         // traffic we have observed a consumed output buffer reappear on this
         // ring with a 0x04xx response header. Never dispatch such a reflected
@@ -1017,18 +771,6 @@ impl Transport {
             crate::halt_always!();
         }
         if wire_len < 4 || raw_id & 0x0c00 != 0 {
-            unsafe {
-                crate::host_tx_diagnostics::freeze(
-                    1,
-                    buffer_address as u32,
-                    (u32::from(raw_id) << 16) | wire_len as u32,
-                    control,
-                );
-            }
-            #[cfg(feature = "vendor-host-tx-diagnostics")]
-            {
-                self.malformed_requests = self.malformed_requests.wrapping_add(1);
-            }
             self.recycle_rx_buffer(consumer, buffer_address);
             return None;
         }
@@ -1045,15 +787,6 @@ impl Transport {
         // the WSM TX confirmation.
         self.detach_rx_buffer(consumer);
         self.schedule_ready_successor_request();
-        unsafe {
-            crate::host_tx_diagnostics::record(
-                crate::host_tx_diagnostics::EVENT_REQUEST_DETACHED,
-                slot as u16,
-                buffer_address as u32,
-                (u32::from(raw_id) << 16) | length as u32,
-                consumer.wrapping_add(1),
-            );
-        }
 
         Some(ReceivedRequest {
             id,
@@ -1085,24 +818,7 @@ impl Transport {
         self.output_releases[queue_slot] = release;
         self.output_shared_slots[queue_slot] = shared_slot;
         self.state.tx_queued = queued.wrapping_add(1);
-        let header = unsafe { (buffer_address as *const u32).read_volatile() };
-        #[cfg(feature = "vendor-host-tx-diagnostics")]
-        {
-            unsafe {
-                (*OUTPUT_HEADERS.0.get())[queue_slot] = header;
-                (*OUTPUT_HASHES.0.get())[queue_slot] =
-                    output_prefix_hash(buffer_address as u32, length);
-            }
-        }
-        unsafe {
-            crate::host_tx_diagnostics::record(
-                crate::host_tx_diagnostics::EVENT_OUTPUT_ENQUEUE,
-                queue_slot as u16,
-                buffer_address as u32,
-                header,
-                queued.wrapping_add(1),
-            );
-        }
+        let _header = unsafe { (buffer_address as *const u32).read_volatile() };
         self.stage_next_tx();
         drain_write_buffer();
     }

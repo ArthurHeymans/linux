@@ -1,6 +1,6 @@
 {
   "candidate_only": {
-    "_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch": {
+    "_RNvMs1_NtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch": {
       "address": 11660,
       "instructions": 217,
       "memory_mnemonics_sha256": "ca0d732036e637c488184aabaecc31e55f55b1cdd7e35016fe96f8dfde5e9c4d",
@@ -10,7 +10,7 @@
       "size": 472,
       "stack": 144
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware11rate_policy18rate_for_try_count": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware11rate_policy18rate_for_try_count": {
       "address": 10580,
       "instructions": 40,
       "memory_mnemonics_sha256": "8ab444456cd29db347240298ec34c83ffa2509ba6654b35207f40b7c067d9052",
@@ -24,7 +24,7 @@
   "candidate_symbol_count": 197,
   "candidate_text_sha256": "18c7dab420e7c79ee6065ec826026be4b578906e8d5954b61355fbe76c1dc839",
   "changed_common": {
-    "_RINvNtCsbx17WDetRei_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_": {
+    "_RINvNtCs2QKOjPfuf9x_14xr819_firmware2tx21complete_tx_pipe_slotNtB2_21SingleProbeMacBackendEB4_": {
       "candidate": {
         "address": 7732,
         "instructions": 155,
@@ -46,7 +46,7 @@
         "stack": 56
       }
     },
-    "_RINvNtCsbx17WDetRei_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_": {
+    "_RINvNtCs2QKOjPfuf9x_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_": {
       "candidate": {
         "address": 8584,
         "instructions": 96,
@@ -68,7 +68,7 @@
         "stack": 24
       }
     },
-    "_RINvNtCsbx17WDetRei_14xr819_firmware3hif21publish_exception_nowKj12_EB4_": {
+    "_RINvNtCs2QKOjPfuf9x_14xr819_firmware3hif21publish_exception_nowKj12_EB4_": {
       "candidate": {
         "address": 10664,
         "instructions": 59,
@@ -90,7 +90,7 @@
         "stack": 24
       }
     },
-    "_RNCINvNtCsbx17WDetRei_14xr819_firmware2tx29service_power_save_completionNtB4_21SingleProbeMacBackendE0B6_": {
+    "_RNCINvNtCs2QKOjPfuf9x_14xr819_firmware2tx29service_power_save_completionNtB4_21SingleProbeMacBackendE0B6_": {
       "candidate": {
         "address": 8568,
         "instructions": 5,
@@ -134,7 +134,7 @@
         "stack": 24
       }
     },
-    "_RNvMs1_NtCsbx17WDetRei_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start": {
+    "_RNvMs1_NtCs2QKOjPfuf9x_14xr819_firmware3phyNtB5_26ChannelTransitionScheduler5start": {
       "candidate": {
         "address": 12132,
         "instructions": 128,
@@ -156,7 +156,7 @@
         "stack": 112
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport10initialize": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport10initialize": {
       "candidate": {
         "address": 27664,
         "instructions": 120,
@@ -178,7 +178,7 @@
         "stack": 944
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport10reclaim_tx": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport10reclaim_tx": {
       "candidate": {
         "address": 28436,
         "instructions": 112,
@@ -200,7 +200,7 @@
         "stack": 56
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport12poll_request": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport12poll_request": {
       "candidate": {
         "address": 27940,
         "instructions": 159,
@@ -222,7 +222,7 @@
         "stack": 48
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport13output_buffer": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport13output_buffer": {
       "candidate": {
         "address": 28352,
         "instructions": 30,
@@ -244,7 +244,7 @@
         "stack": 16
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport13stage_next_tx": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport13stage_next_tx": {
       "candidate": {
         "address": 28688,
         "instructions": 58,
@@ -266,7 +266,7 @@
         "stack": 24
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport14enqueue_output": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport14enqueue_output": {
       "candidate": {
         "address": 29148,
         "instructions": 53,
@@ -288,7 +288,7 @@
         "stack": 40
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport15release_request": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport15release_request": {
       "candidate": {
         "address": 28280,
         "instructions": 31,
@@ -310,7 +310,7 @@
         "stack": 16
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport16output_available": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport16output_available": {
       "candidate": {
         "address": 29268,
         "instructions": 35,
@@ -332,7 +332,7 @@
         "stack": 16
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place": {
       "candidate": {
         "address": 29344,
         "instructions": 113,
@@ -354,7 +354,7 @@
         "stack": 56
       }
     },
-    "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport7publish": {
+    "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport7publish": {
       "candidate": {
         "address": 29616,
         "instructions": 39,
@@ -376,7 +376,7 @@
         "stack": 32
       }
     },
-    "_RNvMs6_NtCsbx17WDetRei_14xr819_firmware3wsmNtB5_16StartScanRequest4ssid": {
+    "_RNvMs6_NtCs2QKOjPfuf9x_14xr819_firmware3wsmNtB5_16StartScanRequest4ssid": {
       "candidate": {
         "address": 29724,
         "instructions": 45,
@@ -398,7 +398,7 @@
         "stack": 24
       }
     },
-    "_RNvMs7_NtCsbx17WDetRei_14xr819_firmware3wsmNtB5_11JoinRequest5parse": {
+    "_RNvMs7_NtCs2QKOjPfuf9x_14xr819_firmware3wsmNtB5_11JoinRequest5parse": {
       "candidate": {
         "address": 30108,
         "instructions": 109,
@@ -420,7 +420,7 @@
         "stack": 80
       }
     },
-    "_RNvMs8_NtCsbx17WDetRei_14xr819_firmware3wsmNtB5_9TxRequest15is_unicast_data": {
+    "_RNvMs8_NtCs2QKOjPfuf9x_14xr819_firmware3wsmNtB5_9TxRequest15is_unicast_data": {
       "candidate": {
         "address": 30328,
         "instructions": 32,
@@ -442,7 +442,7 @@
         "stack": 8
       }
     },
-    "_RNvMs8_NtCsbx17WDetRei_14xr819_firmware3wsmNtB5_9TxRequest16is_unicast_eapol": {
+    "_RNvMs8_NtCs2QKOjPfuf9x_14xr819_firmware3wsmNtB5_9TxRequest16is_unicast_eapol": {
       "candidate": {
         "address": 30408,
         "instructions": 83,
@@ -464,7 +464,7 @@
         "stack": 24
       }
     },
-    "_RNvMs8_NtCsbx17WDetRei_14xr819_firmware3wsmNtB5_9TxRequest21is_unicast_management": {
+    "_RNvMs8_NtCs2QKOjPfuf9x_14xr819_firmware3wsmNtB5_9TxRequest21is_unicast_management": {
       "candidate": {
         "address": 30604,
         "instructions": 30,
@@ -486,7 +486,7 @@
         "stack": 8
       }
     },
-    "_RNvMsH_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel": {
+    "_RNvMsH_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel": {
       "candidate": {
         "address": 30812,
         "instructions": 80,
@@ -508,7 +508,7 @@
         "stack": 112
       }
     },
-    "_RNvMsH_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication7publish": {
+    "_RNvMsH_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_24PreparedProbePublication7publish": {
       "candidate": {
         "address": 31132,
         "instructions": 220,
@@ -530,7 +530,7 @@
         "stack": 144
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver12confirmation": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver12confirmation": {
       "candidate": {
         "address": 31680,
         "instructions": 32,
@@ -552,7 +552,7 @@
         "stack": 24
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index": {
       "candidate": {
         "address": 41804,
         "instructions": 968,
@@ -574,7 +574,7 @@
         "stack": 712
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_index": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_index": {
       "candidate": {
         "address": 31756,
         "instructions": 61,
@@ -596,7 +596,7 @@
         "stack": 24
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state": {
       "candidate": {
         "address": 41640,
         "instructions": 79,
@@ -618,7 +618,7 @@
         "stack": 72
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation": {
       "candidate": {
         "address": 31892,
         "instructions": 37,
@@ -640,7 +640,7 @@
         "stack": 16
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation": {
       "candidate": {
         "address": 35772,
         "instructions": 82,
@@ -662,7 +662,7 @@
         "stack": 48
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit": {
       "candidate": {
         "address": 31980,
         "instructions": 668,
@@ -684,7 +684,7 @@
         "stack": 160
       }
     },
-    "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset": {
+    "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset": {
       "candidate": {
         "address": 35360,
         "instructions": 189,
@@ -706,7 +706,7 @@
         "stack": 384
       }
     },
-    "_RNvMsa_NtCsbx17WDetRei_14xr819_firmware3wsmNtB5_17StartupIndication6encode": {
+    "_RNvMsa_NtCs2QKOjPfuf9x_14xr819_firmware3wsmNtB5_17StartupIndication6encode": {
       "candidate": {
         "address": 45092,
         "instructions": 100,
@@ -750,7 +750,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware11rate_policy7install": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware11rate_policy7install": {
       "candidate": {
         "address": 45300,
         "instructions": 62,
@@ -772,7 +772,7 @@
         "stack": 24
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware13configuration14template_frame": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration14template_frame": {
       "candidate": {
         "address": 45436,
         "instructions": 21,
@@ -794,7 +794,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware13configuration15tx_power_ranges": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration15tx_power_ranges": {
       "candidate": {
         "address": 45492,
         "instructions": 52,
@@ -816,7 +816,7 @@
         "stack": 24
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware13configuration16find_sdd_element": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration16find_sdd_element": {
       "candidate": {
         "address": 18208,
         "instructions": 30,
@@ -838,7 +838,7 @@
         "stack": 20
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware13configuration20retain_interface_mib": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration20retain_interface_mib": {
       "candidate": {
         "address": 45600,
         "instructions": 145,
@@ -860,7 +860,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware13configuration6retain": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration6retain": {
       "candidate": {
         "address": 45984,
         "instructions": 302,
@@ -882,7 +882,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx17free_host_context": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx17free_host_context": {
       "candidate": {
         "address": 11372,
         "instructions": 24,
@@ -904,7 +904,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22reject_unscheduled_pas": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx22reject_unscheduled_pas": {
       "candidate": {
         "address": 43904,
         "instructions": 35,
@@ -926,7 +926,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22release_pending_to_pas": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx22release_pending_to_pas": {
       "candidate": {
         "address": 44464,
         "instructions": 165,
@@ -948,7 +948,7 @@
         "stack": 48
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx18copy_to_packet_ram": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx18copy_to_packet_ram": {
       "candidate": {
         "address": 47432,
         "instructions": 72,
@@ -970,7 +970,7 @@
         "stack": 24
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx18packet_ram_matches": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx18packet_ram_matches": {
       "candidate": {
         "address": 47604,
         "instructions": 46,
@@ -992,7 +992,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx21host_prepared_context": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21host_prepared_context": {
       "candidate": {
         "address": 9264,
         "instructions": 40,
@@ -1014,7 +1014,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx21prepare_probe_context": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21prepare_probe_context": {
       "candidate": {
         "address": 46768,
         "instructions": 308,
@@ -1036,7 +1036,7 @@
         "stack": 88
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_phy_operation_1": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21start_phy_operation_1": {
       "candidate": {
         "address": 31616,
         "instructions": 23,
@@ -1058,7 +1058,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx21start_scheduler_timer": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21start_scheduler_timer": {
       "candidate": {
         "address": 8080,
         "instructions": 67,
@@ -1080,7 +1080,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx22cancel_scheduler_timer": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx22cancel_scheduler_timer": {
       "candidate": {
         "address": 8232,
         "instructions": 38,
@@ -1102,7 +1102,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx23fatal_scan_stop_timeout": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx23fatal_scan_stop_timeout": {
       "candidate": {
         "address": 47698,
         "instructions": 4,
@@ -1124,7 +1124,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx23probe_runtime_quiescent": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx23probe_runtime_quiescent": {
       "candidate": {
         "address": 47708,
         "instructions": 32,
@@ -1146,7 +1146,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx24wsm_status_from_internal": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx24wsm_status_from_internal": {
       "candidate": {
         "address": 41608,
         "instructions": 12,
@@ -1168,7 +1168,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx25prepare_host_frame_timing": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx25prepare_host_frame_timing": {
       "candidate": {
         "address": 9136,
         "instructions": 25,
@@ -1190,7 +1190,7 @@
         "stack": 48
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx26enter_mac_fatal_quiescence": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx26enter_mac_fatal_quiescence": {
       "candidate": {
         "address": 8348,
         "instructions": 91,
@@ -1212,7 +1212,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx26service_host_management_tx": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx26service_host_management_tx": {
       "candidate": {
         "address": 48360,
         "instructions": 751,
@@ -1234,7 +1234,7 @@
         "stack": 416
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx27claim_scheduler_mask_atomic": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27claim_scheduler_mask_atomic": {
       "candidate": {
         "address": 44924,
         "instructions": 14,
@@ -1256,7 +1256,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx27prepare_context_publication": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27prepare_context_publication": {
       "candidate": {
         "address": 47884,
         "instructions": 183,
@@ -1278,7 +1278,7 @@
         "stack": 216
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx27release_wsm_context_address": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27release_wsm_context_address": {
       "candidate": {
         "address": 30992,
         "instructions": 56,
@@ -1300,7 +1300,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx28service_mac_event_drain_tail": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx28service_mac_event_drain_tail": {
       "candidate": {
         "address": 44960,
         "instructions": 57,
@@ -1322,7 +1322,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx29emit_host_frame_descriptor_at": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx29emit_host_frame_descriptor_at": {
       "candidate": {
         "address": 9192,
         "instructions": 33,
@@ -1344,7 +1344,7 @@
         "stack": 56
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx30emit_prepared_probe_descriptor": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx30emit_prepared_probe_descriptor": {
       "candidate": {
         "address": 9364,
         "instructions": 355,
@@ -1366,7 +1366,7 @@
         "stack": 112
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx33release_unpublished_probe_context": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx33release_unpublished_probe_context": {
       "candidate": {
         "address": 48268,
         "instructions": 36,
@@ -1388,7 +1388,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime": {
       "candidate": {
         "address": 50040,
         "instructions": 83,
@@ -1410,7 +1410,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive": {
       "candidate": {
         "address": 35964,
         "instructions": 2498,
@@ -1432,7 +1432,7 @@
         "stack": 184
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3mac12base_airtime": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac12base_airtime": {
       "candidate": {
         "address": 10416,
         "instructions": 74,
@@ -1454,7 +1454,7 @@
         "stack": 24
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3mac16build_rate_entry": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac16build_rate_entry": {
       "candidate": {
         "address": 24532,
         "instructions": 151,
@@ -1476,7 +1476,7 @@
         "stack": 56
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3mac19program_rate_tables": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac19program_rate_tables": {
       "candidate": {
         "address": 23816,
         "instructions": 323,
@@ -1498,7 +1498,7 @@
         "stack": 200
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac23reinitialize_after_wake": {
       "candidate": {
         "address": 14356,
         "instructions": 352,
@@ -1520,7 +1520,7 @@
         "stack": 88
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3mac24initialize_tx_pipe_state": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac24initialize_tx_pipe_state": {
       "candidate": {
         "address": 50212,
         "instructions": 89,
@@ -1542,7 +1542,7 @@
         "stack": 80
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3mac31finish_unjoined_scan_radio_stop": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31finish_unjoined_scan_radio_stop": {
       "candidate": {
         "address": 50580,
         "instructions": 25,
@@ -1564,7 +1564,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31initialize_vendor_startup_state": {
       "candidate": {
         "address": 50648,
         "instructions": 259,
@@ -1586,7 +1586,7 @@
         "stack": 88
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy14dynamic_iq_dft": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy14dynamic_iq_dft": {
       "candidate": {
         "address": 11000,
         "instructions": 177,
@@ -1608,7 +1608,7 @@
         "stack": 96
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy22run_channel_transition": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy22run_channel_transition": {
       "candidate": {
         "address": 51284,
         "instructions": 87,
@@ -1630,7 +1630,7 @@
         "stack": 104
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy23build_mode0_gain_tables": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy23build_mode0_gain_tables": {
       "candidate": {
         "address": 16232,
         "instructions": 171,
@@ -1652,7 +1652,7 @@
         "stack": 504
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy23run_iq_calibration_core": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy23run_iq_calibration_core": {
       "candidate": {
         "address": 18280,
         "instructions": 811,
@@ -1674,7 +1674,7 @@
         "stack": 144
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy24begin_channel_transition": {
       "candidate": {
         "address": 12420,
         "instructions": 819,
@@ -1696,7 +1696,7 @@
         "stack": 160
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy25initialize_mac_core_mode0": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy25initialize_mac_core_mode0": {
       "candidate": {
         "address": 23420,
         "instructions": 61,
@@ -1718,7 +1718,7 @@
         "stack": 64
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy25program_all_tx_gain_slots": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy25program_all_tx_gain_slots": {
       "candidate": {
         "address": 16720,
         "instructions": 423,
@@ -1740,7 +1740,7 @@
         "stack": 176
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy27run_calibration_sample_mode": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy27run_calibration_sample_mode": {
       "candidate": {
         "address": 23288,
         "instructions": 54,
@@ -1762,7 +1762,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy31dynamic_iq_verification_metrics": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy31dynamic_iq_verification_metrics": {
       "candidate": {
         "address": 10800,
         "instructions": 99,
@@ -1784,7 +1784,7 @@
         "stack": 56
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration": {
       "candidate": {
         "address": 20076,
         "instructions": 1419,
@@ -1806,7 +1806,7 @@
         "stack": 792
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware3wsm29encode_configuration_response": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware3wsm29encode_configuration_response": {
       "candidate": {
         "address": 53236,
         "instructions": 110,
@@ -1828,7 +1828,7 @@
         "stack": 96
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4join12activate_sta": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4join12activate_sta": {
       "candidate": {
         "address": 53480,
         "instructions": 142,
@@ -1850,7 +1850,7 @@
         "stack": 80
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4join5reset": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4join5reset": {
       "candidate": {
         "address": 53820,
         "instructions": 62,
@@ -1872,7 +1872,7 @@
         "stack": 24
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4scan14active_channel": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan14active_channel": {
       "candidate": {
         "address": 53988,
         "instructions": 47,
@@ -1894,7 +1894,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4scan14complete_probe": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan14complete_probe": {
       "candidate": {
         "address": 54104,
         "instructions": 90,
@@ -1916,7 +1916,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4scan15copy_probe_ssid": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan15copy_probe_ssid": {
       "candidate": {
         "address": 54324,
         "instructions": 73,
@@ -1938,7 +1938,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4scan23publish_scan_completion": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan23publish_scan_completion": {
       "candidate": {
         "address": 56524,
         "instructions": 39,
@@ -1960,7 +1960,7 @@
         "stack": 24
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4scan5begin": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan5begin": {
       "candidate": {
         "address": 54504,
         "instructions": 237,
@@ -1982,7 +1982,7 @@
         "stack": 88
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan7service": {
       "candidate": {
         "address": 55056,
         "instructions": 548,
@@ -2004,7 +2004,7 @@
         "stack": 48
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware5radio15diagnostic_word": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio15diagnostic_word": {
       "candidate": {
         "address": 59068,
         "instructions": 36,
@@ -2026,7 +2026,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware5radio15poll_indication": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio15poll_indication": {
       "candidate": {
         "address": 56628,
         "instructions": 384,
@@ -2048,7 +2048,7 @@
         "stack": 88
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware5radio16discard_one_idle": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio16discard_one_idle": {
       "candidate": {
         "address": 56376,
         "instructions": 22,
@@ -2070,7 +2070,7 @@
         "stack": 32
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware5radio22resynchronize_consumer": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio22resynchronize_consumer": {
       "candidate": {
         "address": 57460,
         "instructions": 112,
@@ -2092,7 +2092,7 @@
         "stack": 28
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware5radio7release": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio7release": {
       "candidate": {
         "address": 28816,
         "instructions": 138,
@@ -2114,7 +2114,7 @@
         "stack": 96
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto16decrypt_rx_frame": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto16decrypt_rx_frame": {
       "candidate": {
         "address": 57716,
         "instructions": 228,
@@ -2136,7 +2136,7 @@
         "stack": 216
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto16encrypt_tx_frame": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto16encrypt_tx_frame": {
       "candidate": {
         "address": 33452,
         "instructions": 268,
@@ -2158,7 +2158,7 @@
         "stack": 232
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto20hardware_ccm_context": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto20hardware_ccm_context": {
       "candidate": {
         "address": 35180,
         "instructions": 68,
@@ -2180,7 +2180,7 @@
         "stack": 40
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto21hardware_crypto_irq18": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto21hardware_crypto_irq18": {
       "candidate": {
         "address": 61648,
         "instructions": 16,
@@ -2202,7 +2202,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto21hardware_crypto_irq20": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto21hardware_crypto_irq20": {
       "candidate": {
         "address": 61696,
         "instructions": 16,
@@ -2224,7 +2224,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25decrypt_rx_frame_hardware": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto25decrypt_rx_frame_hardware": {
       "candidate": {
         "address": 58196,
         "instructions": 403,
@@ -2246,7 +2246,7 @@
         "stack": 168
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25encrypt_tx_frame_hardware": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto25encrypt_tx_frame_hardware": {
       "candidate": {
         "address": 34216,
         "instructions": 445,
@@ -2268,7 +2268,7 @@
         "stack": 168
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto25hardware_aad_tail_command": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto25hardware_aad_tail_command": {
       "candidate": {
         "address": 35324,
         "instructions": 14,
@@ -2290,7 +2290,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto26run_hardware_ccmp_selftest": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto26run_hardware_ccmp_selftest": {
       "candidate": {
         "address": 59144,
         "instructions": 668,
@@ -2312,7 +2312,7 @@
         "stack": 240
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto7add_key": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto7add_key": {
       "candidate": {
         "address": 60672,
         "instructions": 118,
@@ -2334,7 +2334,7 @@
         "stack": 64
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware6crypto9build_aad": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware6crypto9build_aad": {
       "candidate": {
         "address": 34016,
         "instructions": 94,
@@ -2356,7 +2356,7 @@
         "stack": 72
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware8platform35register_post_activation_interrupts": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware8platform35register_post_activation_interrupts": {
       "candidate": {
         "address": 61532,
         "instructions": 34,
@@ -2378,7 +2378,7 @@
         "stack": 16
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware9exception14panic_terminal": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware9exception14panic_terminal": {
       "candidate": {
         "address": 61744,
         "instructions": 17,
@@ -2400,7 +2400,7 @@
         "stack": 8
       }
     },
-    "_RNvNtCsbx17WDetRei_14xr819_firmware9exception14publish_record": {
+    "_RNvNtCs2QKOjPfuf9x_14xr819_firmware9exception14publish_record": {
       "candidate": {
         "address": 61792,
         "instructions": 69,
@@ -2444,7 +2444,7 @@
         "stack": 8
       }
     },
-    "_RNvNvNtCsbx17WDetRei_14xr819_firmware13configuration33populate_vendor_calibration_state13copy_u16_pair": {
+    "_RNvNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration33populate_vendor_calibration_state13copy_u16_pair": {
       "candidate": {
         "address": 46726,
         "instructions": 20,
@@ -2466,7 +2466,7 @@
         "stack": 16
       }
     },
-    "_RNvNvNtCsbx17WDetRei_14xr819_firmware13configuration33populate_vendor_calibration_state16copy_u16_profile": {
+    "_RNvNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration33populate_vendor_calibration_state16copy_u16_profile": {
       "candidate": {
         "address": 46676,
         "instructions": 24,
@@ -2694,7 +2694,7 @@
     ]
   },
   "parent_only": {
-    "_RNvMs2_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch": {
+    "_RNvMs2_NtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch": {
       "address": 26624,
       "instructions": 224,
       "memory_mnemonics_sha256": "56aa46ffc8f14d72561eec96ea229badb5382915963d1fcd8d09cdb8237aed6a",
@@ -2709,7 +2709,7 @@
   "parent_text_sha256": "db5a4f5bb914d7a3118390acf867c45872e29482f7f39db7a666aed60f7da3ed",
   "required": {
     "HostSchedulerReservation16publish_in_batch": {
-      "candidate": "_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch",
+      "candidate": "_RNvMs1_NtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch",
       "candidate_record": {
         "address": 11660,
         "instructions": 217,
@@ -2720,7 +2720,7 @@
         "size": 472,
         "stack": 144
       },
-      "parent": "_RNvMs2_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch",
+      "parent": "_RNvMs2_NtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch",
       "parent_record": {
         "address": 26624,
         "instructions": 224,
@@ -2733,7 +2733,7 @@
       }
     },
     "HostTxDriver13service_index": {
-      "candidate": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index",
+      "candidate": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index",
       "candidate_record": {
         "address": 41804,
         "instructions": 968,
@@ -2744,7 +2744,7 @@
         "size": 2100,
         "stack": 712
       },
-      "parent": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index",
+      "parent": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver13service_index",
       "parent_record": {
         "address": 41908,
         "instructions": 968,
@@ -2757,7 +2757,7 @@
       }
     },
     "HostTxDriver18confirmation_state": {
-      "candidate": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state",
+      "candidate": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state",
       "candidate_record": {
         "address": 41640,
         "instructions": 79,
@@ -2768,7 +2768,7 @@
         "size": 164,
         "stack": 72
       },
-      "parent": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state",
+      "parent": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver18confirmation_state",
       "parent_record": {
         "address": 41740,
         "instructions": 81,
@@ -2781,7 +2781,7 @@
       }
     },
     "HostTxDriver19finish_confirmation": {
-      "candidate": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation",
+      "candidate": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation",
       "candidate_record": {
         "address": 31892,
         "instructions": 37,
@@ -2792,7 +2792,7 @@
         "size": 88,
         "stack": 16
       },
-      "parent": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation",
+      "parent": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver19finish_confirmation",
       "parent_record": {
         "address": 31628,
         "instructions": 37,
@@ -2805,7 +2805,7 @@
       }
     },
     "HostTxDriver22cancelled_confirmation": {
-      "candidate": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation",
+      "candidate": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation",
       "candidate_record": {
         "address": 35772,
         "instructions": 82,
@@ -2816,7 +2816,7 @@
         "size": 192,
         "stack": 48
       },
-      "parent": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation",
+      "parent": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver22cancelled_confirmation",
       "parent_record": {
         "address": 35608,
         "instructions": 82,
@@ -2829,7 +2829,7 @@
       }
     },
     "HostTxDriver5admit": {
-      "candidate": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit",
+      "candidate": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit",
       "candidate_record": {
         "address": 31980,
         "instructions": 668,
@@ -2840,7 +2840,7 @@
         "size": 1472,
         "stack": 160
       },
-      "parent": "_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit",
+      "parent": "_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit",
       "parent_record": {
         "address": 31776,
         "instructions": 685,
@@ -2853,7 +2853,7 @@
       }
     },
     "PreparedProbePublication6cancel": {
-      "candidate": "_RNvMsH_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel",
+      "candidate": "_RNvMsH_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel",
       "candidate_record": {
         "address": 30812,
         "instructions": 80,
@@ -2864,7 +2864,7 @@
         "size": 180,
         "stack": 112
       },
-      "parent": "_RNvMsH_NtCsbx17WDetRei_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel",
+      "parent": "_RNvMsH_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_24PreparedProbePublication6cancel",
       "parent_record": {
         "address": 30476,
         "instructions": 91,
@@ -2877,7 +2877,7 @@
       }
     },
     "Transport14enqueue_output": {
-      "candidate": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport14enqueue_output",
+      "candidate": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport14enqueue_output",
       "candidate_record": {
         "address": 29148,
         "instructions": 53,
@@ -2888,7 +2888,7 @@
         "size": 120,
         "stack": 40
       },
-      "parent": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport14enqueue_output",
+      "parent": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport14enqueue_output",
       "parent_record": {
         "address": 28812,
         "instructions": 53,
@@ -2901,7 +2901,7 @@
       }
     },
     "Transport15release_request": {
-      "candidate": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport15release_request",
+      "candidate": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport15release_request",
       "candidate_record": {
         "address": 28280,
         "instructions": 31,
@@ -2912,7 +2912,7 @@
         "size": 72,
         "stack": 16
       },
-      "parent": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport15release_request",
+      "parent": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport15release_request",
       "parent_record": {
         "address": 27944,
         "instructions": 31,
@@ -2925,7 +2925,7 @@
       }
     },
     "Transport24publish_request_in_place": {
-      "candidate": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place",
+      "candidate": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place",
       "candidate_record": {
         "address": 29344,
         "instructions": 113,
@@ -2936,7 +2936,7 @@
         "size": 272,
         "stack": 56
       },
-      "parent": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place",
+      "parent": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport24publish_request_in_place",
       "parent_record": {
         "address": 29008,
         "instructions": 113,
@@ -2949,7 +2949,7 @@
       }
     },
     "Transport7publish": {
-      "candidate": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport7publish",
+      "candidate": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport7publish",
       "candidate_record": {
         "address": 29616,
         "instructions": 39,
@@ -2960,7 +2960,7 @@
         "size": 108,
         "stack": 32
       },
-      "parent": "_RNvMs5_NtCsbx17WDetRei_14xr819_firmware3hifNtB5_9Transport7publish",
+      "parent": "_RNvMs5_NtCs2QKOjPfuf9x_14xr819_firmware3hifNtB5_9Transport7publish",
       "parent_record": {
         "address": 29280,
         "instructions": 39,
@@ -2997,7 +2997,7 @@
       }
     },
     "tx21prepare_probe_context": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx21prepare_probe_context",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21prepare_probe_context",
       "candidate_record": {
         "address": 46768,
         "instructions": 308,
@@ -3008,7 +3008,7 @@
         "size": 664,
         "stack": 88
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx21prepare_probe_context",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21prepare_probe_context",
       "parent_record": {
         "address": 46872,
         "instructions": 308,
@@ -3021,7 +3021,7 @@
       }
     },
     "tx25prepare_host_frame_timing": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx25prepare_host_frame_timing",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx25prepare_host_frame_timing",
       "candidate_record": {
         "address": 9136,
         "instructions": 25,
@@ -3032,7 +3032,7 @@
         "size": 56,
         "stack": 48
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx25prepare_host_frame_timing",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx25prepare_host_frame_timing",
       "parent_record": {
         "address": 9064,
         "instructions": 25,
@@ -3045,7 +3045,7 @@
       }
     },
     "tx27prepare_context_publication": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx27prepare_context_publication",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27prepare_context_publication",
       "candidate_record": {
         "address": 47884,
         "instructions": 183,
@@ -3056,7 +3056,7 @@
         "size": 384,
         "stack": 216
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx27prepare_context_publication",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27prepare_context_publication",
       "parent_record": {
         "address": 47988,
         "instructions": 183,
@@ -3069,7 +3069,7 @@
       }
     },
     "tx27release_wsm_context_address": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx27release_wsm_context_address",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27release_wsm_context_address",
       "candidate_record": {
         "address": 30992,
         "instructions": 56,
@@ -3080,7 +3080,7 @@
         "size": 140,
         "stack": 24
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx27release_wsm_context_address",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27release_wsm_context_address",
       "parent_record": {
         "address": 30688,
         "instructions": 74,
@@ -3093,7 +3093,7 @@
       }
     },
     "tx29emit_host_frame_descriptor_at": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx29emit_host_frame_descriptor_at",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx29emit_host_frame_descriptor_at",
       "candidate_record": {
         "address": 9192,
         "instructions": 33,
@@ -3104,7 +3104,7 @@
         "size": 70,
         "stack": 56
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx29emit_host_frame_descriptor_at",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx29emit_host_frame_descriptor_at",
       "parent_record": {
         "address": 9120,
         "instructions": 33,
@@ -3117,7 +3117,7 @@
       }
     },
     "tx30emit_prepared_probe_descriptor": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx30emit_prepared_probe_descriptor",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx30emit_prepared_probe_descriptor",
       "candidate_record": {
         "address": 9364,
         "instructions": 355,
@@ -3128,7 +3128,7 @@
         "size": 752,
         "stack": 112
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx30emit_prepared_probe_descriptor",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx30emit_prepared_probe_descriptor",
       "parent_record": {
         "address": 9296,
         "instructions": 355,
@@ -3141,7 +3141,7 @@
       }
     },
     "tx33release_unpublished_probe_context": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx33release_unpublished_probe_context",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx33release_unpublished_probe_context",
       "candidate_record": {
         "address": 48268,
         "instructions": 36,
@@ -3152,7 +3152,7 @@
         "size": 92,
         "stack": 16
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx33release_unpublished_probe_context",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx33release_unpublished_probe_context",
       "parent_record": {
         "address": 48372,
         "instructions": 41,
@@ -3165,7 +3165,7 @@
       }
     },
     "tx37service_single_probe_runtime_inactive": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive",
       "candidate_record": {
         "address": 35964,
         "instructions": 2498,
@@ -3176,7 +3176,7 @@
         "size": 5644,
         "stack": 184
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive",
       "parent_record": {
         "address": 35948,
         "instructions": 2551,
@@ -3189,7 +3189,7 @@
       }
     },
     "vendor_host_tx17free_host_context": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx17free_host_context",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx17free_host_context",
       "candidate_record": {
         "address": 11372,
         "instructions": 24,
@@ -3200,7 +3200,7 @@
         "size": 60,
         "stack": 16
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx17free_host_context",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx17free_host_context",
       "parent_record": {
         "address": 31716,
         "instructions": 24,
@@ -3213,7 +3213,7 @@
       }
     },
     "vendor_host_tx21program_pipe_eligible": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx21program_pipe_eligible",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx21program_pipe_eligible",
       "candidate_record": {
         "address": 43984,
         "instructions": 228,
@@ -3224,7 +3224,7 @@
         "size": 480,
         "stack": 56
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx21program_pipe_eligible",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx21program_pipe_eligible",
       "parent_record": {
         "address": 44088,
         "instructions": 228,
@@ -3237,7 +3237,7 @@
       }
     },
     "vendor_host_tx22release_pending_to_pas": {
-      "candidate": "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22release_pending_to_pas",
+      "candidate": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx22release_pending_to_pas",
       "candidate_record": {
         "address": 44464,
         "instructions": 165,
@@ -3248,7 +3248,7 @@
         "size": 368,
         "stack": 48
       },
-      "parent": "_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22release_pending_to_pas",
+      "parent": "_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx22release_pending_to_pas",
       "parent_record": {
         "address": 44568,
         "instructions": 165,

@@ -65,17 +65,15 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x040034B0: 3, 0x040034F6: 1, 0x040034F8: 1, 0x04003588: 1}
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x040034B0: 3, 0x040034F6: 1, 0x040034F8: 1, 0x04003588: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware7command20retain_configuration', 0x040034B0): 3,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware7command20retain_configuration', 0x040034F6): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware7command20retain_configuration', 0x04003588): 2,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy23build_mode0_gain_tables', 0x040034F8): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25program_all_tx_gain_slots', 0x040034B0): 2,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy29initialize_mac_software_state', 0x040034B0): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration6retain', 0x040034B0): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration6retain', 0x040034F6): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware13configuration6retain', 0x04003588): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy23build_mode0_gain_tables', 0x040034F8): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy25program_all_tx_gain_slots', 0x040034B0): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy29initialize_mac_software_state', 0x040034B0): 1,
     }
 )
 

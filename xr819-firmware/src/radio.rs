@@ -90,96 +90,6 @@ static DIAGNOSTICS: SharedDiagnostics = SharedDiagnostics(UnsafeCell::new(Receiv
     last_trailer_word: 0,
 }));
 
-#[cfg(feature = "experimental-rx-path-diagnostics")]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RxPathDiagnostics {
-    pub pending_passes: u32,
-    pub blocked_by_host_request: u32,
-    pub blocked_by_control: u32,
-    pub blocked_by_descriptor: u32,
-    pub pending_bytes_max: u32,
-    pub host_transfers_max: u32,
-    pub host_transfer_drops: u32,
-    pub decrypt_drops: u32,
-    pub decrypt_authentication: u32,
-    pub decrypt_missing_key: u32,
-    pub decrypt_malformed: u32,
-    pub decrypt_hardware_timeout: u32,
-    pub decrypt_invalid_dma: u32,
-    pub auth_group: u32,
-    pub auth_unicast: u32,
-    pub auth_retry: u32,
-    pub auth_last_signature: u32,
-}
-
-#[cfg(feature = "experimental-rx-path-diagnostics")]
-struct SharedRxPathDiagnostics(UnsafeCell<RxPathDiagnostics>);
-
-#[cfg(feature = "experimental-rx-path-diagnostics")]
-unsafe impl Sync for SharedRxPathDiagnostics {}
-
-#[cfg(feature = "experimental-rx-path-diagnostics")]
-static RX_PATH_DIAGNOSTICS: SharedRxPathDiagnostics =
-    SharedRxPathDiagnostics(UnsafeCell::new(RxPathDiagnostics {
-        pending_passes: 0,
-        blocked_by_host_request: 0,
-        blocked_by_control: 0,
-        blocked_by_descriptor: 0,
-        pending_bytes_max: 0,
-        host_transfers_max: 0,
-        host_transfer_drops: 0,
-        decrypt_drops: 0,
-        decrypt_authentication: 0,
-        decrypt_missing_key: 0,
-        decrypt_malformed: 0,
-        decrypt_hardware_timeout: 0,
-        decrypt_invalid_dma: 0,
-        auth_group: 0,
-        auth_unicast: 0,
-        auth_retry: 0,
-        auth_last_signature: 0,
-    }));
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-struct SharedRxTxBoundaryWatch(UnsafeCell<[u32; 7]>);
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe impl Sync for SharedRxTxBoundaryWatch {}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-static RX_TX_BOUNDARY_WATCH: SharedRxTxBoundaryWatch =
-    SharedRxTxBoundaryWatch(UnsafeCell::new([0; 7]));
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-struct SharedRxTxProducerWatch(UnsafeCell<[u32; 2]>);
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe impl Sync for SharedRxTxProducerWatch {}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-static RX_TX_PRODUCER_WATCH: SharedRxTxProducerWatch =
-    SharedRxTxProducerWatch(UnsafeCell::new([0; 2]));
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-struct SharedTxCommandSignatures(UnsafeCell<[u32; 51]>);
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe impl Sync for SharedTxCommandSignatures {}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-static TX_COMMAND_SIGNATURES: SharedTxCommandSignatures =
-    SharedTxCommandSignatures(UnsafeCell::new([0; 51]));
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-struct SharedClass0CommandHistory(UnsafeCell<[u32; 186]>);
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe impl Sync for SharedClass0CommandHistory {}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-static CLASS0_COMMAND_HISTORY: SharedClass0CommandHistory =
-    SharedClass0CommandHistory(UnsafeCell::new([0; 186]));
-
 pub fn diagnostics() -> ReceiveDiagnostics {
     unsafe { *DIAGNOSTICS.0.get() }
 }
@@ -207,53 +117,6 @@ pub fn fifo_quiescent() -> bool {
         ring.host_transfer_count() == 0
             && ring.release_offset() == ring.claim_offset()
             && ring.claim_offset() == DMA_PRODUCER.read_volatile() & FIFO_MASK
-    }
-}
-
-#[cfg(feature = "experimental-rx-path-diagnostics")]
-pub fn rx_path_diagnostics() -> RxPathDiagnostics {
-    unsafe { *RX_PATH_DIAGNOSTICS.0.get() }
-}
-
-#[cfg(feature = "experimental-rx-path-diagnostics")]
-pub fn observe_joined_rx_opportunity(
-    host_request_waiting: bool,
-    control_pending: bool,
-    publication_available: bool,
-) {
-    unsafe {
-        let ring = rx_ring();
-        let pending_bytes = available_bytes(
-            ring.claim_offset(),
-            normalize_offset(DMA_PRODUCER.read_volatile()),
-        );
-        let diagnostics = &mut *RX_PATH_DIAGNOSTICS.0.get();
-        diagnostics.host_transfers_max = diagnostics
-            .host_transfers_max
-            .max(ring.host_transfer_count());
-        #[cfg(feature = "experimental-service-probe")]
-        crate::stage_probe::observe_rx_pending(
-            pending_bytes,
-            host_request_waiting,
-            control_pending,
-            publication_available,
-            ring.host_transfer_count(),
-            pending_bytes.saturating_add(0x1000) >= FIFO_SIZE,
-        );
-        if pending_bytes == 0 {
-            return;
-        }
-        diagnostics.pending_passes = diagnostics.pending_passes.wrapping_add(1);
-        diagnostics.pending_bytes_max = diagnostics.pending_bytes_max.max(pending_bytes);
-        if host_request_waiting {
-            diagnostics.blocked_by_host_request =
-                diagnostics.blocked_by_host_request.wrapping_add(1);
-        } else if control_pending {
-            diagnostics.blocked_by_control = diagnostics.blocked_by_control.wrapping_add(1);
-        } else if !publication_available {
-            diagnostics.blocked_by_descriptor =
-                diagnostics.blocked_by_descriptor.wrapping_add(1);
-        }
     }
 }
 
@@ -406,10 +269,6 @@ unsafe fn set_claim_offset(ring: &mut RxRing, next: u32) {
 /// The total flush when the span is exhausted IS vendor behaviour
 /// (`annotated-main.c:10373-10380` sets release, consumer and the DMA consumer
 /// at `0x09c00608` all to the producer), so it is kept as-is.
-///
-/// `RX_RESYNC` now packs three fields, since resync counts are small:
-/// bits 0..9 accepted, bits 10..19 flushed, bits 20..31 candidates rejected by
-/// the lookahead.
 unsafe fn apply_resynchronized_offset(ring: &mut RxRing, previous_claim: u32, target: u32) {
     unsafe {
         let release = ring.resynchronize(previous_claim, target);
@@ -421,12 +280,7 @@ unsafe fn apply_resynchronized_offset(ring: &mut RxRing, previous_claim: u32, ta
     }
 }
 
-unsafe fn resynchronize_consumer(
-    ring: &mut RxRing,
-    consumer: u32,
-    producer: u32,
-    raw_producer: u32,
-) {
+unsafe fn resynchronize_consumer(ring: &mut RxRing, consumer: u32, producer: u32) {
     unsafe {
         let mut remaining = available_bytes(consumer, producer);
         let mut candidate = consumer;
@@ -435,7 +289,6 @@ unsafe fn resynchronize_consumer(
             // that carries the magic, flushing if the span runs out.
             loop {
                 if remaining < 4 || candidate == producer {
-                    resync_report(ring, raw_producer, consumer, producer, RESYNC_FLUSHED);
                     apply_resynchronized_offset(ring, consumer, producer);
                     return;
                 }
@@ -452,53 +305,12 @@ unsafe fn resynchronize_consumer(
                 && slot_length >= 4
                 && fifo_word(next) == FIFO_MAGIC
             {
-                resync_report(ring, raw_producer, consumer, producer, RESYNC_ACCEPTED);
                 apply_resynchronized_offset(ring, consumer, candidate);
                 return;
             }
             // Candidate carried the magic but failed vendor's validation: a
             // false positive we would previously have resynchronised onto.
-            bump_resync_field(RESYNC_REJECTED);
         }
-    }
-}
-
-const RESYNC_ACCEPTED: u32 = 0;
-const RESYNC_FLUSHED: u32 = 10;
-const RESYNC_REJECTED: u32 = 20;
-
-/// Bump one packed field of the `RX_RESYNC` counter, saturating so a busy field
-/// cannot carry into its neighbour.
-unsafe fn bump_resync_field(shift: u32) {
-    unsafe {
-        let width = if shift == RESYNC_REJECTED { 12 } else { 10 };
-        let mask = ((1_u32 << width) - 1) << shift;
-        let current =
-            crate::host_tx_diagnostics::read(crate::host_tx_diagnostics::counter::RX_RESYNC);
-        let field = (current & mask) >> shift;
-        if field + 1 < (1 << width) {
-            crate::host_tx_diagnostics::observe(
-                crate::host_tx_diagnostics::counter::RX_RESYNC,
-                (current & !mask) | ((field + 1) << shift),
-            );
-        }
-    }
-}
-
-unsafe fn resync_report(
-    ring: &RxRing,
-    raw_producer: u32,
-    consumer: u32,
-    producer: u32,
-    shift: u32,
-) {
-    unsafe {
-        if ring.host_transfer_count() != 0 {
-            {
-                let _ = (raw_producer, consumer, producer);
-            }
-        }
-        bump_resync_field(shift);
     }
 }
 
@@ -547,267 +359,9 @@ unsafe fn matching_tx_command(slot: usize) -> (usize, usize, u32) {
     best
 }
 
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-fn encode_snapshot_name(words: [u32; 6]) -> [u8; 48] {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = [0_u8; 48];
-    for (word_index, word) in words.into_iter().enumerate() {
-        for nibble in 0..8 {
-            let shift = 28 - nibble * 4;
-            output[word_index * 8 + nibble] = HEX[((word >> shift) & 0x0f) as usize];
-        }
-    }
-    output
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-pub unsafe fn record_tx_command_signature(class: u8, command: u32) {
-    let (valid_bit, pointer_index) = match class {
-        0 => (2_u32, 2_usize),
-        6 => (1_u32, 1_usize),
-        _ => return,
-    };
-    let signatures = unsafe { &mut *TX_COMMAND_SIGNATURES.0.get() };
-    signatures[0] = (signatures[0] & 3) | valid_bit | (u32::from(class) << 8);
-    signatures[pointer_index] = command;
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn capture_final_tx_command_signature(command: u32) {
-    let signatures = unsafe { &mut *TX_COMMAND_SIGNATURES.0.get() };
-    let class = (signatures[0] >> 8) as u8;
-    let words_start = match class {
-        0 if signatures[2] == command => 30,
-        6 if signatures[1] == command => 9,
-        _ => return,
-    };
-    for word in 0..21 {
-        signatures[words_start + word] =
-            unsafe { ((command as usize + word * 4) as *const u32).read_volatile() };
-    }
-    if class == 0 {
-        let history = unsafe { &mut *CLASS0_COMMAND_HISTORY.0.get() };
-        let index = history[0] as usize & 7;
-        let generation = history[1].wrapping_add(1);
-        let entry = 2 + index * 23;
-        history[0] = ((index + 1) & 7) as u32;
-        history[1] = generation;
-        history[entry] = generation;
-        history[entry + 1] = command;
-        history[entry + 2..entry + 23].copy_from_slice(&signatures[30..51]);
-    }
-}
-
 // Used by the vendor-shaped resync scan in every build, not just diagnostics.
 unsafe fn fifo_word(offset: u32) -> u32 {
     unsafe { ((fifo_base() + normalize_offset(offset) as usize) as *const u32).read_volatile() }
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn longest_signature_match_in_producer_delta(
-    start: u32,
-    end: u32,
-    signature: &[u32; 21],
-) -> Option<(usize, usize, usize)> {
-    let mut best = None;
-    let mut candidate = normalize_offset(start);
-    let mut remaining = available_bytes(candidate, normalize_offset(end));
-    while remaining >= 12 {
-        for command_word in 0..21 {
-            let mut matched = 0;
-            while command_word + matched < signature.len()
-                && (matched + 1) * 4 <= remaining as usize
-                && unsafe { fifo_word(candidate.wrapping_add((matched * 4) as u32)) }
-                    == signature[command_word + matched]
-            {
-                matched += 1;
-            }
-            if matched >= 3 && best.is_none_or(|(_, _, best_words)| matched > best_words) {
-                best = Some((fifo_base() + candidate as usize, command_word * 4, matched));
-            }
-        }
-        candidate = normalize_offset(candidate.wrapping_add(4));
-        remaining -= 4;
-    }
-    best
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn best_class0_history_match(
-    start: u32,
-    end: u32,
-) -> Option<(usize, usize, usize, u32, u32)> {
-    let history = unsafe { &*CLASS0_COMMAND_HISTORY.0.get() };
-    let latest_generation = history[1];
-    let mut best = None;
-    for index in 0..8 {
-        let entry = 2 + index * 23;
-        let generation = history[entry];
-        if generation == 0 {
-            continue;
-        }
-        let mut signature = [0_u32; 21];
-        signature.copy_from_slice(&history[entry + 2..entry + 23]);
-        if let Some((address, command_offset, matched_words)) =
-            unsafe { longest_signature_match_in_producer_delta(start, end, &signature) }
-        {
-            let replace = best.is_none_or(|(_, _, best_words, _, best_generation)| {
-                matched_words > best_words
-                    || (matched_words == best_words
-                        && latest_generation.wrapping_sub(generation)
-                            < latest_generation.wrapping_sub(best_generation))
-            });
-            if replace {
-                best = Some((
-                    address,
-                    command_offset,
-                    matched_words,
-                    history[entry + 1],
-                    generation,
-                ));
-            }
-        }
-    }
-    best
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn locate_live_command_word(value: u32) -> (u32, u32, u32) {
-    let mut first = 0_u32;
-    let mut first_pointer = 0_u32;
-    let mut count = 0_u32;
-    for pipe in 0..4_u32 {
-        for slot in 0..4_u32 {
-            let command = packet_ram::tx_command(pipe as usize, slot as usize) as u32;
-            for word in 0..21_u32 {
-                if unsafe { ((command + word * 4) as *const u32).read_volatile() } == value {
-                    if count == 0 {
-                        first = (pipe << 28) | (slot << 24) | (word * 4);
-                        first_pointer = command;
-                    }
-                    count = count.wrapping_add(1);
-                }
-            }
-        }
-    }
-    (first, first_pointer, count)
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn locate_history_command_word(value: u32) -> (u32, u32, u32) {
-    let history = unsafe { &*CLASS0_COMMAND_HISTORY.0.get() };
-    let latest = history[1];
-    let mut best = None;
-    let mut count = 0_u32;
-    for index in 0..8 {
-        let entry = 2 + index * 23;
-        let generation = history[entry];
-        if generation == 0 {
-            continue;
-        }
-        for word in 0..21 {
-            if history[entry + 2 + word] == value {
-                count = count.wrapping_add(1);
-                if best.is_none_or(|(best_generation, _, _)| {
-                    latest.wrapping_sub(generation) < latest.wrapping_sub(best_generation)
-                }) {
-                    best = Some((generation, (word * 4) as u32, history[entry + 1]));
-                }
-            }
-        }
-    }
-    best.map_or((0, 0, count), |(generation, offset, pointer)| {
-        (generation, (offset << 16) | (count & 0xffff), pointer)
-    })
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn locate_class6_command_word(value: u32) -> u32 {
-    let signatures = unsafe { &*TX_COMMAND_SIGNATURES.0.get() };
-    (0..21)
-        .find(|word| signatures[9 + word] == value)
-        .map_or(u32::MAX, |word| (word * 4) as u32)
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-unsafe fn describe_matching_slot(start: u32, end: u32, address: usize) -> [u32; 6] {
-    let target = normalize_offset((address - fifo_base()) as u32);
-    let end = normalize_offset(end);
-    let mut cursor = normalize_offset(start);
-    for _ in 0..16 {
-        if cursor == end {
-            break;
-        }
-        let slot = fifo_base() + cursor as usize;
-        if unsafe { (slot as *const u32).read_volatile() } != FIFO_MAGIC {
-            break;
-        }
-        let slot_length = unsafe { ((slot + 0x18) as *const u16).read_volatile() };
-        let next = next_offset(cursor, slot_length);
-        let stride = available_bytes(cursor, next);
-        if slot_length < 4 || stride == 0 || stride > available_bytes(cursor, end) {
-            break;
-        }
-        let relative = available_bytes(cursor, target);
-        if relative < stride {
-            let frame = slot + 0x20;
-            return unsafe {
-                [
-                    slot as u32,
-                    (u32::from(slot_length) << 16) | relative,
-                    (frame as *const u32).read_volatile(),
-                    ((frame + 4) as *const u32).read_volatile(),
-                    ((frame + 8) as *const u32).read_volatile(),
-                    ((frame + 12) as *const u32).read_volatile(),
-                ]
-            };
-        }
-        cursor = next;
-    }
-    [0; 6]
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-pub unsafe fn fatal_command_snapshot() -> [u32; 11] {
-    unsafe {
-        let watch = &*RX_TX_PRODUCER_WATCH.0.get();
-        let start = watch[1];
-        let end = DMA_PRODUCER.read_volatile();
-        let mut result = [0_u32; 11];
-        result[0] = start;
-        result[1] = end;
-        result[8] = DMA_CONSUMER.read_volatile();
-        let ring = rx_ring();
-        result[9] = ring.claim_offset();
-        result[10] = ring.release_offset();
-        if watch[0] != 0
-            && normalize_offset(start) != normalize_offset(end)
-            && let Some((address, command_offset, matched_words, pointer, generation)) =
-                best_class0_history_match(start, end)
-        {
-            result[2] = address as u32;
-            result[3] = pointer;
-            result[4] = command_offset as u32;
-            result[5] = (matched_words * 4) as u32;
-            result[6] = generation;
-            result[7] = fifo_word(start);
-        }
-        result
-    }
-}
-
-#[cfg(feature = "vendor-host-tx-diagnostics")]
-pub fn validate_tx_boundary(phase: u32, _pipe: u8, _tx_slot: u8, command: u32, ring: u32) {
-    // Report-only mode. This validator halts the firmware the instant it sees a
-    // TX command signature inside the RX producer delta, so every run so far has
-    // stopped itself at the first corruption and we have never observed whether
-    // the system continues to work through it. Skip the check entirely here; the
-    // RX consumer resynchronisation counter still records that corruption
-    // happened.
-    {
-        let _ = (phase, command, ring);
-        return;
-    }
 }
 
 unsafe fn publish_owned_resynchronization(consumer: u32, producer: u32, raw_producer: u32) -> ! {
@@ -867,13 +421,6 @@ unsafe fn release_head_slot(ring: &mut RxRing, slot: usize, next: u32, low_state
         ((slot + 8) as *mut u32).write_volatile(FIFO_RELEASED | low_state);
         (slot as *mut u32).write_volatile(0);
         DMA_CONSUMER.write_volatile(next);
-        crate::host_tx_diagnostics::record(
-            crate::host_tx_diagnostics::EVENT_RX_RELEASE,
-            0,
-            slot as u32,
-            next,
-            low_state,
-        );
         let diagnostics = &mut *DIAGNOSTICS.0.get();
         diagnostics.released_slots = diagnostics.released_slots.wrapping_add(1);
     }
@@ -917,25 +464,15 @@ unsafe fn release(ring: &mut RxRing, token: RxToken) {
         let value = state.read_volatile();
         let low = match ring.classify_release(&token, value) {
             ReleaseAction::AlreadyReleased | ReleaseAction::Pending => return,
-            ReleaseAction::MarkPending { corrupt, .. } => {
-                if corrupt {
-                    crate::host_tx_diagnostics::bump(
-                        crate::host_tx_diagnostics::counter::RX_RESYNC,
-                    );
-                }
+            ReleaseAction::MarkPending { .. } => {
                 state.write_volatile(pending_release_state(value));
                 return;
             }
             ReleaseAction::ReleaseHead {
                 low_state,
                 normalize_first,
-                corrupt,
+                ..
             } => {
-                if corrupt {
-                    crate::host_tx_diagnostics::bump(
-                        crate::host_tx_diagnostics::counter::RX_RESYNC,
-                    );
-                }
                 if normalize_first {
                     state.write_volatile(pending_release_state(value));
                 }
@@ -1099,13 +636,12 @@ unsafe fn poll_indication(
                     state.write_volatile(claimed_slot_state(state.read_volatile()));
                     set_claim_offset(ring, next);
                     ((fifo_base() + next as usize) as *mut u32).write_volatile(FIFO_MAGIC);
-                    bump_resync_field(RESYNC_ACCEPTED);
                 }
             } else {
                 unsafe {
                     let diagnostics = &mut *DIAGNOSTICS.0.get();
                     diagnostics.bad_magic = diagnostics.bad_magic.wrapping_add(1);
-                    resynchronize_consumer(ring, consumer, producer, raw_producer);
+                    resynchronize_consumer(ring, consumer, producer);
                 }
                 return None;
             }
@@ -1127,7 +663,7 @@ unsafe fn poll_indication(
                 if usize::from(slot_length) > MAX_FRAME_LEN + 4 {
                     diagnostics.oversized_frames = diagnostics.oversized_frames.wrapping_add(1);
                 }
-                resynchronize_consumer(ring, consumer, producer, raw_producer);
+                resynchronize_consumer(ring, consumer, producer);
             }
             return None;
         }
@@ -1142,13 +678,6 @@ unsafe fn poll_indication(
             let token = ring.claim(next);
             crate::dtcm::shared_ptr::<u32>(crate::dtcm::RX_FIFO_STATE.claim_cursor())
                 .write_volatile(next);
-            crate::host_tx_diagnostics::record(
-                crate::host_tx_diagnostics::EVENT_RX_CLAIM,
-                0,
-                slot as u32,
-                (u32::from(slot_length) << 16) | next,
-                slot_state,
-            );
             token
         };
 
@@ -1201,14 +730,6 @@ unsafe fn poll_indication(
             diagnostics.last_trailer_word = (trailer as *const u32).read_volatile();
         }
 
-        #[cfg(all(target_arch = "arm", feature = "experimental-depth-two-ampdu"))]
-        if !scan_only
-            && unsafe { crate::tx::consume_depth_two_block_ack(frame_address, frame_len) }
-        {
-            unsafe { release(ring, token) };
-            return None;
-        }
-
         // The vendor drains old frames before retuning. Reject a management frame
         // whose on-air DS element proves it belongs to a previous channel rather
         // than relabeling it with the active CW1200 dwell.
@@ -1237,43 +758,6 @@ unsafe fn poll_indication(
                     unsafe {
                         let diagnostics = &mut *DIAGNOSTICS.0.get();
                         diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
-                        #[cfg(feature = "experimental-rx-path-diagnostics")]
-                        {
-                            let path_diagnostics = &mut *RX_PATH_DIAGNOSTICS.0.get();
-                            path_diagnostics.decrypt_drops =
-                                path_diagnostics.decrypt_drops.wrapping_add(1);
-                            let counter = match _error {
-                                crate::crypto::CcmpError::Authentication => {
-                                    if frame.get(4).is_some_and(|address| address & 1 != 0) {
-                                        path_diagnostics.auth_group =
-                                            path_diagnostics.auth_group.wrapping_add(1);
-                                    } else {
-                                        path_diagnostics.auth_unicast =
-                                            path_diagnostics.auth_unicast.wrapping_add(1);
-                                    }
-                                    if frame_control & 0x0800 != 0 {
-                                        path_diagnostics.auth_retry =
-                                            path_diagnostics.auth_retry.wrapping_add(1);
-                                    }
-                                    path_diagnostics.auth_last_signature =
-                                        u32::from(slot_length) | (u32::from(frame_control) << 16);
-                                    &mut path_diagnostics.decrypt_authentication
-                                }
-                                crate::crypto::CcmpError::MissingKey => {
-                                    &mut path_diagnostics.decrypt_missing_key
-                                }
-                                crate::crypto::CcmpError::MalformedFrame => {
-                                    &mut path_diagnostics.decrypt_malformed
-                                }
-                                crate::crypto::CcmpError::HardwareTimeout => {
-                                    &mut path_diagnostics.decrypt_hardware_timeout
-                                }
-                                crate::crypto::CcmpError::InvalidDmaAddress => {
-                                    &mut path_diagnostics.decrypt_invalid_dma
-                                }
-                            };
-                            *counter = counter.wrapping_add(1);
-                        }
                         release(ring, token);
                     }
                     return None;
@@ -1288,14 +772,6 @@ unsafe fn poll_indication(
             unsafe {
                 let diagnostics = &mut *DIAGNOSTICS.0.get();
                 diagnostics.filtered_frames = diagnostics.filtered_frames.wrapping_add(1);
-                #[cfg(feature = "experimental-rx-path-diagnostics")]
-                {
-                    let path_diagnostics = &mut *RX_PATH_DIAGNOSTICS.0.get();
-                    path_diagnostics.host_transfer_drops =
-                        path_diagnostics.host_transfer_drops.wrapping_add(1);
-                }
-                #[cfg(feature = "experimental-service-probe")]
-                crate::stage_probe::note_rx_host_transfer_drop();
                 release(ring, token);
             }
             return None;
@@ -1316,8 +792,6 @@ unsafe fn poll_indication(
             write_u32(message_address + 12, indication_flags);
             let published = ring.publish_host_transfer(MAX_HOST_TRANSFERS);
             debug_assert!(published);
-            #[cfg(feature = "experimental-service-probe")]
-            crate::stage_probe::note_rx_indication();
             let diagnostics = &mut *DIAGNOSTICS.0.get();
             diagnostics.indications = diagnostics.indications.wrapping_add(1);
         }

@@ -58,8 +58,8 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x04009945): 2,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy23run_iq_calibration_core', 0x0400993C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x04009945): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy23run_iq_calibration_core', 0x0400993C): 1,
     }
 )
 

@@ -15,17 +15,8 @@ PACKED=$(mktemp)
 BOOTSTRAP=$(mktemp)
 trap 'rm -f "$PACKED" "$BOOTSTRAP"' EXIT
 
-echo "== default process-local host tests (do not execute ARM driver/HIF behavior) =="
+echo "== process-local host tests (do not execute ARM driver/HIF behavior) =="
 cargo +nightly test
-
-echo "== diagnostic process-local host tests/recorders (do not execute ARM driver/HIF behavior) =="
-cargo +nightly test --features vendor-host-tx-diagnostics
-cargo +nightly test --features dtcm-contract-diagnostics
-
-echo "== DTCM contract diagnostic ARM image fits the qualified linker envelope =="
-cargo +nightly build --release --bin hif-startup --features dtcm-contract-diagnostics \
-    --target "$TARGET" "${BUILD_STD[@]}"
-python3 tools/check-rust-main-stack.py "$ELF"
 
 echo "== source and packer gates =="
 python3 tools/check-address-literals.py
@@ -35,9 +26,6 @@ python3 tools/check-mac-packet-addresses.py
 python3 tools/check-platform-packet-addresses.py
 python3 tools/check-tx-packet-addresses.py
 python3 tools/check-dtcm-access.py
-python3 tools/generate-dtcm-snapshot-contract.py --check
-python3 tools/compare-dtcm-initialized-snapshots.py --self-test
-python3 tools/assemble-dtcm-initialized-snapshots.py --self-test
 python3 tools/check-scheduler-event-layout.py
 python3 tools/check-runtime-register-backoff-layout.py
 python3 tools/check-debug-console-layout.py
@@ -134,7 +122,7 @@ python3 tools/check-internal-context-prefix-layout.py
 python3 tools/check-internal-context-layout.py
 python3 tools/test-pack-sectioned-elf.py
 
-echo "== arm build and stack check: feature-free firmware =="
+echo "== arm build and stack check =="
 cargo +nightly build --release --bin hif-startup --target "$TARGET" "${BUILD_STD[@]}"
 python3 tools/check-rust-main-stack.py "$ELF"
 python3 tools/check-packet-ram-layout.py "$ELF"

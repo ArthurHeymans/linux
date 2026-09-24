@@ -44,13 +44,15 @@ FORBIDDEN_FORMS = (
 # Concurrent-pipe candidate selection moves the scheduler-blocked observation
 # from rust_main into the typed `scheduler_live_diagnostic` helper.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001E6C: 5})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx25scheduler_live_diagnostic', 0x04001E6C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001E6C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001E6C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001E6C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001E6C): 1,
-})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
+    {
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001E6C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx28service_mac_event_drain_tail', 0x04001E6C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001E6C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001E6C): 1,
+        ('rust_main', 0x04001E6C): 1,
+    }
+)
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:

@@ -75,9 +75,7 @@ FORBIDDEN_FORMS = (
 # is still no decoded HIF-address load. Retry nibble advancement remains confined
 # to the typed selective retry helper,
 # while partial give-up reuses ordinary kind-0 completion.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x0400980C: 1}
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x0400980C: 1, 0x0400985B: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter()
 
 

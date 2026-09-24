@@ -2,7 +2,6 @@
 
 use crate::{packet_ram, platform, radio};
 
-
 #[inline(always)]
 fn packet_offset(address: usize) -> u32 {
     // Every caller supplies a linker-derived packet-RAM root or object base.

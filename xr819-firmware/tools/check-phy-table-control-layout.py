@@ -64,9 +64,9 @@ ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
 )
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x04009A08): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy29initialize_mac_software_state', 0x04009A08): 1,
-        ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x04009A08): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy24begin_channel_transition', 0x04009A08): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy29initialize_mac_software_state', 0x04009A08): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy35run_vendor_dynamic_mode_calibration', 0x04009A08): 2,
     }
 )
 

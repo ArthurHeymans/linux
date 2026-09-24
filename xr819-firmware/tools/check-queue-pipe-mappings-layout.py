@@ -47,22 +47,20 @@ FORBIDDEN_FORMS = (
 # 0x040002e0 anchor with negative offsets; its stores remain in 0x0260..0x0288.
 # Concurrent-pipe candidate selection moves the reviewed queue-map read from
 # rust_main into the typed `scheduler_live_diagnostic` helper.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x040002D8: 1,
-    0x040002DC: 7,
-    0x040002E0: 3,
-})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x040002DC): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx25scheduler_live_diagnostic', 0x040002E0): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x040002E0): 1,
-    ('_RNvMs_NtCsbx17WDetRei_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040002DC): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx21prepare_probe_context', 0x040002DC): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx26service_host_management_tx', 0x040002DC): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx27prepare_context_publication', 0x040002E0): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x040002DC): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac24initialize_tx_pipe_state', 0x040002D8): 2,
-})
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x040002D8: 1, 0x040002DC: 6, 0x040002E0: 3})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
+    {
+        ('_RINvNtCs2QKOjPfuf9x_14xr819_firmware2tx32execute_single_probe_publicationNtB2_19VolatileMacPipeMmioEB4_', 0x040002DC): 1,
+        ('_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5admit', 0x040002DC): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x040002E0): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx21prepare_probe_context', 0x040002DC): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx26service_host_management_tx', 0x040002DC): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27prepare_context_publication', 0x040002E0): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x040002DC): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac24initialize_tx_pipe_state', 0x040002D8): 2,
+        ('rust_main', 0x040002E0): 1,
+    }
+)
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:

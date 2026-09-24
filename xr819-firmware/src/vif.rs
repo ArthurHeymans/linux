@@ -312,7 +312,6 @@ pub(crate) fn wake_reinit_candidate() -> Option<usize> {
 #[inline(always)]
 pub(crate) fn mode_address(interface: u8) -> Option<usize> { crate::dtcm::vif_record(usize::from(interface)).map(|record| record.mode().get()) }
 
-
 #[cfg(target_arch = "arm")]
 fn read_u8(address: usize) -> u8 { unsafe { (address as *const u8).read_volatile() } }
 #[cfg(target_arch = "arm")]

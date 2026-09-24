@@ -77,251 +77,6 @@ impl DtcmAddress {
     }
 }
 
-#[cfg(feature = "dtcm-contract-diagnostics")]
-pub const INITIALIZED_IMAGE_SIZE: usize = 0x2078;
-#[cfg(feature = "dtcm-contract-diagnostics")]
-pub const SNAPSHOT_MIB_BASE: u16 = 0xff00;
-#[cfg(feature = "dtcm-contract-diagnostics")]
-pub const SNAPSHOT_CHUNK_PAYLOAD_SIZE: usize = 352;
-#[cfg(feature = "dtcm-contract-diagnostics")]
-pub const SNAPSHOT_CHUNK_COUNT: usize =
-    INITIALIZED_IMAGE_SIZE.div_ceil(SNAPSHOT_CHUNK_PAYLOAD_SIZE);
-#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-const SNAPSHOT_HEADER_SIZE: usize = 16;
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SnapshotStage {
-    Entry = 0,
-    Platform = 1,
-    Startup = 2,
-}
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SnapshotChunk {
-    stage: SnapshotStage,
-    index: usize,
-    offset: usize,
-    length: usize,
-}
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-const fn snapshot_chunk(mib_id: u16) -> Option<SnapshotChunk> {
-    let relative = mib_id.wrapping_sub(SNAPSHOT_MIB_BASE) as usize;
-    if relative >= 3 * SNAPSHOT_CHUNK_COUNT {
-        return None;
-    }
-    let stage = match relative / SNAPSHOT_CHUNK_COUNT {
-        0 => SnapshotStage::Entry,
-        1 => SnapshotStage::Platform,
-        2 => SnapshotStage::Startup,
-        _ => return None,
-    };
-    let index = relative % SNAPSHOT_CHUNK_COUNT;
-    let offset = index * SNAPSHOT_CHUNK_PAYLOAD_SIZE;
-    let remaining = INITIALIZED_IMAGE_SIZE - offset;
-    Some(SnapshotChunk {
-        stage,
-        index,
-        offset,
-        length: if remaining < SNAPSHOT_CHUNK_PAYLOAD_SIZE {
-            remaining
-        } else {
-            SNAPSHOT_CHUNK_PAYLOAD_SIZE
-        },
-    })
-}
-
-#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-struct InitializedImageSnapshots(UnsafeCell<[[u8; INITIALIZED_IMAGE_SIZE]; 3]>);
-#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-// Startup captures finish before interrupts and MIB servicing begin. The only
-// later access is immutable foreground pagination; no capture/read overlap is
-// permitted by the unsafe APIs below.
-unsafe impl Sync for InitializedImageSnapshots {}
-#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-static INITIALIZED_IMAGE_SNAPSHOTS: InitializedImageSnapshots =
-    InitializedImageSnapshots(UnsafeCell::new([[0; INITIALIZED_IMAGE_SIZE]; 3]));
-
-/// Capture one exact initialized-image checkpoint after Rust BSS is available.
-///
-/// # Safety
-///
-/// Each stage must be captured exactly once during single-threaded startup,
-/// before interrupts or diagnostic MIB reads can access the snapshot buffers.
-#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-pub unsafe fn capture_initialized_image_snapshot(stage: SnapshotStage) {
-    unsafe {
-        let source = addr_of_mut!(__dtcm_data_start);
-        let destination = INITIALIZED_IMAGE_SNAPSHOTS
-            .0
-            .get()
-            .cast::<u8>()
-            .add(stage as usize * INITIALIZED_IMAGE_SIZE);
-        for offset in 0..INITIALIZED_IMAGE_SIZE {
-            destination.add(offset).write(source.add(offset).read_volatile());
-        }
-    }
-}
-
-include!("dtcm_snapshot_contract.rs");
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-const SNAPSHOT_REPORT_OFFSET_COUNT: usize = 8;
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SnapshotContractReport {
-    unowned_count: u16,
-    unowned_offsets: [u16; SNAPSHOT_REPORT_OFFSET_COUNT],
-    canonical_count: u8,
-    canonical_offsets: [u16; SNAPSHOT_REPORT_OFFSET_COUNT],
-}
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-fn warm_snapshot_change_allowed(offset: usize) -> bool {
-    WARM_SNAPSHOT_ALLOWED_RANGES
-        .iter()
-        .any(|&(start, end)| start <= offset && offset < end)
-}
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-fn snapshot_contract_report(before: &[u8], after: &[u8]) -> SnapshotContractReport {
-    let mut report = SnapshotContractReport {
-        unowned_count: 0,
-        unowned_offsets: [u16::MAX; SNAPSHOT_REPORT_OFFSET_COUNT],
-        canonical_count: 0,
-        canonical_offsets: [u16::MAX; SNAPSHOT_REPORT_OFFSET_COUNT],
-    };
-    for (offset, (&before, &after)) in before.iter().zip(after).enumerate() {
-        if before != after && !warm_snapshot_change_allowed(offset) {
-            let index = usize::from(report.unowned_count).min(SNAPSHOT_REPORT_OFFSET_COUNT);
-            if index < SNAPSHOT_REPORT_OFFSET_COUNT {
-                report.unowned_offsets[index] = offset as u16;
-            }
-            report.unowned_count = report.unowned_count.saturating_add(1);
-        }
-    }
-    for &(offset, expected) in WARM_SNAPSHOT_EXPECTED {
-        if after.get(offset..offset + expected.len()) != Some(expected) {
-            let index = usize::from(report.canonical_count).min(SNAPSHOT_REPORT_OFFSET_COUNT);
-            if index < SNAPSHOT_REPORT_OFFSET_COUNT {
-                report.canonical_offsets[index] = offset as u16;
-            }
-            report.canonical_count = report.canonical_count.saturating_add(1);
-        }
-    }
-    report
-}
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-fn append_report_bytes(output: &mut [u8], cursor: &mut usize, value: &[u8]) {
-    for &byte in value {
-        if *cursor < output.len() {
-            output[*cursor] = byte;
-            *cursor += 1;
-        }
-    }
-}
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-fn append_report_hex_u16(output: &mut [u8], cursor: &mut usize, value: u16) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for shift in [12, 8, 4, 0] {
-        if *cursor < output.len() {
-            output[*cursor] = HEX[usize::from((value >> shift) & 0x0f)];
-            *cursor += 1;
-        }
-    }
-}
-
-#[cfg(feature = "dtcm-contract-diagnostics")]
-fn append_report_offsets(
-    output: &mut [u8],
-    cursor: &mut usize,
-    offsets: &[u16; SNAPSHOT_REPORT_OFFSET_COUNT],
-) {
-    let mut first = true;
-    for &offset in offsets {
-        if offset == u16::MAX {
-            break;
-        }
-        if !first {
-            append_report_bytes(output, cursor, b",");
-        }
-        append_report_hex_u16(output, cursor, offset);
-        first = false;
-    }
-    if first {
-        append_report_bytes(output, cursor, b"none");
-    }
-}
-
-/// Encode the warm entry-to-startup contract result into the startup label.
-///
-/// # Safety
-///
-/// Entry and startup snapshots must both be complete and immutable.
-#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-pub unsafe fn write_warm_snapshot_report(output: &mut [u8]) -> usize {
-    let snapshots = unsafe { &*INITIALIZED_IMAGE_SNAPSHOTS.0.get() };
-    let report = snapshot_contract_report(
-        &snapshots[SnapshotStage::Entry as usize],
-        &snapshots[SnapshotStage::Startup as usize],
-    );
-    let mut cursor = 0;
-    append_report_bytes(output, &mut cursor, b"XR819 DTCM u=");
-    append_report_hex_u16(output, &mut cursor, report.unowned_count);
-    append_report_bytes(output, &mut cursor, b" f=");
-    append_report_offsets(output, &mut cursor, &report.unowned_offsets);
-    append_report_bytes(output, &mut cursor, b" c=");
-    append_report_hex_u16(output, &mut cursor, u16::from(report.canonical_count));
-    append_report_bytes(output, &mut cursor, b" e=");
-    append_report_offsets(output, &mut cursor, &report.canonical_offsets);
-    cursor
-}
-
-/// Encode one private read-MIB page without forming a reference to DTCM.
-///
-/// # Safety
-///
-/// All three startup captures must be complete and immutable. The caller must
-/// serialize reads in the foreground HIF loop and must not recapture a stage.
-#[cfg(all(feature = "dtcm-contract-diagnostics", target_arch = "arm"))]
-pub unsafe fn write_initialized_image_snapshot_mib(
-    mib_id: u16,
-    output: &mut [u8],
-) -> Option<usize> {
-    let chunk = snapshot_chunk(mib_id)?;
-    let total = SNAPSHOT_HEADER_SIZE + chunk.length;
-    if output.len() < total {
-        return None;
-    }
-    output[..4].copy_from_slice(b"DTCM");
-    output[4] = 1;
-    output[5] = chunk.stage as u8;
-    output[6] = chunk.index as u8;
-    output[7] = SNAPSHOT_CHUNK_COUNT as u8;
-    output[8..10].copy_from_slice(&(chunk.offset as u16).to_le_bytes());
-    output[10..12].copy_from_slice(&(chunk.length as u16).to_le_bytes());
-    output[12..14].copy_from_slice(&(INITIALIZED_IMAGE_SIZE as u16).to_le_bytes());
-    output[14..16].fill(0);
-
-    unsafe {
-        let source = INITIALIZED_IMAGE_SNAPSHOTS
-            .0
-            .get()
-            .cast::<u8>()
-            .add(chunk.stage as usize * INITIALIZED_IMAGE_SIZE + chunk.offset);
-        for index in 0..chunk.length {
-            output[SNAPSHOT_HEADER_SIZE + index] = source.add(index).read();
-        }
-    }
-    Some(total)
-}
-
 /// Opaque storage with no safe byte-slice API.
 #[repr(transparent)]
 struct OpaqueBytes<const N: usize> {
@@ -995,7 +750,6 @@ struct PeerPipeEntry { peer_mac: [SharedU8; 6], state_flags: SharedU8, age: Shar
 #[repr(C, align(4))]
 struct PreCommandQuarantine { peer_pipes: [PeerPipeEntry; 8], management_counters: [SharedU16; 4], scan_channel: SharedU16, opaque_4a: OpaqueBytes<0x02>, pending_root: SharedU32 }
 
-
 /// Command-15 blob whose last four bytes overlap channel-switch control.
 /// Later bytes are shared by JOIN, scan, register-save, and TX-buffer state.
 #[repr(C, align(4))]
@@ -1071,7 +825,6 @@ struct WsmResponseScratch {
     request_status_prefix: [SharedU8; 28],
 }
 
-
 /// BA/LMC request accounting and protocol flags shared with retained code.
 #[repr(C, align(4))]
 struct BaLmcHeader {
@@ -1102,7 +855,6 @@ struct BaSessions { records: [BaSession; 4] }
 struct BaLinkEventState { ba_deferred_action: SharedU8, ba_deferred_interface: SharedU8, opaque_02: OpaqueBytes<0x01>, periodic_timer_enabled: SharedU8,
     periodic_timer: TimerEntry, transition_timer: TimerEntry, current_network_flags: SharedU8, accumulated_network_flags: SharedU8,
     changed_network_flags: SharedU8, opaque_2f: OpaqueBytes<0x01> }
-
 
 /// Exact qualified TALA accounting shape. The semantic names describe the
 /// translated algorithm, not exclusive ownership of these volatile words.
@@ -4924,67 +4676,6 @@ mod tests {
         assert_eq!(pipe.state().get(), DTCM_STATE_BASE + 6);
         assert!(BaPipeObjectAddress::new((DTCM_STATE_END - 6) as u32).is_none());
         assert!(BaPipeObjectAddress::new((DTCM_STATE_BASE - 1) as u32).is_none());
-    }
-
-    #[cfg(feature = "dtcm-contract-diagnostics")]
-    #[test]
-    fn initialized_snapshot_mib_pages_cover_each_stage_exactly() {
-        assert_eq!(SNAPSHOT_CHUNK_COUNT, 24);
-        for stage in 0..3_usize {
-            let mut next = 0;
-            for index in 0..SNAPSHOT_CHUNK_COUNT {
-                let mib_id = SNAPSHOT_MIB_BASE + (stage * SNAPSHOT_CHUNK_COUNT + index) as u16;
-                let chunk = snapshot_chunk(mib_id).unwrap();
-                assert_eq!(chunk.stage as usize, stage);
-                assert_eq!(chunk.index, index);
-                assert_eq!(chunk.offset, next);
-                next += chunk.length;
-            }
-            assert_eq!(next, INITIALIZED_IMAGE_SIZE);
-        }
-        assert!(snapshot_chunk(SNAPSHOT_MIB_BASE - 1).is_none());
-        assert!(snapshot_chunk(SNAPSHOT_MIB_BASE + (3 * SNAPSHOT_CHUNK_COUNT) as u16).is_none());
-    }
-
-    #[cfg(feature = "dtcm-contract-diagnostics")]
-    #[test]
-    fn warm_snapshot_contract_reports_only_unowned_changes() {
-        let before = [0u8; INITIALIZED_IMAGE_SIZE];
-        let mut after = before;
-        after[0x0100] = 1;
-        after[0x0138] = 1;
-        let report = snapshot_contract_report(&before, &after);
-        assert_eq!(report.unowned_count, 1);
-        assert_eq!(report.unowned_offsets[0], 0x0100);
-    }
-
-    #[cfg(feature = "dtcm-contract-diagnostics")]
-    #[test]
-    fn warm_snapshot_contract_checks_canonical_values() {
-        let mut startup = [0u8; INITIALIZED_IMAGE_SIZE];
-        for &(offset, expected) in WARM_SNAPSHOT_EXPECTED {
-            startup[offset..offset + expected.len()].copy_from_slice(expected);
-        }
-        let valid = snapshot_contract_report(&startup, &startup);
-        assert_eq!(valid.unowned_count, 0);
-        assert_eq!(valid.canonical_count, 0);
-
-        startup[0x1fe6] ^= 1;
-        let invalid = snapshot_contract_report(&startup, &startup);
-        assert_eq!(invalid.canonical_count, 1);
-        assert_eq!(invalid.canonical_offsets[0], 0x1fe6);
-    }
-
-    #[cfg(feature = "dtcm-contract-diagnostics")]
-    #[test]
-    fn warm_snapshot_contract_ranges_are_ordered_and_cover_expected_values() {
-        for pair in WARM_SNAPSHOT_ALLOWED_RANGES.windows(2) {
-            assert!(pair[0].1 <= pair[1].0);
-        }
-        for &(offset, expected) in WARM_SNAPSHOT_EXPECTED {
-            assert!(!expected.is_empty());
-            assert!((offset..offset + expected.len()).all(warm_snapshot_change_allowed));
-        }
     }
 
     #[test]

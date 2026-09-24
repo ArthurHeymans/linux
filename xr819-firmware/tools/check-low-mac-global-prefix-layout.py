@@ -57,41 +57,40 @@ FORBIDDEN_FORMS = (
 # counters by exact pipe/slot perturbs the shared inactive-runtime helper and
 # exposes one additional reviewed decoded access at both `0x04001686` and
 # `0x04001694` without introducing another source owner.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({
-    0x04001681: 1, 0x04001682: 6, 0x04001685: 1, 0x04001686: 4,
-    0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 5,
-    0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2,
-})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RINvNtCsbx17WDetRei_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x0400169C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx26enter_mac_fatal_quiescence', 0x04001687): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04001685): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx31prepare_single_frame_pas_timing', 0x04001682): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001687): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 10,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 18,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19build_control_frame', 0x040016B0): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac19program_rate_tables', 0x04001682): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac20program_slot_timings', 0x0400169C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04001682): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reinitialize_after_wake', 0x04001690): 3,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reprogram_after_channel', 0x04001682): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac23reprogram_after_channel', 0x0400169C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac24initialize_tx_pipe_state', 0x0400169C): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac28install_response_descriptors', 0x040016B0): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x0400168A): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001682): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001690): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy24begin_channel_transition', 0x04001682): 4,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001681): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3phy25finish_channel_transition', 0x04001688): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware4join5reset', 0x04001688): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware4scan7service', 0x04001688): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware5radio15poll_indication', 0x04001694): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware5radio22resynchronize_consumer', 0x04001690): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware5radio7release', 0x04001690): 3,
-    ('rust_main', 0x04001690): 1,
-})
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001681: 1, 0x04001682: 7, 0x04001685: 1, 0x04001686: 4, 0x04001687: 2, 0x04001688: 3, 0x0400168A: 1, 0x04001690: 6, 0x04001694: 5, 0x0400169C: 4, 0x040016B0: 2})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
+    {
+        ('_RINvNtCs2QKOjPfuf9x_14xr819_firmware2tx27build_single_frame_durationNtB2_19VolatileMacPipeMmioEB4_', 0x0400169C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx26enter_mac_fatal_quiescence', 0x04001687): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx30emit_prepared_probe_descriptor', 0x04001685): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx31prepare_single_frame_pas_timing', 0x04001682): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx34service_pipe_watchdog_tick_runtime', 0x04001687): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001686): 10,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx37service_single_probe_runtime_inactive', 0x04001694): 18,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac19build_control_frame', 0x040016B0): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac19program_rate_tables', 0x04001682): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac20program_slot_timings', 0x0400169C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac23reinitialize_after_wake', 0x04001682): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac23reinitialize_after_wake', 0x04001690): 3,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac23reprogram_after_channel', 0x04001682): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac23reprogram_after_channel', 0x0400169C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac24initialize_tx_pipe_state', 0x0400169C): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac28install_response_descriptors', 0x040016B0): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31finish_unjoined_scan_radio_stop', 0x0400168A): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001682): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001690): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy24begin_channel_transition', 0x04001682): 4,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy25finish_channel_transition', 0x04001681): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3phy25finish_channel_transition', 0x04001688): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4join12activate_sta', 0x04001682): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4join5reset', 0x04001688): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware4scan7service', 0x04001688): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio15poll_indication', 0x04001694): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio22resynchronize_consumer', 0x04001690): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware5radio7release', 0x04001690): 3,
+        ('rust_main', 0x04001690): 2,
+    }
+)
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:

@@ -694,11 +694,7 @@ pub fn encode_read_mib_data_response(
 ///
 /// This avoids a second large buffer for paginated target diagnostics while
 /// retaining the ordinary read-MIB wire layout.
-#[cfg(any(
-    feature = "dtcm-contract-diagnostics",
-    feature = "experimental-dynamic-iq-trace",
-    test
-))]
+#[cfg(test)]
 pub fn encode_read_mib_data_response_in_place(
     status: u32,
     mib_id: u16,

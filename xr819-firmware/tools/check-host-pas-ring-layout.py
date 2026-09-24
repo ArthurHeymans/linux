@@ -48,14 +48,16 @@ FORBIDDEN_FORMS = (
 # `scheduler_live_diagnostic` helper; the reservation helper keeps its four
 # loads and operation order is unchanged.
 ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x04001578: 6})
-ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter({
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx25scheduler_live_diagnostic', 0x04001578): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001578): 4,
-    ('_RNvMs1_NtCsbx17WDetRei_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation6cancel', 0x04001578): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx15remove_live_pas', 0x04001578): 2,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x04001578): 1,
-    ('_RNvNtCsbx17WDetRei_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001578): 1,
-})
+ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
+    {
+        ('_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001578): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx15remove_live_pas', 0x04001578): 2,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx22release_pending_to_pas', 0x04001578): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001578): 4,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware3mac31initialize_vendor_startup_state', 0x04001578): 1,
+        ('rust_main', 0x04001578): 5,
+    }
+)
 
 
 def code_only(source: str, hash_comments: bool, single_quote_strings: bool) -> str:
