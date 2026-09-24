@@ -4,11 +4,7 @@
 //! path. Hardware-facing code can apply these plans without borrowing the
 //! internal class-6 probe/template initializer.
 
-use crate::packet_ram;
-
 pub(crate) use crate::dtcm::HostContextAddress;
-pub const HOST_FRAME_STATE_SIZE: u32 = packet_ram::HOST_FRAME_STATE_SIZE as u32;
-pub const PAS_RING_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HostConfirmationFields {
@@ -68,46 +64,6 @@ pub const fn valid_phase_transition(current: HostTxPhase, next: HostTxPhase) -> 
             | (HostTxPhase::Scheduled, HostTxPhase::PasQueued)
             | (HostTxPhase::Scheduled, HostTxPhase::Completing)
     )
-}
-
-/// Fields which must remain identical across one vendor A-MPDU chain.
-///
-/// The decompiled builder compares the internal link and rate directly. The
-/// queue-to-pipe mapping supplies the TID grouping upstream; retaining it here
-/// makes that otherwise implicit contract testable before any chain pointer is
-/// published.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AmpduGroupingKey {
-    pub(crate) interface: u8,
-    pub(crate) link: u8,
-    pub(crate) tid: u8,
-    pub(crate) rate: u8,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AmpduCandidate {
-    pub(crate) key: AmpduGroupingKey,
-    pub(crate) frame_control: u16,
-}
-
-/// Restrict the first aggregate slice to compatible same-interface/link/TID QoS data.
-pub(crate) fn can_form_ampdu_pair(first: AmpduCandidate, second: AmpduCandidate) -> bool {
-    let first_qos_data = first.frame_control & 0x008c == 0x0088;
-    let second_qos_data = second.frame_control & 0x008c == 0x0088;
-    let (tx_tids, _) = crate::configuration::block_ack_policy();
-    let operational = crate::configuration::operational_tx_ba_tids();
-    let tid_enabled = first.key.tid < 8
-        && tx_tids & (1 << first.key.tid) != 0
-        && operational & (1 << first.key.tid) != 0;
-    first_qos_data
-        && second_qos_data
-        && tid_enabled
-        && first.key.link < 8
-        && first.key.rate >= 14
-        && first.key.interface == second.key.interface
-        && first.key.link == second.key.link
-        && first.key.tid == second.key.tid
-        && first.key.rate == second.key.rate
 }
 
 /// One borrowed HIF request and its class-0 context identity. The release
@@ -549,15 +505,6 @@ pub enum PendingServiceError {
 }
 
 impl PendingServiceError {
-    pub const fn diagnostic_code(self) -> u8 {
-        match self {
-            Self::WrongPhase => 1,
-            Self::PendingList(_) => 2,
-            Self::Timing(_) => 3,
-            Self::PhyState => 4,
-            Self::PasRingFull => 5,
-        }
-    }
 }
 
 /// Vendor microsecond timer. Exposed so diagnostics can rate-limit without
@@ -736,94 +683,6 @@ unsafe fn push_live_pas(
 }
 
 #[cfg(target_arch = "arm")]
-unsafe fn push_live_pas_front(
-    _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
-    context: HostContextAddress,
-) -> Result<(), PendingServiceError> {
-    let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
-    let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
-    let new_head = head.wrapping_sub(1) & 0x3f;
-    if new_head == tail {
-        return Err(PendingServiceError::PasRingFull);
-    }
-    unsafe {
-        write_live_u32(
-            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(new_head)).get() as u32,
-            context.pas().raw(),
-        );
-        write_live_u32(
-            crate::dtcm::HOST_PAS_RING_HEAD.get() as u32,
-            u32::from(new_head),
-        );
-    }
-    Ok(())
-}
-
-#[cfg(target_arch = "arm")]
-pub unsafe fn retry_attempted(retained: &RetainedHostTx) -> bool {
-    unsafe { read_host_u16(retained.context.try_count()) != 0 }
-}
-
-/// First non-empty PAS frame in scheduler order.
-///
-/// # Safety
-/// The caller must serialize access to the live PAS ring.
-#[cfg(target_arch = "arm")]
-pub unsafe fn first_live_pas_frame() -> Option<u32> {
-    let head = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_HEAD.get() as u32) as u8 & 0x3f };
-    let tail = unsafe { read_live_u32(crate::dtcm::HOST_PAS_RING_TAIL.get() as u32) as u8 & 0x3f };
-    if head == tail {
-        return None;
-    }
-    let frame = unsafe {
-        read_live_u32(
-            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get() as u32,
-        )
-    };
-    (frame != 0).then_some(frame)
-}
-
-pub(crate) const fn requeued_retry_control_bits(bits: u32) -> u32 {
-    (bits | 0x10) & !((1 << 28) | (1 << 27) | (1 << 26) | (1 << 5))
-}
-
-/// Return a retryable hardware-owned context to the normal PAS scheduler.
-///
-/// # Safety
-/// The aggregate slot must already be retired, and `retained` must be its
-/// unique scheduled host owner. The MAC-domain guard serializes ring mutation.
-#[cfg(target_arch = "arm")]
-pub unsafe fn requeue_scheduled_retry(
-    guard: &mut crate::mac_domain::MacDomainGuard<'_>,
-    retained: &mut RetainedHostTx,
-) -> Result<(), PendingServiceError> {
-    if retained.phase != HostTxPhase::Scheduled {
-        return Err(PendingServiceError::WrongPhase);
-    }
-    let context = retained.context;
-    unsafe { push_live_pas_front(guard, context)? };
-    unsafe {
-        write_host_u32(
-            context.control_bits(),
-            requeued_retry_control_bits(read_host_u32(context.control_bits())),
-        );
-        write_host_u16(
-            context.frame_control(),
-            read_host_u16(context.frame_control()) | 0x0800,
-        );
-        write_host_u32(
-            context.ownership_bits(),
-            read_host_u32(context.ownership_bits()) & !0x100,
-        );
-        write_host_u32(context.next_in_ampdu(), 0);
-        let scheduler_events = crate::dtcm::scheduler_pending_events().get() as u32;
-        write_live_u32(scheduler_events, read_live_u32(scheduler_events) | 0x0020_0000);
-    }
-    retained.phase = HostTxPhase::PasQueued;
-    Ok(())
-}
-
-#[cfg(target_arch = "arm")]
 unsafe fn remove_live_pas(
     _guard: &mut crate::mac_domain::MacDomainGuard<'_>,
     context: HostContextAddress,
@@ -904,46 +763,6 @@ unsafe fn release_pending_to_pas(
     }
     retained.phase = HostTxPhase::PasQueued;
     Ok(())
-}
-
-/// Service the retained context through the vendor `task_b88e` decision and,
-/// when eligible, through `tx_frame_done_release` into the global PAS ring.
-///
-/// # Safety
-/// The context and global pending/PAS structures must be runtime-owned.
-#[cfg(target_arch = "arm")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PendingLiveDiagnostic {
-    pub global: u32,
-    pub active_mask: u16,
-    pub effective_mask: u16,
-    pub vif_control_bits: u32,
-    pub vif_mode_byte: u8,
-    pub interface: u8,
-    pub link: u8,
-    pub pipe_allowed: bool,
-}
-
-/// Snapshot the exact live gates used by vendor pending task `0xb88e`.
-///
-/// # Safety
-/// The retained context and vendor VIF/global state must remain mapped.
-#[cfg(target_arch = "arm")]
-pub unsafe fn pending_live_diagnostic(retained: &RetainedHostTx) -> PendingLiveDiagnostic {
-    let context = retained.context;
-    let interface = unsafe { read_host_u8(context.interface()) };
-    let link = unsafe { read_host_u8(context.host_link()) };
-    let vif = crate::vif::diagnostic_snapshot(interface);
-    PendingLiveDiagnostic {
-        global: unsafe { crate::dtcm::scheduler_exclusion_state_ptr().read_volatile() },
-        active_mask: vif.map_or(0, |state| state.allowed_links),
-        effective_mask: vif.map_or(0, |state| state.effective_links),
-        vif_control_bits: vif.map_or(0, |state| state.flags),
-        vif_mode_byte: vif.map_or(0, |state| state.mode),
-        interface,
-        link,
-        pipe_allowed: unsafe { program_pipe_eligible(context) },
-    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -1089,16 +908,6 @@ pub enum SchedulerReserveError {
 }
 
 impl SchedulerReserveError {
-    pub const fn diagnostic_code(self) -> u8 {
-        match self {
-            Self::WrongPhase => 1,
-            Self::SchedulerBlocked => 2,
-            Self::LeaveQueued => 3,
-            Self::Expired => 4,
-            Self::PipeStateUnavailable => 5,
-            Self::Descriptor(_) => 6,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1111,20 +920,6 @@ pub struct SchedulerLiveDiagnostic {
     pub pipe_allowed: bool,
     pub retry_gate: u8,
     pub receive_gate: u8,
-}
-
-#[cfg(target_arch = "arm")]
-pub(crate) unsafe fn ampdu_candidate(retained: &RetainedHostTx) -> AmpduCandidate {
-    let context = retained.context;
-    AmpduCandidate {
-        key: AmpduGroupingKey {
-            interface: unsafe { read_host_u8(context.interface()) },
-            link: unsafe { read_host_u8(context.link_id()) },
-            tid: unsafe { read_host_u8(context.tid()) },
-            rate: unsafe { read_host_u8(context.tx_rate()) },
-        },
-        frame_control: unsafe { read_host_u16(context.frame_control()) },
-    }
 }
 
 /// Snapshot the non-aggregate scheduler gates without changing ownership.
@@ -1641,38 +1436,6 @@ pub fn write_host_context_fields<W: HostContextWriter>(
     writer.write_u8(context.tx_rate(), metadata.max_tx_rate);
 }
 
-struct SliceContextWriter<'a> {
-    context: HostContextAddress,
-    image: &'a mut [u8; crate::dtcm::HOST_TX_CONTEXT_SIZE],
-}
-
-impl HostContextWriter for SliceContextWriter<'_> {
-    fn write_u8(&mut self, address: crate::dtcm::DtcmAddress, value: u8) {
-        self.image[address.get() - self.context.raw() as usize] = value;
-    }
-
-    fn write_u16(&mut self, address: crate::dtcm::DtcmAddress, value: u16) {
-        let offset = address.get() - self.context.raw() as usize;
-        self.image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn write_u32(&mut self, address: crate::dtcm::DtcmAddress, value: u32) {
-        let offset = address.get() - self.context.raw() as usize;
-        self.image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
-}
-
-/// Build a zero-based context image for tests and documentation. Runtime code
-/// should call `write_host_context_fields` with a volatile writer instead.
-pub fn initialize_host_context(
-    image: &mut [u8; crate::dtcm::HOST_TX_CONTEXT_SIZE],
-    metadata: HostTxMetadata,
-) {
-    image.fill(0);
-    let context = HostContextAddress::from_index(0).unwrap();
-    write_host_context_fields(&mut SliceContextWriter { context, image }, context, metadata);
-}
-
 #[cfg(target_arch = "arm")]
 struct VolatileContextWriter;
 
@@ -2002,128 +1765,6 @@ pub unsafe fn admit_host_tx(
     })
 }
 
-pub fn read_u16(image: &[u8; crate::dtcm::HOST_TX_CONTEXT_SIZE], offset: usize) -> u16 {
-    u16::from_le_bytes([image[offset], image[offset + 1]])
-}
-
-pub fn read_u32(image: &[u8; crate::dtcm::HOST_TX_CONTEXT_SIZE], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        image[offset],
-        image[offset + 1],
-        image[offset + 2],
-        image[offset + 3],
-    ])
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PendingListInsertion {
-    pub context_next: u32,
-    pub new_head: u32,
-    pub new_tail: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PendingListRemoval {
-    pub new_head: u32,
-    pub new_tail: u32,
-    pub prior_next: Option<u32>,
-}
-
-pub const fn remove_pending_list_node(
-    head: u32,
-    tail: u32,
-    prior: u32,
-    context: u32,
-    next: u32,
-) -> Option<PendingListRemoval> {
-    if context == 0 || (prior == 0 && head != context) || (prior != 0 && head == context) {
-        return None;
-    }
-    Some(PendingListRemoval {
-        new_head: if prior == 0 { next } else { head },
-        new_tail: if tail == context { prior } else { tail },
-        prior_next: if prior == 0 { None } else { Some(next) },
-    })
-}
-
-/// Exact `txq_list_insert(ctx, queue, 0)` append-at-tail mutation.
-pub const fn append_pending_list(head: u32, tail: u32, context: u32) -> PendingListInsertion {
-    PendingListInsertion {
-        context_next: 0,
-        new_head: if tail == 0 { context } else { head },
-        new_tail: context,
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PasRingError {
-    InvalidFrameKind,
-    Full,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PasRing {
-    pub head: u8,
-    pub tail: u8,
-    pub entries: [u32; PAS_RING_CAPACITY],
-}
-
-impl PasRing {
-    pub const fn empty() -> Self {
-        Self {
-            head: 0,
-            tail: 0,
-            entries: [0; PAS_RING_CAPACITY],
-        }
-    }
-
-    /// Compact holes exactly as `pas_txq_push_global()` does before insertion.
-    pub fn compact(&mut self) {
-        let old_tail = self.tail;
-        let mut scan = self.head;
-        // Vendor compacts live entries into the free range beginning at the
-        // old tail, then advances the logical head to that old tail.
-        let mut write = old_tail;
-        while scan != old_tail {
-            let value = self.entries[usize::from(scan)];
-            if value != 0 {
-                self.entries[usize::from(write)] = value;
-                write = write.wrapping_add(1) & 0x3f;
-                self.entries[usize::from(scan)] = 0;
-            }
-            scan = scan.wrapping_add(1) & 0x3f;
-        }
-        self.head = old_tail;
-        self.tail = write;
-    }
-
-    /// Insert a PAS pointer according to PAS `+0x53` (`ctx+0xa7`). Host WSM
-    /// contexts use frame kind 1 and append at the tail.
-    pub fn push(&mut self, pas: u32, frame_kind: u8) -> Result<(), PasRingError> {
-        self.compact();
-        match frame_kind {
-            1 => {
-                let next = self.tail.wrapping_add(1) & 0x3f;
-                if next == self.head {
-                    return Err(PasRingError::Full);
-                }
-                self.entries[usize::from(self.tail)] = pas;
-                self.tail = next;
-            }
-            0 => {
-                let previous = self.head.wrapping_sub(1) & 0x3f;
-                if previous == self.tail {
-                    return Err(PasRingError::Full);
-                }
-                self.entries[usize::from(previous)] = pas;
-                self.head = previous;
-            }
-            _ => return Err(PasRingError::InvalidFrameKind),
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingTaskInput {
     pub global_blocked: bool,
@@ -2369,25 +2010,6 @@ mod tests {
     }
 
     #[test]
-    fn host_context_addresses_preserve_pool_and_frame_state_identity() {
-        let first = HostContextAddress::from_index(0).unwrap();
-        let last = HostContextAddress::from_index(29).unwrap();
-
-        assert_eq!(HostContextAddress::from_index(0), Some(first));
-        assert_eq!(
-            HostContextAddress::from_index(crate::dtcm::HOST_TX_CONTEXT_COUNT - 1),
-            Some(last)
-        );
-        assert_eq!(first.raw(), crate::dtcm::HOST_TX_CONTEXTS.get() as u32);
-        assert_eq!(first.expected_frame_state().raw(), packet_ram::host_frame_state(0) as u32);
-        assert_eq!(last.raw(), crate::dtcm::HOST_TX_CONTEXTS.get() as u32 + 29 * 0x170);
-        assert_eq!(last.expected_frame_state().raw(), packet_ram::host_frame_state(29) as u32);
-        assert_eq!(HostContextAddress::from_raw(last.raw()), Some(last));
-        assert_eq!(HostContextAddress::from_raw(last.raw() + 4), None);
-        assert_eq!(HostContextAddress::from_index(crate::dtcm::HOST_TX_CONTEXT_COUNT), None);
-    }
-
-    #[test]
     fn host_free_list_rebuild_pop_and_push_preserve_exact_order_and_widths() {
         let mut io = PoolRecorder::new();
         assert!(io.enter());
@@ -2596,52 +2218,6 @@ mod tests {
     }
 
     #[test]
-    fn host_initializer_preserves_vendor_offsets() {
-        let mut image = [0xaa; crate::dtcm::HOST_TX_CONTEXT_SIZE];
-        initialize_host_context(
-            &mut image,
-            HostTxMetadata {
-                message_address: 0x0900_9000,
-                packet_id: 0x1234_5678,
-                max_tx_rate: 14,
-                queue_id: 0x22,
-                more: false,
-                flags: 0x53,
-                expire_time: 200,
-                ht_tx_parameters: 1 | (0x60 << 11),
-                frame_address: 0x0900_9018,
-                frame_length: 147,
-                interface: 0,
-                submit_timer: 0x1020_3040,
-                ac: 2,
-                frame_state_address: 0x0900_3678,
-            },
-        );
-
-        assert_eq!(read_u32(&image, 0x00), 0x0900_9000);
-        assert_eq!(read_u32(&image, 0x08), 0x1234_5678);
-        assert_eq!(read_u32(&image, 0x10), 200);
-        assert_eq!(read_u32(&image, 0x14), 1 | (0x60 << 11));
-        assert_eq!(image[0x0c], 14);
-        assert_eq!(image[0x0d], 2);
-        assert_eq!(image[0x24], 14);
-        assert_eq!(&image[0x25..0x34], &[0; 15]);
-        assert_eq!(image[0xbf], 8);
-        assert_eq!(image[0x53], 0);
-        assert_eq!(image[0x52], 1);
-        assert_eq!(image[0xa7], 1);
-        assert_eq!(image[0x60], 2);
-        assert_eq!(image[0x61], 1);
-        assert_eq!(image[0x62], 5);
-        assert_eq!(read_u16(&image, 0x5c), 147);
-        assert_eq!(read_u16(&image, 0x70), 0xfe);
-        assert_eq!(read_u32(&image, 0x54), 0x0900_9018);
-        assert_eq!(read_u32(&image, 0xa0), 0x0900_3678);
-        assert_eq!(read_u32(&image, 0x68), 0x1020_303f);
-        assert_eq!(read_u32(&image, 0x58), 0x0081_0068);
-    }
-
-    #[test]
     fn station_data_rate_rejects_only_unsupported_indices() {
         assert_eq!(station_data_rate(0), 0);
         assert_eq!(station_data_rate(3), 3);
@@ -2650,53 +2226,6 @@ mod tests {
         assert_eq!(station_data_rate(6), 6);
         assert_eq!(station_data_rate(21), 21);
         assert_eq!(station_data_rate(u8::MAX), 0);
-    }
-
-    #[test]
-    fn pending_mode_zero_appends_instead_of_prepending() {
-        assert_eq!(
-            append_pending_list(0x1000, 0x2000, 0x3000),
-            PendingListInsertion {
-                context_next: 0,
-                new_head: 0x1000,
-                new_tail: 0x3000,
-            }
-        );
-        assert_eq!(append_pending_list(0, 0, 0x3000).new_head, 0x3000);
-    }
-
-    #[test]
-    fn pending_removal_updates_head_tail_and_predecessor_separately() {
-        assert_eq!(
-            remove_pending_list_node(0x1000, 0x3000, 0, 0x1000, 0x2000),
-            Some(PendingListRemoval {
-                new_head: 0x2000,
-                new_tail: 0x3000,
-                prior_next: None,
-            })
-        );
-        assert_eq!(
-            remove_pending_list_node(0x1000, 0x3000, 0x2000, 0x3000, 0),
-            Some(PendingListRemoval {
-                new_head: 0x1000,
-                new_tail: 0x2000,
-                prior_next: Some(0),
-            })
-        );
-    }
-
-    #[test]
-    fn host_pas_entries_append_and_holes_are_compacted() {
-        let mut ring = PasRing::empty();
-        assert_eq!(ring.push(0x1054, 1), Ok(()));
-        assert_eq!(ring.push(0x2054, 1), Ok(()));
-        ring.entries[1] = 0;
-        assert_eq!(ring.push(0x3054, 1), Ok(()));
-
-        assert_eq!(ring.entries[3], 0x2054);
-        assert_eq!(ring.entries[4], 0x3054);
-        assert_eq!(ring.head, 3);
-        assert_eq!(ring.tail, 5);
     }
 
     #[test]
@@ -2733,49 +2262,6 @@ mod tests {
             }),
             NonAggregateSchedulerDecision::Complete(10)
         );
-    }
-
-    #[test]
-    fn requeued_retry_clears_scheduler_ownership_bits() {
-        assert_eq!(
-            requeued_retry_control_bits(0x1c08_0030),
-            0x0008_0010
-        );
-    }
-
-    #[test]
-    fn ampdu_pair_requires_qos_data_and_one_grouping_key() {
-        assert!(crate::configuration::retain_interface_mib(
-            crate::wsm::MIB_ID_BLOCK_ACK_POLICY,
-            &[0x3f, 0, 0x3f, 0],
-        ));
-        assert!(crate::configuration::retain_interface_mib(
-            crate::wsm::MIB_ID_PRIVATE_TX_BA_SESSION,
-            &[5, 1],
-        ));
-        let first = AmpduCandidate {
-            key: AmpduGroupingKey { interface: 0, link: 2, tid: 5, rate: 19 },
-            frame_control: 0x0188,
-        };
-        assert!(can_form_ampdu_pair(first, first));
-        assert!(!can_form_ampdu_pair(
-            first,
-            AmpduCandidate { frame_control: 0x0008, ..first },
-        ));
-        assert!(!can_form_ampdu_pair(
-            first,
-            AmpduCandidate {
-                key: AmpduGroupingKey { rate: 18, ..first.key },
-                ..first
-            },
-        ));
-        assert!(!can_form_ampdu_pair(
-            first,
-            AmpduCandidate {
-                key: AmpduGroupingKey { tid: 4, ..first.key },
-                ..first
-            },
-        ));
     }
 
     #[test]

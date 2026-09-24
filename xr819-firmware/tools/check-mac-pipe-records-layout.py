@@ -65,7 +65,7 @@ ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counte
         ('_RINvNtCs2QKOjPfuf9x_14xr819_firmware2tx36release_aggregate_retry_command_maskNtB2_19VolatileMacPipeMmioEB4_', 0x04001722): 2,
         ('_RNvMs1_NtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_txNtB5_24HostSchedulerReservation16publish_in_batch', 0x04001720): 2,
         ('_RNvMs7_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_10LiveTxSlot14from_pipe_slot', 0x0400172C): 1,
-        ('_RNvMsP_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
+        ('_RNvMsK_NtCs2QKOjPfuf9x_14xr819_firmware2txNtB5_24PreparedProbePublication7publish', 0x04001720): 2,
         ('_RNvMs_NtCs2QKOjPfuf9x_14xr819_firmware14host_tx_driverNtB4_12HostTxDriver5reset', 0x04001738): 1,
         ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx34reserve_non_aggregate_scheduler_at', 0x04001720): 3,
         ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware2tx27prepare_context_publication', 0x04001720): 1,

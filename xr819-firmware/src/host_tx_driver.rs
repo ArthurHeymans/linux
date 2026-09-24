@@ -12,7 +12,9 @@
 
 use crate::{hif, host_tx_policy, tx, vendor_host_tx};
 
-const HOST_CONTEXT_COUNT: usize = crate::host_tx_arena::HOST_CONTEXT_COUNT;
+/// Host TX contexts in the fixed vendor arena; hardware context addresses
+/// define slot identity.
+const HOST_CONTEXT_COUNT: usize = 30;
 /// Contexts advanced per service pass.
 ///
 /// At 4, reservations that still need publication consume the front of the

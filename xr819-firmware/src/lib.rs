@@ -12,7 +12,6 @@ pub mod download;
 pub mod dtcm;
 pub mod exception;
 pub mod hif;
-pub mod host_tx_arena;
 /// Halts in **every** build, including report-and-continue ones.
 ///
 /// Use where continuing past the detected condition would corrupt state the

@@ -14,10 +14,10 @@ for mask in ("0x007f_ffff", "0xf6ff_ffff"):
 
 expected = {
     "packet_ram::mac_packet_offset_unchecked(": 1,
-    "packet_ram::encode_mac_packet_offset_u32(": 3,
+    "packet_ram::encode_mac_packet_offset_u32(": 1,
     "packet_ram::encode_tx_payload_bus_address(": 0,
-    "packet_ram::RuntimePacketAddress::new(": 8,
-    "validated_tx_frame(": 4,
+    "packet_ram::RuntimePacketAddress::new(": 4,
+    "validated_tx_frame(": 3,
     "validated_context_tx_frame(": 5,
     "FrameNodeAddress::from_raw(": 1,
     "LiveTxSlot::from_pipe_slot(": 4,
@@ -25,13 +25,13 @@ expected = {
     "LiveTxSlot::from_mmio(": 2,
     "release_aggregate_retry_command_mask(": 2,
     "release_retiring_aggregate_command_mask(": 2,
-    "retained_hardware_ring(": 6,
+    "retained_hardware_ring(": 3,
     "TxHardwareRingAddress::for_pipe(": 9,
     "TxHardwareRingAddress::new(": 0,
     "PublishedSlotIdentity::new(": 1,
     ".live_slot()": 0,
-    ".mac_offset()": 2,
-    ".tx_payload_bus_address(": 2,
+    ".mac_offset()": 1,
+    ".tx_payload_bus_address(": 1,
 }
 for call, count in expected.items():
     actual = production.count(call)

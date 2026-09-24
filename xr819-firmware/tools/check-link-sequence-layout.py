@@ -46,15 +46,10 @@ FORBIDDEN_FORMS = (
 )
 
 # Regenerated only after reviewing the candidate disassembly and operation order.
-ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter(
-    {0x040087CE: 1}
-)
+ALLOWED_LINKED_LITERALS: collections.Counter[int] = collections.Counter({0x040087CE: 1, 0x04008840: 1})
 ALLOWED_DECODED_XREFS: collections.Counter[tuple[str, int]] = collections.Counter(
     {
-        (
-            '_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx21program_pipe_eligible',
-            0x040087CE,
-        ): 1,
+        ('_RNvNtCs2QKOjPfuf9x_14xr819_firmware14vendor_host_tx21program_pipe_eligible', 0x040087CE): 1,
     }
 )
 

@@ -9,7 +9,6 @@ use core::cell::UnsafeCell;
 use crate::configuration::MAX_TEMPLATE_FRAME_LEN;
 use crate::packet_ram;
 
-const TX_CONTEXT_SIZE: usize = crate::dtcm::INTERNAL_TX_CONTEXT_SIZE;
 const TX_CONTEXT_COUNT: usize = crate::dtcm::INTERNAL_TX_CONTEXT_COUNT;
 const TX_BUFFER_SIZE: usize = packet_ram::INTERNAL_TX_BUFFER_SIZE;
 const FRAME_NODE_OFFSET: u32 = 0x54;
@@ -147,9 +146,6 @@ const PIPE_IRQ_TRIGGER: u32 = crate::platform::mac_register(0x0e98) as u32;
 const PIPE_QUANTUM: u32 = 0x0000_0fff;
 const PIPE_STATUS_COUNTER: u32 = 0xfff0_1aa4;
 const PIPE_RETRY_INACTIVE_SENTINEL: u32 = 0xff00_ffff;
-// `txp_pipe_advance_slot` acknowledges with `-((0x1110 << pipe) + 0x10)`, which
-// is a different lane from the `0x100 << pipe` publication ownership mask.
-const PIPE_ADVANCE_ACK_BASE: u32 = 0x0000_1110;
 const PIPE_RETRY_SPECIAL_ACK: u32 = 0x0000_f010;
 const PIPE_RETRY_RANDOM_STATS: u32 = 0xfff0_2e7c;
 const MAC_EVENT_READINESS: u32 = crate::platform::mac_register(0x0a24) as u32;
@@ -282,7 +278,6 @@ impl ContextAddress {
     fn payload_base_address(self) -> usize { self.field_address(|c| c.payload_base(), |c| c.payload_base()) }
     fn next_in_ampdu_address(self) -> usize { self.field_address(|c| c.next_in_ampdu(), |c| c.next_in_ampdu()) }
     fn word_48_address(self) -> usize { self.field_address(|c| c.word_48(), |c| c.word_48()) }
-    fn frame_state_address_address(self) -> usize { self.field_address(|c| c.frame_state_address(), |c| c.frame_state_address()) }
     fn auxiliary_state_address(self) -> usize { self.field_address(|c| c.auxiliary_state(), |c| c.auxiliary_state()) }
     fn tid_address(self) -> usize { self.field_address(|c| c.tid(), |c| c.tid()) }
     fn insertion_mode_address(self) -> usize { self.field_address(|c| c.insertion_mode(), |c| c.insertion_mode()) }
@@ -320,12 +315,9 @@ impl FrameNodeAddress {
         ContextAddress(self.0.wrapping_sub(FRAME_NODE_OFFSET))
     }
 
-    fn frame_address(self) -> u32 { self.context().frame_address_address() as u32 }
     fn control_bits(self) -> u32 { self.context().control_bits_address() as u32 }
     fn frame_length(self) -> u32 { self.context().frame_length_address() as u32 }
-    fn frame_control(self) -> u32 { self.context().frame_control_address() as u32 }
     fn access_category(self) -> u32 { self.context().access_category_address() as u32 }
-    fn request_flag_rate_bits(self) -> u32 { self.context().request_flag_rate_bits_address() as u32 }
     fn tx_rate(self) -> u32 { self.context().tx_rate_address() as u32 }
     fn scheduler_timestamp(self) -> u32 { self.context().scheduler_timestamp_address() as u32 }
     fn ownership_bits(self) -> u32 { self.context().ownership_bits_address() as u32 }
@@ -340,7 +332,6 @@ impl FrameNodeAddress {
     fn frame_kind(self) -> u32 { self.context().retry_rate_address() as u32 }
     fn retry_random(self) -> u32 { self.context().retry_random_address() as u32 }
     fn interface(self) -> u32 { self.context().interface_address() as u32 }
-    fn duration_slot(self) -> u32 { self.context().duration_slot_address() as u32 }
 }
 
 /// A class-0 completion tied to the exact published MAC slot that owned it.
@@ -358,12 +349,6 @@ pub struct HostClass0Completion {
     pub slot: u8,
     pub status: u16,
     pub ack_failures: u8,
-}
-
-const HOST_CLASS0_REQUEUE_STATUS: u16 = 0xfffd;
-
-pub const fn host_class0_is_requeue(completion: HostClass0Completion) -> bool {
-    completion.status == HOST_CLASS0_REQUEUE_STATUS
 }
 
 /// One service pass can retire the configured ordinary batch depth on each of
@@ -394,9 +379,6 @@ impl<T, const N: usize> BoundedCompletionQueue<T, N> {
         self.entries.iter_mut().find_map(Option::take)
     }
 
-    fn first(&self) -> Option<&T> {
-        self.entries.iter().find_map(Option::as_ref)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -498,24 +480,7 @@ impl PublishedSlotIdentity {
         })
     }
 
-    #[cfg(target_arch = "arm")]
-    unsafe fn live_slot(self) -> Option<crate::dtcm::MacPipeSlotAddress> {
-        unsafe {
-            let slot = pipe_record_address(self.pipe).slot_unchecked(usize::from(self.slot));
-            (read_u32(slot.frame().get()) == self.frame_node.raw()
-                && read_u32(slot.command().get()) == self.command
-                && packet_ram::tx_command_index(self.command as usize)
-                    == Some((usize::from(self.pipe), usize::from(self.slot))))
-            .then_some(slot)
-        }
-    }
 }
-
-struct ProbeChecksum(UnsafeCell<u32>);
-
-unsafe impl Sync for ProbeChecksum {}
-
-static PROBE_CHECKSUM: ProbeChecksum = ProbeChecksum(UnsafeCell::new(0));
 
 #[derive(Clone, Copy)]
 struct TxDebugSnapshot {
@@ -539,21 +504,6 @@ struct SharedTxExecTrace(UnsafeCell<[u32; 12]>);
 unsafe impl Sync for SharedTxExecTrace {}
 
 static TX_EXEC_TRACE: SharedTxExecTrace = SharedTxExecTrace(UnsafeCell::new([0; 12]));
-
-pub fn take_tx_debug_event() -> Option<(u32, u32)> {
-    let snapshot = unsafe { &mut *TX_DEBUG_SNAPSHOT.0.get() };
-    if !snapshot.valid {
-        return None;
-    }
-    let index = usize::from(snapshot.next);
-    let value = snapshot.values[index];
-    snapshot.next = snapshot.next.wrapping_add(1);
-    if usize::from(snapshot.next) == snapshot.values.len() {
-        snapshot.valid = false;
-        snapshot.next = 0;
-    }
-    Some((0x5852_0000 | index as u32, value))
-}
 
 unsafe fn copy_to_packet_ram(destination: u32, source: &[u8]) {
     let mut offset = 0;
@@ -671,13 +621,6 @@ struct PreparedProbeScratch(UnsafeCell<PreparedProbe>);
 unsafe impl Sync for PreparedProbeScratch {}
 
 static PREPARED_PROBE_SCRATCH: PreparedProbeScratch =
-    PreparedProbeScratch(UnsafeCell::new(PreparedProbe {
-        bytes: [0; MAX_TEMPLATE_FRAME_LEN],
-        length: 0,
-        rate: 0,
-    }));
-
-static TRANSFORMED_HOST_SCRATCH: PreparedProbeScratch =
     PreparedProbeScratch(UnsafeCell::new(PreparedProbe {
         bytes: [0; MAX_TEMPLATE_FRAME_LEN],
         length: 0,
@@ -837,254 +780,6 @@ pub const fn single_frame_slot_duration(timing: SingleFramePasTiming) -> u32 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SingleFramePipeInput {
-    pub phy_rate_word: u32,
-    pub phy_control_word: u32,
-    pub frame_length: u16,
-    pub hardware_rate: u8,
-    pub frame_control: u16,
-    pub retry_flag: bool,
-    pub metadata_address: packet_ram::RuntimePacketAddress,
-    pub duration: u16,
-    pub header_address: packet_ram::RuntimePacketAddress,
-    pub secondary_command: u32,
-    pub address_mask: u32,
-    pub terminal_command: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SingleFramePipeDescriptor {
-    words: [u32; 13],
-    length: u8,
-}
-
-impl SingleFramePipeDescriptor {
-    pub fn words(&self) -> &[u32] {
-        &self.words[..usize::from(self.length)]
-    }
-}
-
-/// Exact non-control, non-aggregate branch of vendor
-/// `txp_submit_to_pipe` (`0xadd0`). Unknown policy-derived values are explicit
-/// inputs so descriptor publication cannot silently invent them.
-pub fn build_single_frame_pipe_descriptor(
-    input: SingleFramePipeInput,
-) -> Result<SingleFramePipeDescriptor, ProbeBuildError> {
-    let header = validated_tx_frame(input.header_address.raw(), input.frame_length)
-        .ok_or(ProbeBuildError::PacketRamMismatch)?;
-    if packet_ram::RuntimePacketAddress::new(input.metadata_address.raw(), 1).is_none() {
-        return Err(ProbeBuildError::PacketRamMismatch);
-    }
-    let mut words = [0_u32; 13];
-    let frame_control = u32::from(input.frame_control) | if input.retry_flag { 0x0800 } else { 0 };
-    words[0] = 0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff);
-    words[1] = 0x5000_0000 | (input.phy_control_word & 0x00ff_ffff);
-    words[2] = 0x5200_0000
-        | (u32::from(input.hardware_rate) << 16)
-        | u32::from(input.frame_length.wrapping_add(4));
-    words[3] = 0x3100_0000 + frame_control;
-    words[4] = 0x4700_0000 + (frame_control >> 8);
-    words[5] = 0x2080_0000 | input.metadata_address.mac_offset().raw();
-    words[6] = 0x3200_0000 | u32::from(input.duration);
-    words[7] =
-        0x2900_0000 | packet_ram::encode_mac_packet_offset_u32(header.descriptor_tail());
-    words[8] = input.secondary_command;
-    let mut length = 9;
-    if input.frame_length > DOT11_FIXED_HEADER_LENGTH {
-        let payload = packet_ram::RuntimePacketAddress::new(
-            header.payload_after_fixed_header(),
-            usize::from(input.frame_length - DOT11_FIXED_HEADER_LENGTH),
-        )
-        .ok_or(ProbeBuildError::PacketRamMismatch)?;
-        words[9] = 0x4000_0000 | payload.tx_payload_bus_address(input.address_mask).raw();
-        words[10] = (u32::from(input.frame_length - DOT11_FIXED_HEADER_LENGTH) & 0x0fff) << 12
-            | (payload.raw() & 3);
-        length = 11;
-    }
-    words[length] = input.terminal_command;
-    words[length + 1] = 0xf000_0000;
-    Ok(SingleFramePipeDescriptor {
-        words,
-        length: (length + 2) as u8,
-    })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DepthTwoAmpduInput {
-    pub first_frame_state: u32,
-    pub second_frame_state: u32,
-    pub first_frame_length: u16,
-    pub second_frame_length: u16,
-    pub phy_rate_word: u32,
-    pub phy_control_word: u32,
-    pub hardware_rate: u8,
-    /// Vendor spacing selector used by opcode 4. Zero emits no spacing word.
-    pub spacing_selector: u8,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BlockAckMemberState {
-    Acknowledged,
-    Missing,
-    OutsideWindow,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BlockAckMemberAction {
-    Confirm,
-    Retry,
-    GiveUp,
-}
-
-pub fn classify_depth_two_block_ack(
-    start_sequence: u16,
-    bitmap: u64,
-    sequences: [u16; 2],
-) -> [BlockAckMemberState; 2] {
-    sequences.map(|sequence| {
-        let delta = (sequence & 0x0fff).wrapping_sub(start_sequence & 0x0fff) & 0x0fff;
-        if delta >= 64 {
-            BlockAckMemberState::OutsideWindow
-        } else if bitmap & (1_u64 << delta) != 0 {
-            BlockAckMemberState::Acknowledged
-        } else {
-            BlockAckMemberState::Missing
-        }
-    })
-}
-
-pub fn merge_depth_two_block_ack_states(
-    previous: Option<[BlockAckMemberState; 2]>,
-    current: [BlockAckMemberState; 2],
-) -> [BlockAckMemberState; 2] {
-    core::array::from_fn(|index| match (previous.map(|states| states[index]), current[index]) {
-        (Some(BlockAckMemberState::Acknowledged), _)
-        | (_, BlockAckMemberState::Acknowledged) => BlockAckMemberState::Acknowledged,
-        (Some(BlockAckMemberState::Missing), _)
-        | (_, BlockAckMemberState::Missing) => BlockAckMemberState::Missing,
-        _ => BlockAckMemberState::OutsideWindow,
-    })
-}
-
-pub fn plan_depth_two_block_ack_actions(
-    members: [BlockAckMemberState; 2],
-    retry_allowed: [bool; 2],
-    session_active: bool,
-) -> [BlockAckMemberAction; 2] {
-    core::array::from_fn(|index| match members[index] {
-        BlockAckMemberState::Acknowledged => BlockAckMemberAction::Confirm,
-        BlockAckMemberState::Missing if session_active && retry_allowed[index] => {
-            BlockAckMemberAction::Retry
-        }
-        BlockAckMemberState::Missing | BlockAckMemberState::OutsideWindow => {
-            BlockAckMemberAction::GiveUp
-        }
-    })
-}
-
-pub fn depth_two_whole_retry_allowed(
-    retry_allowed: [bool; 2],
-    session_active: bool,
-    next_rates: [u8; 2],
-) -> bool {
-    plan_depth_two_block_ack_actions(
-        [BlockAckMemberState::Missing; 2],
-        retry_allowed,
-        session_active,
-    ) == [BlockAckMemberAction::Retry; 2]
-        && next_rates[0] == next_rates[1]
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DepthTwoAmpduDescriptor {
-    /// Auxiliary stream reached by the top-level opcode-0 transfer.
-    pub words: [u32; 6],
-    pub length: u8,
-    /// Shared PHY words emitted at top-level command offsets `+0x0c..+0x14`.
-    pub phy_words: [u32; 3],
-    pub aggregate_length: u16,
-}
-
-fn ampdu_transfer_word(cpu_address: usize) -> u32 {
-    #[cfg(target_arch = "arm")]
-    unsafe {
-        packet_ram::ampdu_transfer_word_unchecked(cpu_address)
-    }
-    #[cfg(not(target_arch = "arm"))]
-    {
-        packet_ram::ampdu_transfer_word(cpu_address)
-            .expect("A-MPDU transfer requires an aligned CPU-form runtime packet-RAM address")
-    }
-}
-
-const AMPDU_SPACING_SELECTORS: [[u8; 8]; 8] = [
-    [0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 2],
-    [1, 1, 1, 1, 2, 2, 2, 3],
-    [1, 1, 2, 2, 3, 4, 4, 5],
-    [1, 2, 3, 4, 5, 7, 8, 9],
-    [2, 4, 5, 7, 10, 13, 15, 17],
-    [4, 7, 10, 13, 20, 26, 30, 33],
-];
-
-pub(crate) const fn ampdu_spacing_selector(density: u8, rate: u8) -> u8 {
-    if density < 8 && rate >= 14 && rate < 22 {
-        AMPDU_SPACING_SELECTORS[density as usize][(rate - 14) as usize]
-    } else {
-        0
-    }
-}
-
-fn ampdu_spacing_word(selector: u8) -> Option<u32> {
-    if selector == 0 {
-        None
-    } else {
-        Some(ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(selector)))
-    }
-}
-
-/// Build the vendor opcode stream for exactly two MPDUs.
-///
-/// This is the body reached through the slot command's initial opcode-0 jump;
-/// reservation and publication own that outer word separately. The first
-/// subframe includes delimiter/alignment overhead while the last contributes
-/// its frame and FCS length directly.
-pub fn build_depth_two_ampdu_descriptor(input: DepthTwoAmpduInput) -> DepthTwoAmpduDescriptor {
-    let mut words = [0_u32; 6];
-    let mut length = 0_usize;
-    words[length] = ampdu_transfer_word(input.first_frame_state.wrapping_add(8) as usize);
-    length += 1;
-    words[length] = 0x6600_0000;
-    length += 1;
-    if let Some(spacing) = ampdu_spacing_word(input.spacing_selector) {
-        words[length] = spacing;
-        length += 1;
-    }
-    words[length] = ampdu_transfer_word(input.second_frame_state.wrapping_add(8) as usize);
-    length += 1;
-    words[length] = 0xe400_0000;
-    length += 1;
-    let aggregate_length = (u32::from(input.first_frame_length).wrapping_add(0x0b) & !3)
-        .wrapping_add(u32::from(input.spacing_selector) * 4)
-        .wrapping_add(u32::from(input.second_frame_length))
-        .wrapping_add(8) as u16;
-    let phy_words = [
-        0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff),
-        0x5000_0000 | (input.phy_control_word & 0x00ff_ffff),
-        0x5200_0000
-            | (u32::from(input.hardware_rate) << 16)
-            | u32::from(aggregate_length),
-    ];
-    DepthTwoAmpduDescriptor {
-        words,
-        length: length as u8,
-        phy_words,
-        aggregate_length,
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MacEvent {
     pub raw: u32,
     pub event_type: u8,
@@ -1097,32 +792,6 @@ pub struct MacEvent {
     pub pipe_service_marker: bool,
     pub beacon_marker: bool,
     pub sideband_marker: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MacEventEffect {
-    Trace,
-    Fatal,
-    PipePhase {
-        event_type: u8,
-        phase: u8,
-        latch_index: Option<u8>,
-    },
-    PipeService,
-    TxStatus {
-        event_type: u8,
-        status: u8,
-        pipe_service_escalation: bool,
-    },
-    Beacon,
-    Sideband,
-    Archive,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MacEventDispatchPlan {
-    effects: [Option<MacEventEffect>; 8],
-    len: u8,
 }
 
 /// Deterministic Rust postmortem record for a terminal MAC event. Vendor
@@ -1200,17 +869,6 @@ pub fn capture_mac_fatal_postmortem<M: MacPipeMmio>(
     output.pipe_irq_trigger = mmio.read_u32(PIPE_IRQ_TRIGGER);
 }
 
-impl MacEventDispatchPlan {
-    pub fn effects(&self) -> &[Option<MacEventEffect>] {
-        &self.effects[..usize::from(self.len)]
-    }
-
-    fn push(&mut self, effect: MacEventEffect) {
-        self.effects[usize::from(self.len)] = Some(effect);
-        self.len += 1;
-    }
-}
-
 impl MacEvent {
     /// Decodes the fields consumed by vendor `mac_irq_handler` (`0x9eb4`).
     /// Bit 31 is the event-FIFO empty sentinel.
@@ -1241,133 +899,6 @@ impl MacEvent {
         self.completion_marker.then_some(self.status)
     }
 
-    pub fn is_pipe_start(self) -> bool {
-        self.pipe_index().is_some() && self.phase == 2
-    }
-
-    pub fn is_pipe_success(self) -> bool {
-        self.pipe_index().is_some() && self.phase == 3
-    }
-
-    /// Preserves the exact independent-marker order in vendor FIQ handler
-    /// `0x9e90..0x9ff8`. Fatal assertion handling never returns, so no later
-    /// marker or archive effect is reachable for a bit-30 event.
-    pub fn dispatch_plan(self) -> MacEventDispatchPlan {
-        let mut plan = MacEventDispatchPlan {
-            effects: [None; 8],
-            len: 0,
-        };
-        plan.push(MacEventEffect::Trace);
-        if self.fatal_marker {
-            plan.push(MacEventEffect::Fatal);
-            return plan;
-        }
-        if self.pipe_marker {
-            plan.push(MacEventEffect::PipePhase {
-                event_type: self.event_type,
-                phase: self.phase,
-                latch_index: self.pipe_index(),
-            });
-        }
-        if self.pipe_service_marker {
-            plan.push(MacEventEffect::PipeService);
-        }
-        if let Some(status) = self.completion_status() {
-            plan.push(MacEventEffect::TxStatus {
-                event_type: self.event_type,
-                status,
-                pipe_service_escalation: self.pipe_service_marker,
-            });
-        }
-        if self.beacon_marker {
-            plan.push(MacEventEffect::Beacon);
-        }
-        if self.sideband_marker {
-            plan.push(MacEventEffect::Sideband);
-        }
-        plan.push(MacEventEffect::Archive);
-        plan
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProbeTxOwnership {
-    Idle,
-    Prepared {
-        context: u32,
-    },
-    PipeOwned {
-        context: u32,
-        pipe: u8,
-        slot: u8,
-    },
-    Started {
-        context: u32,
-        pipe: u8,
-        slot: u8,
-    },
-    RetryRequired {
-        context: u32,
-        pipe: u8,
-        slot: u8,
-        status: u8,
-    },
-    TerminalObserved {
-        context: u32,
-        pipe: u8,
-        slot: u8,
-        status: u8,
-    },
-    CompletionQueued {
-        context: u32,
-        pipe: u8,
-        slot: u8,
-        status: u8,
-    },
-    CallbackRunning {
-        context: u32,
-        pipe: u8,
-        slot: u8,
-        status: u8,
-    },
-    FatalQuiesced {
-        context: Option<u32>,
-        pipe: Option<u8>,
-        slot: Option<u8>,
-    },
-    Returned,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProbeTxIdentity {
-    pub context: u32,
-    pub pipe: Option<u8>,
-    pub slot: Option<u8>,
-    pub generation: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProbeTxTransitionError {
-    Busy,
-    NotPrepared,
-    WrongPipe,
-    CompletionBeforeStart,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProbeTxTracker {
-    ownership: ProbeTxOwnership,
-    latched_pipe: Option<u8>,
-    observed_status: Option<u8>,
-    generation: u32,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct MacEventServiceReport {
-    pub drained: u32,
-    pub handled: u32,
-    pub unhandled: u32,
-    pub blocked: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1399,28 +930,6 @@ impl SchedulerWord {
     pub const fn raw(self) -> u32 {
         self.0
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MacStatusSnapshot {
-    pub pre_service_scheduler_word: SchedulerWord,
-    pub latched_pipe: u8,
-    pub pipe_active: bool,
-    pub slot_expected_status: u8,
-    pub slot_state: u8,
-    pub global_busy: bool,
-    pub mismatch_count: u8,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MacStatusResolution {
-    pub status: u8,
-    pub pending_mask: u32,
-    pub dispatch_ordinary: bool,
-    pub ordinary_completion_eligible: bool,
-    pub direct_retry: bool,
-    pub next_mismatch_count: u8,
-    pub escalation_retry: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1539,8 +1048,6 @@ impl TxHardwareRingAddress {
     const fn raw(self) -> u32 { self.0 }
     const fn field(self, offset: usize) -> u32 { self.0.wrapping_add(offset as u32) }
     const fn duration_fifo(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, duration_fifo)) }
-    const fn diagnostic_word_0c(self) -> u32 { self.field(0x0c) }
-    const fn diagnostic_word_10(self) -> u32 { self.field(0x10) }
     const fn go(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, go)) }
     const fn inactive_sentinel(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, inactive_sentinel)) }
     const fn completion_word(self) -> u32 { self.field(core::mem::offset_of!(TxHardwareRingLayout, completion_word)) }
@@ -1675,106 +1182,10 @@ fn pipe_state_address(pipe: u8) -> u32 {
     pipe_record_address(pipe).raw()
 }
 
-/// Exact translation of vendor `txp_pipe_advance_slot` (`0xa9f2`).
-///
-/// Retires one pipe's hardware ring state: the inactive command sentinel at
-/// `ring + 0x18`, the pipe acknowledgement, and — the part the packet
-/// controller actually consumes — both cursor fields of `ring + 0x20`
-/// (bits 26:24 and 29:27), which are set to the retired slot.
-///
-/// The caller must hold IRQ/FIQ off across the pipe-state read/modify, matching
-/// the vendor `irq_fiq_disable_save()`/`irq_fiq_restore()` pair; the ring and
-/// acknowledgement writes are outside that section in the vendor as well.
-///
-/// Returns true when the pipe was still armed, which selects the vendor
-/// slot-record cleanup sweep in `txp_fn_4425` (`0x38c`).
-pub fn advance_pipe_slot<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> Option<bool> {
-    let ring = retained_hardware_ring(mmio, pipe)?;
-    let record = pipe_record_address(pipe);
-    let armed = mmio.read_u8(record.state().get() as u32) != 0;
-    let cursor = if armed {
-        mmio.write_u8(record.state().get() as u32, 0);
-        // Vendor saturates this abort counter at 0xff rather than wrapping.
-        let aborts = mmio.read_u8(record.abort_status().get() as u32);
-        if aborts != 0xff {
-            mmio.write_u8(record.abort_status().get() as u32, aborts.wrapping_add(1));
-        }
-        mmio.read_u8(record.last_slot().get() as u32).wrapping_add(1) & 3
-    } else {
-        mmio.read_u8(record.producer_slot().get() as u32) & 3
-    };
-    mmio.write_u32(ring.inactive_sentinel(), PIPE_RETRY_INACTIVE_SENTINEL);
-    mmio.write_u32(
-        PIPE_IRQ_PENDING,
-        0_u32.wrapping_sub((PIPE_ADVANCE_ACK_BASE << (pipe & 3)).wrapping_add(0x10)),
-    );
-    resync_pipe_ring_cursor(mmio, ring, cursor);
-    Some(armed)
-}
-
-/// Writes both `ring + 0x20` cursor fields, preserving the pending-slot mask in
-/// bits 23:0 and the two hardware-owned high bits. This is the only part of
-/// `txp_pipe_advance_slot` that the packet controller reads back, and it is the
-/// half the open firmware has never performed.
-fn resync_pipe_ring_cursor<M: MacPipeMmio>(
-    mmio: &mut M,
-    ring: TxHardwareRingAddress,
-    cursor: u8,
-) {
-    let cursor = u32::from(cursor & 3);
-    let word = mmio.read_u32(ring.cursor_and_pending_mask());
-    mmio.write_u32(
-        ring.cursor_and_pending_mask(),
-        (word & 0xc0ff_ffff) | (cursor << 24) | (cursor << 27),
-    );
-}
-
-/// Restores the vendor invariant asserted at the end of `txp_fn_4425`
-/// (`0x38c`): the software producer `pipe_state + 0` equals the hardware ring
-/// cursor `(ring[0x20] & 0x3fffffff) >> 27`. Unlike `advance_pipe_slot` this
-/// touches neither the pipe acknowledgement nor the command sentinel, so it is
-/// safe to call from the completion handler that already retired the burst.
-pub fn resync_pipe_cursor<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> bool {
-    let Some(ring) = retained_hardware_ring(mmio, pipe) else {
-        return false;
-    };
-    let record = pipe_record_address(pipe);
-    let producer = mmio.read_u8(record.producer_slot().get() as u32);
-    resync_pipe_ring_cursor(mmio, ring, producer);
-    true
-}
-
 /// The invariant asserted at the end of vendor `txp_fn_4425` (`0x38c`): the
 /// software producer equals the hardware ring cursor field in bits 29:27.
 pub fn pipe_cursor_invariant_holds(packed: u32) -> bool {
     (packed >> 4) & 0x0f == (packed >> 24) & 0x0f
-}
-
-/// Packs the vendor cursor invariant inputs for one pipe into one nibble-coded
-/// word plus the raw ring word:
-///
-/// ```text
-/// [3:0] pipe  [7:4] producer  [11:8] last  [15:12] current
-/// [19:16] armed  [23:20] ring cursor 26:24  [27:24] ring cursor 29:27
-/// ```
-///
-/// The invariant holds when nibble 1 equals nibble 6.
-pub fn pipe_cursor_diagnostic<M: MacPipeMmio>(mmio: &mut M, pipe: u8) -> (u32, u32) {
-    if pipe >= 4 {
-        return (u32::from(pipe), 0);
-    }
-    let record = pipe_record_address(pipe);
-    let ring_word = retained_hardware_ring(mmio, pipe)
-        .map(|ring| mmio.read_u32(ring.cursor_and_pending_mask()))
-        .unwrap_or(0);
-    let packed = u32::from(pipe & 3)
-        | (u32::from(mmio.read_u8(record.producer_slot().get() as u32) & 0x0f) << 4)
-        | (u32::from(mmio.read_u8(record.last_slot().get() as u32) & 0x0f) << 8)
-        | (u32::from(mmio.read_u8(record.current_slot().get() as u32) & 0x0f) << 12)
-        | (u32::from(mmio.read_u8(record.state().get() as u32) & 0x0f) << 16)
-        | (((ring_word >> 24) & 7) << 20)
-        | (((ring_word >> 27) & 7) << 24);
-    (packed, ring_word)
 }
 
 fn current_slot<M: MacPipeMmio>(
@@ -1979,10 +1390,6 @@ unsafe fn restore_irq_fiq(previous: u32) {
         fn xr819_restore_irq_fiq(previous: u32);
     }
     unsafe { xr819_restore_irq_fiq(previous) };
-}
-
-pub fn mac_fatal_postmortem_address() -> *const MacFatalPostmortem {
-    MAC_FATAL_POSTMORTEM.0.get().cast_const()
 }
 
 /// Terminal production path for MAC event bit 30. It publishes a bounded Rust
@@ -2867,15 +2274,6 @@ pub fn build_fixed_rate_retry_duration<M: MacPipeMmio>(
     build_single_frame_duration(mmio, descriptor, frame_node, true);
 }
 
-/// Exact mode-0 duration descriptor for the no-ACK broadcast probe.
-pub fn build_no_ack_single_frame_duration<M: MacPipeMmio>(
-    mmio: &mut M,
-    descriptor: u32,
-    frame_node: FrameNodeAddress,
-) {
-    build_single_frame_duration(mmio, descriptor, frame_node, false);
-}
-
 /// Fatal boundary for retry shapes outside the fixed-rate one-frame subset.
 pub trait SingleFrameRearmBackend {
     fn rebuild_rate_descriptor(&mut self, _pipe: u8, _slot: u32, _frame_node: FrameNodeAddress) {}
@@ -2983,28 +2381,6 @@ where
         );
     }
     SingleFrameRearmOutcome::CommandMaskAcknowledged
-}
-
-pub fn execute_fixed_rate_single_frame_rearm<M, B>(
-    mmio: &mut M,
-    pipe: u8,
-    slot: u32,
-    frame_node: FrameNodeAddress,
-    pending_mask: u32,
-    backend: &mut B,
-) -> SingleFrameRearmOutcome
-where
-    M: MacPipeMmio,
-    B: SingleFrameRearmBackend,
-{
-    execute_fixed_rate_single_frame_rearm_with_ack(
-        mmio,
-        pipe,
-        slot,
-        frame_node,
-        Some(pending_mask),
-        backend,
-    )
 }
 
 /// Exact entry, inactive-pipe, and give-up portions of
@@ -3150,69 +2526,6 @@ pub unsafe fn service_single_outstanding_tx_retry_inactive<B: SingleTxRetryBacke
     backend: &mut B,
 ) -> SingleTxRetryOutcome {
     execute_single_outstanding_tx_retry(&mut VolatileMacPipeMmio, scheduler_word, backend)
-}
-
-/// Pure bit-24 decision model from `0x9f5c..0x9fc4`. It deliberately accepts
-/// the scheduler word captured before bit-23 service; re-reading `0x09c00e84`
-/// after service would change the vendor decision.
-pub fn resolve_mac_status_event(
-    event: MacEvent,
-    snapshot: MacStatusSnapshot,
-) -> Option<MacStatusResolution> {
-    let status = event.completion_status()?;
-    let pending_mask = snapshot.pre_service_scheduler_word.raw()
-        & 0x100_u32.wrapping_shl(u32::from(snapshot.latched_pipe) & 0x1f);
-    if pending_mask != 0 && matches!(status, 4 | 0x19) {
-        return Some(MacStatusResolution {
-            status,
-            pending_mask,
-            dispatch_ordinary: false,
-            ordinary_completion_eligible: false,
-            // The pending/status branch calls retry directly; unlike ordinary
-            // status dispatch, it has no slot-state-three gate.
-            direct_retry: true,
-            next_mismatch_count: snapshot.mismatch_count,
-            escalation_retry: false,
-        });
-    }
-
-    let dispatch_ordinary = !(event.event_type == 0x39 && status == 6);
-    let ordinary_completion_eligible = dispatch_ordinary
-        && snapshot.pipe_active
-        && snapshot.slot_expected_status == status
-        && snapshot.slot_state == 3
-        && !snapshot.global_busy;
-    // This check follows ordinary dispatch and examines the active slot again,
-    // while retaining the same pending mask derived from the pre-service word.
-    let mismatch = event.pipe_service_marker
-        && pending_mask != 0
-        && snapshot.pipe_active
-        && snapshot.slot_expected_status != status;
-    let next_mismatch_count = if mismatch {
-        snapshot.mismatch_count.wrapping_add(1)
-    } else {
-        snapshot.mismatch_count
-    };
-    Some(MacStatusResolution {
-        status,
-        pending_mask,
-        dispatch_ordinary,
-        ordinary_completion_eligible,
-        direct_retry: false,
-        next_mismatch_count,
-        escalation_retry: mismatch && next_mismatch_count > 2,
-    })
-}
-
-/// Infallible effect backend used after a destructive FIFO pop. A production
-/// implementation may not reject or defer an effect once `pop_event` returned
-/// a non-negative word. Its `Fatal` effect must enter the matching non-returning
-/// postmortem path; `MacEventStopReason::Fatal` exists for host backends only.
-pub trait MacEventBackend {
-    fn pop_event(&mut self) -> i32;
-    fn readiness(&mut self) -> i32;
-    fn apply_effect(&mut self, event: MacEvent, effect: MacEventEffect);
-    fn drain_tail(&mut self);
 }
 
 /// Infallible executor leaves for one event that has already been popped from
@@ -3551,7 +2864,6 @@ unsafe fn start_scheduler_timer(timer: u32, duration: u32) {
             .wrapping_add(crate::dtcm::initialized_timer_counter_ptr().read_volatile())
             .wrapping_add(duration);
 
-
         let previous = mask_irq_fiq_terminal();
         let became_head = insert_scheduler_timer_list(&mut VolatileMacPipeMmio, timer, deadline);
         restore_irq_fiq(previous);
@@ -3584,26 +2896,6 @@ fn retained_slot_state_index(pipe: u8, slot_raw: u32) -> Option<usize> {
         .get() as u32;
         (address == slot_raw).then_some(usize::from(pipe) * 4 + usize::from(slot))
     })
-}
-
-fn ampdu_publication_indices(slot: u8, member_count: usize) -> Option<[usize; 4]> {
-    if slot >= 4 || !(2..=4).contains(&member_count) {
-        return None;
-    }
-    let mut indices = [usize::MAX; 4];
-    indices[0] = usize::from(slot);
-    let mut position = 1;
-    for index in 0..4 {
-        if index == usize::from(slot) {
-            continue;
-        }
-        if position == member_count {
-            break;
-        }
-        indices[position] = index;
-        position += 1;
-    }
-    (position == member_count).then_some(indices)
 }
 
 fn publication_registration_allowed(
@@ -4487,400 +3779,6 @@ pub unsafe fn take_host_class0_completion() -> Option<HostClass0Completion> {
     runtime.backend.take_completion()
 }
 
-/// Compact read-only snapshot of the bounded class-0 MAC backend.
-///
-/// Bits 0..7 contain the maximum retry attempts across all pipes, bit 8
-/// reports a queued completion, and bits 16..31 contain its internal status
-/// when present.
-#[cfg(target_arch = "arm")]
-pub unsafe fn host_class0_runtime_diagnostic() -> u32 {
-    let runtime = unsafe { &*PROBE_EXPERIMENT.0.get() };
-    u32::from(
-        runtime
-            .backend
-            .retry
-            .iter()
-            .map(|retry| retry.attempts())
-            .max()
-            .unwrap_or(0),
-    )
-        | runtime
-            .backend
-            .completed
-            .first()
-            .copied()
-            .map(|completion| (1 << 8) | (u32::from(completion.status) << 16))
-            .unwrap_or(0)
-}
-
-/// Exact bounded loop shape from vendor FIQ handler `0x9e90..0xa038`.
-///
-/// Budget exhaustion occurs before another readiness read or destructive pop,
-/// and does not run the empty-FIFO drain tail. The production MMIO backend is
-/// deliberately absent until every effect executor is translated.
-pub fn service_mac_event_backend<B: MacEventBackend>(
-    backend: &mut B,
-    max_events: u32,
-) -> MacEventLoopReport {
-    if max_events == 0 {
-        return MacEventLoopReport {
-            processed: 0,
-            stop: MacEventStopReason::BudgetExhausted,
-            reschedule_required: true,
-        };
-    }
-
-    let mut processed = 0_u32;
-    let mut raw = backend.pop_event();
-    loop {
-        let Some(event) = MacEvent::decode(raw as u32) else {
-            backend.drain_tail();
-            return MacEventLoopReport {
-                processed,
-                stop: MacEventStopReason::Empty,
-                reschedule_required: false,
-            };
-        };
-        for effect in event.dispatch_plan().effects().iter().flatten().copied() {
-            backend.apply_effect(event, effect);
-            if effect == MacEventEffect::Fatal {
-                return MacEventLoopReport {
-                    processed: processed.wrapping_add(1),
-                    stop: MacEventStopReason::Fatal,
-                    reschedule_required: false,
-                };
-            }
-        }
-        processed = processed.wrapping_add(1);
-        if processed == max_events {
-            return MacEventLoopReport {
-                processed,
-                stop: MacEventStopReason::BudgetExhausted,
-                reschedule_required: true,
-            };
-        }
-        if backend.readiness() < 0 {
-            backend.drain_tail();
-            return MacEventLoopReport {
-                processed,
-                stop: MacEventStopReason::Empty,
-                reschedule_required: false,
-            };
-        }
-        raw = backend.pop_event();
-    }
-}
-
-impl ProbeTxTracker {
-    pub const fn new() -> Self {
-        Self {
-            ownership: ProbeTxOwnership::Idle,
-            latched_pipe: None,
-            observed_status: None,
-            generation: 0,
-        }
-    }
-
-    pub fn ownership(&self) -> ProbeTxOwnership {
-        self.ownership
-    }
-
-    pub fn observed_status(&self) -> Option<u8> {
-        self.observed_status
-    }
-
-    pub fn identity(&self) -> Option<ProbeTxIdentity> {
-        let (context, pipe, slot) = match self.ownership {
-            ProbeTxOwnership::Prepared { context } => (context, None, None),
-            ProbeTxOwnership::PipeOwned {
-                context,
-                pipe,
-                slot,
-            }
-            | ProbeTxOwnership::Started {
-                context,
-                pipe,
-                slot,
-            }
-            | ProbeTxOwnership::RetryRequired {
-                context,
-                pipe,
-                slot,
-                ..
-            }
-            | ProbeTxOwnership::TerminalObserved {
-                context,
-                pipe,
-                slot,
-                ..
-            }
-            | ProbeTxOwnership::CompletionQueued {
-                context,
-                pipe,
-                slot,
-                ..
-            }
-            | ProbeTxOwnership::CallbackRunning {
-                context,
-                pipe,
-                slot,
-                ..
-            } => (context, Some(pipe), Some(slot)),
-            ProbeTxOwnership::FatalQuiesced {
-                context: Some(context),
-                pipe,
-                slot,
-            } => (context, pipe, slot),
-            ProbeTxOwnership::Idle
-            | ProbeTxOwnership::Returned
-            | ProbeTxOwnership::FatalQuiesced { context: None, .. } => return None,
-        };
-        Some(ProbeTxIdentity {
-            context,
-            pipe,
-            slot,
-            generation: self.generation,
-        })
-    }
-
-    pub fn owned_pipe(&self) -> Option<u8> {
-        match self.ownership {
-            ProbeTxOwnership::PipeOwned { pipe, .. }
-            | ProbeTxOwnership::Started { pipe, .. }
-            | ProbeTxOwnership::RetryRequired { pipe, .. }
-            | ProbeTxOwnership::TerminalObserved { pipe, .. }
-            | ProbeTxOwnership::CompletionQueued { pipe, .. }
-            | ProbeTxOwnership::CallbackRunning { pipe, .. } => Some(pipe),
-            ProbeTxOwnership::FatalQuiesced { pipe, .. } => pipe,
-            ProbeTxOwnership::Idle
-            | ProbeTxOwnership::Prepared { .. }
-            | ProbeTxOwnership::Returned => None,
-        }
-    }
-
-    pub fn prepare(&mut self, context: u32) -> Result<(), ProbeTxTransitionError> {
-        if self.ownership != ProbeTxOwnership::Idle {
-            return Err(ProbeTxTransitionError::Busy);
-        }
-        self.latched_pipe = None;
-        self.observed_status = None;
-        self.generation = self.generation.wrapping_add(1);
-        self.ownership = ProbeTxOwnership::Prepared { context };
-        Ok(())
-    }
-
-    pub fn publish(&mut self, pipe: u8, slot: u8) -> Result<(), ProbeTxTransitionError> {
-        let ProbeTxOwnership::Prepared { context } = self.ownership else {
-            return Err(ProbeTxTransitionError::NotPrepared);
-        };
-        self.ownership = ProbeTxOwnership::PipeOwned {
-            context,
-            pipe,
-            slot,
-        };
-        Ok(())
-    }
-
-    /// Applies only the pipe events needed by the probe path. Other MAC events
-    /// remain owned by the future complete `mac_irq_handler` translation.
-    pub fn handle_pipe_event(
-        &mut self,
-        event: MacEvent,
-        _pipe_pending: bool,
-    ) -> Result<bool, ProbeTxTransitionError> {
-        let (context, pipe, slot, started) = match self.ownership {
-            ProbeTxOwnership::PipeOwned {
-                context,
-                pipe,
-                slot,
-            } => (context, pipe, slot, false),
-            ProbeTxOwnership::Started {
-                context,
-                pipe,
-                slot,
-            } => (context, pipe, slot, true),
-            _ => return Ok(false),
-        };
-        if (event.is_pipe_start() || event.is_pipe_success()) && event.pipe != pipe {
-            return Err(ProbeTxTransitionError::WrongPipe);
-        }
-        if event.is_pipe_start() {
-            self.latched_pipe = event.pipe_index();
-            self.observed_status = None;
-            self.ownership = ProbeTxOwnership::Started {
-                context,
-                pipe,
-                slot,
-            };
-            return Ok(true);
-        }
-        if event.is_pipe_success() {
-            if !started {
-                return Err(ProbeTxTransitionError::CompletionBeforeStart);
-            }
-            self.ownership = ProbeTxOwnership::TerminalObserved {
-                context,
-                pipe,
-                slot,
-                status: 0,
-            };
-            self.observed_status = Some(0);
-            return Ok(true);
-        }
-        if let Some(status) = event.completion_status() {
-            if self.latched_pipe != Some(pipe) {
-                return Err(ProbeTxTransitionError::WrongPipe);
-            }
-            self.observed_status = Some(status);
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    pub fn resolve_retry_status(&mut self, status: u8) -> bool {
-        let ProbeTxOwnership::Started {
-            context,
-            pipe,
-            slot,
-        } = self.ownership
-        else {
-            return false;
-        };
-        if self.observed_status != Some(status) {
-            return false;
-        }
-        self.ownership = ProbeTxOwnership::RetryRequired {
-            context,
-            pipe,
-            slot,
-            status,
-        };
-        true
-    }
-
-    pub fn resolve_terminal_status(&mut self, status: u8) -> bool {
-        let ProbeTxOwnership::Started {
-            context,
-            pipe,
-            slot,
-        } = self.ownership
-        else {
-            return false;
-        };
-        if self.observed_status != Some(status) {
-            return false;
-        }
-        self.ownership = ProbeTxOwnership::TerminalObserved {
-            context,
-            pipe,
-            slot,
-            status,
-        };
-        true
-    }
-
-    pub fn enter_fatal_quiescence(&mut self) {
-        let identity = self.identity();
-        self.observed_status = None;
-        self.ownership = ProbeTxOwnership::FatalQuiesced {
-            context: identity.map(|identity| identity.context),
-            pipe: identity.and_then(|identity| identity.pipe),
-            slot: identity.and_then(|identity| identity.slot),
-        };
-    }
-
-    pub fn reset_fatal_quiescence(&mut self) -> bool {
-        if !matches!(self.ownership, ProbeTxOwnership::FatalQuiesced { .. }) {
-            return false;
-        }
-        self.latched_pipe = None;
-        self.observed_status = None;
-        self.ownership = ProbeTxOwnership::Idle;
-        true
-    }
-
-    pub fn queue_terminal_completion(&mut self) -> bool {
-        let ProbeTxOwnership::TerminalObserved {
-            context,
-            pipe,
-            slot,
-            status,
-        } = self.ownership
-        else {
-            return false;
-        };
-        self.ownership = ProbeTxOwnership::CompletionQueued {
-            context,
-            pipe,
-            slot,
-            status,
-        };
-        true
-    }
-
-    pub fn begin_completion_callback(&mut self) -> bool {
-        let ProbeTxOwnership::CompletionQueued {
-            context,
-            pipe,
-            slot,
-            status,
-        } = self.ownership
-        else {
-            return false;
-        };
-        self.ownership = ProbeTxOwnership::CallbackRunning {
-            context,
-            pipe,
-            slot,
-            status,
-        };
-        true
-    }
-
-    /// Runs the final context-return operation exactly once and records the
-    /// returned state only after the callback path has completed.
-    pub fn finish_completion_callback<F>(&mut self, return_context: F) -> bool
-    where
-        F: FnOnce(u32),
-    {
-        self.try_finish_completion_callback(|context| {
-            return_context(context);
-            true
-        })
-    }
-
-    pub fn try_finish_completion_callback<F>(&mut self, return_context: F) -> bool
-    where
-        F: FnOnce(u32) -> bool,
-    {
-        let ProbeTxOwnership::CallbackRunning { context, .. } = self.ownership else {
-            return false;
-        };
-        if !return_context(context) {
-            return false;
-        }
-        self.latched_pipe = None;
-        self.observed_status = None;
-        self.ownership = ProbeTxOwnership::Returned;
-        true
-    }
-
-    pub fn reset_returned(&mut self) -> bool {
-        if self.ownership != ProbeTxOwnership::Returned {
-            return false;
-        }
-        self.ownership = ProbeTxOwnership::Idle;
-        self.observed_status = None;
-        true
-    }
-}
-
-impl Default for ProbeTxTracker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 fn completion_device_address(interface: u8) -> usize {
     crate::vif::mode_address(interface).unwrap_or(0)
 }
@@ -5005,29 +3903,6 @@ where
             raise_scheduler_bits(1 << 20);
         }
     }
-}
-
-/// Atomically couples the software ownership transition to the vendor
-/// completion-ring enqueue. A terminal context cannot be enqueued twice.
-///
-/// # Safety
-/// Same requirements as [`enqueue_completion_frame_node`].
-pub unsafe fn enqueue_probe_terminal_completion<F>(
-    tracker: &mut ProbeTxTracker,
-    frame_node: FrameNodeAddress,
-    special_gate: F,
-) -> bool
-where
-    F: FnOnce() -> bool,
-{
-    let ProbeTxOwnership::TerminalObserved { context, .. } = tracker.ownership else {
-        return false;
-    };
-    if frame_node.context().raw() != context {
-        return false;
-    }
-    unsafe { enqueue_completion_frame_node(frame_node, special_gate) };
-    tracker.queue_terminal_completion()
 }
 
 /// Snapshot cursor for the matching-payload `0xd1fc` completion drain. The
@@ -6081,19 +4956,6 @@ where
     }
 }
 
-/// Couples a completion-ring frame node to callback entry for the tracked
-/// probe. A node for another context is not consumed by this tracker and must
-/// be dispatched by the general class callback path.
-pub fn begin_probe_completion_callback(
-    tracker: &mut ProbeTxTracker,
-    frame_node: FrameNodeAddress,
-) -> bool {
-    let ProbeTxOwnership::CompletionQueued { context, .. } = tracker.ownership else {
-        return false;
-    };
-    frame_node.context().raw() == context && tracker.begin_completion_callback()
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompletedContextDispatch {
     NoCallback,
@@ -6231,78 +5093,6 @@ where
     }
 }
 
-/// Runs the exact general callback wrapper for a tracked probe and records
-/// `Returned` only when the wrapper actually reaches `0xd0a8`.
-///
-/// # Safety
-/// Same requirements as [`dispatch_completed_context`].
-pub unsafe fn dispatch_probe_completed_context<F, G>(
-    tracker: &mut ProbeTxTracker,
-    completion_status: u16,
-    callback: F,
-    service_pending_queue: G,
-) -> bool
-where
-    F: FnOnce(u8, ContextAddress),
-    G: FnOnce(),
-{
-    let mut callback = Some(callback);
-    let mut pending = Some(service_pending_queue);
-    tracker.try_finish_completion_callback(|context| {
-        let result = unsafe {
-            dispatch_completed_context(
-                ContextAddress::new(context),
-                completion_status,
-                |class, address| {
-                    if let Some(callback) = callback.take() {
-                        callback(class, address);
-                    }
-                },
-                || {
-                    if let Some(pending) = pending.take() {
-                        pending();
-                    }
-                },
-            )
-        };
-        result == CompletedContextDispatch::Returned
-    })
-}
-
-/// Executes the translated class-6 callback wrapper for a tracked probe.
-/// Other classes are rejected before any callback/accounting mutation.
-///
-/// # Safety
-/// Same requirements as [`dispatch_completed_context`]. The downstream
-/// scheduler-bit-10 task raised by class 6 must be serviced separately.
-pub unsafe fn dispatch_class6_probe_completion<G>(
-    tracker: &mut ProbeTxTracker,
-    completion_status: u16,
-    service_pending_queue: G,
-) -> bool
-where
-    G: FnOnce(),
-{
-    let ProbeTxOwnership::CallbackRunning { context, .. } = tracker.ownership else {
-        return false;
-    };
-    if unsafe { ((context as usize + 0x53) as *const u8).read_volatile() } != 6 {
-        return false;
-    }
-    unsafe {
-        dispatch_probe_completed_context(
-            tracker,
-            completion_status,
-            |class, address| {
-                if class == 6 {
-                    service_class6_probe_completion(address.raw());
-                }
-            },
-            service_pending_queue,
-        )
-    }
-}
-
 /// Exact context return at matching-payload `0xd0a8`.
 ///
 /// `service_pending_queue` represents vendor helper `0x4f58` and is invoked
@@ -6347,31 +5137,6 @@ where
             raise_scheduler_bits(1 << 22);
         }
     }
-}
-
-/// Couples final callback completion to exact vendor context return. The
-/// tracker changes to `Returned` only after all MMIO effects complete.
-///
-/// # Safety
-/// Same requirements as [`return_completed_context`].
-pub unsafe fn return_probe_context_after_callback<F>(
-    tracker: &mut ProbeTxTracker,
-    service_pending_queue: F,
-) -> bool
-where
-    F: FnOnce(),
-{
-    let ProbeTxOwnership::CallbackRunning { .. } = tracker.ownership else {
-        return false;
-    };
-    let mut callback = Some(service_pending_queue);
-    tracker.finish_completion_callback(|returned| unsafe {
-        return_completed_context(ContextAddress::new(returned), || {
-            if let Some(callback) = callback.take() {
-                callback();
-            }
-        });
-    })
 }
 
 /// Matching-payload event trace helper at `0x164f8`.
@@ -6575,37 +5340,11 @@ pub unsafe fn service_class6_probe_completion(context: u32) {
     }
 }
 
-/// Observes whether the MAC event FIFO is non-empty without consuming it.
-///
-/// Vendor FIQ handler `0x9e90` treats `0x09c00a24` only as a signed
-/// empty/readiness value and obtains the event from destructive register
-/// `0x09c00a20`. Therefore no event can be classified safely at this boundary.
-///
-/// # Safety
-/// The MAC event registers must be mapped.
-pub unsafe fn service_probe_mac_events(
-    _tracker: &mut ProbeTxTracker,
-    max_events: u32,
-) -> Result<MacEventServiceReport, ProbeTxTransitionError> {
-    let mut report = MacEventServiceReport::default();
-    if max_events != 0 {
-        let readiness =
-            unsafe { (crate::platform::mac_register(0x0a24) as *const i32).read_volatile() };
-        if readiness >= 0 {
-            report.blocked = Some(readiness as u32);
-        }
-    }
-    Ok(report)
-}
-
 impl PreparedProbe {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes[..self.length]
     }
 
-    pub fn rate(&self) -> u8 {
-        self.rate
-    }
 }
 
 pub struct PreparedProbeContext {
@@ -6617,21 +5356,7 @@ pub struct PreparedProbeContext {
 }
 
 impl PreparedProbeContext {
-    pub fn context_address(&self) -> u32 {
-        self.context
-    }
 
-    pub fn header_address(&self) -> u32 {
-        self.header
-    }
-
-    pub fn frame_length(&self) -> u16 {
-        self.length
-    }
-
-    pub fn rate(&self) -> u8 {
-        self.rate
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -6668,10 +5393,6 @@ impl BatchPosition {
         matches!(self, Self::Only | Self::First)
     }
 
-    /// Vendor arms and writes GO once, after the publish loop.
-    pub const fn arms(self) -> bool {
-        matches!(self, Self::Only | Self::Last)
-    }
 }
 
 /// Final matching-payload publication sequence for one kind-0 no-ACK frame.
@@ -6908,21 +5629,6 @@ pub struct PreparedProbePublication {
 }
 
 impl PreparedProbePublication {
-    pub fn context_address(&self) -> u32 {
-        self.context.context
-    }
-
-    pub fn pipe(&self) -> u8 {
-        self.pipe
-    }
-
-    pub fn slot(&self) -> u8 {
-        self.slot
-    }
-
-    pub fn checksum(&self) -> u32 {
-        self.checksum
-    }
 
     /// Transfers the prepared single probe to MAC ownership. This is target-
     /// only and remains uncalled by the firmware main loop.
@@ -7258,55 +5964,6 @@ pub unsafe fn prepare_probe_context(
     }
 }
 
-#[cfg(target_arch = "arm")]
-unsafe fn move_to_wsm_class0_context(
-    source: PreparedProbeContext,
-) -> Result<PreparedProbeContext, ProbeBuildError> {
-    unsafe {
-        let destination = match crate::vendor_host_tx::allocate_host_context() {
-            Ok(context) => context,
-            Err(_) => {
-                release_context_address(source.context);
-                return Err(ProbeBuildError::ContextPoolEmpty);
-            }
-        };
-        let destination_address = destination.raw() as usize;
-        let destination_request =
-            crate::dtcm::shared_ptr::<u32>(destination.request_buffer()).read_volatile();
-        let destination_frame_state =
-            crate::dtcm::shared_ptr::<u32>(destination.frame_state_address()).read_volatile();
-        if packet_ram::host_frame_state_index(destination_frame_state as usize).is_none() {
-            release_context_address(source.context);
-            release_wsm_context_address(destination);
-            return Err(ProbeBuildError::InvalidContextPointer);
-        }
-        for offset in (0..TX_CONTEXT_SIZE).step_by(4) {
-            ((destination_address + offset) as *mut u32)
-                .write_volatile(((source.context as usize + offset) as *const u32).read_volatile());
-        }
-
-        // The vendor host path borrows the HIF frame until class-0 completion.
-        // Our transformed frame lives in the internal context's packet-RAM
-        // buffer, so retain that context as the host descriptor's backing
-        // owner instead of guessing a nonexistent host-pool buffer mapping.
-        crate::dtcm::shared_ptr::<u32>(destination.request_buffer()).write_volatile(destination_request);
-        crate::dtcm::shared_ptr::<u8>(destination.request_flags()).write_volatile(0);
-        crate::dtcm::shared_ptr::<u32>(destination.borrowed_frame_address()).write_volatile(source.header);
-        crate::dtcm::shared_ptr::<u32>(destination.completion_status()).write_volatile(0xfe);
-        crate::dtcm::shared_ptr::<u32>(destination.frame_address()).write_volatile(source.header);
-        crate::dtcm::shared_ptr::<u16>(destination.terminal_status()).write_volatile(0xfe);
-        crate::dtcm::shared_ptr::<u32>(destination.frame_state_address()).write_volatile(destination_frame_state);
-        crate::dtcm::shared_ptr::<u8>(destination.completion_class()).write_volatile(0);
-        crate::dtcm::shared_ptr::<u8>(destination.host_link()).write_volatile(0);
-        crate::dtcm::shared_ptr::<u32>(destination.ownership_bits()).write_volatile(3);
-
-        Ok(PreparedProbeContext {
-            context: destination.raw(),
-            ..source
-        })
-    }
-}
-
 /// Returns a context that has never been queued or published.
 ///
 /// # Safety
@@ -7318,76 +5975,6 @@ pub unsafe fn release_unpublished_probe_context(context: PreparedProbeContext) {
         } else {
             release_context_address(context.context);
         }
-    }
-}
-
-/// Builds the single-frame command list from a prepared context using the live
-/// vendor rate tables and PAS fields. The returned words are still
-/// software-owned and are not copied into a pipe descriptor.
-///
-/// # Safety
-/// `context` must remain prepared and software-owned; its DTCM and packet-RAM
-/// pointers must be valid.
-pub unsafe fn build_prepared_probe_descriptor(
-    context: &PreparedProbeContext,
-) -> Result<SingleFramePipeDescriptor, ProbeBuildError> {
-    unsafe {
-        let address = ContextAddress::new(context.context);
-        let rate = (address.tx_rate_address() as *const u8).read_volatile();
-        let tx_flags = (address.control_bits_address() as *const u32).read_volatile();
-        let request_flag_rate_bits =
-            (address.request_flag_rate_bits_address() as *const u8).read_volatile();
-        let legacy_mode = (crate::dtcm::LOW_MAC_LEGACY_MODE.get() as *const u8).read_volatile();
-        let rate_attribute = crate::dtcm::rate_encoding_unchecked(usize::from(rate))
-            .cast_mut::<u8>()
-            .read_volatile();
-        let hardware_rate = crate::dtcm::rate_attribute_unchecked(usize::from(rate))
-            .cast_mut::<u8>()
-            .read_volatile();
-        let phy = build_phy_rate_words(
-            rate,
-            legacy_mode,
-            tx_flags,
-            request_flag_rate_bits,
-            rate_attribute,
-        );
-        let if_id = (address.interface_address() as *const u8).read_volatile();
-        if usize::from(if_id) >= packet_ram::INTERFACE_METADATA_SIZE {
-            return Err(ProbeBuildError::PacketRamMismatch);
-        }
-        let metadata_address = packet_ram::RuntimePacketAddress::new(
-            packet_ram::interface_metadata_byte(usize::from(if_id)) as u32,
-            1,
-        )
-        .ok_or(ProbeBuildError::PacketRamMismatch)?;
-        let header_address = packet_ram::RuntimePacketAddress::new(
-            context.header,
-            usize::from(context.length),
-        )
-        .ok_or(ProbeBuildError::PacketRamMismatch)?;
-        let duration_slot = (address.duration_slot_address() as *const u8).read_volatile();
-        if usize::from(duration_slot) >= packet_ram::DURATION_WORD_COUNT {
-            return Err(ProbeBuildError::PacketRamMismatch);
-        }
-        // `txp_submit_to_pipe` uses PAS `bVifSlot` (`ctx+0xbe`) here when
-        // flags bit 0 is clear. Both internal and host contexts use this
-        // selector; the TX rate indexes different PHY tables.
-        let secondary_address = packet_ram::duration_word(usize::from(duration_slot)) as u32;
-        build_single_frame_pipe_descriptor(SingleFramePipeInput {
-            phy_rate_word: phy.rate,
-            phy_control_word: finalize_phy_control(phy, rate, context.length),
-            frame_length: context.length,
-            hardware_rate,
-            frame_control: (address.frame_control_address() as *const u16).read_volatile(),
-            retry_flag: (address.control_bits_address() as *const u32).read_volatile() & 0x10 != 0,
-            metadata_address,
-            duration: (address.duration_address() as *const u16).read_volatile(),
-            header_address,
-            secondary_command: 0x2100_0000
-                | packet_ram::encode_mac_packet_offset_u32(secondary_address),
-            address_mask: 0x007f_fffc,
-            terminal_command: 0x0700_4600,
-        })
     }
 }
 
@@ -7569,90 +6156,6 @@ pub unsafe fn prepare_probe_publication(
     };
     let context = unsafe { prepare_probe_context(probe, if_id) }?;
     unsafe { prepare_context_publication(context) }
-}
-
-/// Reproduce the vendor host-frame ownership handoff up to scheduler selection:
-/// post-crypto ready bit, pending-list insertion/removal by `task_b88e`, then
-/// `tx_frame_done_release -> pas_retime_and_kick` through the 64-entry PAS ring.
-/// The caller still owns the context after this diagnostic round trip.
-#[cfg(target_arch = "arm")]
-unsafe fn vendor_queue_handoff_before_direct_publication(
-    context: u32,
-) -> Result<(), ProbeBuildError> {
-    unsafe {
-        let Some(host) = crate::dtcm::host_context_from_raw(context) else {
-            return Err(ProbeBuildError::InvalidContextPointer);
-        };
-        let previous = mask_irq_fiq_terminal();
-        let (pending_head, pending_tail) = (crate::dtcm::pending_tx_head().get(), crate::dtcm::pending_tx_tail().get());
-        let old_head = read_u32(pending_head);
-        let old_tail = read_u32(pending_tail);
-
-        // `txq_list_insert(context, queue, 2)` prepends to the pending list.
-        write_u32(host.intrusive_next().get(), old_head);
-        if old_tail == 0 {
-            write_u32(pending_tail, context);
-        }
-        write_u32(pending_head, context);
-        write_u32(
-            host.ownership_bits().get(),
-            read_u32(host.ownership_bits().get()) | 0x20,
-        );
-
-        // The joined/active task accepts this frame, removes the same head,
-        // and passes it through `tx_frame_done_release`.
-        let next = read_u32(host.intrusive_next().get());
-        write_u32(pending_head, next);
-        if read_u32(pending_tail) == context {
-            write_u32(pending_tail, if next == 0 { 0 } else { old_tail });
-        }
-        write_u32(host.intrusive_next().get(), 0);
-        write_u32(
-            host.ownership_bits().get(),
-            read_u32(host.ownership_bits().get()) | 0x40,
-        );
-
-        // `pas_txq_push_global(context + 0x54)` appends class-0 host frames.
-        let head = read_u32(crate::dtcm::HOST_PAS_RING_HEAD.get()) as u8 & 0x3f;
-        let tail = read_u32(crate::dtcm::HOST_PAS_RING_TAIL.get()) as u8 & 0x3f;
-        let following = tail.wrapping_add(1) & 0x3f;
-        if head != tail || following == head {
-            restore_irq_fiq(previous);
-            return Err(ProbeBuildError::PipeSlotBusy);
-        }
-        let frame_node = host.frame_node().raw();
-        write_u32(
-            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(tail)).get(),
-            frame_node,
-        );
-        write_u32(crate::dtcm::HOST_PAS_RING_TAIL.get(), u32::from(following));
-
-        // The minimum scheduler diagnostic consumes exactly the frame it just
-        // enqueued, preserving an otherwise-empty ring for the direct backend.
-        let selected = read_u32(
-            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get(),
-        );
-        if selected != frame_node {
-            restore_irq_fiq(previous);
-            return Err(ProbeBuildError::UnsupportedPublicationShape);
-        }
-        write_u32(
-            crate::dtcm::host_pas_ring_slot_unchecked(usize::from(head)).get(),
-            0,
-        );
-        write_u32(
-            crate::dtcm::HOST_PAS_RING_HEAD.get(),
-            u32::from(head.wrapping_add(1) & 0x3f),
-        );
-        // The non-aggregate scheduler branch marks the selected frame before
-        // `txp_build_pipe_descriptor(..., 0)`.
-        write_u32(
-            host.control_bits().get(),
-            read_u32(host.control_bits().get()) | (1 << 26),
-        );
-        restore_irq_fiq(previous);
-    }
-    Ok(())
 }
 
 unsafe fn prepare_context_publication(
@@ -8354,26 +6857,6 @@ pub const fn probe_experiment_diagnostic_value() -> u32 {
     0
 }
 
-/// Exercises complete detached preparation and cancellation without publishing.
-///
-/// # Safety
-/// The internal context pool and retained template storage must be exclusively
-/// owned by the firmware runtime.
-pub unsafe fn validate_probe_preparation(
-    template: Option<&[u8]>,
-    ssid: &[u8],
-    channel: u8,
-    if_id: u8,
-) -> Result<u32, ProbeBuildError> {
-    let publication = unsafe { prepare_probe_publication(template, ssid, channel, if_id) }?;
-    let checksum = publication.checksum();
-    unsafe {
-        (&raw mut *PROBE_CHECKSUM.0.get()).write_volatile(checksum);
-        publication.cancel()?;
-    }
-    Ok(checksum)
-}
-
 /// Initializes the three-entry internal management TX pool from vendor
 /// `tx_ctx_pool_init` (`0x12574`). This does not publish anything to hardware.
 ///
@@ -8488,269 +6971,9 @@ fn prepare_probe_into<'a>(
     Ok(prepared)
 }
 
-pub fn prepare_probe(
-    template: Option<&[u8]>,
-    ssid: &[u8],
-    channel: u8,
-) -> Result<PreparedProbe, ProbeBuildError> {
-    let mut prepared = PreparedProbe {
-        bytes: [0; MAX_TEMPLATE_FRAME_LEN],
-        length: 0,
-        rate: 0,
-    };
-    prepare_probe_into(&mut prepared, template, ssid, channel)?;
-    Ok(prepared)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PlannedAmpduMember {
-    pub frame_state: u32,
-    pub frame_length: u16,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PlannedAmpduInput {
-    pub members: [Option<PlannedAmpduMember>;
-        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    pub phy_rate_word: u32,
-    pub phy_control_word: u32,
-    pub hardware_rate: u8,
-    pub spacing_selector: u8,
-}
-
-const MAX_PLANNED_AMPDU_DESCRIPTOR_WORDS: usize =
-    crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH * 3 - 1;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PlannedAmpduDescriptor {
-    pub words: [u32; MAX_PLANNED_AMPDU_DESCRIPTOR_WORDS],
-    pub length: u8,
-    pub phy_words: [u32; 3],
-    pub aggregate_length: u16,
-    pub member_count: u8,
-}
-
-/// Build a bounded vendor opcode stream without publishing it to hardware.
-///
-/// Every non-final member contributes its padded delimiter length and optional
-/// spacing transfer. Members must form one contiguous prefix within the active
-/// experimental depth bound.
-pub(crate) fn build_planned_ampdu_descriptor(
-    input: PlannedAmpduInput,
-) -> Option<PlannedAmpduDescriptor> {
-    let member_count = input.members.iter().take_while(|member| member.is_some()).count();
-    if !(2..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&member_count)
-        || input.members[member_count..].iter().any(Option::is_some)
-    {
-        return None;
-    }
-
-    let mut words = [0_u32; MAX_PLANNED_AMPDU_DESCRIPTOR_WORDS];
-    let mut word_count = 0_usize;
-    let mut aggregate_length = 0_u32;
-    for index in 0..member_count {
-        let member = input.members.get(index).copied().flatten()?;
-        *words.get_mut(word_count)? =
-            ampdu_transfer_word(member.frame_state.wrapping_add(8) as usize);
-        word_count += 1;
-        if index + 1 == member_count {
-            aggregate_length = aggregate_length.checked_add(u32::from(member.frame_length) + 8)?;
-        } else {
-            *words.get_mut(word_count)? = 0x6600_0000;
-            word_count += 1;
-            if let Some(spacing) = ampdu_spacing_word(input.spacing_selector) {
-                *words.get_mut(word_count)? = spacing;
-                word_count += 1;
-            }
-            let padded = u32::from(member.frame_length).checked_add(0x0b)? & !3;
-            aggregate_length = aggregate_length
-                .checked_add(padded)?
-                .checked_add(u32::from(input.spacing_selector) * 4)?;
-        }
-    }
-    *words.get_mut(word_count)? = 0xe400_0000;
-    word_count += 1;
-    let aggregate_length = u16::try_from(aggregate_length).ok()?;
-    let phy_words = [
-        0x5100_0000 | (input.phy_rate_word & 0x00ff_ffff),
-        0x5000_0000 | (input.phy_control_word & 0x00ff_ffff),
-        0x5200_0000
-            | (u32::from(input.hardware_rate) << 16)
-            | u32::from(aggregate_length),
-    ];
-    Some(PlannedAmpduDescriptor {
-        words,
-        length: word_count as u8,
-        phy_words,
-        aggregate_length,
-        member_count: member_count as u8,
-    })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PlannedBlockAck {
-    pub states: [BlockAckMemberState;
-        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    pub member_count: u8,
-}
-
-fn planned_member_count<T>(members: &[Option<T>]) -> Option<usize> {
-    let count = members.iter().take_while(|member| member.is_some()).count();
-    if !(2..=crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH).contains(&count)
-        || members[count..].iter().any(Option::is_some)
-    {
-        None
-    } else {
-        Some(count)
-    }
-}
-
-pub(crate) fn classify_planned_block_ack(
-    start_sequence: u16,
-    bitmap: u64,
-    sequences: [Option<u16>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-) -> Option<PlannedBlockAck> {
-    let member_count = planned_member_count(&sequences)?;
-    let mut states = [BlockAckMemberState::OutsideWindow;
-        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-    for index in 0..member_count {
-        let sequence = sequences[index]?;
-        let delta = (sequence & 0x0fff).wrapping_sub(start_sequence & 0x0fff) & 0x0fff;
-        states[index] = if delta >= 64 {
-            BlockAckMemberState::OutsideWindow
-        } else if bitmap & (1_u64 << delta) != 0 {
-            BlockAckMemberState::Acknowledged
-        } else {
-            BlockAckMemberState::Missing
-        };
-    }
-    Some(PlannedBlockAck {
-        states,
-        member_count: member_count as u8,
-    })
-}
-
-pub(crate) fn merge_planned_block_ack(
-    previous: Option<PlannedBlockAck>,
-    current: PlannedBlockAck,
-) -> Option<PlannedBlockAck> {
-    if previous.is_some_and(|previous| previous.member_count != current.member_count) {
-        return None;
-    }
-    let mut merged = current;
-    for index in 0..usize::from(current.member_count) {
-        merged.states[index] = match (
-            previous.map(|previous| previous.states[index]),
-            current.states[index],
-        ) {
-            (Some(BlockAckMemberState::Acknowledged), _)
-            | (_, BlockAckMemberState::Acknowledged) => BlockAckMemberState::Acknowledged,
-            (Some(BlockAckMemberState::Missing), _) | (_, BlockAckMemberState::Missing) => {
-                BlockAckMemberState::Missing
-            }
-            _ => BlockAckMemberState::OutsideWindow,
-        };
-    }
-    Some(merged)
-}
-
-pub(crate) fn plan_planned_block_ack_actions(
-    observation: PlannedBlockAck,
-    retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    session_active: bool,
-) -> [Option<BlockAckMemberAction>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH] {
-    core::array::from_fn(|index| {
-        if index >= usize::from(observation.member_count) {
-            return None;
-        }
-        Some(match observation.states[index] {
-            BlockAckMemberState::Acknowledged => BlockAckMemberAction::Confirm,
-            BlockAckMemberState::Missing if session_active && retry_allowed[index] => {
-                BlockAckMemberAction::Retry
-            }
-            BlockAckMemberState::Missing | BlockAckMemberState::OutsideWindow => {
-                BlockAckMemberAction::GiveUp
-            }
-        })
-    })
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SelectiveAmpduRetryPlan {
-    pub actions: [Option<BlockAckMemberAction>;
-        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    pub retry_members: [Option<u8>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    pub retry_count: u8,
-}
-
-#[cfg(test)]
-pub(crate) fn plan_selective_ampdu_retry(
-    observation: PlannedBlockAck,
-    retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    session_active: bool,
-    effective_retry_rates: [Option<u8>;
-        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-) -> SelectiveAmpduRetryPlan {
-    let member_count = usize::from(observation.member_count)
-        .min(crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH);
-    let mut actions =
-        plan_planned_block_ack_actions(observation, retry_allowed, session_active);
-    let mut retry_members = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-    let mut retry_count = 0_usize;
-    let mut selected_rate = None;
-    for index in 0..member_count {
-        if actions[index] != Some(BlockAckMemberAction::Retry) {
-            continue;
-        }
-        let rate = effective_retry_rates[index];
-        if rate.is_none() || selected_rate.is_some_and(|selected| Some(selected) != rate) {
-            actions[index] = Some(BlockAckMemberAction::GiveUp);
-            continue;
-        }
-        selected_rate = rate;
-        retry_members[retry_count] = Some(index as u8);
-        retry_count += 1;
-    }
-    SelectiveAmpduRetryPlan {
-        actions,
-        retry_members,
-        retry_count: retry_count as u8,
-    }
-}
-
-pub(crate) fn planned_whole_retry_allowed(
-    observation: PlannedBlockAck,
-    retry_allowed: [bool; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-    session_active: bool,
-    next_rates: [Option<u8>; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-) -> bool {
-    let actions = plan_planned_block_ack_actions(observation, retry_allowed, session_active);
-    let count = usize::from(observation.member_count);
-    if count < 2
-        || actions[..count]
-            .iter()
-            .any(|action| *action != Some(BlockAckMemberAction::Retry))
-    {
-        return false;
-    }
-    let Some(first_rate) = next_rates[0] else {
-        return false;
-    };
-    next_rates[..count]
-        .iter()
-        .all(|rate| *rate == Some(first_rate))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pad_ampdu<T: Copy>(first: [T; 4], trailing: T) -> [T;
-        crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH]
-    {
-        core::array::from_fn(|index| first.get(index).copied().unwrap_or(trailing))
-    }
 
     #[test]
     fn retry_state_indices_require_an_exact_pipe_slot_identity() {
@@ -8763,18 +6986,6 @@ mod tests {
         assert_eq!(retained_slot_state_index(1, slot), None);
         assert_eq!(retained_slot_state_index(2, slot + 1), None);
         assert_eq!(retained_slot_state_index(4, slot), None);
-    }
-
-    #[test]
-    fn ampdu_publication_indices_preserve_head_slot_and_bound_members() {
-        assert_eq!(
-            ampdu_publication_indices(3, 2),
-            Some([3, 0, usize::MAX, usize::MAX]),
-        );
-        assert_eq!(ampdu_publication_indices(2, 4), Some([2, 0, 1, 3]));
-        assert_eq!(ampdu_publication_indices(0, 1), None);
-        assert_eq!(ampdu_publication_indices(0, 5), None);
-        assert_eq!(ampdu_publication_indices(4, 2), None);
     }
 
     #[test]
@@ -8856,60 +7067,6 @@ mod tests {
         assert_eq!(completed.take(), None);
         assert_eq!(completed.push(0xfe), Ok(()));
         assert_eq!(completed.take(), Some(0xfe));
-    }
-
-    struct MockMacEventBackend {
-        events: [i32; 4],
-        event_count: usize,
-        event_index: usize,
-        readiness: i32,
-        readiness_reads: u32,
-        effects: [Option<MacEventEffect>; 16],
-        effect_count: usize,
-        drain_tails: u32,
-    }
-
-    impl MockMacEventBackend {
-        fn new(events: &[i32], readiness: i32) -> Self {
-            let mut stored = [-1; 4];
-            stored[..events.len()].copy_from_slice(events);
-            Self {
-                events: stored,
-                event_count: events.len(),
-                event_index: 0,
-                readiness,
-                readiness_reads: 0,
-                effects: [None; 16],
-                effect_count: 0,
-                drain_tails: 0,
-            }
-        }
-    }
-
-    impl MacEventBackend for MockMacEventBackend {
-        fn pop_event(&mut self) -> i32 {
-            let event = if self.event_index < self.event_count {
-                self.events[self.event_index]
-            } else {
-                -1
-            };
-            self.event_index += 1;
-            event
-        }
-
-        fn readiness(&mut self) -> i32 {
-            self.readiness_reads += 1;
-            self.readiness
-        }
-
-        fn apply_effect(&mut self, _event: MacEvent, effect: MacEventEffect) {
-            self.effects[self.effect_count] = Some(effect);
-            self.effect_count += 1;
-        }
-
-        fn drain_tail(&mut self) {
-            self.drain_tails += 1;
-        }
     }
 
     struct MockPipeMmio {
@@ -9234,29 +7391,6 @@ mod tests {
     }
 
     #[test]
-    fn advance_pipe_slot_retires_armed_pipe_to_last_plus_one() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe_state = pipe_state_address(2);
-        mmio.set(pipe_state, 1); // producer
-        mmio.set(pipe_state + 1, 2); // last consumed
-        mmio.set(pipe_state + 3, 1); // armed
-        mmio.set(pipe_state + 6, 7); // abort counter
-        let ring = crate::platform::tx_ring_register(2, 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-        // Pending-slot mask and hardware-owned high bits must survive.
-        mmio.set(ring + 0x20, 0x8000_000f | (1 << 24) | (1 << 27));
-
-        assert_eq!(advance_pipe_slot(&mut mmio, 2), Some(true));
-
-        assert_eq!(mmio.get(pipe_state + 3), 0);
-        assert_eq!(mmio.get(pipe_state + 6), 8);
-        assert_eq!(mmio.get(ring + 0x18), PIPE_RETRY_INACTIVE_SENTINEL);
-        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0_u32.wrapping_sub(0x4450));
-        // cursor = (last + 1) & 3 = 3, written to bits 26:24 and 29:27.
-        assert_eq!(mmio.get(ring + 0x20), 0x8000_000f | (3 << 24) | (3 << 27));
-    }
-
-    #[test]
     fn watchdog_timer_divider_samples_once_per_sixteen_passes() {
         let mut countdown = 0;
         let mut samples = 0;
@@ -9376,45 +7510,6 @@ mod tests {
     }
 
     #[test]
-    fn advance_pipe_slot_on_idle_pipe_republishes_producer() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe_state = pipe_state_address(0);
-        mmio.set(pipe_state, 2);
-        mmio.set(pipe_state + 1, 3);
-        mmio.set(pipe_state + 3, 0);
-        mmio.set(pipe_state + 6, 0xff);
-        let ring = crate::platform::tx_ring_register(0, 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-
-        assert_eq!(advance_pipe_slot(&mut mmio, 0), Some(false));
-
-        // A saturated abort counter is left alone, and the idle branch mirrors
-        // the producer rather than `last + 1`.
-        assert_eq!(mmio.get(pipe_state + 6), 0xff);
-        assert_eq!(mmio.get(ring + 0x20), (2 << 24) | (2 << 27));
-    }
-
-    #[test]
-    fn hardware_ring_view_matches_cursor_and_sentinel_offsets() {
-        let ring = TxHardwareRingAddress::new(0x9000);
-        assert_eq!(core::mem::size_of::<TxHardwareRingLayout>(), 0x24);
-        assert_eq!(ring.raw(), 0x9000);
-        assert_eq!(ring.duration_fifo(), 0x9000);
-        assert_eq!(ring.diagnostic_word_0c(), 0x900c);
-        assert_eq!(ring.diagnostic_word_10(), 0x9010);
-        assert_eq!(ring.go(), 0x9014);
-        assert_eq!(ring.inactive_sentinel(), 0x9018);
-        assert_eq!(ring.completion_word(), 0x901c);
-        assert_eq!(ring.cursor_and_pending_mask(), 0x9020);
-        let descriptor = TxDescriptorAddress::new(0xa000);
-        assert_eq!(core::mem::size_of::<TxDescriptorLayout>(), 12);
-        assert_eq!(descriptor.raw(), 0xa000);
-        assert_eq!(descriptor.command(), 0xa000);
-        assert_eq!(descriptor.flags(), 0xa004);
-        assert_eq!(descriptor.duration(), 0xa008);
-    }
-
-    #[test]
     fn hardware_ring_identity_is_exact_for_each_pipe() {
         for pipe in 0..4 {
             let expected = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
@@ -9431,94 +7526,6 @@ mod tests {
             ),
             None,
         );
-    }
-
-    #[test]
-    fn retained_hardware_ring_consumers_reject_mismatched_roots_before_mmio() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe = 2_u8;
-        let record = pipe_record_address(pipe);
-        let wrong_ring = crate::platform::tx_ring_register(1, 0) as u32;
-        mmio.set(record.hardware_ring().get() as u32, wrong_ring);
-
-        assert_eq!(advance_pipe_slot(&mut mmio, pipe), None);
-        assert!(!resync_pipe_cursor(&mut mmio, pipe));
-        assert_eq!(hardware_pipe_cursor(&mut mmio, pipe), Err(()));
-        assert_eq!(mmio.write_count, 0);
-
-        let input = SingleProbePublicationInput {
-            pipe,
-            slot: 0,
-            pipe_state: record.raw(),
-            slot_record: record.slot_unchecked(0).raw(),
-            command_storage: packet_ram::tx_command(usize::from(pipe), 0) as u32,
-            hardware_ring: wrong_ring,
-            frame_node: FrameNodeAddress::from_raw(0x0400_9248).unwrap(),
-            expects_ack: false,
-            batch: BatchPosition::Only,
-        };
-        assert_eq!(execute_single_probe_publication(&mut mmio, input), u8::MAX);
-        assert!(!finalize_staged_pipe(
-            &mut mmio,
-            pipe,
-            record.raw(),
-            wrong_ring,
-            0,
-            0,
-        ));
-        assert_eq!(mmio.write_count, 0);
-    }
-
-    #[test]
-    fn resync_pipe_cursor_matches_vendor_invariant_and_keeps_mask() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe_state = pipe_state_address(1);
-        mmio.set(pipe_state, 3);
-        let ring = crate::platform::tx_ring_register(1, 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-        mmio.set(ring + 0x20, 0xc000_00aa | (1 << 24) | (1 << 27));
-
-        assert!(resync_pipe_cursor(&mut mmio, 1));
-
-        let word = mmio.get(ring + 0x20);
-        assert_eq!(word & 0x00ff_ffff, 0xaa);
-        assert_eq!(word & 0xc000_0000, 0xc000_0000);
-        // The invariant asserted by vendor `txp_fn_4425`.
-        assert_eq!((word & 0x3fff_ffff) >> 27, u32::from(mmio.get(pipe_state)));
-        assert_eq!((word >> 24) & 7, 3);
-    }
-
-    #[test]
-    fn resync_pipe_cursor_ignores_unprogrammed_ring() {
-        let mut mmio = MockPipeMmio::new();
-        resync_pipe_cursor(&mut mmio, 3);
-        assert_eq!(mmio.write_count, 0);
-    }
-
-    #[test]
-    fn pipe_cursor_diagnostic_exposes_divergence() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe_state = pipe_state_address(2);
-        mmio.set(pipe_state, 3); // producer
-        mmio.set(pipe_state + 1, 2); // last
-        mmio.set(pipe_state + 2, 2); // current
-        mmio.set(pipe_state + 3, 1); // armed
-        let ring = crate::platform::tx_ring_register(2, 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-        mmio.set(ring + 0x20, (1 << 24) | (1 << 27));
-
-        let (packed, ring_word) = pipe_cursor_diagnostic(&mut mmio, 2);
-
-        assert_eq!(ring_word, (1 << 24) | (1 << 27));
-        assert_eq!(packed & 0x0f, 2);
-        assert_eq!((packed >> 4) & 0x0f, 3);
-        assert_eq!((packed >> 8) & 0x0f, 2);
-        assert_eq!((packed >> 12) & 0x0f, 2);
-        assert_eq!((packed >> 16) & 0x0f, 1);
-        // Producer nibble 3 versus hardware cursor nibble 1: diverged.
-        assert_eq!((packed >> 20) & 0x0f, 1);
-        assert_eq!((packed >> 24) & 0x0f, 1);
-        assert_ne!((packed >> 4) & 0x0f, (packed >> 24) & 0x0f);
     }
 
     #[test]
@@ -10015,249 +8022,6 @@ mod tests {
     }
 
     #[test]
-    fn fixed_rate_rearm_rebuilds_before_clearing_command_mask_and_optional_ack() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe = 0;
-        let pipe_state = pipe_state_address(pipe);
-        mmio.set(pipe_state, 0);
-        mmio.set(pipe_state + 2, 0);
-        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-        mmio.set(ring + 0x20, 0x0f);
-        let slot = pipe_state + 0x0c;
-        mmio.set(slot, 0);
-        mmio.set(slot + 1, 0xff);
-        mmio.set(slot + 0x14, 0xa000);
-        mmio.set(0xa004, 0x20);
-        let frame = FrameNodeAddress::new(0x0400_90d8);
-        mmio.set(frame.raw() + 4, 0x1018);
-        mmio.set(frame.raw() + 0x0c, 0);
-        mmio.set(frame.raw() + 0x0f, 2);
-        mmio.set(frame.raw() + 0x69, 0);
-        mmio.set(frame.raw() + 0x56, 0xff);
-        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 0x0012_3456);
-        mmio.set(
-            crate::dtcm::pas_stride_view(0)
-                .unwrap()
-                .contention_window(0)
-                .unwrap()
-                .get() as u32,
-            0x001f,
-        );
-        mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 3);
-        mmio.set(crate::dtcm::tx_duration_timing_unchecked(3).get() as u32, 0x20);
-        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get() as u32, 2);
-        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_INITIAL.get() as u32, 3);
-        mmio.set(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32, 0);
-        let mut backend = MockRearmBackend::new();
-
-        let outcome = execute_fixed_rate_single_frame_rearm(
-            &mut mmio,
-            pipe,
-            slot,
-            frame,
-            0x100,
-            &mut backend,
-        );
-
-        assert_eq!(outcome, SingleFrameRearmOutcome::CommandMaskAcknowledged);
-        let trigger_index = mmio
-            .writes
-            .iter()
-            .position(|write| *write == (PIPE_IRQ_TRIGGER, 1 << 25))
-            .unwrap_or_else(|| panic!("missing retry trigger write"));
-        let descriptor_index = mmio
-            .writes
-            .iter()
-            .rposition(|(address, _)| *address == 0xa004)
-            .unwrap_or_else(|| panic!("missing rebuilt descriptor write"));
-        let command_mask_index = mmio
-            .writes
-            .iter()
-            .position(|(address, _)| *address == ring + 0x20)
-            .unwrap_or_else(|| panic!("missing retry command-mask write"));
-        assert!(descriptor_index < trigger_index);
-        assert!(trigger_index < command_mask_index);
-        assert_eq!(mmio.get(0xa000), 0);
-        assert_eq!(mmio.get(crate::dtcm::initialized_random_lfsr().get() as u32), 0xb013_1713);
-        assert_eq!(mmio.get(PIPE_RETRY_RANDOM_STATS), 0x13);
-        assert_eq!(mmio.get(PIPE_RETRY_RANDOM_STATS + 12), 1);
-        assert_eq!(mmio.get(frame.raw() + 0x5a), 0x13);
-        assert_eq!(mmio.get(0xa004), 0x4d7f);
-        assert_eq!(mmio.get(0xa008), 0xd800_2138);
-        assert_eq!(mmio.get(ring + 0x20), 0x0e);
-        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_feff);
-        assert!(!backend.rebuilt);
-
-        mmio.write_count = 0;
-        mmio.set(ring + 0x20, 0x0f);
-        let outcome = execute_fixed_rate_single_frame_rearm_with_ack(
-            &mut mmio,
-            pipe,
-            slot,
-            frame,
-            None,
-            &mut backend,
-        );
-        assert_eq!(outcome, SingleFrameRearmOutcome::CommandMaskAcknowledged);
-        assert!(mmio.writes[..mmio.write_count]
-            .iter()
-            .all(|(address, _)| *address != PIPE_IRQ_PENDING));
-    }
-
-    #[test]
-    fn ordinary_batch_retry_keeps_producer_and_clears_only_current_mask_bit() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe = 0;
-        let pipe_state = pipe_state_address(pipe);
-        mmio.set(pipe_state, 0);
-        mmio.set(pipe_state + 2, 1);
-        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-        mmio.set(ring + 0x20, 0x0f);
-        let slot = pipe_state + 0x0c + 0x18;
-        mmio.set(slot, 0);
-        mmio.set(slot + 1, 0x11);
-        mmio.set(slot + 0x14, 0xa000);
-        mmio.set(0xa004, 0x20);
-        let frame = FrameNodeAddress::new(0x0400_90d8);
-        mmio.set(frame.raw() + 4, 0);
-        mmio.set(frame.raw() + 0x0c, 0);
-        mmio.set(frame.raw() + 0x0f, 2);
-        mmio.set(frame.raw() + 0x69, 0);
-        mmio.set(frame.raw() + 0x56, 0x11);
-        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 0x0012_3456);
-        mmio.set(
-            crate::dtcm::pas_stride_view(0)
-                .unwrap()
-                .contention_window(0)
-                .unwrap()
-                .get() as u32,
-            0x001f,
-        );
-        mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 3);
-        mmio.set(crate::dtcm::tx_duration_timing_unchecked(3).get() as u32, 0x20);
-        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_BASE.get() as u32, 2);
-        mmio.set(crate::dtcm::LOW_MAC_SLOT_TIME_INITIAL.get() as u32, 3);
-        mmio.set(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32, 0);
-        let mut backend = MockRearmBackend::new();
-
-        let outcome = execute_fixed_rate_single_frame_rearm(
-            &mut mmio,
-            pipe,
-            slot,
-            frame,
-            0x100,
-            &mut backend,
-        );
-
-        assert_eq!(outcome, SingleFrameRearmOutcome::CommandMaskAcknowledged);
-        assert_eq!(mmio.get(pipe_state), 0);
-        assert_eq!(mmio.get(pipe_state + 2), 1);
-        assert_eq!(mmio.get(ring + 0x20), 0x0d);
-        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_feff);
-        assert!(!backend.rebuilt);
-    }
-
-    #[test]
-    fn rate_change_rebuilds_phy_descriptor_before_retry_duration() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe = 0;
-        let pipe_state = pipe_state_address(pipe);
-        mmio.set(pipe_state, 0);
-        mmio.set(pipe_state + 2, 0);
-        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-        mmio.set(ring + 0x20, 1);
-        let slot = pipe_state + 0x0c;
-        mmio.set(slot, 0);
-        mmio.set(slot + 1, 0xff);
-        mmio.set(slot + 0x14, 0xa000);
-        mmio.set(0xa004, 0);
-        let frame = FrameNodeAddress::new(0x0400_90d8);
-        mmio.set(frame.raw() + 4, 0x0008_1018);
-        mmio.set(frame.raw() + 0x0c, 0);
-        mmio.set(frame.raw() + 0x0f, 2);
-        mmio.set(frame.raw() + 0x69, 0);
-        mmio.set(frame.raw() + 0x56, 0xff);
-        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 1);
-        mmio.set(
-            crate::dtcm::pas_stride_view(0)
-                .unwrap()
-                .contention_window(0)
-                .unwrap()
-                .get() as u32,
-            0,
-        );
-        mmio.set(crate::dtcm::mac_retry_rate_unchecked(2).get() as u32, 0);
-        mmio.set(crate::dtcm::tx_duration_timing_unchecked(0).get() as u32, 0);
-        mmio.set(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32, 0);
-        let mut backend = MockRearmBackend::new();
-
-        let outcome = execute_fixed_rate_single_frame_rearm(
-            &mut mmio,
-            pipe,
-            slot,
-            frame,
-            0x100,
-            &mut backend,
-        );
-
-        assert_eq!(outcome, SingleFrameRearmOutcome::CommandMaskAcknowledged);
-        assert!(backend.rebuilt);
-    }
-
-    #[test]
-    fn fixed_rate_rearm_hardware_state_uses_matching_payload_sentinel() {
-        let mut mmio = MockPipeMmio::new();
-        let pipe = 1;
-        let pipe_state = pipe_state_address(pipe);
-        mmio.set(pipe_state, 3);
-        mmio.set(pipe_state + 2, 3);
-        let ring = crate::platform::tx_ring_register(usize::from(pipe), 0) as u32;
-        mmio.set(pipe_state + 8, ring);
-        let slot = pipe_state + 0x0c + 3 * 0x18;
-        mmio.set(slot, 0);
-        mmio.set(slot + 1, 4);
-        mmio.set(slot + 0x14, 0xa000);
-        let frame = FrameNodeAddress::new(0x0400_9248);
-        mmio.set(frame.raw() + 4, 0x1018);
-        mmio.set(frame.raw() + 0x0c, 0);
-        mmio.set(frame.raw() + 0x0f, 1);
-        mmio.set(frame.raw() + 0x69, 0);
-        mmio.set(frame.raw() + 0x56, 0xff);
-        mmio.set(crate::dtcm::initialized_random_lfsr().get() as u32, 1);
-        mmio.set(
-            crate::dtcm::pas_stride_view(0)
-                .unwrap()
-                .contention_window(0)
-                .unwrap()
-                .get() as u32,
-            0,
-        );
-        mmio.set(crate::dtcm::mac_retry_rate_unchecked(1).get() as u32, 0);
-        mmio.set(crate::dtcm::tx_duration_timing_unchecked(0).get() as u32, 0);
-        mmio.set(crate::dtcm::MAC_RETRY_HARDWARE_STATE.get() as u32, 2);
-        let mut backend = MockRearmBackend::new();
-
-        let outcome = execute_fixed_rate_single_frame_rearm(
-            &mut mmio,
-            pipe,
-            slot,
-            frame,
-            0x200,
-            &mut backend,
-        );
-
-        assert_eq!(
-            outcome,
-            SingleFrameRearmOutcome::HardwareSentinelAcknowledged
-        );
-        assert_eq!(mmio.get(ring + 0x18), 0xff00_ffff);
-        assert_eq!(mmio.get(PIPE_IRQ_PENDING), 0xffff_0df0);
-    }
-
-    #[test]
     fn single_probe_publication_preserves_vendor_trigger_and_go_order() {
         let mut mmio = MockPipeMmio::new();
         let pipe_state = pipe_state_address(0);
@@ -10501,37 +8265,6 @@ mod tests {
     }
 
     #[test]
-    fn probe_builder_substitutes_ssid_and_channel() {
-        let mut template = [0_u8; 4 + 24 + 2 + 3 + 4];
-        template[0] = 0;
-        template[1] = 6;
-        let frame_len = (template.len() - 4) as u16;
-        template[2..4].copy_from_slice(&frame_len.to_le_bytes());
-        let ies = 4 + 24;
-        template[ies..ies + 2].copy_from_slice(&[0, 0]);
-        template[ies + 2..ies + 5].copy_from_slice(&[3, 1, 11]);
-        template[ies + 5..ies + 9].copy_from_slice(&[1, 2, 0x82, 0x84]);
-
-        let probe = match prepare_probe(Some(&template), b"test", 6) {
-            Ok(probe) => probe,
-            Err(error) => panic!("probe build failed: {error:?}"),
-        };
-        assert_eq!(probe.rate(), 6);
-        assert_eq!(
-            &probe.bytes()[24..],
-            &[0, 4, b't', b'e', b's', b't', 3, 1, 6, 1, 2, 0x82, 0x84]
-        );
-    }
-
-    #[test]
-    fn probe_builder_rejects_non_probe_template() {
-        assert_eq!(
-            prepare_probe(Some(&[1, 0, 0, 0]), b"", 1).err(),
-            Some(ProbeBuildError::WrongTemplateType)
-        );
-    }
-
-    #[test]
     fn mac_event_decoder_matches_vendor_bitfields() {
         let raw = (1 << 25) | (1 << 24) | (2 << 18) | (3 << 16) | (0x37 << 8) | 0x19;
         assert_eq!(
@@ -10551,34 +8284,6 @@ mod tests {
             })
         );
         assert_eq!(MacEvent::decode(u32::MAX), None);
-    }
-
-    #[test]
-    fn literal_status_2_event_has_no_pipe_service_or_retry_escalation() {
-        let event =
-            MacEvent::decode(0x0140_3902).unwrap_or_else(|| panic!("status-2 event decoded empty"));
-        assert_eq!(event.event_type, 0x39);
-        assert_eq!(event.completion_status(), Some(2));
-        assert!(event.completion_marker);
-        assert!(!event.pipe_service_marker);
-        let resolution = resolve_mac_status_event(
-            event,
-            MacStatusSnapshot {
-                pre_service_scheduler_word: SchedulerWord::new(0x100),
-                latched_pipe: 0,
-                pipe_active: true,
-                slot_expected_status: 0x11,
-                slot_state: 5,
-                global_busy: false,
-                mismatch_count: 2,
-            },
-        )
-        .unwrap_or_else(|| panic!("missing status-2 resolution"));
-        assert!(resolution.dispatch_ordinary);
-        assert!(!resolution.ordinary_completion_eligible);
-        assert!(!resolution.direct_retry);
-        assert_eq!(resolution.next_mismatch_count, 2);
-        assert!(!resolution.escalation_retry);
     }
 
     #[test]
@@ -10646,111 +8351,6 @@ mod tests {
     }
 
     #[test]
-    fn mac_status_uses_saved_scheduler_word_and_exact_terminal_gate() {
-        let event = MacEvent::decode((1 << 24) | 0x0b)
-            .unwrap_or_else(|| panic!("status event decoded empty"));
-        let resolution = resolve_mac_status_event(
-            event,
-            MacStatusSnapshot {
-                pre_service_scheduler_word: SchedulerWord::new(0x100),
-                latched_pipe: 0,
-                pipe_active: true,
-                slot_expected_status: 0x0b,
-                slot_state: 3,
-                global_busy: false,
-                mismatch_count: 0,
-            },
-        )
-        .unwrap_or_else(|| panic!("missing resolution"));
-        assert_eq!(resolution.pending_mask, 0x100);
-        assert!(resolution.dispatch_ordinary);
-        assert!(resolution.ordinary_completion_eligible);
-        assert!(!resolution.direct_retry);
-    }
-
-    #[test]
-    fn mac_status_mismatch_escalates_only_after_third_bit23_event() {
-        let event = MacEvent::decode((1 << 24) | (1 << 23) | 0x0b)
-            .unwrap_or_else(|| panic!("status event decoded empty"));
-        let resolution = resolve_mac_status_event(
-            event,
-            MacStatusSnapshot {
-                pre_service_scheduler_word: SchedulerWord::new(0x200),
-                latched_pipe: 1,
-                pipe_active: true,
-                slot_expected_status: 4,
-                slot_state: 3,
-                global_busy: false,
-                mismatch_count: 2,
-            },
-        )
-        .unwrap_or_else(|| panic!("missing resolution"));
-        assert!(!resolution.ordinary_completion_eligible);
-        assert_eq!(resolution.next_mismatch_count, 3);
-        assert!(resolution.escalation_retry);
-    }
-
-    #[test]
-    fn direct_retry_requires_saved_pending_bit_but_not_slot_state_three() {
-        let event = MacEvent::decode((1 << 24) | 0x19)
-            .unwrap_or_else(|| panic!("status event decoded empty"));
-        let resolution = resolve_mac_status_event(
-            event,
-            MacStatusSnapshot {
-                pre_service_scheduler_word: SchedulerWord::new(0x400),
-                latched_pipe: 2,
-                pipe_active: true,
-                slot_expected_status: 0x19,
-                slot_state: 4,
-                global_busy: false,
-                mismatch_count: 0,
-            },
-        )
-        .unwrap_or_else(|| panic!("missing resolution"));
-        assert_eq!(resolution.pending_mask, 0x400);
-        assert!(!resolution.dispatch_ordinary);
-        assert!(resolution.direct_retry);
-    }
-
-    #[test]
-    fn bit23_mismatch_uses_post_dispatch_slot_and_saved_pending_mask() {
-        let event = MacEvent::decode((1 << 24) | (1 << 23) | 0x0b)
-            .unwrap_or_else(|| panic!("status event decoded empty"));
-        let resolution = resolve_mac_status_event(
-            event,
-            MacStatusSnapshot {
-                pre_service_scheduler_word: SchedulerWord::new(0x100),
-                latched_pipe: 0,
-                pipe_active: true,
-                slot_expected_status: 4,
-                slot_state: 5,
-                global_busy: false,
-                mismatch_count: 2,
-            },
-        )
-        .unwrap_or_else(|| panic!("missing resolution"));
-        assert_eq!(resolution.pending_mask, 0x100);
-        assert_eq!(resolution.next_mismatch_count, 3);
-        assert!(resolution.escalation_retry);
-
-        let no_pending = resolve_mac_status_event(
-            event,
-            MacStatusSnapshot {
-                pre_service_scheduler_word: SchedulerWord::new(0),
-                latched_pipe: 0,
-                pipe_active: true,
-                slot_expected_status: 4,
-                slot_state: 5,
-                global_busy: false,
-                mismatch_count: 2,
-            },
-        )
-        .unwrap_or_else(|| panic!("missing resolution"));
-        assert_eq!(no_pending.next_mismatch_count, 2);
-        assert!(!no_pending.escalation_retry);
-    }
-
-    #[test]
     fn pipe_service_plan_preserves_vendor_priority_and_acknowledgements() {
         assert_eq!(
             plan_mac_pipe_service(SchedulerWord::new(0x1095), 3),
@@ -10777,55 +8377,6 @@ mod tests {
                 acknowledgement: !0x2000_u32,
             }
         );
-    }
-
-    #[test]
-    fn mac_event_backend_zero_budget_performs_no_mmio_equivalent_calls() {
-        let mut backend = MockMacEventBackend::new(&[0], 0);
-        assert_eq!(
-            service_mac_event_backend(&mut backend, 0),
-            MacEventLoopReport {
-                processed: 0,
-                stop: MacEventStopReason::BudgetExhausted,
-                reschedule_required: true,
-            }
-        );
-        assert_eq!(backend.event_index, 0);
-        assert_eq!(backend.readiness_reads, 0);
-        assert_eq!(backend.drain_tails, 0);
-    }
-
-    #[test]
-    fn mac_event_backend_budget_stops_before_readiness_or_next_pop() {
-        let raw = (1 << 25) | (2 << 16) | (0x37 << 8);
-        let mut backend = MockMacEventBackend::new(&[raw], 0);
-        assert_eq!(
-            service_mac_event_backend(&mut backend, 1),
-            MacEventLoopReport {
-                processed: 1,
-                stop: MacEventStopReason::BudgetExhausted,
-                reschedule_required: true,
-            }
-        );
-        assert_eq!(backend.event_index, 1);
-        assert_eq!(backend.readiness_reads, 0);
-        assert_eq!(backend.drain_tails, 0);
-    }
-
-    #[test]
-    fn mac_event_backend_runs_drain_tail_only_after_fifo_empty() {
-        let mut backend = MockMacEventBackend::new(&[0], -1);
-        assert_eq!(
-            service_mac_event_backend(&mut backend, 2),
-            MacEventLoopReport {
-                processed: 1,
-                stop: MacEventStopReason::Empty,
-                reschedule_required: false,
-            }
-        );
-        assert_eq!(backend.event_index, 1);
-        assert_eq!(backend.readiness_reads, 1);
-        assert_eq!(backend.drain_tails, 1);
     }
 
     #[test]
@@ -10873,18 +8424,6 @@ mod tests {
         assert_eq!(phy_dispatch_switch_target(2), 0x0001_6f92);
         assert_eq!(phy_dispatch_switch_target(3), 0x0001_6fa0);
         assert_eq!(phy_dispatch_switch_target(7), 0x0001_6fb6);
-    }
-
-    #[test]
-    fn native_internal_context_pool_preserves_context_stride() {
-        assert_eq!(crate::dtcm::INTERNAL_TX_CONTEXT_SIZE, TX_CONTEXT_SIZE);
-        assert_eq!(crate::dtcm::INTERNAL_TX_CONTEXT_COUNT, TX_CONTEXT_COUNT);
-        assert_eq!(crate::dtcm::INTERNAL_CONTEXT_POOL.get(), 0x0400_9080);
-        assert_eq!(internal_context_address(0).raw(), 0x0400_9084);
-        assert_eq!(
-            internal_context_address(2).raw() - internal_context_address(0).raw(),
-            (2 * TX_CONTEXT_SIZE) as u32
-        );
     }
 
     #[test]
@@ -10991,40 +8530,6 @@ mod tests {
     }
 
     #[test]
-    fn mac_event_plan_preserves_vendor_multi_marker_order() {
-        let raw = (1 << 26)
-            | (1 << 25)
-            | (1 << 24)
-            | (1 << 23)
-            | (2 << 18)
-            | (3 << 16)
-            | (0x37 << 8)
-            | (1 << 7)
-            | 0x19;
-        let event = MacEvent::decode(raw).unwrap_or_else(|| panic!("valid event decoded empty"));
-        assert_eq!(
-            event.dispatch_plan().effects(),
-            &[
-                Some(MacEventEffect::Trace),
-                Some(MacEventEffect::PipePhase {
-                    event_type: 0x37,
-                    phase: 3,
-                    latch_index: Some(2),
-                }),
-                Some(MacEventEffect::PipeService),
-                Some(MacEventEffect::TxStatus {
-                    event_type: 0x37,
-                    status: 0x19,
-                    pipe_service_escalation: true,
-                }),
-                Some(MacEventEffect::Beacon),
-                Some(MacEventEffect::Sideband),
-                Some(MacEventEffect::Archive),
-            ]
-        );
-    }
-
-    #[test]
     fn popped_event_executor_captures_scheduler_once_before_service_and_status() {
         let raw =
             (1 << 26) | (1 << 25) | (1 << 24) | (1 << 23) | (3 << 16) | (0x37 << 8) | (1 << 7) | 4;
@@ -11039,145 +8544,6 @@ mod tests {
             Some(SchedulerWord::new(0x1234_5678))
         );
         assert_eq!(backend.status_scheduler, backend.service_scheduler);
-    }
-
-    #[test]
-    fn fatal_mac_event_stops_before_all_later_marker_effects() {
-        let raw = (1 << 30) | (1 << 26) | (1 << 25) | (1 << 24) | (1 << 23) | (1 << 7);
-        let event = MacEvent::decode(raw).unwrap_or_else(|| panic!("valid event decoded empty"));
-        assert_eq!(
-            event.dispatch_plan().effects(),
-            &[Some(MacEventEffect::Trace), Some(MacEventEffect::Fatal)]
-        );
-    }
-
-    #[test]
-    fn probe_tracker_requires_full_completion_chain_before_return() {
-        let mut tracker = ProbeTxTracker::new();
-        tracker
-            .prepare(0x0400_9084)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        tracker
-            .publish(2, 1)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        let success = MacEvent::decode((1 << 25) | (2 << 18) | (3 << 16) | (0x37 << 8))
-            .unwrap_or_else(|| panic!("valid success event decoded as empty"));
-        assert_eq!(
-            tracker.handle_pipe_event(success, true),
-            Err(ProbeTxTransitionError::CompletionBeforeStart)
-        );
-        let start = MacEvent::decode((1 << 25) | (2 << 18) | (2 << 16) | (0x37 << 8))
-            .unwrap_or_else(|| panic!("valid start event decoded as empty"));
-        assert_eq!(tracker.handle_pipe_event(start, true), Ok(true));
-        assert_eq!(tracker.handle_pipe_event(success, true), Ok(true));
-        assert!(tracker.queue_terminal_completion());
-        assert!(!begin_probe_completion_callback(
-            &mut tracker,
-            FrameNodeAddress::new(0x0400_9364 + FRAME_NODE_OFFSET),
-        ));
-        assert!(begin_probe_completion_callback(
-            &mut tracker,
-            FrameNodeAddress::new(0x0400_9084 + FRAME_NODE_OFFSET),
-        ));
-        let mut returned = 0;
-        assert!(tracker.finish_completion_callback(|context| returned = context));
-        assert_eq!(returned, 0x0400_9084);
-        assert!(!tracker.finish_completion_callback(|_| panic!("double return")));
-        assert_eq!(tracker.ownership(), ProbeTxOwnership::Returned);
-        assert!(tracker.reset_returned());
-        assert_eq!(tracker.ownership(), ProbeTxOwnership::Idle);
-    }
-
-    #[test]
-    fn probe_tracker_retains_retry_status() {
-        let mut tracker = ProbeTxTracker::new();
-        tracker
-            .prepare(0x0400_91f4)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        tracker
-            .publish(1, 3)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        let start = MacEvent::decode((1 << 25) | (1 << 18) | (2 << 16) | (0x37 << 8))
-            .unwrap_or_else(|| panic!("valid start event decoded as empty"));
-        assert_eq!(tracker.handle_pipe_event(start, true), Ok(true));
-        let retry = MacEvent::decode((1 << 24) | 0x19)
-            .unwrap_or_else(|| panic!("valid retry event decoded as empty"));
-        assert_eq!(tracker.handle_pipe_event(retry, true), Ok(true));
-        assert_eq!(tracker.observed_status(), Some(0x19));
-        assert!(tracker.resolve_retry_status(0x19));
-        assert_eq!(
-            tracker.ownership(),
-            ProbeTxOwnership::RetryRequired {
-                context: 0x0400_91f4,
-                pipe: 1,
-                slot: 3,
-                status: 0x19,
-            }
-        );
-    }
-
-    #[test]
-    fn status_observation_requires_explicit_terminal_resolution() {
-        let mut tracker = ProbeTxTracker::new();
-        tracker
-            .prepare(0x0400_9364)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        tracker
-            .publish(0, 2)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        let start = MacEvent::decode((1 << 25) | (2 << 16) | (0x37 << 8))
-            .unwrap_or_else(|| panic!("valid start event decoded as empty"));
-        assert_eq!(tracker.handle_pipe_event(start, true), Ok(true));
-        let status = MacEvent::decode((1 << 24) | 0x0b)
-            .unwrap_or_else(|| panic!("valid status event decoded as empty"));
-        assert_eq!(tracker.handle_pipe_event(status, false), Ok(true));
-        assert_eq!(tracker.observed_status(), Some(0x0b));
-        assert_eq!(
-            tracker.ownership(),
-            ProbeTxOwnership::Started {
-                context: 0x0400_9364,
-                pipe: 0,
-                slot: 2,
-            }
-        );
-        assert!(!tracker.resolve_terminal_status(4));
-        assert!(tracker.resolve_terminal_status(0x0b));
-        assert_eq!(
-            tracker.ownership(),
-            ProbeTxOwnership::TerminalObserved {
-                context: 0x0400_9364,
-                pipe: 0,
-                slot: 2,
-                status: 0x0b,
-            }
-        );
-    }
-
-    #[test]
-    fn probe_identity_generation_and_fatal_quiescence_are_explicit() {
-        let mut tracker = ProbeTxTracker::new();
-        tracker
-            .prepare(0x0400_9084)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        let first = tracker
-            .identity()
-            .unwrap_or_else(|| panic!("missing identity"));
-        assert_eq!(first.generation, 1);
-        tracker.enter_fatal_quiescence();
-        assert_eq!(tracker.identity(), Some(first));
-        assert_eq!(
-            tracker.prepare(0x0400_91f4),
-            Err(ProbeTxTransitionError::Busy)
-        );
-        assert!(tracker.reset_fatal_quiescence());
-        tracker
-            .prepare(0x0400_91f4)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        let second = tracker
-            .identity()
-            .unwrap_or_else(|| panic!("missing identity"));
-        assert_eq!(second.generation, 2);
-        assert_ne!(first, second);
     }
 
     #[test]
@@ -11309,455 +8675,6 @@ mod tests {
         assert_eq!(classify_dot11_header(0x0388, false), Dot11HeaderShape { length: 32, qos_data: true });
         assert_eq!(classify_dot11_header(0x8388, false), Dot11HeaderShape { length: 36, qos_data: true });
         assert_eq!(classify_dot11_header(0x0088, true), Dot11HeaderShape { length: 24, qos_data: false });
-    }
-
-    #[test]
-    fn single_frame_descriptor_matches_vendor_command_shape() {
-        let input = SingleFramePipeInput {
-            phy_rate_word: 0x123456,
-            phy_control_word: 0xabcdef,
-            frame_length: 42,
-            hardware_rate: 3,
-            frame_control: 0x0040,
-            retry_flag: true,
-            metadata_address: packet_ram::RuntimePacketAddress::new(0x0901_2345, 1).unwrap(),
-            duration: 0x0064,
-            header_address: packet_ram::RuntimePacketAddress::new(0x0901_4fe8, 42).unwrap(),
-            secondary_command: 0x2100_1234,
-            address_mask: u32::MAX,
-            terminal_command: 0x4e14_0000,
-        };
-        let descriptor = build_single_frame_pipe_descriptor(input).unwrap();
-        assert_eq!(
-            descriptor.words(),
-            &[
-                0x5112_3456,
-                0x50ab_cdef,
-                0x5203_002e,
-                0x3100_0840,
-                0x4700_0008,
-                0x2081_2345,
-                0x3200_0064,
-                0x2901_4fec,
-                0x2100_1234,
-                0x4001_5000,
-                0x0001_2000,
-                0x4e14_0000,
-                0xf000_0000,
-            ]
-        );
-        assert_eq!(
-            build_single_frame_pipe_descriptor(SingleFramePipeInput {
-                frame_length: CONTROL_FRAME_MIN_LENGTH - 1,
-                ..input
-            }),
-            Err(ProbeBuildError::PacketRamMismatch),
-        );
-    }
-
-    #[test]
-    fn selective_retirement_preserves_acks_at_two_and_four_member_depth() {
-        for count in [2_usize, 4] {
-            let mut sequences = [None; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH];
-            for (index, sequence) in sequences[..count].iter_mut().enumerate() {
-                *sequence = Some((0x0fff + index as u16) & 0x0fff);
-            }
-            let observation = classify_planned_block_ack(0x0fff, 1, sequences).unwrap();
-            for retry_allowed in [true, false] {
-                let plan = plan_selective_ampdu_retry(
-                    observation,
-                    [retry_allowed; crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-                    true,
-                    [Some(4); crate::host_tx_policy::MAX_EXPERIMENTAL_AMPDU_DEPTH],
-                );
-                assert_eq!(plan.actions[0], Some(BlockAckMemberAction::Confirm));
-                assert!(plan.actions[1..count].iter().all(|action| *action == Some(
-                    if retry_allowed { BlockAckMemberAction::Retry } else { BlockAckMemberAction::GiveUp }
-                )));
-                assert!(plan.actions[count..].iter().all(Option::is_none));
-                assert_eq!(usize::from(plan.retry_count), if retry_allowed { count - 1 } else { 0 });
-                if retry_allowed {
-                    assert!(plan.retry_members[..count - 1].iter().enumerate()
-                        .all(|(index, member)| *member == Some((index + 1) as u8)));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn depth_two_block_ack_classifies_wrapped_window_members() {
-        assert_eq!(
-            classify_depth_two_block_ack(0x0fff, 0b11, [0x0fff, 0x0000]),
-            [BlockAckMemberState::Acknowledged; 2],
-        );
-        assert_eq!(
-            classify_depth_two_block_ack(0x0100, 0b01, [0x0100, 0x0101]),
-            [BlockAckMemberState::Acknowledged, BlockAckMemberState::Missing],
-        );
-        let outside = classify_depth_two_block_ack(0x0100, u64::MAX, [0x0100, 0x0140]);
-        assert_eq!(
-            outside,
-            [BlockAckMemberState::Acknowledged, BlockAckMemberState::OutsideWindow],
-        );
-        assert_eq!(
-            plan_depth_two_block_ack_actions(outside, [true, true], true),
-            [BlockAckMemberAction::Confirm, BlockAckMemberAction::GiveUp],
-        );
-        assert_eq!(
-            plan_depth_two_block_ack_actions(outside, [true, true], false),
-            [BlockAckMemberAction::Confirm, BlockAckMemberAction::GiveUp],
-        );
-        assert_eq!(
-            plan_depth_two_block_ack_actions(
-                [BlockAckMemberState::Missing, BlockAckMemberState::Missing],
-                [true, false],
-                true,
-            ),
-            [BlockAckMemberAction::Retry, BlockAckMemberAction::GiveUp],
-        );
-        assert!(depth_two_whole_retry_allowed([true; 2], true, [19; 2]));
-        assert!(!depth_two_whole_retry_allowed([true, false], true, [19; 2]));
-        assert!(!depth_two_whole_retry_allowed([true; 2], false, [19; 2]));
-        assert!(!depth_two_whole_retry_allowed([true; 2], true, [19, 18]));
-        assert!(aggregate_retry_command_owned(1, 4));
-        assert!(!aggregate_retry_command_owned(1, 3));
-        assert!(!aggregate_retry_command_owned(0, 4));
-    }
-
-    #[test]
-    fn depth_two_block_ack_accumulates_repeated_and_growing_bitmaps() {
-        let sequences = [0x0100, 0x0101];
-        let first_only = classify_depth_two_block_ack(0x0100, 0b01, sequences);
-        let repeated_first = merge_depth_two_block_ack_states(Some(first_only), first_only);
-        assert_eq!(
-            repeated_first,
-            [BlockAckMemberState::Acknowledged, BlockAckMemberState::Missing],
-        );
-
-        let second_only = classify_depth_two_block_ack(0x0100, 0b10, sequences);
-        assert_eq!(
-            merge_depth_two_block_ack_states(Some(repeated_first), second_only),
-            [BlockAckMemberState::Acknowledged; 2],
-        );
-        assert_eq!(
-            merge_depth_two_block_ack_states(Some(second_only), first_only),
-            [BlockAckMemberState::Acknowledged; 2],
-        );
-
-        let total_miss = classify_depth_two_block_ack(0x0100, 0, sequences);
-        assert_eq!(total_miss, [BlockAckMemberState::Missing; 2]);
-        assert_eq!(
-            plan_depth_two_block_ack_actions(total_miss, [true; 2], true),
-            [BlockAckMemberAction::Retry; 2],
-        );
-        assert_eq!(
-            plan_depth_two_block_ack_actions(total_miss, [true; 2], false),
-            [BlockAckMemberAction::GiveUp; 2],
-        );
-
-        // An acknowledgement is sticky for one exact aggregate even if a later
-        // compressed BA shifts its window away from that member.
-        let shifted = classify_depth_two_block_ack(0x0101, 0b1, sequences);
-        assert_eq!(
-            merge_depth_two_block_ack_states(Some(first_only), shifted),
-            [BlockAckMemberState::Acknowledged; 2],
-        );
-    }
-
-    #[test]
-    fn planned_block_ack_handles_four_wrapped_members_and_sticky_updates() {
-        let sequences = pad_ampdu(
-            [Some(0x0ffe), Some(0x0fff), Some(0x0000), Some(0x0001)],
-            None,
-        );
-        let Some(first_half) = classify_planned_block_ack(0x0ffe, 0b0011, sequences) else {
-            panic!("four contiguous wrapped sequences must classify");
-        };
-        assert_eq!(
-            first_half.states,
-            pad_ampdu(
-                [
-                    BlockAckMemberState::Acknowledged,
-                    BlockAckMemberState::Acknowledged,
-                    BlockAckMemberState::Missing,
-                    BlockAckMemberState::Missing,
-                ],
-                BlockAckMemberState::OutsideWindow,
-            ),
-        );
-        let Some(second_half) = classify_planned_block_ack(0x0ffe, 0b1100, sequences) else {
-            panic!("shifted acknowledgement half must classify");
-        };
-        let Some(merged) = merge_planned_block_ack(Some(first_half), second_half) else {
-            panic!("matching aggregate observations must merge");
-        };
-        assert_eq!(
-            merged.states,
-            pad_ampdu(
-                [BlockAckMemberState::Acknowledged; 4],
-                BlockAckMemberState::OutsideWindow,
-            ),
-        );
-        assert_eq!(
-            plan_planned_block_ack_actions(merged, pad_ampdu([true; 4], false), true),
-            pad_ampdu([Some(BlockAckMemberAction::Confirm); 4], None),
-        );
-    }
-
-    #[test]
-    fn selective_ampdu_plan_covers_every_four_member_ack_subset() {
-        let sequences = pad_ampdu(
-            [Some(0x0100), Some(0x0101), Some(0x0102), Some(0x0103)],
-            None,
-        );
-        for bitmap in 0_u64..16 {
-            let observation = classify_planned_block_ack(0x0100, bitmap, sequences).unwrap();
-            let plan = plan_selective_ampdu_retry(
-                observation,
-                pad_ampdu([true; 4], false),
-                true,
-                pad_ampdu([Some(18); 4], None),
-            );
-            let expected_retry_count = 4 - bitmap.count_ones() as u8;
-            assert_eq!(plan.retry_count, expected_retry_count, "bitmap {bitmap:#06b}");
-            for index in 0..4 {
-                let expected = if bitmap & (1 << index) != 0 {
-                    Some(BlockAckMemberAction::Confirm)
-                } else {
-                    Some(BlockAckMemberAction::Retry)
-                };
-                assert_eq!(plan.actions[index], expected, "bitmap {bitmap:#06b}, member {index}");
-            }
-        }
-    }
-
-    #[test]
-    fn selective_ampdu_plan_rejects_mixed_or_unavailable_retry_rates() {
-        let observation = PlannedBlockAck {
-            states: pad_ampdu(
-                [
-                    BlockAckMemberState::Missing,
-                    BlockAckMemberState::Acknowledged,
-                    BlockAckMemberState::Missing,
-                    BlockAckMemberState::Missing,
-                ],
-                BlockAckMemberState::OutsideWindow,
-            ),
-            member_count: 4,
-        };
-        let plan = plan_selective_ampdu_retry(
-            observation,
-            pad_ampdu([true; 4], false),
-            true,
-            pad_ampdu([Some(18), None, Some(17), Some(18)], None),
-        );
-        assert_eq!(plan.retry_count, 2);
-        assert_eq!(plan.retry_members, pad_ampdu([Some(0), Some(3), None, None], None));
-        assert_eq!(
-            plan.actions,
-            pad_ampdu(
-                [
-                    Some(BlockAckMemberAction::Retry),
-                    Some(BlockAckMemberAction::Confirm),
-                    Some(BlockAckMemberAction::GiveUp),
-                    Some(BlockAckMemberAction::Retry),
-                ],
-                None,
-            ),
-        );
-
-        let inactive = plan_selective_ampdu_retry(
-            observation,
-            pad_ampdu([true; 4], false),
-            false,
-            pad_ampdu([Some(18); 4], None),
-        );
-        assert_eq!(inactive.retry_count, 0);
-        assert_eq!(
-            inactive.actions,
-            pad_ampdu(
-                [
-                    Some(BlockAckMemberAction::GiveUp),
-                    Some(BlockAckMemberAction::Confirm),
-                    Some(BlockAckMemberAction::GiveUp),
-                    Some(BlockAckMemberAction::GiveUp),
-                ],
-                None,
-            ),
-        );
-    }
-
-    #[test]
-    fn planned_block_ack_distinguishes_partial_and_whole_retry() {
-        let observation = PlannedBlockAck {
-            states: pad_ampdu(
-                [
-                    BlockAckMemberState::Acknowledged,
-                    BlockAckMemberState::Missing,
-                    BlockAckMemberState::OutsideWindow,
-                    BlockAckMemberState::Missing,
-                ],
-                BlockAckMemberState::OutsideWindow,
-            ),
-            member_count: 4,
-        };
-        assert_eq!(
-            plan_planned_block_ack_actions(
-                observation,
-                pad_ampdu([true, true, true, false], false),
-                true,
-            ),
-            pad_ampdu(
-                [
-                    Some(BlockAckMemberAction::Confirm),
-                    Some(BlockAckMemberAction::Retry),
-                    Some(BlockAckMemberAction::GiveUp),
-                    Some(BlockAckMemberAction::GiveUp),
-                ],
-                None,
-            ),
-        );
-
-        let total_miss = PlannedBlockAck {
-            states: pad_ampdu(
-                [BlockAckMemberState::Missing; 4],
-                BlockAckMemberState::OutsideWindow,
-            ),
-            member_count: 4,
-        };
-        assert!(planned_whole_retry_allowed(
-            total_miss,
-            pad_ampdu([true; 4], false),
-            true,
-            pad_ampdu([Some(18); 4], None),
-        ));
-        assert!(!planned_whole_retry_allowed(
-            total_miss,
-            pad_ampdu([true; 4], false),
-            true,
-            pad_ampdu([Some(18), Some(18), Some(17), Some(18)], None),
-        ));
-        assert!(!planned_whole_retry_allowed(
-            total_miss,
-            pad_ampdu([true; 4], false),
-            false,
-            pad_ampdu([Some(18); 4], None),
-        ));
-        assert!(merge_planned_block_ack(
-            Some(PlannedBlockAck {
-                member_count: 3,
-                ..total_miss
-            }),
-            total_miss,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn depth_two_ampdu_descriptor_matches_vendor_opcode_stream() {
-        assert_eq!(ampdu_spacing_selector(0, 19), 0);
-        assert_eq!(ampdu_spacing_selector(4, 19), 4);
-        assert_eq!(ampdu_spacing_selector(7, 21), 33);
-        assert_eq!(ampdu_spacing_selector(8, 19), 0);
-        assert_eq!(ampdu_spacing_selector(4, 13), 0);
-        let descriptor = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
-            first_frame_state: 0x0901_0000,
-            second_frame_state: 0x0901_0400,
-            first_frame_length: 1500,
-            second_frame_length: 1500,
-            phy_rate_word: 0x031407,
-            phy_control_word: 0x06c006,
-            hardware_rate: 0x0c,
-            spacing_selector: 0,
-        });
-        assert_eq!(descriptor.aggregate_length, 0x0bc8);
-        assert_eq!(descriptor.length, 4);
-        assert_eq!(
-            &descriptor.words[..usize::from(descriptor.length)],
-            &[0x6501_0008, 0x6600_0000, 0x6501_0408, 0xe400_0000],
-        );
-        assert_eq!(
-            descriptor.phy_words,
-            [0x5103_1407, 0x5006_c006, 0x520c_0bc8],
-        );
-
-        let spaced = build_depth_two_ampdu_descriptor(DepthTwoAmpduInput {
-            spacing_selector: 2,
-            ..DepthTwoAmpduInput {
-                first_frame_state: 0x0901_0000,
-                second_frame_state: 0x0901_0400,
-                first_frame_length: 1500,
-                second_frame_length: 1500,
-                phy_rate_word: 0x031407,
-                phy_control_word: 0x06c006,
-                hardware_rate: 0x0c,
-                spacing_selector: 0,
-            }
-        });
-        assert_eq!(spaced.length, 5);
-        assert_eq!(spaced.aggregate_length, 0x0bd0);
-        assert_eq!(spaced.phy_words[2], 0x520c_0bd0);
-        assert_eq!(
-            spaced.words[2],
-            ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(2)),
-        );
-    }
-
-    #[test]
-    fn planned_depth_four_ampdu_matches_the_vendor_member_loop() {
-        let members = core::array::from_fn(|index| {
-            (index < 4).then_some(PlannedAmpduMember {
-                frame_state: 0x0901_0000 + index as u32 * 0x400,
-                frame_length: 1500,
-            })
-        });
-        let input = PlannedAmpduInput {
-            members,
-            phy_rate_word: 0x031407,
-            phy_control_word: 0x06c006,
-            hardware_rate: 0x0c,
-            spacing_selector: 0,
-        };
-        let Some(descriptor) = build_planned_ampdu_descriptor(input) else {
-            panic!("four contiguous members must produce an opcode plan");
-        };
-        assert_eq!(descriptor.member_count, 4);
-        assert_eq!(descriptor.aggregate_length, 0x1790);
-        assert_eq!(descriptor.length, 8);
-        assert_eq!(
-            &descriptor.words[..usize::from(descriptor.length)],
-            &[
-                0x6501_0008,
-                0x6600_0000,
-                0x6501_0408,
-                0x6600_0000,
-                0x6501_0808,
-                0x6600_0000,
-                0x6501_0c08,
-                0xe400_0000,
-            ],
-        );
-        assert_eq!(descriptor.phy_words[2], 0x520c_1790);
-
-        let Some(spaced) = build_planned_ampdu_descriptor(PlannedAmpduInput {
-            spacing_selector: 2,
-            ..input
-        }) else {
-            panic!("spacing must preserve the four-member plan");
-        };
-        assert_eq!(spaced.length, 11);
-        assert_eq!(spaced.aggregate_length, 0x17a8);
-        assert_eq!(spaced.phy_words[2], 0x520c_17a8);
-        assert_eq!(
-            [spaced.words[2], spaced.words[5], spaced.words[8]],
-            [ampdu_transfer_word(packet_ram::ampdu_spacing_word_address(2)); 3],
-        );
-
-        assert!(build_planned_ampdu_descriptor(PlannedAmpduInput {
-            members: pad_ampdu([members[0], None, members[2], None], None),
-            ..input
-        })
-        .is_none());
     }
 
     #[test]
